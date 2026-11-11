@@ -87,6 +87,13 @@ pub(crate) enum ReleaseItem {
     },
     /// Release the map's entry buffer and header.
     MapStorage { map: *mut HewLayoutHashMap },
+    /// An indirect enum node of ordinary data, released by its generated drop
+    /// glue. Only the thread's synchronous walk holds one.
+    Node {
+        node: *mut c_void,
+        drop: unsafe extern "C" fn(*mut c_void),
+        code: crate::code_owner::CodeRoot,
+    },
 }
 
 thread_local! {
@@ -278,13 +285,41 @@ pub(crate) unsafe fn release_deferred(item: ReleaseItem) {
     unsafe { drain(item) };
 }
 
+/// Release an indirect enum node of ordinary data through its generated drop
+/// glue, joining a walk already in progress. The glue releases each child node
+/// through this entry too, so a value of any depth is released in constant
+/// native stack.
+///
+/// Codegen emits this where physical MIR proved the node's whole subtree is
+/// ordinary data, so releasing it later within the same walk is unobservable.
+///
+/// # Safety
+/// `node` is an indirect enum node this call exclusively owns, `drop` is its
+/// generated glue, and `code_owner` is null or the defining image's live slot.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_variant_free_walk(
+    node: *mut c_void,
+    drop: unsafe extern "C" fn(*mut c_void),
+    code_owner: *const hew_cabi::code::HewCodeLeaseSlot,
+) {
+    // SAFETY: the calling glue's own image is live while it runs.
+    let code = unsafe { crate::code_owner::CodeRoot::acquire(code_owner) };
+    // SAFETY: forwarded ownership contract.
+    unsafe { release_deferred(ReleaseItem::Node { node, drop, code }) };
+}
+
 /// Perform one step, queueing whatever it uncovers.
 ///
 /// # Safety
 ///
 /// `item` must name storage the walk in progress owns.
 unsafe fn run(item: ReleaseItem) {
-    if let ReleaseItem::Value { slot, layout } = item {
+    if let ReleaseItem::Node { node, drop, code } = item {
+        // SAFETY: the walk owns the node; its glue queues the node's children
+        // on this walk instead of nesting, and `code` keeps the glue loaded.
+        unsafe { drop(node) };
+        std::mem::drop(code);
+    } else if let ReleaseItem::Value { slot, layout } = item {
         if layout.release_start.is_some() {
             // A synchronous caller cannot discharge a resumable obligation.
             std::process::abort();
@@ -356,6 +391,10 @@ unsafe fn expand(
                 crate::hashmap::release_slot_chunk(map, next, pending);
             }
             ReleaseItem::MapStorage { map } => crate::hashmap::free_map_storage(map),
+            ReleaseItem::Node { node, drop, code } => {
+                drop(node);
+                std::mem::drop(code);
+            }
         }
     }
     None
@@ -913,7 +952,10 @@ pub(crate) unsafe fn visit_cursor(
                     failure => failure,
                 },
                 ReleaseItem::RcSurvivors(wave) => wave.visit(visitor),
+                // A node only waits on the thread's synchronous walk, never on
+                // a cursor that can be visited.
                 ReleaseItem::CodeRoot(_)
+                | ReleaseItem::Node { .. }
                 | ReleaseItem::Storage { .. }
                 | ReleaseItem::Allocation {
                     managed_bytes: None,
@@ -1144,6 +1186,79 @@ pub(crate) unsafe fn release_sync_items(items: impl IntoIterator<Item = ReleaseI
 mod tests {
     use super::*;
     use hew_cabi::value::HewTypeOwnershipKind;
+
+    #[test]
+    fn queued_variant_glue_retains_its_defining_image() {
+        use hew_cabi::code::{HewCodeLease, HewCodeLeaseSlot};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counts {
+            roots: AtomicUsize,
+            dropped: AtomicUsize,
+        }
+        struct Node {
+            next: *mut Node,
+            code: *const HewCodeLeaseSlot,
+            counts: *const Counts,
+        }
+        unsafe extern "C" fn retain(context: *const c_void) {
+            // SAFETY: the test retains the lease counters through the walk.
+            unsafe { &*context.cast::<Counts>() }
+                .roots
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn release(context: *const c_void) {
+            // SAFETY: the test retains the lease counters through the walk.
+            unsafe { &*context.cast::<Counts>() }
+                .roots
+                .fetch_sub(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn drop_node(node: *mut c_void) {
+            // SAFETY: each callback receives exactly one transferred node.
+            let node = unsafe { Box::from_raw(node.cast::<Node>()) };
+            // SAFETY: the test retains the counters until every callback ends.
+            let counts = unsafe { &*node.counts };
+            assert!(
+                counts.roots.load(Ordering::SeqCst) >= 2,
+                "queued glue must retain code"
+            );
+            counts.dropped.fetch_add(1, Ordering::SeqCst);
+            if !node.next.is_null() {
+                // SAFETY: this node transfers its child with the same live lease.
+                unsafe { hew_variant_free_walk(node.next.cast(), drop_node, node.code) };
+            }
+        }
+
+        let counts = Counts {
+            roots: AtomicUsize::new(1),
+            dropped: AtomicUsize::new(0),
+        };
+        let lease = HewCodeLease {
+            context: (&raw const counts).cast(),
+            retain,
+            release,
+            try_retain: None,
+        };
+        let code = HewCodeLeaseSlot {
+            lease: &raw const lease,
+        };
+        let mut head = ptr::null_mut();
+        for _ in 0..64 {
+            head = Box::into_raw(Box::new(Node {
+                next: head,
+                code: &raw const code,
+                counts: &raw const counts,
+            }));
+        }
+        // SAFETY: the walk consumes the chain while its caller retains the image.
+        unsafe { hew_variant_free_walk(head.cast(), drop_node, &raw const code) };
+        assert_eq!(counts.dropped.load(Ordering::SeqCst), 64);
+        assert_eq!(
+            counts.roots.load(Ordering::SeqCst),
+            1,
+            "only the caller's image root remains"
+        );
+    }
 
     unsafe extern "C" fn selected_release(
         _slot: *mut c_void,

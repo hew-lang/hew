@@ -214,7 +214,7 @@ fn finish_server(
 }
 
 fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
-    let kx_dir = tempfile::tempdir().expect("create identity monitor key directory");
+    let kx_dir = support::distributed::credentials(false, &["server", "client"]);
     let port = allocate_loopback_port();
     let mut server = spawn_server(binary, port, scenario, kx_dir.path());
     let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());
@@ -256,7 +256,7 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
 }
 
 fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) -> (usize, usize) {
-    let kx_dir = tempfile::tempdir().expect("create identity display key directory");
+    let kx_dir = support::distributed::credentials(false, &["server", "client"]);
     let port = allocate_loopback_port();
     let mut server = spawn_server(binary, port, scenario, kx_dir.path());
     let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());

@@ -118,6 +118,30 @@ pub(crate) fn set_current_for_test(bounds: StackBounds) -> StackBounds {
     BOUNDS.with(|slot| slot.replace(bounds))
 }
 
+/// Observe the physical stack, including when `ASan` relocates Rust locals to
+/// its fake stack. Hew's generated entry checks also use physical frames.
+#[cfg(test)]
+pub(crate) fn live_stack_address() -> usize {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        let address: usize;
+        // SAFETY: reading the stack pointer does not access memory or change
+        // the stack, flags or any other machine state.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            std::arch::asm!("mov {}, rsp", out(reg) address, options(nomem, nostack, preserves_flags));
+            #[cfg(target_arch = "aarch64")]
+            std::arch::asm!("mov {}, sp", out(reg) address, options(nomem, nostack, preserves_flags));
+        }
+        address
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let marker = 0_u8;
+        std::hint::black_box(&raw const marker) as usize
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod os {
     use super::StackBounds;
@@ -221,11 +245,12 @@ mod os {
         unsafe { GetCurrentThreadStackLimits(&raw mut low, &raw mut high) };
         // The reservation's lowest pages hold the guard and the hard limit;
         // the window below `low` therefore lies inside the reservation.
-        Some(StackBounds {
+        let bounds = StackBounds {
             low,
             high,
             guard: 0,
-        })
+        };
+        bounds.is_known().then_some(bounds)
     }
 }
 
@@ -298,8 +323,7 @@ mod tests {
     fn registered_bounds_contain_the_live_stack() {
         let previous = set_current_for_test(StackBounds::UNKNOWN);
         register_current_thread(ThreadLabel::Other);
-        let local = 0_u64;
-        let here = (&raw const local) as usize;
+        let here = live_stack_address();
         let current = current();
         let _ = set_current_for_test(previous);
         assert!(

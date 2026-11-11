@@ -121,10 +121,6 @@ impl Checker {
         self.expression_value_candidates.get(key).cloned()
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one provenance dispatch covers the checked expression forms"
-    )]
     fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
         if let Some(candidates) =

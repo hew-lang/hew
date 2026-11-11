@@ -7,7 +7,9 @@
 //! becomes the first operand of a new chain, so the HIR nests only where a
 //! conversion sits between two steps.
 
-use super::*;
+use super::{
+    BinaryOp, Expr, HirExpr, HirExprKind, IntentKind, LowerCtx, ResolvedTy, SiteId, Span, Spanned,
+};
 use crate::node::{HirBinaryResult, HirBinaryStep};
 use hew_parser::ast::BinaryStep;
 

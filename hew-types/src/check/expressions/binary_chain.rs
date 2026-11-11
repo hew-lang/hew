@@ -7,8 +7,8 @@
 //! intermediate value keeps its key. Checking walks the steps in order and
 //! produces the facts the nested form produced, without recursing per step.
 
-use super::super::*;
-use super::*;
+use super::super::{BinaryOp, Expr, Span, Spanned};
+use super::{BuiltinType, Checker, SpanKey, Ty};
 use hew_parser::ast::BinaryStep;
 
 /// The left operand of one step of a binary chain.

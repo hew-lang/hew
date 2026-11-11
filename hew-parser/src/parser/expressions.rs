@@ -288,11 +288,18 @@ impl Parser<'_> {
         f(self)
     }
 
+    pub(crate) fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
+        // Genuine nesting still recurses, up to MAX_DEPTH. Enter through a
+        // small frame so the large Pratt/primary frames cannot exhaust the
+        // compiler stack before that existing diagnostic is reached.
+        crate::stack::ensure_sufficient_stack(|| self.parse_expr_bp_inner(min_bp))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "Pratt parser covers many expression forms"
     )]
-    pub(crate) fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
         // Taken (not read) so the restriction covers this expression only: the
         // statements inside the arm's block parse with ordinary postfix rules.

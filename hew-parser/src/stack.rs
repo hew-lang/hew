@@ -1,14 +1,13 @@
 //! Stack growth for recursive walks over source-shaped trees.
 //!
-//! A left-associative chain such as `a + b + c + …` or `x.f().g().h()…` is
-//! flat in the source but one tree level per operator, so every stage that
-//! walks an expression recursively descends once per term. The parser builds
-//! these chains in a loop; the walkers after it recurse, and a long generated
-//! chain would otherwise exhaust the compiler thread's fixed stack. Each
-//! recursive expression walker enters through [`ensure_sufficient_stack`], which
-//! continues on a fresh heap-allocated stack segment when the current one runs
-//! low, so the depth such a walk can reach is bounded by memory rather than by
-//! the thread's stack size.
+//! Recursive expression walkers and genuinely nested parsing enter through
+//! [`ensure_sufficient_stack`], which continues on a fresh heap-allocated stack
+//! segment when the current one runs low. The parser can then reach its existing
+//! nesting diagnostic even on a small compiler stack.
+//!
+//! On wasm32 this grows the linear-memory stack, not the engine's call stack.
+//! Flat binary runs use ordered steps, and unbounded receiver walks must remain
+//! iterative where engine depth would otherwise depend on source length.
 
 /// Remaining stack below which a walker continues on a new segment. It must
 /// exceed the stack one walker level consumes between two entries, which is

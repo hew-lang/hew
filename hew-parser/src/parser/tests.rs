@@ -6571,3 +6571,21 @@ fn a_fifty_thousand_term_chain_parses_and_formats_without_deep_recursion() {
         assert_eq!(binary_chain(first_let_value(&result)).1.len(), 49_999);
     });
 }
+
+#[test]
+fn deeply_nested_expressions_reach_the_existing_nesting_diagnostic() {
+    on_a_small_stack(|| {
+        let source = format!(
+            "fn main() {{ let _ = {}1{}; }}",
+            "(".repeat(2_000),
+            ")".repeat(2_000),
+        );
+        let parsed = parse(&source);
+        assert!(parsed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("maximum nesting depth exceeded")));
+        assert!(parsed.errors.len() < 2_000);
+        assert!(parse("fn main() { println(1); }").errors.is_empty());
+    });
+}

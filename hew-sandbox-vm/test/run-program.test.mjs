@@ -147,6 +147,9 @@ test("long malformed forms and genuine nesting produce diagnostics", async () =>
       result.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
     );
   }
+  const next = await runProgram('fn main() { println("still usable"); }', "");
+  assert.equal(next.exit_code, 0, JSON.stringify(next));
+  assert.equal(next.stdout, "still usable\n");
 });
 
 for (const name of [
@@ -167,7 +170,12 @@ for (const name of [
         name === "binary-chain-recovery" ? "a1\na2\no1\no2\n" : "",
       );
     } else {
-      assert.equal(result.exit_code, 1, JSON.stringify(result));
+      assert.equal(result.status, "trap", JSON.stringify(result));
+      assert.ok(
+        result.diagnostics.some(
+          (diagnostic) => diagnostic.kind === "integer_overflow",
+        ),
+      );
       assert.equal(
         result.stdout,
         "a1\na2\nall=false\no1\no2\nany=true\nm1\nm3\nm4\nm5\nmixed=true\nn1\nn2\nn3\nn4\nn5\nsum=14\n10 7 8 true 1\nasbsc\nt1\nt2\n",

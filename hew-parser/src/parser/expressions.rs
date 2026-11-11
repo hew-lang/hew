@@ -205,6 +205,12 @@ impl Parser<'_> {
         self.parse_expr_bp(0)
     }
 
+    /// Count prefix operands as syntactic nesting, just like parentheses.
+    fn parse_prefix_operand(&mut self, rbp: u8) -> Option<Spanned<Expr>> {
+        let _guard = self.enter_recursion()?;
+        self.parse_expr_bp(rbp)
+    }
+
     /// True while a bare identifier directly followed by `{` must be read as an
     /// identifier (block opener) rather than a struct literal — i.e. inside an
     /// `if`/`while` condition or `match` scrutinee at the top level.
@@ -307,7 +313,7 @@ impl Parser<'_> {
                 "to duplicate a value, write `clone x`",
             );
             self.advance()?; // consume `&` and recover on the operand
-            return self.parse_expr_bp(min_bp);
+            return self.parse_prefix_operand(min_bp);
         }
 
         // Prefix operators
@@ -321,14 +327,14 @@ impl Parser<'_> {
             // unary precedence so `clone a + b` is `(clone a) + b` and
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
-            let operand = self.parse_expr_bp(UNARY_BP)?;
+            let operand = self.parse_prefix_operand(UNARY_BP)?;
             let end = self.peek_span().start;
             (Expr::Clone(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -343,7 +349,7 @@ impl Parser<'_> {
                     // carrier represents every magnitude the checker can admit,
                     // so there is nothing the parser must fold early. HIR folds
                     // it once the checker has picked a concrete width.
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -354,7 +360,7 @@ impl Parser<'_> {
                     )
                 }
                 Token::Tilde => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -365,7 +371,7 @@ impl Parser<'_> {
                     )
                 }
                 Token::Await => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
                 }
@@ -374,7 +380,7 @@ impl Parser<'_> {
                     // the type checker rejects with either
                     // `UnsafeOperationRequiresBlock` (outside unsafe) or a
                     // "not lowered in v0.5" diagnostic (inside unsafe).
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = operand.1.end;
                     (
                         Expr::Unary {
@@ -760,7 +766,7 @@ impl Parser<'_> {
                     Expr::Literal(Literal::Integer { value: val, radix })
                 } else {
                     self.error_invalid_literal_with_hint(
-                        format!("invalid integer literal '{s}'"),
+                        invalid_int_literal_message(s),
                         "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                     );
                     return None;

@@ -135,6 +135,21 @@ pub fn parse_duration_ns(s: &str) -> Option<i64> {
     parse_duration_literal(s)
 }
 
+/// The message for an integer literal that does not parse. The span already
+/// marks the literal, so a long one is quoted only by its start: a generated
+/// literal of a million digits would otherwise fill the terminal.
+pub(crate) fn invalid_int_literal_message(literal: &str) -> String {
+    const SHOWN: usize = 32;
+    match literal.char_indices().nth(SHOWN) {
+        Some((cut, _)) => format!(
+            "invalid integer literal '{}…' ({} characters)",
+            &literal[..cut],
+            literal.chars().count()
+        ),
+        None => format!("invalid integer literal '{literal}'"),
+    }
+}
+
 pub(crate) fn parse_duration_literal(s: &str) -> Option<i64> {
     let cleaned = s.replace('_', "");
     let (number, unit) = [

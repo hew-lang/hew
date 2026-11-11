@@ -1140,8 +1140,12 @@ pub(super) mod tests {
 
     #[test]
     fn hir_non_root_diagnostics_route_to_imported_uri() {
-        let root_uri = Url::parse("file:///project/main.hew").unwrap();
-        let helper_uri = Url::parse("file:///project/helper.hew").unwrap();
+        let root_uri = test_document_uri();
+        let helper_path = root_uri
+            .to_checked_file_path()
+            .unwrap()
+            .with_file_name("helper.hew");
+        let helper_uri = Url::from_checked_file_path(helper_path).unwrap();
         let root_source = "fn main() {}\n";
         let helper_source = "fn helper() { bogus }\n";
         let diagnostics = vec![HirDiagnostic::new(

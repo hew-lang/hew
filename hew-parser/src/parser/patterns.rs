@@ -83,17 +83,18 @@ impl Parser<'_> {
 
     pub(crate) fn parse_pattern(&mut self) -> Option<Spanned<Pattern>> {
         let _guard = self.enter_recursion()?;
-        let mut result = self.parse_base_pattern()?;
-
-        // Handle OR patterns: `1 | 2 | 3` becomes Or(Or(1, 2), 3)
-        while self.peek() == Some(&Token::Pipe) {
-            self.advance();
-            let right = self.parse_base_pattern()?;
-            let span = result.1.start..right.1.end;
-            result = (Pattern::Or(Box::new(result), Box::new(right)), span);
+        let first = self.parse_base_pattern()?;
+        if self.peek() != Some(&Token::Pipe) {
+            return Some(first);
         }
-
-        Some(result)
+        // `1 | 2 | 3` is one `Or` over its three alternatives.
+        let start = first.1.start;
+        let mut alternatives = vec![first];
+        while self.eat(&Token::Pipe) {
+            alternatives.push(self.parse_base_pattern()?);
+        }
+        let end = alternatives.last().map_or(start, |last| last.1.end);
+        Some((Pattern::Or(alternatives), start..end))
     }
 
     #[expect(

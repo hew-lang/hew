@@ -439,9 +439,9 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
                 .as_ref()
                 .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
         }),
-        Pattern::Or(left, right) => {
-            pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
-        }
+        Pattern::Or(alternatives) => alternatives
+            .iter()
+            .any(|alternative| pattern_binds_name(&alternative.0, name)),
         Pattern::Regex { captures, .. } => captures.iter().any(|c| c == name),
         Pattern::Wildcard | Pattern::Literal(_) => false,
     }
@@ -551,9 +551,10 @@ impl RefsVisitor<'_> {
                     }
                 }
             }
-            Pattern::Or(left, right) => {
-                self.push_pattern_matches(&left.0, &left.1);
-                self.push_pattern_matches(&right.0, &right.1);
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.push_pattern_matches(&alternative.0, &alternative.1);
+                }
             }
             Pattern::Regex { captures, .. } => {
                 for capture_name in captures {

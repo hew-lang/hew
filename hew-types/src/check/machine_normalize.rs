@@ -2132,9 +2132,10 @@ impl Builder {
                     self.refresh_pattern(pattern);
                 }
             }
-            Pattern::Or(left, right) => {
-                self.refresh_pattern(left);
-                self.refresh_pattern(right);
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.refresh_pattern(alternative);
+                }
             }
             Pattern::RecordShorthand { fields, rest } => {
                 for field in fields {
@@ -2296,9 +2297,10 @@ fn collect_pattern_bindings(pattern: &Pattern, names: &mut Vec<Ident>) {
                 collect_pattern_bindings(pattern, names);
             }
         }
-        Pattern::Or(left, right) => {
-            collect_pattern_bindings(&left.0, names);
-            collect_pattern_bindings(&right.0, names);
+        Pattern::Or(alternatives) => {
+            for (alternative, _) in alternatives {
+                collect_pattern_bindings(alternative, names);
+            }
         }
         Pattern::RecordShorthand { fields, .. } => {
             collect_pattern_fields(fields, names);

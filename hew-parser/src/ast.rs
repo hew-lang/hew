@@ -959,7 +959,9 @@ pub enum Pattern {
         rest: Option<Span>,
     },
     Tuple(Vec<Spanned<Pattern>>),
-    Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// Two or more alternatives in source order, `a | b | c`. A flat list, so
+    /// a long alternation is one level of nesting rather than one per `|`.
+    Or(Vec<Spanned<Pattern>>),
     /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.
     ///
     /// `pattern` is the normalised regex string (delimiter escapes decoded,

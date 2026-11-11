@@ -275,9 +275,10 @@ impl TemplateNames<'_> {
                     self.pattern(pattern)?;
                 }
             }
-            Pattern::Or(left, right) => {
-                self.pattern(left)?;
-                self.pattern(right)?;
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.pattern(alternative)?;
+                }
             }
             Pattern::Regex { captures, .. } => {
                 for name in captures {

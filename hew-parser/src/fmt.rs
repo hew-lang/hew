@@ -5404,10 +5404,13 @@ impl<'a> Formatter<'a> {
                 self.comma_sep(patterns, Formatter::format_pattern);
                 self.write(")");
             }
-            Pattern::Or(left, right) => {
-                self.format_pattern(left);
-                self.write_token(" | ", |t| matches!(t, hew_lexer::Token::Pipe));
-                self.format_pattern(right);
+            Pattern::Or(alternatives) => {
+                for (index, alternative) in alternatives.iter().enumerate() {
+                    if index > 0 {
+                        self.write_token(" | ", |t| matches!(t, hew_lexer::Token::Pipe));
+                    }
+                    self.format_pattern(alternative);
+                }
             }
             Pattern::Regex { pattern, .. } => {
                 self.write("re\"");

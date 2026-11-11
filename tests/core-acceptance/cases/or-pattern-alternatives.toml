@@ -1,0 +1,10 @@
+[[case]]
+id = "or-pattern-alternatives"
+intent = "Flat alternatives preserve source order and the owned bindings of every arm."
+source = "cases/or-pattern-alternatives.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

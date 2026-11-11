@@ -1,0 +1,27 @@
+enum Message {
+    First(string);
+    Second(string);
+    Third(string);
+}
+
+fn inspect(message: Message) -> string {
+    match message {
+        .First(text) | .Second(text) | .Third(text) => text + "!",
+    }
+}
+
+fn main() {
+    let first = Message.First("first".to_upper());
+    let second = Message.Second("second".to_upper());
+    let third = Message.Third("third".to_upper());
+    for _ in 0..32 {
+        assert(inspect(first) == "FIRST!");
+        assert(inspect(second) == "SECOND!");
+        assert(inspect(third) == "THIRD!");
+    }
+    // The earliest matching alternative determines the bound value.
+    let pair = ("left".to_upper(), "right".to_upper());
+    match pair {
+        (text, _) | (_, text) | (text, _) => assert(text == "LEFT"),
+    };
+}

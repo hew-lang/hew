@@ -5497,13 +5497,37 @@ fn leading_dot_unit_variant_pattern_preserves_origin() {
 fn leading_dot_or_pattern_parses() {
     let source = "fn f(e: E) -> i64 { match e { .A(x) | .B(x) => x, _ => 0 } }";
     let patterns = first_match_arm_patterns(source);
-    let Pattern::Or(left, right) = &patterns[0] else {
+    let Pattern::Or(alternatives) = &patterns[0] else {
         panic!("expected Pattern::Or, got {:?}", patterns[0]);
+    };
+    let [left, right] = alternatives.as_slice() else {
+        panic!("expected two alternatives, got {alternatives:?}");
     };
     assert!(matches!(&left.0, Pattern::ContextVariant(context) if context.name == Ident::new("A")));
     assert!(
         matches!(&right.0, Pattern::ContextVariant(context) if context.name == Ident::new("B"))
     );
+}
+
+#[test]
+fn a_long_or_pattern_keeps_source_order_and_round_trips() {
+    let alternatives = (0..2_000)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let source = format!("fn f(x: i64) -> i64 {{ match x {{ {alternatives} => 1, _ => 0 }} }}");
+    let patterns = first_match_arm_patterns(&source);
+    let Pattern::Or(alternatives) = &patterns[0] else {
+        panic!("expected an or-pattern");
+    };
+    assert_eq!(alternatives.len(), 2_000);
+    for (index, (pattern, span)) in alternatives.iter().enumerate() {
+        assert!(matches!(pattern, Pattern::Literal(_)));
+        assert_eq!(source[span.clone()].trim(), index.to_string());
+    }
+    let encoded = serde_json::to_string(&patterns[0]).expect("serialize flat alternatives");
+    let decoded: Pattern = serde_json::from_str(&encoded).expect("deserialize flat alternatives");
+    assert_eq!(patterns[0], decoded);
 }
 
 /// Adding the leading-dot arm does not disturb a qualified constructor pattern.

@@ -1054,9 +1054,10 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 }
             }
         }
-        Pattern::Or(left, right) => {
-            collect_pattern_names(&left.0, locals);
-            collect_pattern_names(&right.0, locals);
+        Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                collect_pattern_names(&alternative.0, locals);
+            }
         }
         Pattern::Regex { captures, .. } => {
             for name in captures {

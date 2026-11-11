@@ -862,7 +862,9 @@ fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
                 None => field.name == Ident::new(name),
             })
         }
-        Pattern::Or(a, b) => pattern_binds(&a.0, name) || pattern_binds(&b.0, name),
+        Pattern::Or(alternatives) => alternatives
+            .iter()
+            .any(|alternative| pattern_binds(&alternative.0, name)),
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => false,
     }
 }

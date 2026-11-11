@@ -100,6 +100,17 @@ jobs:
         with:
           ref: ${{ steps.qualification.outputs.source_sha }}
 
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
+
       - name: Check release identity
         shell: bash
         env:
@@ -152,6 +163,17 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -211,6 +233,17 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -366,13 +399,24 @@ jobs:
     if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
-    # Workspace tests plus native core acceptance take about 44 minutes on
-    # a warm cache, so 45 cancelled the job while it saved its caches.
-    timeout-minutes: 90
+    # Setup and the full workspace consumed 70 minutes on the cold runner;
+    # retain time for the complete native suite without changing case limits.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -769,6 +813,17 @@ jobs:
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
 
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
+
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
@@ -932,6 +987,17 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+
+      - name: Checkout workflow DNS setup
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-actions
+          sparse-checkout: /.github/actions/setup-ubuntu-dns/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
 
       - name: Build and test on FreeBSD aarch64
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9

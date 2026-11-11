@@ -527,6 +527,8 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
 }
 
 /// Consume a logical fault into an owned diagnostic for scope recovery.
+/// If the current managed-value budget cannot retain the diagnostic, return
+/// the canonical empty string without raising another fault during recovery.
 ///
 /// # Safety
 /// `fault` must be a live, unique, non-null fault owner without borrowers.
@@ -535,7 +537,27 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
 pub unsafe extern "C" fn hew_fault_take_message(fault: *mut HewFault) -> *mut HewString {
     // SAFETY: the caller transfers the unique fault allocation.
     let fault = unsafe { Box::from_raw(fault) };
-    hew_cabi::string::string_from_str(&fault.recovery_message())
+    let text = fault.recovery_message();
+    if text.is_empty() {
+        return std::ptr::null_mut();
+    }
+    let reservation = if let Some(owner) = crate::owned_value_budget::current_owner() {
+        let Ok(reservation) = owner.reserve_new(text.len() as u64) else {
+            return std::ptr::null_mut();
+        };
+        Some(reservation)
+    } else {
+        None
+    };
+    let message = hew_cabi::string::string_from_str(&text);
+    if let Some(reservation) = reservation {
+        reservation.commit(&[crate::owned_value_budget::ManagedStorage {
+            identity: message as usize,
+            // SAFETY: this function owns the freshly allocated string.
+            bytes: unsafe { hew_cabi::string::string_payload_capacity(message) } as u64,
+        }]);
+    }
+    message
 }
 
 /// Release one fault owner. Null is accepted for an empty fault output slot.
@@ -614,7 +636,10 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
     // SAFETY: the caller retains a live immutable fault through this report.
     if let Some(fault) = unsafe { fault.as_ref() } {
-        if cancelled_by_shutdown(fault.code()) && fault.secondary.is_empty() {
+        if fault
+            .diagnostics()
+            .all(|diagnostic| cancelled_by_shutdown(diagnostic.code))
+        {
             return 0;
         }
         note_test_fault(fault);
@@ -744,6 +769,34 @@ fn write_unreported(fault: &HewFault, output: &mut impl Write) -> io::Result<()>
 mod tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn process_entry_distinguishes_shutdown_children_from_cleanup_failures() {
+        let _runtime = crate::runtime_test_guard();
+        let mut fault = HewFault::new(HEW_FAULT_CANCELLED, None);
+        fault.append(HewFault::new(HEW_FAULT_CANCELLED, None));
+        fault.append(HewFault::new(HEW_FAULT_CANCELLED, None));
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_DRAIN, Ordering::Release);
+        // SAFETY: each report borrows a live fault owned by this test.
+        assert_eq!(unsafe { hew_fault_report_entry(&raw const fault) }, 0);
+        assert!(fault.diagnostics().all(|d| !*d.reported.lock_or_recover()));
+        for code in [HEW_FAULT_DEADLINE, HEW_TRAP_USER_PANIC] {
+            let mut failed = fault.clone();
+            failed.append(HewFault::with_message(code, "cleanup failed".into()));
+            // SAFETY: the report borrows this live, immutable fault.
+            assert_eq!(unsafe { hew_fault_report_entry(&raw const failed) }, 1);
+            assert!(failed.diagnostics().all(|d| *d.reported.lock_or_recover()));
+        }
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_RUNNING, Ordering::Release);
+        let ordinary = HewFault::new(HEW_FAULT_CANCELLED, None);
+        // SAFETY: a cancellation outside shutdown retains its failure outcome.
+        assert_eq!(unsafe { hew_fault_report_entry(&raw const ordinary) }, 1);
+    }
+
     #[test]
     fn cloned_faults_report_once_without_losing_recovery_text() {
         let mut fault = HewFault::with_message(212, "primary".into());
@@ -830,6 +883,40 @@ mod tests {
                 unsafe { hew_fault_drop(combined) };
             }
         }
+    }
+
+    #[test]
+    fn recovery_message_is_accounted_or_empty_on_budget_refusal() {
+        use crate::owned_value_budget::{with_value_owner, ValueOwner};
+
+        let owner = ValueOwner::new(Some(4));
+        with_value_owner(&Some(owner.clone()), || {
+            // SAFETY: each call consumes a fresh unique fault owner.
+            let accepted = unsafe { hew_fault_take_message(panic_fault("boom")) };
+            // SAFETY: the returned owner remains live during this borrow.
+            assert_eq!(unsafe { string_as_str(accepted) }, "boom");
+            assert_eq!(owner.live_bytes(), 4);
+            // The first owner fills the account; another message that would
+            // otherwise fit degrades to the canonical empty string.
+            // SAFETY: this consumes another fresh unique fault owner.
+            let refused = unsafe { hew_fault_take_message(panic_fault("more")) };
+            assert!(refused.is_null());
+            assert_eq!(owner.live_bytes(), 4);
+            // SAFETY: the returned string owns the committed account edge.
+            unsafe { crate::string::hew_string_drop_managed(accepted) };
+            assert_eq!(owner.live_bytes(), 0);
+
+            // Refunding the first message restores capacity; UTF-8 is charged
+            // by its canonical payload bytes rather than its scalar count.
+            // SAFETY: this call consumes a fresh unique fault owner.
+            let next = unsafe { hew_fault_take_message(panic_fault("雪")) };
+            // SAFETY: this test retains the returned string through its drop.
+            assert_eq!(unsafe { string_as_str(next) }, "雪");
+            assert_eq!(owner.live_bytes(), 3);
+            // SAFETY: this consumes the returned string and its account edge.
+            unsafe { crate::string::hew_string_drop_managed(next) };
+            assert_eq!(owner.live_bytes(), 0);
+        });
     }
 
     #[test]

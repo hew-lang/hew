@@ -599,6 +599,34 @@ fn listener_jobs_share_shutdown_admission_and_wake_their_caller() {
 }
 
 #[test]
+fn root_shutdown_cancels_new_listener_jobs_before_the_listener_sweep() {
+    let _runtime = crate::runtime_test_guard();
+    crate::shutdown::close_root_admission_for_test();
+    assert!(!crate::reactor::listener_admission_closed());
+
+    // Root ingress closes before listener admission during shutdown. An accept
+    // submitted in that interval must take its cancellation continuation.
+    // SAFETY: both operations are owned here until their final free.
+    unsafe {
+        let listener = library::submit_listener_job::<_, i32>(ptr::null(), |_| {
+            panic!("shutdown must not run a new listener job");
+        });
+        let status = hew_async_io_status(listener);
+        hew_async_io_free(listener);
+        assert_eq!(status, AsyncIoStatus::Cancelled as i32);
+
+        let socket = library::submit_socket_job::<_, i32>(ptr::null(), |_| {
+            panic!("shutdown must refuse new socket work");
+        });
+        let status = hew_async_io_status(socket);
+        let errno = hew_async_io_errno(socket);
+        hew_async_io_free(socket);
+        assert_eq!(status, AsyncIoStatus::Error as i32);
+        assert_eq!(errno, crate::stream_error::CANCELLED_ERRNO);
+    }
+}
+
+#[test]
 fn tcp_accept_shutdown_cancels_before_and_after_the_syscall_attempt() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
@@ -1317,10 +1345,46 @@ fn a_process_root_wait_does_not_hold_the_drain() {
 }
 
 #[test]
+fn shutdown_cancels_a_parked_process_root_listener() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let handle = crate::reactor::register(crate::reactor::IoObject::TcpListener(listener));
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the listener and descriptor stay live until the operation is freed.
+    let operation = crate::coro_root::as_process_root_for_test(|| unsafe {
+        hew_async_tcp_accept(handle, &descriptor(&signal))
+    });
+    assert_eq!(
+        // SAFETY: this test owns the creator reference throughout the sweep.
+        unsafe { hew_async_io_status(operation) },
+        AsyncIoStatus::Pending as i32
+    );
+    assert!(crate::reactor::drain_is_idle());
+    crate::reactor::close_listener_admission();
+    let swept = crate::reactor::reactor_cancel_parked_waits_for_shutdown();
+    // SAFETY: release the operation after observing its terminal status.
+    let status = unsafe {
+        let status = hew_async_io_status(operation);
+        hew_async_io_free(operation);
+        status
+    };
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+    assert_eq!(status, AsyncIoStatus::Cancelled as i32);
+    assert_eq!(swept, 1);
+    assert_eq!(*signal.notifications.lock().unwrap(), 1);
+}
+
+#[test]
 fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let slot = crate::reactor::lookup(handle).unwrap();
+    // Pending also includes a delivered readiness wake. Keep both operations
+    // parked until the sweep: a writable report may otherwise remove the writer
+    // between its status check and the parked-only cancellation snapshot.
+    let parked = slot.pause_readiness_for_test();
     let root_signal = Arc::new(ReadySignal::default());
     // SAFETY: the connection and descriptor stay live until the read is freed.
     let read = crate::coro_root::as_process_root_for_test(|| unsafe {
@@ -1350,6 +1414,7 @@ fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
         crate::bytes::hew_bytes_drop(bytes.ptr);
         statuses
     };
+    drop(parked);
     let received = if root_status == AsyncIoStatus::Pending as i32 {
         peer.write_all(b"late").unwrap();
         // SAFETY: the root read is retained until its successful take frees it.

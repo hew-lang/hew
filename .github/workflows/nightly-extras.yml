@@ -45,6 +45,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120
@@ -64,6 +66,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-ubuntu-dns
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq
@@ -89,6 +93,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-ubuntu-dns
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq

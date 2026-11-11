@@ -179,12 +179,19 @@ pub enum PublishAuth {
     GithubActions,
 }
 
-fn init_follow_up_hint(template: manifest::ManifestTemplate, package_name: &str) -> String {
+fn init_follow_up_hint(
+    template: manifest::ManifestTemplate,
+    package_name: &str,
+    project_dir: &Path,
+) -> String {
     let source = template.scaffold_source(package_name);
+    let location = project_dir.display();
     match template {
-        manifest::ManifestTemplate::Lib => format!("Next: `hew check {source}`"),
+        manifest::ManifestTemplate::Lib => {
+            format!("Next, in `{location}`: `hew check {source}`")
+        }
         manifest::ManifestTemplate::Bin | manifest::ManifestTemplate::Actor => {
-            format!("Next: `hew check {source}` then `hew run {source}`")
+            format!("Next, in `{location}`: `hew check {source}` then `hew run {source}`")
         }
     }
 }
@@ -590,7 +597,7 @@ fn cmd_init(dir: &Path, template: manifest::ManifestTemplate, cfg: &config::PkgC
             // Write .gitignore with target/ and .hew/ (merged, never replaced).
             write_init_gitignore(dir);
             let source = template.scaffold_source(&name);
-            let follow_up = init_follow_up_hint(template, &name);
+            let follow_up = init_follow_up_hint(template, &name, dir);
 
             // Parse back to verify and display the confirmed package name.
             match manifest::parse_manifest(&manifest_path) {
@@ -4576,16 +4583,16 @@ mod tests {
     #[test]
     fn init_follow_up_hint_matches_template() {
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Bin, "proj"),
-            "Next: `hew check main.hew` then `hew run main.hew`"
+            init_follow_up_hint(manifest::ManifestTemplate::Bin, "proj", Path::new("proj")),
+            "Next, in `proj`: `hew check main.hew` then `hew run main.hew`"
         );
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Lib, "proj"),
-            "Next: `hew check proj.hew`"
+            init_follow_up_hint(manifest::ManifestTemplate::Lib, "proj", Path::new("proj")),
+            "Next, in `proj`: `hew check proj.hew`"
         );
         assert_eq!(
-            init_follow_up_hint(manifest::ManifestTemplate::Actor, "proj"),
-            "Next: `hew check main.hew` then `hew run main.hew`"
+            init_follow_up_hint(manifest::ManifestTemplate::Actor, "proj", Path::new("proj")),
+            "Next, in `proj`: `hew check main.hew` then `hew run main.hew`"
         );
     }
 

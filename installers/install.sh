@@ -119,7 +119,16 @@ parse_args() {
 # ---------------------------------------------------------------------------
 detect_platform() {
     case "$(uname -s)" in
-    Linux*) OS="linux" ;;
+    Linux*)
+        OS="linux"
+        # A musl host cannot execute the shipped glibc archive. Prefer an
+        # explicit glibc identity so an extra musl toolchain does not disqualify
+        # a glibc host; refuse only a positively identified musl system.
+        if ! getconf GNU_LIBC_VERSION >/dev/null 2>&1 &&
+            ldd --version 2>&1 | grep -qi musl; then
+            err "prebuilt Linux SDKs require glibc; musl-based systems such as Alpine are not supported"
+        fi
+        ;;
     Darwin*) OS="darwin" ;;
     FreeBSD*) OS="freebsd" ;;
     *) err "unsupported operating system: $(uname -s)" ;;
@@ -389,6 +398,9 @@ main() {
 
     printf '\n'
     printf "  %bHew was installed to %b%s%b\n\n" "${GREEN}" "${BOLD}" "$INSTALL_PREFIX" "${RESET}"
+
+    printf "  Native builds need a system C compiler and C development files.\n"
+    printf "  Prerequisites: https://github.com/hew-lang/hew/blob/main/installers/README.md#native-build-prerequisites\n\n"
 
     # Check if already on PATH
     bin_dir="${INSTALL_PREFIX}/bin"

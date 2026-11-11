@@ -9,6 +9,7 @@ mod inbound;
 mod lifecycle;
 mod remote_wire;
 mod reply;
+mod service_offers;
 mod swim;
 
 /// Ask deadline for tests whose outcome IS the timeout: no reply can ever
@@ -832,7 +833,9 @@ unsafe fn connect_with_retry(initiator: *mut HewNode, responder_addr: &CString) 
     panic!("could not connect initiator to responder: {error:?}");
 }
 
-/// Poll until both connection managers report at least one active connection.
+/// Poll until both managers expose an authenticated carrier. An accepted
+/// connection's route, service replay and other publication tails may still
+/// be running; tests requiring those effects must await their own boundary.
 unsafe fn wait_for_handshake(node1: *mut HewNode, node2: *mut HewNode) {
     poll_until(|i| {
         // SAFETY: node1 and node2 pointers are valid for the duration of the test.

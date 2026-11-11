@@ -308,6 +308,11 @@ durable session can replace an earlier connection and readmit a buried
 member. Once membership retires a buried member (§11), its identity is
 unknown again and any session is admitted as a new member.
 
+Optional feature bit `5` (service sessions) acknowledges service offers per
+peer session and retracts closed grants (§7.1). Nodes act on it only when both
+records set it. It does not change the schema hash, so peers without bit `5`
+can still complete the required bit `4` handshake.
+
 ### 4.1 One connection per peer
 
 Two nodes can dial each other at once. Both ends MUST keep the same connection
@@ -582,8 +587,44 @@ observations settle through their existing owners. Local calls retain their
 normal actor contracts.
 
 Equal-session reconnect permits new calls through the current publication. A
-pending call or setup acknowledgement remains bound to its original publication;
-it cannot replay or migrate its reply onto a replacement connection. A node
+pending call or monitor/link setup acknowledgement remains bound to its original
+publication; it cannot replay or migrate its reply onto a replacement
+connection.
+
+Between two nodes that both set handshake bit `5`, a service offer belongs to
+the recipient's session rather than to one connection:
+
+- The issuer sends the offer (`CTRL_SERVICE_OFFER`) on the session's current
+  publication and sends it again, with the same grant and request identifiers,
+  on each successor publication of that session until the recipient
+  acknowledges it. Losing a connection does not fail `export`; a session change,
+  node shutdown or the operation's deadline does, and membership burying the
+  recipient session (DEAD or LEFT) fails it with `Partition`.
+- The recipient identifies an offer by its issuer session and grant. A repeated
+  offer it still holds or has already imported is acknowledged as accepted again
+  and is not imported a second time; the same grant with a different target or
+  interface is refused. It remembers at most 256 imported grants. At capacity,
+  a new session-scoped import is refused with `WorkerAtCapacity` before any
+  value is delivered; duplicate offers are still acknowledged. A retraction or
+  replacement of the issuer session frees history capacity. A queued offer
+  remains queued when a receive is refused for capacity, and a waiting receive
+  remains pending when a new offer is refused.
+- A `peer.receive_service` wait belongs to the issuer session and survives the
+  loss of one connection. Membership burying that session fails it with
+  `Partition`.
+- Closing an `Export` revokes the grant at the issuer and sends
+  `CTRL_SERVICE_RETRACT` naming the grant and its target. The recipient removes a
+  queued offer for that grant, so it can no longer be received, and forgets the
+  grant. The issuer repeats its retractions on each successor publication of the
+  recipient session, keeping at most the 256 most recent until that session is
+  replaced. A retraction does not revoke a value already received; the issuer
+  refuses its calls.
+
+With a peer that does not set bit `5`, the issuer binds each offer to the
+publication it was sent on and fails `export` with `ConnectionDropped` when that
+connection is lost, and it sends no retraction. A closed grant that peer has
+already queued stays receivable there, and every call on it is refused
+`Unauthorized`. A receive wait still belongs to the issuer session. A node
 session change, actor retirement or node shutdown makes old descriptors stale.
 Service acquisition and remote service calls are native-only; sandbox targets
 report the distributed-platform refusal at source.

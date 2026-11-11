@@ -30,6 +30,11 @@ service-offer = {
     5 => uint, ; request_id
 }
 
+service-retract = {
+    1 => uint, ; grant_id
+    2 => wire-location, ; target
+}
+
 monitor-down = {
     1 => uint, ; ref_id
     2 => wire-location, ; target

@@ -249,6 +249,8 @@ pub(crate) struct Slot {
     handle: c_int,
     object: IoObject,
     state: Mutex<SlotState>,
+    #[cfg(test)]
+    readiness_dispatch: Mutex<()>,
     /// The poll buffers the kernel writes while an AFD poll is in flight.
     /// Touched only under `state` while no poll is in flight, or by the
     /// reactor after it dequeued the completion.
@@ -659,6 +661,8 @@ impl Slot {
     /// Hand a readiness report to the waiters it can unblock and re-arm for
     /// any waiter it cannot. Runs on the reactor thread.
     fn fire(self: &Arc<Self>, events: c_int) {
+        #[cfg(test)]
+        let _dispatch = self.readiness_dispatch.lock_or_recover();
         let (ready, turn) = {
             let mut state = self.state.lock_or_recover();
             #[cfg(windows)]
@@ -700,6 +704,12 @@ impl Slot {
         }
     }
 
+    /// Keep this slot's waits parked while a test exercises a shutdown sweep.
+    #[cfg(test)]
+    pub(crate) fn pause_readiness_for_test(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.readiness_dispatch.lock_or_recover()
+    }
+
     /// Mark the slot closed and complete its waiters with `ECANCELED`. The OS
     /// object closes when the last operation holding the slot releases it.
     fn close(&self) {
@@ -730,10 +740,13 @@ impl Slot {
         }
     }
 
-    /// Snapshot only drained work, leaving root waits registered. Cancellation
-    /// withdraws each selected operation through `forget`, including passing
-    /// a cancelled standard-input reader's turn to the next reader.
-    fn waiters_holding_drain(&self) -> Vec<Arc<HewAsyncIo>> {
+    /// Snapshot drained work and listener waits. A process-root accept does not
+    /// hold the drain open, but it must still wake when listener admission
+    /// closes. Established root reads and writes remain registered.
+    /// Cancellation withdraws each selected operation through `forget`,
+    /// including passing a cancelled standard-input reader's turn to the next.
+    fn shutdown_waiters(&self) -> Vec<Arc<HewAsyncIo>> {
+        let listener = self.listener().is_some();
         let state = self.state.lock_or_recover();
         state
             .readers
@@ -741,7 +754,7 @@ impl Slot {
             .iter()
             .chain(state.reader.iter())
             .chain(state.writer.iter())
-            .filter(|operation| operation.holds_drain())
+            .filter(|operation| listener || operation.holds_drain())
             .cloned()
             .collect()
     }
@@ -814,6 +827,8 @@ fn new_slot(handle: c_int, object: IoObject) -> Slot {
         handle,
         object,
         state: Mutex::new(SlotState::default()),
+        #[cfg(test)]
+        readiness_dispatch: Mutex::new(()),
         #[cfg(windows)]
         afd,
     }
@@ -1081,17 +1096,17 @@ pub(crate) fn cancel_all() -> usize {
     cancelled
 }
 
-/// Resolve drained waits parked when shutdown began, preserving process-root
-/// waits and existing child process pipes and exit watches. Capture must drain
-/// the child's output to EOF alongside its exit; cancelling either pipe would
-/// fault an admitted run.
+/// Resolve drained work and listener waits parked when shutdown began,
+/// preserving established process-root waits and existing child process pipes
+/// and exit watches. Capture must drain the child's output to EOF alongside
+/// its exit; cancelling either pipe would fault an admitted run.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
     let mut cancelled = 0;
     for slot in slots() {
         if slot.is_child_process() {
             continue;
         }
-        for operation in slot.waiters_holding_drain() {
+        for operation in slot.shutdown_waiters() {
             cancelled += usize::from(operation.cancel_and_wake());
         }
     }

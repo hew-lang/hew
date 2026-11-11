@@ -13,7 +13,7 @@ use crate::transport::HewTransport;
 use super::channel::ChannelProtection;
 use super::{
     HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_GOSSIP,
-    MAX_HANDSHAKE_BYTES, NOISE_STATIC_PUBKEY_LEN,
+    HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS, MAX_HANDSHAKE_BYTES, NOISE_STATIC_PUBKEY_LEN,
 };
 use super::{
     HEW_FEATURE_RESPONDER_COMMIT, HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE,
@@ -21,7 +21,10 @@ use super::{
 };
 
 fn local_feature_flags() -> u32 {
-    HEW_FEATURE_SUPPORTS_ENCRYPTION | HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_RESPONDER_COMMIT
+    HEW_FEATURE_SUPPORTS_ENCRYPTION
+        | HEW_FEATURE_SUPPORTS_GOSSIP
+        | HEW_FEATURE_RESPONDER_COMMIT
+        | HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS
 }
 
 /// Whether both records advertise the responder-commit step. The records are
@@ -84,6 +87,10 @@ pub(super) unsafe fn recv_commit(
 
 pub(crate) fn supports_gossip(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_GOSSIP != 0
+}
+
+pub(crate) fn supports_service_sessions(flags: u32) -> bool {
+    flags & HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS != 0
 }
 
 pub(super) fn local_schema_hash() -> u32 {

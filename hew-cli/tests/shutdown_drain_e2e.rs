@@ -511,6 +511,98 @@ fn run_until_signalled(source: &str, opt_level: u8) -> (ExitStatus, Vec<String>,
 }
 
 #[test]
+fn signal_shutdown_cancels_root_tcp_accept() {
+    require_codegen();
+    for cleanup_fails in [false, true] {
+        let source = format!(
+            r#"
+import std.net;
+
+fn main() {{
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    defer {{
+        println("LISTENER_RELEASED");
+        if {cleanup_fails} {{ panic("shutdown cleanup failed"); }}
+    }}
+    println("READY");
+    let connection = listener.accept().expect("accept");
+    panic("accept completed without a peer");
+}}
+"#
+        );
+        for opt_level in [0, 2] {
+            let (status, stdout, stderr) = run_until_signalled(&source, opt_level);
+            assert_eq!(
+                status.success(),
+                !cleanup_fails,
+                "shutdown exited {status}: {stderr}"
+            );
+            assert_eq!(
+                stdout
+                    .iter()
+                    .filter(|line| *line == "LISTENER_RELEASED")
+                    .count(),
+                1,
+                "{stdout:?}"
+            );
+            if cleanup_fails {
+                assert!(stderr.contains("shutdown cleanup failed"), "{stderr}");
+            } else {
+                assert!(stderr.is_empty(), "clean shutdown diagnostics: {stderr}");
+            }
+        }
+    }
+}
+
+#[test]
+fn signal_shutdown_drains_cancelled_root_children_without_hiding_cleanup_failure() {
+    require_codegen();
+    for cleanup_fails in [false, true] {
+        let source = format!(
+            r#"
+import std.net;
+
+fn wait() {{ sleep(60s); }}
+
+fn main() {{
+    let first = fork wait();
+    let second = fork wait();
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    defer {{
+        println("LISTENER_RELEASED");
+        if {cleanup_fails} {{ panic("shutdown cleanup failed"); }}
+    }}
+    println("READY");
+    let connection = listener.accept().expect("accept");
+    panic("accept completed without a peer");
+}}
+"#
+        );
+        for opt_level in [0, 2] {
+            let (status, stdout, stderr) = run_until_signalled(&source, opt_level);
+            assert_eq!(
+                status.success(),
+                !cleanup_fails,
+                "O{opt_level}: {status}: {stderr}"
+            );
+            assert_eq!(
+                stdout
+                    .iter()
+                    .filter(|line| *line == "LISTENER_RELEASED")
+                    .count(),
+                1,
+                "{stdout:?}"
+            );
+            if cleanup_fails {
+                assert!(stderr.contains("shutdown cleanup failed"), "{stderr}");
+            } else {
+                assert!(stderr.is_empty(), "clean child drain diagnostics: {stderr}");
+            }
+        }
+    }
+}
+
+#[test]
 fn signal_shutdown_cancels_root_websocket_accept() {
     require_codegen();
     for cleanup_fails in [false, true] {

@@ -2810,6 +2810,25 @@ class ExecutorV1 {
           tag: deadline ? term.deadline_variant : term.fault_variant,
           payload: [stringValue(faultRecoveryMessage(fault))],
         };
+        // Scope recovery must preserve the original fault even when the
+        // current actor cannot retain its diagnostic text. Preflight the same
+        // managed graph that completion will retain, then use the canonical
+        // empty string on refusal without publishing an uncharged owner.
+        const result = term.result?.value;
+        const type = result == null ? undefined : act.managedTypes.get(result);
+        const budget =
+          result != null && act.owned.has(result)
+            ? act.context.actor?.budget
+            : undefined;
+        if (budget && type != null) {
+          try {
+            this.managed.stampGraph({ value, type });
+            budget.check([{ value, type }]);
+          } catch (error) {
+            if (!(error instanceof HeapExceeded)) throw error;
+            value.payload[0] = stringValue("");
+          }
+        }
         act.fault = null;
         if (act.context.actor) act.context.actor.crashing = null;
         this.completeShim(act, term, value);

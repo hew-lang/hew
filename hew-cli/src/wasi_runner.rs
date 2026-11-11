@@ -92,9 +92,8 @@ pub(crate) fn run_module_captured(
     }
 }
 
-/// Native stack the engine's main thread may grow to while running a module.
-#[cfg(unix)]
-const ENGINE_STACK_BYTES: libc::rlim_t = 64 << 20;
+/// Stack reserved for the engine and the host callbacks it invokes.
+const ENGINE_STACK_BYTES: u32 = 64 << 20;
 
 /// Give wasmtime enough native stack that a module's own entry checks, which
 /// guard its 1 MiB linear-memory stack, fail a deep recursion with
@@ -102,7 +101,7 @@ const ENGINE_STACK_BYTES: libc::rlim_t = 64 << 20;
 /// (HEW-SPEC-2026 §2.2). The child's main thread may grow to
 /// [`ENGINE_STACK_BYTES`], and wasm may use three quarters of it.
 #[cfg(unix)]
-fn reserve_engine_stack(command: &mut Command) {
+pub(crate) fn reserve_engine_stack(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     let mut limit = libc::rlimit {
@@ -113,10 +112,11 @@ fn reserve_engine_stack(command: &mut Command) {
     if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &raw mut limit) } != 0 {
         return;
     }
+    let engine_stack = libc::rlim_t::from(ENGINE_STACK_BYTES);
     let available = if limit.rlim_max == libc::RLIM_INFINITY {
-        ENGINE_STACK_BYTES
+        engine_stack
     } else {
-        limit.rlim_max.min(ENGINE_STACK_BYTES)
+        limit.rlim_max.min(engine_stack)
     };
     if limit.rlim_cur != libc::RLIM_INFINITY && limit.rlim_cur < available {
         let raised = libc::rlimit {
@@ -135,7 +135,7 @@ fn reserve_engine_stack(command: &mut Command) {
         }
     }
     let usable = if limit.rlim_cur == libc::RLIM_INFINITY {
-        ENGINE_STACK_BYTES
+        engine_stack
     } else {
         available.max(limit.rlim_cur)
     };
@@ -144,9 +144,17 @@ fn reserve_engine_stack(command: &mut Command) {
         .arg(format!("max-wasm-stack={}", usable / 4 * 3));
 }
 
-/// Windows keeps the engine's defaults.
+/// Wasmtime's asynchronous execution owns its stack on Windows. Provision
+/// that allocation explicitly: the default Wasm limit can trap before Hew's
+/// linear-memory stack checks, bypassing actor cleanup and supervision.
 #[cfg(not(unix))]
-fn reserve_engine_stack(_command: &mut Command) {}
+pub(crate) fn reserve_engine_stack(command: &mut Command) {
+    command
+        .arg("-W")
+        .arg(format!("max-wasm-stack={}", ENGINE_STACK_BYTES / 4 * 3))
+        .arg("-W")
+        .arg(format!("async-stack-size={ENGINE_STACK_BYTES}"));
+}
 
 /// Returns the path to `wasmtime` if it is available, using the same lookup
 /// order as the production `run_module` / `run_module_captured` functions.

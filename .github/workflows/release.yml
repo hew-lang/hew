@@ -73,6 +73,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
+      ubuntu_dns: ${{ steps.ubuntu_dns.outputs.resolver }}
       tag: ${{ steps.identity.outputs.tag }}
       version: ${{ steps.identity.outputs.version }}
       prerelease: ${{ steps.identity.outputs.prerelease }}
@@ -81,6 +82,9 @@ jobs:
     steps:
       - name: Checkout release source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - id: ubuntu_dns
+        uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Resolve release identity and publish decision
         id: identity
@@ -148,6 +152,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - id: rust-toolchain
         name: Read repository Rust toolchain
         run: |
@@ -197,6 +204,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Install archive inspection tools
         run: |
           sudo apt-get update
@@ -228,7 +237,8 @@ jobs:
 
       - name: Install cargo-xwin
         if: matrix.builder == 'xwin'
-        run: cargo install cargo-xwin --locked --version 0.23.0
+        # xwin 0.10 handles the current SDK manifest's payload path separators.
+        run: cargo install cargo-xwin --locked --version 0.23.1
 
       - name: Build FreeBSD release library
         if: matrix.builder == 'zig' && !matrix.build_std
@@ -317,6 +327,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python for packaged SDK acceptance
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -776,7 +788,9 @@ jobs:
             live_sdk: false
 
     runs-on: ${{ matrix.os }}
-    container: ubuntu:22.04
+    container:
+      image: ubuntu:22.04
+      options: ${{ needs.validate.outputs.ubuntu_dns != '' && format('--dns {0}', needs.validate.outputs.ubuntu_dns) || '' }}
     timeout-minutes: 180
 
     steps:
@@ -931,6 +945,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Compute archive name
         id: archive
         run: |
@@ -1049,6 +1065,8 @@ jobs:
           # build-npm-packages.mjs stamps the exact tag it finds on HEAD.
           fetch-depth: 0
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
@@ -1151,6 +1169,9 @@ jobs:
         if: env.FINAL == 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+        if: env.FINAL == 'true'
+
       - name: Download Linux tarball
         if: env.FINAL == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1213,6 +1234,8 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Download Linux release archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1271,6 +1294,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Download Linux release archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1425,6 +1450,8 @@ jobs:
       - name: Checkout release inventory
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Find available Linux package artefacts
         id: available
         env:
@@ -1508,7 +1535,11 @@ jobs:
       - name: Checkout release notes
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          sparse-checkout: docs/releases
+          sparse-checkout: |
+            docs/releases
+            .github/actions/setup-ubuntu-dns
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Download release set
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1572,6 +1603,8 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1627,6 +1660,8 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1669,6 +1704,8 @@ jobs:
       PRERELEASE: ${{ needs.validate.outputs.prerelease }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Log in to GHCR
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
@@ -1715,6 +1752,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Download producer release checksums
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

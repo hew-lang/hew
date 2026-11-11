@@ -121,6 +121,9 @@ pub const CTRL_SERVICE_OFFER_RESULT: u64 = 12;
 pub const CTRL_RELAY_OPEN: u64 = 13;
 pub const CTRL_RELAY_CHUNK: u64 = 14;
 pub const CTRL_RELAY_CLOSE: u64 = 15;
+/// The issuer closed a service grant. Sent only to peers that advertise the
+/// service-session handshake capability.
+pub const CTRL_SERVICE_RETRACT: u64 = 16;
 pub const MAX_SERVICE_HANDLERS: usize = 256;
 pub const MAX_SERVICE_OFFER_BYTES: usize = 65_536;
 
@@ -327,6 +330,13 @@ pub struct ServiceOfferPayload {
     pub target: Location,
     pub recipient: NodeSessionIdentity,
     pub handlers: Vec<String>,
+}
+
+/// The closed grant and the issuer location it named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceRetractPayload {
+    pub grant_id: u64,
+    pub target: Location,
 }
 
 /// Bounded registry-gossip control payload.
@@ -1082,6 +1092,34 @@ pub fn decode_service_offer_payload(bytes: &[u8]) -> Result<ServiceOfferPayload,
         });
     }
     Ok(offer)
+}
+
+/// Encode a service-grant retraction.
+#[must_use]
+pub fn encode_service_retract_payload(retract: &ServiceRetractPayload) -> Vec<u8> {
+    protocol::ServiceRetract {
+        grant_id: retract.grant_id,
+        target: wire_location(retract.target),
+    }
+    .encode(hew_codec::Format::Cbor)
+}
+
+/// Decode an exact service-grant retraction.
+///
+/// # Errors
+/// Refuses malformed payloads and the reserved zero grant.
+pub fn decode_service_retract_payload(bytes: &[u8]) -> Result<ServiceRetractPayload, DecodeError> {
+    let wire = protocol::ServiceRetract::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(DecodeError::Data)?;
+    if wire.grant_id == 0 {
+        return Err(DecodeError::MalformedFrame {
+            reason: "invalid service retraction",
+        });
+    }
+    Ok(ServiceRetractPayload {
+        grant_id: wire.grant_id,
+        target: checked_location(&wire.target, 2)?,
+    })
 }
 
 /// Encode a bounded registry-gossip control payload.

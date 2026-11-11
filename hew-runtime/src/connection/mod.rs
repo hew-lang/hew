@@ -114,6 +114,9 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // commit (`handshake::send_commit`); otherwise each end keeps the newer
 // same-session connection.
 const HEW_FEATURE_RESPONDER_COMMIT: u32 = 1 << 4;
+// Service offers are acknowledged per peer session and closed grants are
+// retracted with `CTRL_SERVICE_RETRACT`. Both ends must set this bit.
+const HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS: u32 = 1 << 5;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
@@ -363,6 +366,28 @@ pub struct HewConnMgr {
 }
 
 impl HewConnMgr {
+    /// Wait for accepted connections to finish their publication tails, rather
+    /// than merely exposing an authenticated carrier during admission.
+    #[cfg(test)]
+    pub(crate) fn wait_for_inbound_admissions_for_test(
+        &self,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut active = self.inbound_admissions.active.lock_or_recover();
+        while *active != 0 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            (active, _) = self
+                .inbound_admissions
+                .idle
+                .wait_timeout_or_recover(active, remaining);
+        }
+        true
+    }
+
     pub(crate) fn observe_counts(&self) -> (u64, u64, u64) {
         let peers = self
             .claims

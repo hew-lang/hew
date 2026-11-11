@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-11
+
+- Combine the 0.10 candidate improvements in actor memory budgets, persistent
+  authoring, stack exhaustion recovery, compiler robustness and service sessions.
+- Preserve Windows runtime archives and matching PDBs during concurrent builds.
+- Apply the WASI stack policy to Windows execution and line-processing commands.
+- Build Windows SDK libraries against current Microsoft SDK manifests.
+
+See the [0.10.0 release notes](docs/releases/v0.10.0.md) for behaviour and
+migration guidance. First-class failure traces and streaming interpolation are
+planned for 0.11.
+
+## [0.10.0-rc2] - 2026-11-11
+
+- Prepare the next qualification candidate; supported platform and packaged
+  toolchain results remain pending before publication.
+- Recover native stack exhaustion through Hew failure and supervision, retaining
+  stack space for cleanup.
+- Preserve cleanup reserves across loaded code images, drain deep indirect-enum
+  and generator notification chains iteratively, and keep cleanup code alive.
+- Compile long postfix chains through native and browser paths, evaluate chained
+  method receivers once, and bound malformed prefix and legacy-path diagnostics.
+- Avoid receiver snapshots for read-only computed collection keys while retaining
+  snapshots for later mutations and cleanup for faults.
+- Preserve authenticated service grants across connection replacement, deduplicate
+  replayed offers with explicit capacity backpressure, and settle owner shutdown.
+- Announce graceful peer departure before closing I/O, including QUIC stream
+  acknowledgement within the bounded shutdown window.
+- Repair scalar vector-push compilation, Windows stream-error linkage, GNU Linux
+  unwind linkage and macOS temporary-file identity in editor diagnostics.
+- Preserve live frontend context and inspect multiple processes through Observe.
+- Reduce repeated compiler work, coroutine allocations and scheduler overhead.
+- Expand native and sandbox fuzz regression coverage for parsing, numeric
+  operations, encoding ownership and formatting.
 - Escape tab, newline and carriage-return in XML attribute values and text so
   they read back unchanged, read literal CRLF and CR in text as LF, and refuse
   element and attribute names XML does not allow.

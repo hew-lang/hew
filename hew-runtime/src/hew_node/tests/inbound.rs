@@ -114,8 +114,8 @@ fn replies_select_the_request_publication_during_connection_overlap() {
             .publication_token;
     // The accepted publisher must finish before these probes can belong to
     // its successor. The client's dial already completed synchronously.
-    // SAFETY: the server retains its manager through this complete test.
     assert!(
+        // SAFETY: the server retains its manager through this complete test.
         unsafe { &*server_manager }.wait_for_inbound_admissions_for_test(Duration::from_secs(5))
     );
     let (client_entered, client_wait) = std::sync::mpsc::channel();

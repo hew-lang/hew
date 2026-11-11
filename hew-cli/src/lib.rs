@@ -2220,6 +2220,15 @@ fn resolve_debugger_invocation(
 ) -> Result<(String, Vec<String>), String> {
     let program = program_path.display().to_string();
 
+    #[cfg(windows)]
+    if std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join("cdb.exe").is_file())
+    }) {
+        let mut cdb_args = vec!["-c".to_string(), "bu hew_fault_raise".to_string(), program];
+        cdb_args.extend(program_args.iter().cloned());
+        return Ok(("cdb.exe".to_string(), cdb_args));
+    }
+
     if which_exists("gdb") {
         // Load the Hew GDB helper script if it exists
         let gdb_script = find_debug_script("hew-gdb.py");
@@ -2251,7 +2260,7 @@ fn resolve_debugger_invocation(
         lldb_args.extend(program_args.iter().cloned());
         Ok(("lldb".to_string(), lldb_args))
     } else {
-        Err("Error: no debugger found. Install gdb or lldb.".to_string())
+        Err("Error: no debugger found. Install gdb, lldb or cdb.".to_string())
     }
 }
 

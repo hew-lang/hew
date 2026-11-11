@@ -54,7 +54,7 @@ pub enum Command {
     Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
-    /// Build with debug info and launch under gdb/lldb.
+    /// Build with debug info and launch under gdb, lldb or cdb.
     Debug(DebugArgs),
     /// Parse and typecheck only.
     Check(CheckArgs),

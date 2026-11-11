@@ -1241,6 +1241,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 })?;
                 self.emit_literal(dest, bytes.as_bytes(), "hew_string_literal_new")
             }
+            PhysicalConst::LiteralBytes(id) => {
+                let text = self.module.string_literals.get(id).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("missing physical string literal {}", id.0))
+                })?;
+                let (address, _) = self.literal_data(text.as_bytes())?;
+                self.store(dest, address.into())
+            }
             PhysicalConst::Bytes(id) => {
                 let bytes = self.module.bytes_literals.get(id).ok_or_else(|| {
                     CodegenError::FailClosed(format!("missing physical bytes literal {}", id.0))

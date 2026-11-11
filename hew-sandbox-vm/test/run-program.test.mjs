@@ -1220,3 +1220,37 @@ fn main() {
   assert.equal(result.stdout, "bounded budget retained\n");
   assert.equal(result.exit_code, 1);
 });
+
+// This source is shared with native acceptance so the same semantic checks
+// exercise the real browser compiler and VM, including custom Display calls.
+test("streaming interpolation preserves rendering, order and aliases", async () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/fstring-append-order.hew"),
+    "utf8",
+  );
+  const result = await runProgram(source, "", undefined, {
+    stepBudget: 500000,
+  });
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "expression 1\ndisplay 1\nexpression 2\ndisplay 2\nexpression 3\ndisplay 3\ninterpolation passed\n",
+  );
+  assert.equal(result.exit_code, 0);
+});
+
+test("interpolation keeps originating faults and cleans up across suspension", async () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/fstring-append-fault.hew"),
+    "utf8",
+  );
+  const result = await runProgram(source, "", undefined, {
+    stepBudget: 1000000,
+  });
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "interpolation cancelled\ninterpolation recovered\n",
+  );
+  assert.equal(result.exit_code, 0);
+});

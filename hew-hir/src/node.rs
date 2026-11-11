@@ -1351,6 +1351,13 @@ impl HirExprKind {
                     pending.push(*value);
                 }
             }
+            Self::Interpolation { segments } => {
+                for segment in std::mem::take(segments) {
+                    if let HirInterpolationSegment::Append { value, .. } = segment {
+                        pending.push(*value);
+                    }
+                }
+            }
             Self::Literal(_)
             | Self::RegexLiteralRef { .. }
             | Self::BindingRef { .. }
@@ -1438,6 +1445,37 @@ pub struct HirTaskScopeResult {
 impl HirTaskScopeResult {
     pub(crate) const fn checked() -> Self {
         Self { checked: () }
+    }
+}
+
+/// One f-string segment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirInterpolationSegment {
+    /// Constant text, appended without materializing a string.
+    Literal(String),
+    /// A value appended by an accumulator `family` that either renders it in
+    /// place or copies a rendered string.
+    Append {
+        family: hew_types::RuntimeCallFamily,
+        value: Box<HirExpr>,
+    },
+}
+
+impl HirInterpolationSegment {
+    /// The evaluated expression of an appended segment.
+    #[must_use]
+    pub fn value(&self) -> Option<&HirExpr> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Append { value, .. } => Some(value),
+        }
+    }
+
+    pub fn value_mut(&mut self) -> Option<&mut HirExpr> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Append { value, .. } => Some(value),
+        }
     }
 }
 
@@ -2072,6 +2110,11 @@ pub enum HirExprKind {
     /// Transparent source-expression wrapper retained by lowering rewrites.
     SubsumedValue {
         source: Box<HirExpr>,
+    },
+    /// An f-string of two or more segments, evaluated left to right and
+    /// appended onto one owned accumulator string.
+    Interpolation {
+        segments: Vec<HirInterpolationSegment>,
     },
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.

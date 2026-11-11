@@ -30,9 +30,9 @@ mod verify;
 mod wire;
 
 pub use actor::{
-    ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LifecycleTarget,
-    LocalObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
-    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
+    static_address_type, ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation,
+    LifecycleTarget, LocalObservationKind, SemActor, SemActorCoalesce, SemActorField,
+    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, compute_indexed_dominators,

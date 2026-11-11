@@ -197,6 +197,26 @@ impl BuiltinDisplayPlan {
         })
     }
 
+    /// The interpolation accumulator operation that renders this plan in
+    /// place, with its exact argument type. `None` renders a separate string.
+    #[must_use]
+    pub fn append(&self) -> Option<(crate::RuntimeCallFamily, ResolvedTy)> {
+        use crate::RuntimeCallFamily as F;
+        let Self::Runtime { family, .. } = self else {
+            return Some((F::StringAppend, ResolvedTy::String));
+        };
+        Some(match family {
+            F::I32ToString | F::I64ToString => (F::StringAppendI64, ResolvedTy::I64),
+            F::U8ToString | F::U32ToString | F::U64ToString => {
+                (F::StringAppendU64, ResolvedTy::U64)
+            }
+            F::F64ToString => (F::StringAppendF64, ResolvedTy::F64),
+            F::BoolToString => (F::StringAppendBool, ResolvedTy::Bool),
+            F::CharToString => (F::StringPush, ResolvedTy::Char),
+            _ => return None,
+        })
+    }
+
     #[must_use]
     pub fn can_fail(&self) -> bool {
         match self {

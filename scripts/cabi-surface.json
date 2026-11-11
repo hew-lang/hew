@@ -19579,6 +19579,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_append_bool_checked( *mut HewString, u8, *mut i32, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_append_bool_checked( *mut HewString, u8, *mut i32, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_append_bool_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -19588,6 +19603,66 @@
         "wasm32-wasip1": "fn hew_string_append_checked( *mut HewString, *const HewString, *mut i32, ) -> *mut HewString"
       },
       "symbol": "hew_string_append_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_append_f64_checked( *mut HewString, f64, *mut i32, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_append_f64_checked( *mut HewString, f64, *mut i32, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_append_f64_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_append_i64_checked( *mut HewString, i64, *mut i32, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_append_i64_checked( *mut HewString, i64, *mut i32, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_append_i64_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_append_literal_checked( *mut HewString, *const u8, u32, *mut i32, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_append_literal_checked( *mut HewString, *const u8, u32, *mut i32, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_append_literal_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_append_u64_checked( *mut HewString, u64, *mut i32, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_string_append_u64_checked( *mut HewString, u64, *mut i32, ) -> *mut HewString"
+      },
+      "symbol": "hew_string_append_u64_checked"
     },
     {
       "availability": [

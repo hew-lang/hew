@@ -231,7 +231,12 @@ impl Builder<'_, '_> {
             }
         }
         let value = self.fresh_value();
-        if matches!(kind, SemOpKind::ActorIngressAdapter(_)) {
+        if *result_ty == crate::static_address_type()
+            && matches!(
+                kind,
+                SemOpKind::ActorIngressAdapter(_) | SemOpKind::ConstStr(_)
+            )
+        {
             require_type_facts(&mut self.service.checked_facts, result_ty)?;
         } else {
             self.service.require_type_facts(result_ty)?;

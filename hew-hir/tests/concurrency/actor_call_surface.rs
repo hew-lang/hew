@@ -36,6 +36,14 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(arg, out);
             }
         }
+        HirExprKind::Interpolation { segments } => {
+            for value in segments
+                .iter()
+                .filter_map(hew_hir::HirInterpolationSegment::value)
+            {
+                visit_expr(value, out);
+            }
+        }
         HirExprKind::Spawn { args, .. } => {
             for (_, arg) in args {
                 visit_expr(arg, out);

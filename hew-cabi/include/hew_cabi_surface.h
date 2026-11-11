@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1790u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1795u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1790] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1795] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -7568,12 +7568,47 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1790] = {
      "HewString, *const HewString, ) -> *mut HewString\"}",
      "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_append_bool_checked",
+     "{\"native\": \"fn hew_string_append_bool_checked( *mut HewString, u8, "
+     "*mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_string_append_bool_checked( *mut HewString, u8, *mut i32, ) -> *mut "
+     "HewString\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_append_checked",
      "{\"native\": \"fn hew_string_append_checked( *mut HewString, *const "
      "HewString, *mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
      "hew_string_append_checked( *mut HewString, *const HewString, *mut i32, ) "
      "-> *mut HewString\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_append_f64_checked",
+     "{\"native\": \"fn hew_string_append_f64_checked( *mut HewString, f64, "
+     "*mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_string_append_f64_checked( *mut HewString, f64, *mut i32, ) -> *mut "
+     "HewString\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_append_i64_checked",
+     "{\"native\": \"fn hew_string_append_i64_checked( *mut HewString, i64, "
+     "*mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_string_append_i64_checked( *mut HewString, i64, *mut i32, ) -> *mut "
+     "HewString\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_append_literal_checked",
+     "{\"native\": \"fn hew_string_append_literal_checked( *mut HewString, "
+     "*const u8, u32, *mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_string_append_literal_checked( *mut HewString, *const u8, u32, *mut "
+     "i32, ) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_append_u64_checked",
+     "{\"native\": \"fn hew_string_append_u64_checked( *mut HewString, u64, "
+     "*mut i32, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_string_append_u64_checked( *mut HewString, u64, *mut i32, ) -> *mut "
+     "HewString\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_builder_append_bool",
      "{\"native\": \"fn hew_string_builder_append_bool( *mut c_void, u8)\", "

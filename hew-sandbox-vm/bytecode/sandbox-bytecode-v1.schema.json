@@ -5304,6 +5304,36 @@
               "type": "null"
             },
             "family": {
+              "const": "StringAppendU64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendF64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "StringFindFrom"
             }
           }
@@ -6184,6 +6214,26 @@
             },
             "family": {
               "const": "StreamPairSink"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendI64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendLiteral"
             }
           }
         },

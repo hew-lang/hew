@@ -340,6 +340,9 @@ pub enum PhysicalConst {
     Unit,
     Duration(i64),
     String(hew_sir::StringLiteralId),
+    /// The static address of a string literal's UTF-8 bytes, lent to a
+    /// runtime operation without materializing a string.
+    LiteralBytes(hew_sir::StringLiteralId),
     Bytes(hew_sir::BytesLiteralId),
 }
 

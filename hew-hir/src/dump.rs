@@ -985,6 +985,20 @@ fn dump_expr_inner(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr,
             writeln!(out, "{pad}  subsumed-value").expect("write to string");
             dump_expr(defs, out, source, indent + 4);
         }
+        HirExprKind::Interpolation { segments } => {
+            writeln!(out, "{pad}  interpolation").expect("write to string");
+            for segment in segments {
+                match segment {
+                    crate::HirInterpolationSegment::Literal(text) => {
+                        writeln!(out, "{pad}    literal {text:?}").expect("write to string");
+                    }
+                    crate::HirInterpolationSegment::Append { family, value } => {
+                        writeln!(out, "{pad}    append {family:?}").expect("write to string");
+                        dump_expr(defs, out, value, indent + 6);
+                    }
+                }
+            }
+        }
         HirExprKind::MachineVariantCtor {
             machine_name,
             state_idx,

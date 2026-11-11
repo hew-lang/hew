@@ -588,6 +588,7 @@ impl Builder<'_, '_> {
             HirExprKind::SubsumedValue { source, .. } => {
                 self.lower_expr_with_binding_use(source, binding_use)
             }
+            HirExprKind::Interpolation { segments } => self.lower_interpolation(expr, segments),
             HirExprKind::Index { container, index }
                 if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) =>
             {
@@ -1404,5 +1405,108 @@ impl Builder<'_, '_> {
             self.owned_live.insert(result, result_ty.clone());
         }
         Ok(result_arg.map(|(result, _)| result))
+    }
+}
+
+impl Builder<'_, '_> {
+    /// Fold f-string segments left to right onto one owned accumulator that
+    /// grows in place. A segment that faults leaves the accumulator to the
+    /// enclosing cleanup.
+    fn lower_interpolation(
+        &mut self,
+        expr: &HirExpr,
+        segments: &[hew_hir::HirInterpolationSegment],
+    ) -> Result<ValueId, SirLoweringError> {
+        use hew_hir::HirInterpolationSegment as Segment;
+        use hew_types::RuntimeCallFamily as F;
+        let provenance = Provenance::Site(expr.site);
+        let (first, rest) = segments
+            .split_first()
+            .ok_or_else(|| SirLoweringError::from("interpolation has no first segment"))?;
+        // Acquire exactly the ordinary first rendering. In particular, do not
+        // copy a shared string's bytes before a later expression has run.
+        let mut accumulator = match first {
+            Segment::Literal(text) => {
+                let literal = self.service.intern_string(text);
+                self.emit_typed(
+                    provenance.clone(),
+                    &ResolvedTy::String,
+                    SemOpKind::ConstStr(literal),
+                )?
+            }
+            Segment::Append {
+                family: F::StringAppend,
+                value,
+            } => lower_initial_value_transfer(
+                self,
+                value,
+                "interpolation first segment",
+                OwnedBindingUse::Copy,
+            )?,
+            Segment::Append { .. } => {
+                return Err("interpolation first segment must be rendered normally".into())
+            }
+        };
+        for segment in rest {
+            accumulator = match segment {
+                Segment::Literal(text) => {
+                    let literal = self.service.intern_string(text);
+                    let bytes = self.emit_typed(
+                        provenance.clone(),
+                        &crate::static_address_type(),
+                        SemOpKind::ConstStr(literal),
+                    )?;
+                    let length = self.emit_typed(
+                        provenance.clone(),
+                        &ResolvedTy::U32,
+                        SemOpKind::ConstInteger(text.len() as i128),
+                    )?;
+                    self.interpolation_step(
+                        expr,
+                        F::StringAppendLiteral,
+                        &[(0, accumulator), (1, bytes), (2, length)],
+                        &[],
+                    )?
+                }
+                Segment::Append { family, value } => {
+                    // Own the rendering until append returns, including its
+                    // failure edge. This keeps source loans and mutation out
+                    // of the consuming accumulator boundary.
+                    let suffix = lower_initial_value_transfer(
+                        self,
+                        value,
+                        "interpolation segment",
+                        OwnedBindingUse::Copy,
+                    )?;
+                    let temporary =
+                        (self.value_own_kind(suffix) == Some(OwnKind::Owned)).then_some(suffix);
+                    self.interpolation_step(
+                        expr,
+                        *family,
+                        &[(0, accumulator), (1, suffix)],
+                        temporary.as_slice(),
+                    )?
+                }
+            };
+        }
+        Ok(accumulator)
+    }
+
+    fn interpolation_step(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        prelowered: &[(usize, ValueId)],
+        temporaries: &[ValueId],
+    ) -> Result<ValueId, SirLoweringError> {
+        self.lower_runtime_operation_with_temporaries(
+            expr,
+            family,
+            (&[], &[]),
+            true,
+            prelowered,
+            temporaries,
+        )?
+        .ok_or_else(|| SirLoweringError::from("interpolation step must produce a string"))
     }
 }

@@ -39,6 +39,14 @@ specifications.
   state. Preserve the required release, COW and cancellation behaviour while
   removing redundant metadata and checks.
 
+- String interpolation selects Display semantically, evaluates each segment
+  in source order and keeps its owned accumulator visible to fault and
+  suspension cleanup. Scalar and literal appends reuse the ordinary checked
+  string COW growth and capacity-budget contract. They must not reserve guessed
+  capacity before later source expressions or Display calls run. Canonical
+  append capacity may retain slack; an allocation reduction does not imply a
+  lower retained payload or peak memory use.
+
 ## Declaration and type identity
 
 - Resolve source names in the checker. Later stages consume declaration,

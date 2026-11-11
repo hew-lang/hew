@@ -1045,6 +1045,14 @@ impl Verifier {
                 self.expr(source);
             }
             HirExprKind::SubsumedValue { source, .. } => self.expr(source),
+            HirExprKind::Interpolation { segments } => {
+                for value in segments
+                    .iter()
+                    .filter_map(crate::HirInterpolationSegment::value)
+                {
+                    self.expr(value);
+                }
+            }
             HirExprKind::MachineVariantCtor { payload, .. } => {
                 if let Some(fields) = payload {
                     for (_, val) in fields {

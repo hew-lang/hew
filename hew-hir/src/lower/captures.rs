@@ -1,6 +1,7 @@
 //! Closure capture collection.
 
 use super::*;
+use crate::HirInterpolationSegment;
 
 pub(super) fn collect_general_closure_captures_walk(
     expr: &HirExpr,
@@ -219,6 +220,11 @@ fn collect_general_closure_captures_walk_inner(
             source: receiver, ..
         } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+        }
+        HirExprKind::Interpolation { segments } => {
+            for value in segments.iter().filter_map(HirInterpolationSegment::value) {
+                collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
+            }
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             // Machine state constructors cannot appear inside closure bodies.

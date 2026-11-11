@@ -579,6 +579,12 @@ const UNIT_FAMILIES = {
   },
   StringAppend: (_host, args) => indexed(args, 0).append(indexed(args, 1)),
   StringPush: (_host, args) => indexed(args, 0).append(indexed(args, 1)),
+  StringAppendI64: (_host, args) => appendRendered(args),
+  StringAppendU64: (_host, args) => appendRendered(args),
+  StringAppendF64: (_host, args) => appendRendered(args),
+  StringAppendBool: (_host, args) => appendRendered(args),
+  StringAppendLiteral: (_host, args) =>
+    indexed(args, 0).append(indexed(args, 1)),
   StringClear: (_host, args) => {
     indexed(args, 0).release();
     return str("");
@@ -1671,6 +1677,16 @@ function indexed(
       `runtime call expected a string operand, got ${value.kind}`,
     );
   return value;
+}
+
+/** Append a scalar segment, rendered as its `to_string` renders it. */
+function appendRendered(args: VmValue[]): VmValue {
+  const rendered = stringValue(renderStdout(arg(args, 1)));
+  try {
+    return indexed(args, 0).append(rendered);
+  } finally {
+    rendered.release();
+  }
 }
 
 function text(args: VmValue[], at: number): string {

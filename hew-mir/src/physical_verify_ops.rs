@@ -444,7 +444,7 @@ pub(crate) fn verify_constant(
             adapter
                 .handler(&module.actors)
                 .map_err(PhysicalError::new)?;
-            destination.ty == hew_sir::ActorIngressAdapter::pointer_type()
+            destination.ty == hew_sir::static_address_type()
                 && destination.own == OwnKind::None
                 && destination.layout.repr == PhysicalRepr::Pointer
         }
@@ -475,6 +475,17 @@ pub(crate) fn verify_constant(
                 )));
             }
             destination.ty == ResolvedTy::String && destination.own == OwnKind::Owned
+        }
+        PhysicalConst::LiteralBytes(id) => {
+            if !module.string_literals.contains_key(id) {
+                return Err(PhysicalError::new(format!(
+                    "physical literal address references unknown literal {}",
+                    id.0
+                )));
+            }
+            destination.ty == hew_sir::static_address_type()
+                && destination.own == OwnKind::None
+                && destination.layout.repr == PhysicalRepr::Pointer
         }
         PhysicalConst::Bytes(id) => {
             if !module.bytes_literals.contains_key(id) {

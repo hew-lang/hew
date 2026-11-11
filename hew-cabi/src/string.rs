@@ -547,6 +547,16 @@ pub unsafe fn string_append(value: *mut HewString, suffix: *const HewString) -> 
     }
 }
 
+/// Append UTF-8 text to an owned receiver, growing unique storage in place.
+///
+/// # Safety
+/// `value` transfers one live owner or is null; `text` does not alias it.
+#[must_use]
+pub unsafe fn string_append_str(value: *mut HewString, text: &str) -> *mut HewString {
+    // SAFETY: `text` is valid UTF-8 with its own scalar count.
+    unsafe { append_utf8(value, text.as_bytes(), text.chars().count()) }
+}
+
 /// Append one scalar to an owned receiver, copying shared storage.
 ///
 /// # Safety

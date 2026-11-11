@@ -1810,7 +1810,7 @@ impl LowerCtx<'_> {
                 error,
                 body,
             } => self.lower_local_recovery(operand, body, Some(error), &span),
-            Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
+            Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
             Expr::ArrayRepeat { value, count } => self.lower_array_repeat(value, count, &span),

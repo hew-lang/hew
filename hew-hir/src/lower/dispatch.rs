@@ -1,6 +1,7 @@
 //! Comparison, display, assertion and interpolation dispatch.
 
 use super::*;
+use crate::HirInterpolationSegment;
 
 impl LowerCtx<'_> {
     /// Lower a `==`/`!=`/`<`/`<=`/`>`/`>=` binary expression the checker
@@ -440,24 +441,28 @@ impl LowerCtx<'_> {
         else {
             return value;
         };
-        let from_ty = value.ty.clone();
-        let argument = if value.ty == argument_ty {
-            value
-        } else {
-            HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                ty: argument_ty.clone(),
-                intent: IntentKind::Read,
-                kind: HirExprKind::NumericCast {
-                    value: Box::new(value),
-                    from_ty,
-                    to_ty: argument_ty,
-                },
-                span: span.clone(),
-            }
-        };
+        let argument = self.numeric_argument(value, argument_ty, span.clone());
         self.build_runtime_format_call(family, argument, span)
+    }
+
+    /// Widen a scalar to the exact ABI argument type of its runtime renderer.
+    fn numeric_argument(&mut self, value: HirExpr, argument_ty: ResolvedTy, span: Span) -> HirExpr {
+        if value.ty == argument_ty {
+            return value;
+        }
+        let from_ty = value.ty.clone();
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: argument_ty.clone(),
+            intent: IntentKind::Read,
+            kind: HirExprKind::NumericCast {
+                value: Box::new(value),
+                from_ty,
+                to_ty: argument_ty,
+            },
+            span,
+        }
     }
 
     pub(super) fn dispatch_display_to_named_impl(
@@ -918,22 +923,21 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
-    /// joining literal segments with `Display::fmt(…)` results.  Empty
-    /// interpolations collapse to the empty-string literal.  The result type
-    /// is always `ResolvedTy::String` so the surrounding lowering wraps it
-    /// like any other string-typed expression.
+    /// Lower an `Expr::InterpolatedString` to its segments, appended left to
+    /// right onto one accumulator. Builtin scalars render in place; other
+    /// values append their `Display::fmt(…)` result. Empty interpolations
+    /// collapse to the empty-string literal, and a lone literal or string
+    /// segment stands for itself.
     pub(super) fn lower_interpolated_string(
         &mut self,
         parts: &[StringPart],
-        span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let mut segments: Vec<HirExpr> = Vec::with_capacity(parts.len());
+        let mut segments = Vec::with_capacity(parts.len());
         for part in parts {
             match part {
                 StringPart::Literal(text) => {
                     if !text.is_empty() {
-                        segments.push(self.build_string_literal_expr(text.clone(), span.clone()));
+                        segments.push(HirInterpolationSegment::Literal(text.clone()));
                     }
                 }
                 StringPart::Expr((expr, expr_span)) => {
@@ -943,8 +947,16 @@ impl LowerCtx<'_> {
                     let anchor_site = self.ids.site();
                     let value =
                         self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
-                    let rendered = self.lower_display_dispatch(value, expr_span.clone());
-                    segments.push(rendered);
+                    let segment = if segments.is_empty() {
+                        HirInterpolationSegment::Append {
+                            family: hew_types::RuntimeCallFamily::StringAppend,
+                            value: Box::new(self.lower_display_dispatch(value, expr_span.clone())),
+                        }
+                    } else {
+                        let dispatch_ty = value.ty.clone();
+                        self.interpolation_segment(value, dispatch_ty, expr_span.clone())
+                    };
+                    segments.push(segment);
                 }
                 StringPart::StructuralExpr((expr, expr_span)) => {
                     let authored =
@@ -957,37 +969,75 @@ impl LowerCtx<'_> {
                         .interpolation_display_types
                         .get(&self.mk_key(expr_span))
                         .and_then(|ty| ResolvedTy::from_ty(ty).ok());
-                    let rendered = if let Some(dispatch_ty) = dispatch_ty {
-                        self.lower_display_dispatch_for_type(value, dispatch_ty, expr_span.clone())
+                    let segment = if let Some(dispatch_ty) = dispatch_ty {
+                        if segments.is_empty() {
+                            HirInterpolationSegment::Append {
+                                family: hew_types::RuntimeCallFamily::StringAppend,
+                                value: Box::new(self.lower_display_dispatch_for_type(
+                                    value,
+                                    dispatch_ty,
+                                    expr_span.clone(),
+                                )),
+                            }
+                        } else {
+                            self.interpolation_segment(value, dispatch_ty, expr_span.clone())
+                        }
                     } else {
-                        self.build_structural_format_call(value, expr_span.clone())
+                        HirInterpolationSegment::Append {
+                            family: hew_types::RuntimeCallFamily::StringAppend,
+                            value: Box::new(
+                                self.build_structural_format_call(value, expr_span.clone()),
+                            ),
+                        }
                     };
-                    segments.push(rendered);
+                    segments.push(segment);
                 }
             }
         }
-        if segments.is_empty() {
-            return (
-                HirExprKind::Literal(HirLiteral::String(String::new())),
-                ResolvedTy::String,
-            );
+        if segments.len() > 1 {
+            return (HirExprKind::Interpolation { segments }, ResolvedTy::String);
         }
-        let mut iter = segments.into_iter();
-        let mut acc = iter.next().expect("non-empty segments by construction");
-        for next in iter {
-            acc = self.build_catalog_call("string_concat", vec![acc, next], span.clone());
-        }
-        // The caller re-wraps `(kind, ty)` with its own site, so returning the
-        // last segment's kind directly would drop that segment's site along
-        // with every side table keyed on it (a generic `Display` impl records
-        // its per-instantiation type arguments there). Keep the segment whole
-        // inside a transparent subsumed value.
-        let ty = acc.ty.clone();
-        (
-            HirExprKind::SubsumedValue {
-                source: Box::new(acc),
+        let kind = match segments.pop() {
+            None => HirExprKind::Literal(HirLiteral::String(String::new())),
+            Some(HirInterpolationSegment::Literal(text)) => {
+                HirExprKind::Literal(HirLiteral::String(text))
+            }
+            // The caller re-wraps `(kind, ty)` with its own site, so returning
+            // the segment's kind directly would drop that segment's site along
+            // with every side table keyed on it (a generic `Display` impl
+            // records its per-instantiation type arguments there). Keep the
+            // segment whole inside a transparent subsumed value.
+            Some(HirInterpolationSegment::Append {
+                family: hew_types::RuntimeCallFamily::StringAppend,
+                value,
+            }) => HirExprKind::SubsumedValue { source: value },
+            Some(segment) => HirExprKind::Interpolation {
+                segments: vec![segment],
             },
-            ty,
-        )
+        };
+        (kind, ResolvedTy::String)
+    }
+
+    /// Append a builtin scalar in place; render any other value first.
+    fn interpolation_segment(
+        &mut self,
+        value: HirExpr,
+        dispatch_ty: ResolvedTy,
+        span: Span,
+    ) -> HirInterpolationSegment {
+        let append = self
+            .display_facts
+            .builtin_display_plan(&dispatch_ty)
+            .and_then(|plan| plan.append());
+        if let Some((family, argument_ty)) = append {
+            return HirInterpolationSegment::Append {
+                family,
+                value: Box::new(self.numeric_argument(value, argument_ty, span)),
+            };
+        }
+        HirInterpolationSegment::Append {
+            family: hew_types::RuntimeCallFamily::StringAppend,
+            value: Box::new(self.lower_display_dispatch_for_type(value, dispatch_ty, span)),
+        }
     }
 }

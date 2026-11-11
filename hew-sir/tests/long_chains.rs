@@ -66,6 +66,47 @@ fn a_long_method_chain_lowers_on_a_small_stack() {
 }
 
 #[test]
+fn long_user_method_chains_preserve_owned_receivers_on_a_small_stack() {
+    let links = ".keep().take()".repeat(LINKS / 2);
+    lowers_and_verifies_on(
+        SMALL_STACK,
+        &format!(
+            "type Cell {{ value: string; }}\n\
+             impl Cell {{\n\
+             fn keep(self) -> Cell {{ self }}\n\
+             fn take(consume self) -> Cell {{ self }}\n\
+             }}\n\
+             fn f() -> string {{ Cell {{ value: \"kept\" }}{links}.value }}"
+        ),
+        "f()",
+    );
+}
+
+#[test]
+fn receiver_temporaries_remain_owned_across_argument_and_callee_failures() {
+    for receiver in ["self", "consume self"] {
+        for argument in ["fail()", "\"suffix\""] {
+            lowers_and_verifies_on(
+                SMALL_STACK,
+                &format!(
+                    "type Cell {{ value: string; }}\n\
+                     impl Cell {{\n\
+                     fn keep(self) -> Cell {{ self }}\n\
+                     fn append({receiver}, suffix: string) -> Cell {{\n\
+                         if suffix == \"suffix\" {{ panic(\"callee failed\") }}\n\
+                         Cell {{ value: self.value + suffix }}\n\
+                     }}\n\
+                     }}\n\
+                     fn fail() -> string {{ panic(\"argument failed\") }}\n\
+                     fn f() -> string {{ Cell {{ value: \"owned\" }}.keep().keep().append({argument}).value }}"
+                ),
+                "f()",
+            );
+        }
+    }
+}
+
+#[test]
 fn a_long_index_chain_lowers_on_a_small_stack() {
     let links = "[0]".repeat(LINKS);
     lowers_and_verifies_on(

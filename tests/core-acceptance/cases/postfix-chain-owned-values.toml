@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "cHAIN\n6\nMIDDLE\nG/0/1/2\nREFUSED\nbottom\nMISSING\nFOUND\n300\nTOP\nrabcdzz\n"
+stdout = "cHAIN\n6\nMIDDLE\nG/0/1/2\nREFUSED\nbottom\nMISSING\nFOUND\n300\nTOP\nrabcdzz\naAbBtop\n"
 exit = 0

@@ -28,7 +28,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, SirLoweringError> {
-        if let Some(value) = self.lower_runtime_receiver_chain(expr)? {
+        if let Some(value) = self.lower_receiver_chain(expr)? {
             return Ok(value);
         }
         let loan_floor = self.scope_loans.len();

@@ -12,6 +12,14 @@ type Node {
 }
 
 impl Node {
+    fn marked(self, label: string) -> Node {
+        print(label);
+        self
+    }
+    fn take(consume self) -> Node {
+        self
+    }
+
     fn first(self) -> Option<Node> {
         if self.kids.is_empty() { .None } else { .Some(self.kids[0]) }
     }
@@ -94,4 +102,7 @@ fn main() {
         .replace(segment("a", "x"), segment("b", "y"))
         .replace(segment("c", "y"), segment("d", "z"));
     println(ordered);
+
+    // User calls borrow or transfer the temporary receiver before later args.
+    println(tree().marked(segment("a", "A")).take().marked(segment("b", "B")).name);
 }

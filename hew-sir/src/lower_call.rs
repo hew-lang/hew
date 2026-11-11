@@ -5,20 +5,29 @@ use crate::{SirLoweringError, SirOwnershipError};
 use super::{
     collection_type_arguments, dyn_boundary_passing, evaluation_sequence, is_initial_value_type,
     lower_initial_value_transfer, positional_call_target, require_initial_scalar_read,
-    require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
-    FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
-    PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
-    SemCallableKind, SemOpKind, SemParamPassing, SemSignature, SemTerminator, TypeInstanceKey,
-    ValueDef, ValueId, WritableRoot,
+    require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind,
+    DefId, Edge, FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind,
+    OwnedBindingUse, PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy,
+    SemAbiParam, SemCallable, SemCallableKind, SemOpKind, SemParamPassing, SemSignature,
+    SemTerminator, TypeInstanceKey, ValueDef, ValueId, WritableRoot,
 };
+
+enum ReceiverCall {
+    Runtime(hew_types::RuntimeCallFamily),
+    Direct,
+}
 
 impl Builder<'_, '_> {
     /// Finish a flat spine of ordinary value operations from its receiver
-    /// outwards. Each step still uses the runtime contract's argument order,
+    /// outwards. Each step still uses its call contract's argument order,
     /// ownership decisions and failure cleanup; only the Rust call stack goes
     /// away. Borrowed results and receiver mutations retain their ordinary
     /// lowering, because their place/loan continuation is not an owned value.
-    pub(super) fn lower_runtime_receiver_chain(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one receiver spine preserves call admission, evaluation order and temporary cleanup"
+    )]
+    pub(super) fn lower_receiver_chain(
         &mut self,
         expr: &HirExpr,
     ) -> Result<Option<ValueId>, SirLoweringError> {
@@ -42,28 +51,50 @@ impl Builder<'_, '_> {
                     evaluation_order,
                     ..
                 } => {
-                    if positional_call_target(target) && !evaluation_order.is_empty() {
+                    if args.is_empty()
+                        || (positional_call_target(target) && !evaluation_order.is_empty())
+                    {
                         break;
                     }
-                    let family = match target {
+                    let operation = match target {
                         CallTarget::Runtime(family)
                         | CallTarget::DeclaredRuntime {
                             family,
                             actor_endpoints: None,
                             ..
-                        } => *family,
+                        } => ReceiverCall::Runtime(*family),
+                        CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+                            let target =
+                                self.resolve_direct_user_call(*declaration, current.site)?;
+                            if !matches!(
+                                target.kind,
+                                SemCallableKind::HewDirect | SemCallableKind::HewClosure
+                            ) || target.signature.params.len() != args.len()
+                                || target.signature.params.first().is_none_or(|param| {
+                                    param.passing == SemParamPassing::BorrowMut
+                                        || self.ty(&args[0].ty) != param.ty
+                                })
+                                || matches!(
+                                    target.signature.return_ty,
+                                    ResolvedTy::Unit | ResolvedTy::Never
+                                )
+                            {
+                                break;
+                            }
+                            ReceiverCall::Direct
+                        }
                         CallTarget::Builtin { endpoint } => {
                             let Some(family) =
                                 hew_types::RuntimeCallFamily::from_catalog_endpoint(endpoint)
                             else {
                                 break;
                             };
-                            family
+                            ReceiverCall::Runtime(family)
                         }
                         _ => break,
                     };
                     (
-                        family,
+                        operation,
                         args.iter().collect::<Vec<_>>(),
                         evaluation_order.as_slice(),
                     )
@@ -74,28 +105,33 @@ impl Builder<'_, '_> {
                     value: None,
                     ..
                 } => (
-                    super::shared_handle_family(*op),
+                    ReceiverCall::Runtime(super::shared_handle_family(*op)),
                     vec![receiver.as_ref()],
                     &[][..],
                 ),
                 _ => break,
             };
-            let row = family.row();
-            let Some(contract) = row.contract else { break };
-            if row.authority != hew_types::runtime_call::RuntimeAuthority::Value
-                || !matches!(
-                    contract.result,
-                    R::FreshOwned(_) | R::IndependentValue(_) | R::BitCopy(_)
-                )
-                || contract.arguments.len() != args.len()
-                || !contract
-                    .arguments
-                    .iter()
-                    .all(|arg| matches!(arg.effect, A::Borrow | A::Copy))
-                || args.is_empty()
-                || evaluation_sequence(order, args.len()).first() != Some(&0)
-                || args[0].intent != IntentKind::Read
-            {
+            if let ReceiverCall::Runtime(family) = family {
+                let row = family.row();
+                let Some(contract) = row.contract else { break };
+                if args
+                    .first()
+                    .is_none_or(|receiver| receiver.intent != IntentKind::Read)
+                    || row.authority != hew_types::runtime_call::RuntimeAuthority::Value
+                    || !matches!(
+                        contract.result,
+                        R::FreshOwned(_) | R::IndependentValue(_) | R::BitCopy(_)
+                    )
+                    || contract.arguments.len() != args.len()
+                    || !contract
+                        .arguments
+                        .iter()
+                        .all(|arg| matches!(arg.effect, A::Borrow | A::Copy))
+                {
+                    break;
+                }
+            }
+            if args.is_empty() || evaluation_sequence(order, args.len()).first() != Some(&0) {
                 break;
             }
             let receiver = args[0];
@@ -114,16 +150,20 @@ impl Builder<'_, '_> {
         for (call, family, args, order) in chain.into_iter().rev() {
             let loan_floor = self.scope_loans.len();
             self.current_site = Some(call.site);
-            let result = self
-                .lower_runtime_operation_with_temporaries(
+            let result = match family {
+                ReceiverCall::Runtime(family) => self.lower_runtime_operation_with_temporaries(
                     call,
                     family,
                     (&args, order),
                     true,
                     &[(0, value)],
                     &[value],
-                )?
-                .ok_or_else(|| SirLoweringError::from("value operation has no result"))?;
+                )?,
+                ReceiverCall::Direct => {
+                    self.lower_direct_call_in_scope(call, true, None, &mut Vec::new(), Some(value))?
+                }
+            }
+            .ok_or_else(|| SirLoweringError::from("receiver call has no result"))?;
             value = self.finish_expression_value(call, result, loan_floor)?;
         }
         Ok(Some(value))
@@ -696,6 +736,14 @@ impl Builder<'_, '_> {
                 OwnedBindingUse::Copy,
             )?
         };
+        self.transfer_consuming_value(argument, value)
+    }
+
+    fn transfer_consuming_value(
+        &mut self,
+        argument: &HirExpr,
+        value: ValueId,
+    ) -> Result<ValueId, SirLoweringError> {
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "a consuming argument requires an owned value; declare the forwarding parameter consume".into() });
         }
@@ -923,7 +971,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         value_required: bool,
     ) -> Result<Option<ValueId>, SirLoweringError> {
-        self.lower_direct_call_in_scope(expr, value_required, None, &mut Vec::new())
+        self.lower_direct_call_in_scope(expr, value_required, None, &mut Vec::new(), None)
     }
 
     pub(super) fn lower_select_call(
@@ -955,9 +1003,34 @@ impl Builder<'_, '_> {
         } else if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
             self.lower_static_trait_call_in_scope(expr, true, Some(scope), loans)?
         } else {
-            self.lower_direct_call_in_scope(expr, true, Some(scope), loans)?
+            self.lower_direct_call_in_scope(expr, true, Some(scope), loans, None)?
         };
         result.ok_or_else(|| SirLoweringError::from("prepared select call has no task handle"))
+    }
+
+    /// Actor-private declarations belong to their concrete instance; all other
+    /// direct declarations use ordinary callable admission.
+    fn resolve_direct_user_call(
+        &mut self,
+        declaration: DefId,
+        site: hew_hir::SiteId,
+    ) -> Result<SemCallable, SirLoweringError> {
+        if let SemCallableKind::HewActor(actor) = self.callable.kind {
+            if let Some(method) = self.service.actors[actor.0 as usize]
+                .methods
+                .iter()
+                .find_map(|id| {
+                    self.service
+                        .callable(*id)
+                        .filter(|method| method.declaration == declaration)
+                        .cloned()
+                })
+            {
+                return Ok(method);
+            }
+        }
+        self.service
+            .resolve_direct_call(declaration, site, &self.substitution)
     }
 
     #[allow(
@@ -970,6 +1043,7 @@ impl Builder<'_, '_> {
         value_required: bool,
         scope: Option<crate::TaskScopeId>,
         retained_loans: &mut Vec<ValueId>,
+        prelowered_receiver: Option<ValueId>,
     ) -> Result<Option<ValueId>, SirLoweringError> {
         let HirExprKind::Call {
             target,
@@ -980,33 +1054,17 @@ impl Builder<'_, '_> {
         else {
             return Err("user-call lowering received a non-call".to_string().into());
         };
-        let live_before_arguments: std::collections::HashSet<_> =
+        let mut live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
+        if let Some(value) = prelowered_receiver {
+            // A receiver produced by the spine belongs to this argument
+            // boundary, including both its normal and fault cleanup.
+            live_before_arguments.remove(&value);
+        }
         let mut loans = Vec::new();
         let (callee, signature, actor) = match target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
-                let local_actor_method =
-                    if let SemCallableKind::HewActor(actor) = self.callable.kind {
-                        self.service.actors[actor.0 as usize]
-                            .methods
-                            .iter()
-                            .find_map(|id| {
-                                self.service
-                                    .callable(*id)
-                                    .filter(|method| &method.declaration == declaration)
-                                    .cloned()
-                            })
-                    } else {
-                        None
-                    };
-                let target = match local_actor_method {
-                    Some(method) => method,
-                    None => self.service.resolve_direct_call(
-                        *declaration,
-                        expr.site,
-                        &self.substitution,
-                    )?,
-                };
+                let target = self.resolve_direct_user_call(*declaration, expr.site)?;
                 let actor = match target.kind {
                     SemCallableKind::HewActor(actor) => Some(actor),
                     SemCallableKind::HewDirect | SemCallableKind::HewClosure => None,
@@ -1157,11 +1215,12 @@ impl Builder<'_, '_> {
             .map(|(receiver, _)| self.expression_projection(receiver))
             .transpose()?
             .flatten();
-        let mut lowered_args = self.lower_user_arguments(
+        let mut lowered_args = self.lower_user_arguments_with_receiver(
             args,
             evaluation_order,
             &signature.params[seats..],
             &mut loans,
+            prelowered_receiver,
         )?;
         if let Some(actor) = actor {
             if self.callable.kind != SemCallableKind::HewActor(actor) {
@@ -1515,6 +1574,21 @@ impl Builder<'_, '_> {
         params: &[SemAbiParam],
         loans: &mut Vec<ValueId>,
     ) -> Result<Vec<crate::BoundaryOperand>, SirLoweringError> {
+        self.lower_user_arguments_with_receiver(args, evaluation_order, params, loans, None)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one argument boundary owns receiver transfer, coercions and loan tracking"
+    )]
+    fn lower_user_arguments_with_receiver(
+        &mut self,
+        args: &[HirExpr],
+        evaluation_order: &[usize],
+        params: &[SemAbiParam],
+        loans: &mut Vec<ValueId>,
+        prelowered_receiver: Option<ValueId>,
+    ) -> Result<Vec<crate::BoundaryOperand>, SirLoweringError> {
         if args.len() != params.len() {
             return Err("call arguments differ from the callee's parameters".into());
         }
@@ -1528,7 +1602,34 @@ impl Builder<'_, '_> {
             let stable_tail = order[position + 1..]
                 .iter()
                 .all(|&later| Self::stable_argument_read(&args[later]));
-            let operand = if expected.passing == SemParamPassing::Consume {
+            let operand = if let Some(value) = prelowered_receiver.filter(|_| index == 0) {
+                if self.value_ty(value).as_ref() != Some(&expected.ty) {
+                    return Err("prelowered receiver differs from its parameter type".into());
+                }
+                if expected.passing == SemParamPassing::Consume {
+                    Operand {
+                        value: self.transfer_consuming_value(arg, value)?,
+                    }
+                } else {
+                    self.service.require_type_facts(&expected.ty)?;
+                    let affine = self.service.checked_facts.rows()
+                        [&TypeInstanceKey(expected.ty.clone())]
+                        .clone
+                        == hew_types::CloneKind::None;
+                    if affine && self.value_own_kind(value) == Some(OwnKind::Owned) {
+                        let value = self.emit(
+                            arg,
+                            SemOpKind::BeginBorrow {
+                                owner: Operand { value },
+                            },
+                        )?;
+                        loans.push(value);
+                        Operand { value }
+                    } else {
+                        Operand { value }
+                    }
+                }
+            } else if expected.passing == SemParamPassing::Consume {
                 let value = self.lower_consuming_value(arg)?;
                 Operand {
                     value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,

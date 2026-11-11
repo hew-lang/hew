@@ -1,0 +1,10 @@
+[[case]]
+id = "scope-failure-budget"
+intent = "A bounded actor can repeatedly recover and release owned scope-failure messages."
+source = "cases/scope-failure-budget.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

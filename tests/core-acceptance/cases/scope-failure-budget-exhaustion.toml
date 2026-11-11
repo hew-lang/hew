@@ -1,0 +1,10 @@
+[[case]]
+id = "scope-failure-budget-exhaustion"
+intent = "A bounded actor recovers with an empty diagnostic when its budget cannot retain the fault message."
+source = "cases/scope-failure-budget-exhaustion.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -5248,7 +5248,7 @@ class ExecutorV1 {
       frame && count < 48;
       frame = frame.caller ?? frame.traceCaller ?? null, count++
     ) {
-      if (new TextEncoder().encode(frame.fn.name).length > FAILURE_TEXT_LIMIT) {
+      if (!failureTextPrefix(frame.fn.name).complete) {
         previous = undefined;
         previousInstruction = undefined;
         continue;
@@ -7683,14 +7683,27 @@ class ExecutorV1 {
   }
 }
 
-/// Match the owned native snapshot's UTF-8 bound without changing raw fault
-/// reporting. A suffix counts inside the limit and never splits a character.
+/// Retain only bounded scratch space even when raw fault text or a compiler
+/// function name is much larger than the public diagnostic limit.
+function failureTextPrefix(text: string): {
+  bytes: Uint8Array;
+  complete: boolean;
+} {
+  const bytes = new Uint8Array(FAILURE_TEXT_LIMIT);
+  const { read, written } = new TextEncoder().encodeInto(text, bytes);
+  return { bytes: bytes.subarray(0, written), complete: read === text.length };
+}
+
+/// Match the owned native snapshot without changing raw fault reporting.
+/// The suffix counts inside the UTF-8 limit and never splits a character.
 function boundedFailureMessage(message: string): string {
-  const bytes = new TextEncoder().encode(message);
-  if (bytes.length <= FAILURE_TEXT_LIMIT) return message;
-  let end =
+  const { bytes, complete } = failureTextPrefix(message);
+  if (complete) return message;
+  let end = Math.min(
+    bytes.length,
     FAILURE_TEXT_LIMIT -
-    new TextEncoder().encode(FAILURE_TRUNCATED_SUFFIX).length;
+      new TextEncoder().encode(FAILURE_TRUNCATED_SUFFIX).length,
+  );
   while ((bytes[end]! & 0xc0) === 0x80) end--;
   return (
     new TextDecoder().decode(bytes.subarray(0, end)) + FAILURE_TRUNCATED_SUFFIX

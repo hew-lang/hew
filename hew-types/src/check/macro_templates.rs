@@ -724,17 +724,20 @@ impl TemplateNames<'_> {
         Ok(())
     }
 
+    fn expr(&mut self, expression: &mut Spanned<Expr>) -> Result<(), Box<TypeError>> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.expr_inner(expression))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive AST dispatch keeps template scope transitions visible"
     )]
-    fn expr(&mut self, (expression, span): &mut Spanned<Expr>) -> Result<(), Box<TypeError>> {
+    fn expr_inner(&mut self, (expression, span): &mut Spanned<Expr>) -> Result<(), Box<TypeError>> {
         if self.captured(span) {
             return Ok(());
         }
         match expression {
             Expr::PostfixTry(value) => self.expr(value)?,
-            Expr::ReturnError(value) => self.expr(value)?,
             Expr::Return(value) | Expr::Yield(value) => {
                 if let Some(value) = value {
                     self.expr(value)?;
@@ -807,7 +810,8 @@ impl TemplateNames<'_> {
                 self.expr(left)?;
                 self.expr(right)?;
             }
-            Expr::Unary { operand: value, .. }
+            Expr::ReturnError(value)
+            | Expr::Unary { operand: value, .. }
             | Expr::Clone(value)
             | Expr::Await(value)
             | Expr::ForkChild { expr: value } => self.expr(value)?,
@@ -1022,6 +1026,10 @@ impl TemplateNames<'_> {
 }
 
 fn value_path(expression: &Expr, span: &Span) -> Option<Path> {
+    hew_parser::stack::ensure_sufficient_stack(|| value_path_inner(expression, span))
+}
+
+fn value_path_inner(expression: &Expr, span: &Span) -> Option<Path> {
     match expression {
         Expr::Ident(name) => Some(Path {
             segments: vec![(*name, span.clone())],

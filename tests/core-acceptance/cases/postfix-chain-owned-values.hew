@@ -1,0 +1,83 @@
+// Postfix chains whose links produce, project and release owned values: each
+// link's receiver is a temporary the next link consumes or borrows, so a leak
+// or double release at any link shows under the safety suite.
+type Label {
+    text: string;
+}
+
+type Node {
+    name: string;
+    label: Label;
+    kids: Vec<Node>;
+}
+
+impl Node {
+    fn first(self) -> Option<Node> {
+        if self.kids.is_empty() { .None } else { .Some(self.kids[0]) }
+    }
+}
+
+type Grid {
+    name: string;
+}
+
+impl Index<i64> for Grid {
+    type Output = Option<Grid>;
+    fn get(self, index: i64) -> Option<Option<Grid>> {
+        .Some(self.at(index))
+    }
+    fn at(self, index: i64) -> Option<Grid> {
+        if index < 0 { .None } else { .Some(Grid { name: f"{self.name}/{index}" }) }
+    }
+}
+
+fn leaf(name: string) -> Node {
+    Node { name, label: Label { text: name.to_upper() }, kids: Vec.new() }
+}
+
+fn tree() -> Node {
+    var middle = leaf("middle".to_lower());
+    middle.kids.push(leaf("bottom".to_lower()));
+    var top = leaf("top".to_lower());
+    top.kids.push(middle);
+    top
+}
+
+fn walk(grid: Grid) -> Option<string> {
+    let last = grid[0]?[1]?[2]?;
+    .Some(last.name.to_upper())
+}
+
+fn refuse(grid: Grid) -> Option<string> {
+    let last = grid[0]?[-1]?[2]?;
+    .Some(last.name)
+}
+
+fn main() {
+    // Method chain: every link returns a fresh string.
+    let shouted = "  Chain  ".to_lower().trim().to_upper().replace("C", "c").trim();
+    println(shouted);
+
+    // Field and index chain over owned records and vectors.
+    let root = tree();
+    println(root.kids[0].kids[0].label.text.to_lower().len());
+    println(root.kids[0].label.text);
+
+    // Try chain through a user index whose links allocate.
+    println(walk(Grid { name: "g".to_upper() }) ?? "none".to_upper());
+    println(refuse(Grid { name: "g".to_upper() }) ?? "refused".to_upper());
+
+    // Optional chains through owned payloads, present and absent.
+    let deep: Option<Node> = .Some(tree());
+    println(deep?.first()?.first()?.name ?? "missing".to_upper());
+    println(deep?.first()?.first()?.first()?.name ?? "missing".to_upper());
+
+    // A `??` run whose operands are owned strings.
+    let absent: Option<string> = .None;
+    let present: Option<string> = .Some("found".to_upper());
+    println(absent ?? absent ?? present ?? "fallback".to_upper());
+
+    // A cast chain.
+    let wide = 300;
+    println(wide as i64 as i32 as i64);
+}

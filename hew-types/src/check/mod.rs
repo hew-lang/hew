@@ -5065,12 +5065,24 @@ impl Checker {
         }
     }
 
+    fn classify_escapes_in_expr(
+        &mut self,
+        expr: &Expr,
+        expr_span: &hew_parser::ast::Span,
+        in_fork: bool,
+        ctx: AnonContext,
+    ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.classify_escapes_in_expr_inner(expr, expr_span, in_fork, ctx);
+        });
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "Expression visitor traverses the full Expr surface; \
                   arm-per-variant is the clearest form"
     )]
-    fn classify_escapes_in_expr(
+    fn classify_escapes_in_expr_inner(
         &mut self,
         expr: &Expr,
         expr_span: &hew_parser::ast::Span,
@@ -5644,13 +5656,23 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
     }
 }
 
+fn collect_lambda_spans_in_expr(
+    expr: &Expr,
+    expr_span: &Span,
+    out: &mut Vec<(Span, Option<String>)>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        collect_lambda_spans_in_expr_inner(expr, expr_span, out);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::match_same_arms,
     reason = "Expression visitor over the full Expr surface; arm-per-variant \
               is the clearest form"
 )]
-fn collect_lambda_spans_in_expr(
+fn collect_lambda_spans_in_expr_inner(
     expr: &Expr,
     expr_span: &Span,
     out: &mut Vec<(Span, Option<String>)>,

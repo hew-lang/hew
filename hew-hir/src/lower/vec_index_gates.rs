@@ -184,11 +184,21 @@ pub(super) fn scan_else_block_for_vec_index_gate(
 
 /// Recursively walk a `Spanned<Expr>` tree, gating `Vec<T>` `Expr::Index`
 /// nodes whose element type `T` is not in the runtime ABI's supported set.
+pub(super) fn scan_expr_for_vec_index_gate(
+    expr: &Spanned<Expr>,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        scan_expr_for_vec_index_gate_inner(expr, expr_types, diagnostics);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
 )]
-pub(super) fn scan_expr_for_vec_index_gate(
+fn scan_expr_for_vec_index_gate_inner(
     expr: &Spanned<Expr>,
     expr_types: &HashMap<SpanKey, Ty>,
     diagnostics: &mut Vec<HirDiagnostic>,

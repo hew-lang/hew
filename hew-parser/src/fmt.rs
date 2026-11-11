@@ -3657,11 +3657,15 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn can_format_expr_inline(expr: &Expr) -> bool {
+        crate::stack::ensure_sufficient_stack(|| Self::can_format_expr_inline_inner(expr))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive expression-shape classifier stays readable as one match"
     )]
-    fn can_format_expr_inline(expr: &Expr) -> bool {
+    fn can_format_expr_inline_inner(expr: &Expr) -> bool {
         match expr {
             Expr::Literal(_)
             | Expr::Ident(_)
@@ -4404,6 +4408,14 @@ impl<'a> Formatter<'a> {
     /// Format an expression that appears as the object/receiver of a postfix
     /// operation (`.`, `[]`, `?`), adding parentheses when required for correct
     /// re-parsing.
+    /// Keep a try separate from a following `.` or `?` token.
+    fn format_try_adjacent_receiver(&mut self, expr: &Spanned<Expr>) {
+        self.format_receiver(expr);
+        if matches!(expr.0, Expr::PostfixTry(_)) && !self.source_parenthesizes(&expr.1) {
+            self.write(" ");
+        }
+    }
+
     fn format_receiver(&mut self, expr: &Spanned<Expr>) {
         if Self::needs_receiver_parens(&expr.0) && self.chooses_parens(&expr.1) {
             self.write("(");
@@ -4474,6 +4486,10 @@ impl<'a> Formatter<'a> {
     /// field access, or a call whose callee and arguments are themselves
     /// atoms. A parenthesized operand is compound.
     fn is_range_atom(&self, expr: &Spanned<Expr>) -> bool {
+        crate::stack::ensure_sufficient_stack(|| self.is_range_atom_inner(expr))
+    }
+
+    fn is_range_atom_inner(&self, expr: &Spanned<Expr>) -> bool {
         if self.source_parenthesizes(&expr.1) {
             return false;
         }
@@ -4960,7 +4976,7 @@ impl<'a> Formatter<'a> {
                 method,
                 args,
             } => {
-                self.format_receiver(receiver);
+                self.format_try_adjacent_receiver(receiver);
                 self.flush_comments_before_token_after(receiver.1.end);
                 self.write(".");
                 self.write_ident(method.0);
@@ -5059,7 +5075,7 @@ impl<'a> Formatter<'a> {
                     self.format_expr(object);
                     self.write(")");
                 } else {
-                    self.format_receiver(object);
+                    self.format_try_adjacent_receiver(object);
                 }
                 self.flush_comments_before_token_after(object.1.end);
                 self.write(".");
@@ -5083,11 +5099,11 @@ impl<'a> Formatter<'a> {
                 self.format_type_expr(&ty.0);
             }
             Expr::PostfixTry(expr) => {
-                self.format_receiver(expr);
+                self.format_try_adjacent_receiver(expr);
                 self.write("?");
             }
             Expr::OptionalChain { receiver, body } => {
-                self.format_receiver(receiver);
+                self.format_try_adjacent_receiver(receiver);
                 self.write("?");
                 self.format_expr(body);
             }

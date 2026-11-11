@@ -171,11 +171,15 @@ fn find_in_arm(ctx: &LintCtx, levels: &LintLevels, arm: &MatchArm, out: &mut Vec
 /// live); leaf and non-nesting expressions are ignored — that only affects
 /// recall, never soundness, since each discovered loop is independently
 /// verified by [`BodyScan`].
+fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+    hew_parser::stack::ensure_sufficient_stack(|| find_in_expr_inner(ctx, levels, expr, out));
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every block-bearing expr shape"
 )]
-fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
     match expr {
         Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             find_in_block(ctx, levels, block, out);
@@ -540,11 +544,15 @@ impl BodyScan<'_> {
         self.expr(&arm.body.0);
     }
 
+    fn expr(&mut self, expr: &Expr) {
+        hew_parser::stack::ensure_sufficient_stack(|| self.expr_inner(expr));
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "exhaustive expression visitor keeps the precision check sound"
     )]
-    fn expr(&mut self, expr: &Expr) {
+    fn expr_inner(&mut self, expr: &Expr) {
         if !self.ok {
             return;
         }
@@ -881,6 +889,10 @@ fn nominal_payload_binds(payload: &hew_parser::ast::NominalPatternPayload, name:
 /// index or the collection anywhere? Targets are l-values (identifiers, index,
 /// field access), so unexpected shapes conservatively count as a mention.
 fn expr_mentions(idx: &str, coll: &str, expr: &Expr) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| expr_mentions_inner(idx, coll, expr))
+}
+
+fn expr_mentions_inner(idx: &str, coll: &str, expr: &Expr) -> bool {
     match expr {
         Expr::Ident(name) => name.name.as_str() == idx || name.name.as_str() == coll,
         Expr::Index { object, index } => {

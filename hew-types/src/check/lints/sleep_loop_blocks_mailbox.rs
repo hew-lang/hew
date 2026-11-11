@@ -167,11 +167,15 @@ fn find_in_arm(ctx: &LintCtx, levels: &LintLevels, arm: &MatchArm, out: &mut Vec
     find_in_expr(ctx, levels, &arm.body.0, out);
 }
 
+fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+    hew_parser::stack::ensure_sufficient_stack(|| find_in_expr_inner(ctx, levels, expr, out));
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every block-bearing expr shape"
 )]
-fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
     match expr {
         Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             find_in_block(ctx, levels, block, out);
@@ -609,11 +613,15 @@ fn bounded_call_args_have_sleep(args: &[CallArg]) -> bool {
     args.iter().any(|arg| bounded_expr_has_sleep(&arg.expr().0))
 }
 
+fn bounded_expr_has_sleep(expr: &Expr) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| bounded_expr_has_sleep_inner(expr))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every Expr shape to preserve boundary decisions"
 )]
-fn bounded_expr_has_sleep(expr: &Expr) -> bool {
+fn bounded_expr_has_sleep_inner(expr: &Expr) -> bool {
     match expr {
         Expr::Call { function, args, .. } => {
             matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "sleep" || name.name.as_str() == "sleep_until")
@@ -877,11 +885,15 @@ fn call_args_assign_identifier(args: &[CallArg], name: &str) -> bool {
         .any(|arg| expr_assigns_identifier(&arg.expr().0, name))
 }
 
+fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| expr_assigns_identifier_inner(expr, name))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every Expr shape so assignment sites are not missed"
 )]
-fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
+fn expr_assigns_identifier_inner(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Block(block)
         | Expr::Scope { body: block }

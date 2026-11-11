@@ -2343,6 +2343,12 @@ fn collect_pattern_fields(fields: &[PatternField], names: &mut Vec<Ident>) {
 /// state by naming it, and one whose source is a wildcard or a different state
 /// does not.
 fn returns_variant(expr: &Expr, target: Ident, source: Ident, machine: &MachineDecl) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        returns_variant_inner(expr, target, source, machine)
+    })
+}
+
+fn returns_variant_inner(expr: &Expr, target: Ident, source: Ident, machine: &MachineDecl) -> bool {
     match expr {
         Expr::ContextVariant(context) => context.name == target,
         Expr::Ident(name) if name.name.as_str() == "state" && name.ctx == machine.body_context => {

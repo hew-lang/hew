@@ -1,0 +1,10 @@
+[[case]]
+id = "postfix-chain-owned-values"
+intent = "Method, field, index, try, optional-chain, `??` and cast chains produce, project and release owned values at every link, with each temporary receiver released exactly once on present and absent paths."
+source = "cases/postfix-chain-owned-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "cHAIN\n6\nMIDDLE\nG/0/1/2\nREFUSED\nbottom\nMISSING\nFOUND\n300\n"
+exit = 0

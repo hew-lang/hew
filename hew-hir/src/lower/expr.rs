@@ -636,12 +636,13 @@ impl LowerCtx<'_> {
                         right,
                         span.clone(),
                     );
+                    let (kind, ty) = call.into_parts();
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        ty: call.ty.clone(),
+                        ty,
                         intent,
-                        kind: call.kind,
+                        kind,
                         span,
                     };
                 }
@@ -955,10 +956,10 @@ impl LowerCtx<'_> {
                     };
                     let batch =
                         self.lower_fork_batch(branches, output_ty, span.clone(), result_lifetime);
-                    (batch.kind, batch.ty)
+                    batch.into_parts()
                 } else {
                     let child = self.lower_fork_invocation(expr, result_lifetime);
-                    (child.kind, child.ty)
+                    child.into_parts()
                 }
             }
 
@@ -1188,7 +1189,7 @@ impl LowerCtx<'_> {
                 if let Some(item_ty) = self.failing_generator_item.clone() {
                     let value = self.lower_expr(value, IntentKind::Consume);
                     let exit = self.failing_generator_exit(value, &item_ty, &span);
-                    (exit.kind, ResolvedTy::Never)
+                    (exit.into_parts().0, ResolvedTy::Never)
                 } else if self.result_return_coercions.get(&self.mk_key(&span))
                     == Some(&hew_types::ResultReturnKind::Error)
                 {
@@ -1835,7 +1836,7 @@ impl LowerCtx<'_> {
                     &result_ty,
                     &span,
                 );
-                (lowered.kind, result_ty)
+                (lowered.into_parts().0, result_ty)
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.

@@ -2,11 +2,22 @@
 
 use super::*;
 
+pub(super) fn collect_general_closure_captures_walk(
+    expr: &HirExpr,
+    outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    seen: &mut HashSet<BindingId>,
+    captures: &mut Vec<ClosureCaptureCandidate>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        collect_general_closure_captures_walk_inner(expr, outer_bindings, seen, captures);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single exhaustive walker over HirExprKind variants; splitting risks traversal gaps"
 )]
-pub(super) fn collect_general_closure_captures_walk(
+fn collect_general_closure_captures_walk_inner(
     expr: &HirExpr,
     outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
     seen: &mut HashSet<BindingId>,

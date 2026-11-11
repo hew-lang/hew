@@ -649,12 +649,16 @@ fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
     }
 }
 
+pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+    hew_parser::stack::ensure_sufficient_stack(|| walk_expr_inner(expr, span, visitor));
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::match_same_arms,
     reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
 )]
-pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
     if !visitor.enters_nested_callables()
         && matches!(

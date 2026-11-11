@@ -839,11 +839,17 @@ fn collect_locals_from_stmt(
     }
 }
 
+fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        collect_locals_from_expr_inner(expr, offset, locals);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive AST match — splitting would obscure the traversal"
 )]
-fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
+fn collect_locals_from_expr_inner(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
         Expr::Block(block) | Expr::Scope { body: block } => {
             collect_locals_from_block(block, offset, locals);

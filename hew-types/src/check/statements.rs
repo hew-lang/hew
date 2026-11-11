@@ -131,6 +131,10 @@ impl Checker {
     }
 
     fn method_chain_root_binding(expr: &Expr) -> Option<Ident> {
+        hew_parser::stack::ensure_sufficient_stack(|| Self::method_chain_root_binding_inner(expr))
+    }
+
+    fn method_chain_root_binding_inner(expr: &Expr) -> Option<Ident> {
         match expr {
             Expr::Ident(name) => Some(*name),
             Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
@@ -144,6 +148,16 @@ impl Checker {
     /// Record that fact per call site for HIR and restore the checker binding
     /// only when it was live before this statement.
     fn preserve_discarded_receiver_identity_chain(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+    ) -> Option<String> {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.preserve_discarded_receiver_identity_chain_inner(expr, span)
+        })
+    }
+
+    fn preserve_discarded_receiver_identity_chain_inner(
         &mut self,
         expr: &Expr,
         span: &Span,
@@ -498,6 +512,10 @@ impl Checker {
     }
 
     pub(super) fn assignment_root_binding_name(&self, expr: &Expr) -> Option<Ident> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.assignment_root_binding_name_inner(expr))
+    }
+
+    fn assignment_root_binding_name_inner(&self, expr: &Expr) -> Option<Ident> {
         match expr {
             Expr::Ident(name) => Some(*name),
             Expr::FieldAccess { object, field } => {
@@ -576,6 +594,12 @@ impl Checker {
     }
 
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            Self::numeric_update_reads_binding_inner(expr, binding)
+        })
+    }
+
+    fn numeric_update_reads_binding_inner(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Ident(name) => name.name.as_str() == binding,
             Expr::Coalesce { left, right }

@@ -17,6 +17,10 @@ impl Builder<'_, '_> {
     /// cleanup while a call-local loan is open. Other evaluation requires a
     /// snapshot of copyable arguments or a protected loan of affine arguments.
     pub(super) fn stable_argument_read(expr: &HirExpr) -> bool {
+        hew_parser::stack::ensure_sufficient_stack(|| Self::stable_argument_read_inner(expr))
+    }
+
+    fn stable_argument_read_inner(expr: &HirExpr) -> bool {
         match &expr.kind {
             HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => true,
             HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
@@ -38,11 +42,22 @@ impl Builder<'_, '_> {
         self.lower_place_read(expr, loans, false)
     }
 
+    pub(super) fn lower_place_read(
+        &mut self,
+        expr: &HirExpr,
+        loans: &mut Vec<ValueId>,
+        exclusive: bool,
+    ) -> Result<Operand, SirLoweringError> {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.lower_place_read_inner(expr, loans, exclusive)
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one borrow boundary covers bindings, projections and computed supervisor roles"
     )]
-    pub(super) fn lower_place_read(
+    fn lower_place_read_inner(
         &mut self,
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,

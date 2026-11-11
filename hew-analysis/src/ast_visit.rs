@@ -701,11 +701,20 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
         self.pop_scope();
     }
 
+    fn walk_expr(&mut self, expr: &'ast Expr, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+        hew_parser::stack::ensure_sufficient_stack(|| self.walk_expr_inner(expr, span, body));
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "expression traversal needs exhaustive variant coverage"
     )]
-    fn walk_expr(&mut self, expr: &'ast Expr, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+    fn walk_expr_inner(
+        &mut self,
+        expr: &'ast Expr,
+        span: &'ast Span,
+        body: Option<BodyInfo<'ast>>,
+    ) {
         self.visitor.visit_scope(span, &self.scopes);
         self.visitor.visit_expr(expr, span, Self::context(body));
         match expr {

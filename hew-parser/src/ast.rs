@@ -190,6 +190,11 @@ impl Path {
     /// expression is anything else.
     #[must_use]
     pub fn from_chain(expr: &Spanned<Expr>) -> Option<Self> {
+        crate::stack::ensure_sufficient_stack(|| Self::from_chain_inner(expr))
+    }
+
+    #[must_use]
+    fn from_chain_inner(expr: &Spanned<Expr>) -> Option<Self> {
         match &expr.0 {
             Expr::Ident(ident) => Some(Self::single(*ident, expr.1.clone())),
             Expr::FieldAccess { object, field } => {

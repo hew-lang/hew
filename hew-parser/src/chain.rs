@@ -181,6 +181,72 @@ mod tests {
             .expect("a long spine overflowed");
     }
 
+    /// A link with two chain edges, like an optional chain's receiver and body.
+    struct Fork {
+        left: Option<Chain<Fork>>,
+        right: Option<Chain<Fork>>,
+    }
+
+    impl Spine for Fork {
+        fn detach(&mut self) -> Option<Chain<Self>> {
+            self.right
+                .as_mut()
+                .and_then(Chain::take)
+                .or_else(|| self.left.as_mut().and_then(Chain::take))
+        }
+    }
+
+    /// A spine of `length` links that continues through `left` when `left`
+    /// is set, else through `right`, each link's other edge a single leaf.
+    fn fork_spine(length: u32, through_left: impl Fn(u32) -> bool) -> Fork {
+        let leaf = || {
+            Some(Chain::new(Fork {
+                left: None,
+                right: None,
+            }))
+        };
+        let mut link = Fork {
+            left: None,
+            right: None,
+        };
+        for index in 0..length {
+            let next = Some(Chain::new(link));
+            link = if through_left(index) {
+                Fork {
+                    left: next,
+                    right: leaf(),
+                }
+            } else {
+                Fork {
+                    left: leaf(),
+                    right: next,
+                }
+            };
+        }
+        link
+    }
+
+    #[test]
+    fn spines_through_either_edge_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                // Through the edge taken first, the edge taken second, and
+                // switching edges at every link.
+                drop(Chain::new(fork_spine(1_000_000, |_| false)));
+                drop(Chain::new(fork_spine(1_000_000, |_| true)));
+                drop(Chain::new(fork_spine(1_000_000, |index| index % 2 == 0)));
+                // Both edges of one link carrying a long spine.
+                drop(Chain::new(Fork {
+                    left: Some(Chain::new(fork_spine(500_000, |_| true))),
+                    right: Some(Chain::new(fork_spine(500_000, |_| false))),
+                }));
+            })
+            .expect("spawn")
+            .join()
+            .expect("a two-edge spine overflowed");
+    }
+
     #[test]
     fn into_inner_hands_back_the_link() {
         let link = Chain::new(spine(3)).into_inner();

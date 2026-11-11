@@ -931,11 +931,15 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
     }
 }
 
+fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
+    hew_parser::stack::ensure_sufficient_stack(|| count_idents_in_expr_inner(expr, counts));
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive match over all Expr variants for identifier counting"
 )]
-fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
+fn count_idents_in_expr_inner(expr: &Expr, counts: &mut HashMap<String, usize>) {
     match expr {
         Expr::Ident(ident) => {
             *counts.entry(ident.to_string()).or_insert(0) += 1;

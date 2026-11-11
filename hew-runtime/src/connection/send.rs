@@ -21,6 +21,7 @@ pub(crate) struct SendClaim {
     identity: NodeId,
     route_slot: u16,
     session_incarnation: u32,
+    peer_feature_flags: u32,
     _guard: ReaderLifecycleGuard,
     pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
@@ -38,11 +39,27 @@ impl SendClaim {
         self.conn_id
     }
 
+    /// Finish a departure stream before node stop closes its connection.
+    /// QUIC writes initially enter local buffers; stream completion waits for
+    /// peer receipt and is cancelled by the node's bounded I/O shutdown.
+    pub(crate) fn finish_departure(&self) {
+        #[cfg(feature = "quic")]
+        // SAFETY: this claim pins its transport through departure completion.
+        unsafe {
+            crate::quic_mesh::finish_departure(&*self.transport.as_ptr(), self.conn_id);
+        }
+    }
+
     pub(crate) fn peer_session(&self) -> crate::envelope::NodeSessionIdentity {
         crate::envelope::NodeSessionIdentity {
             node_id: self.identity,
             session_incarnation: self.session_incarnation,
         }
+    }
+
+    /// Whether both ends acknowledge service offers per peer session.
+    pub(crate) fn service_sessions(&self) -> bool {
+        super::supports_service_sessions(self.peer_feature_flags)
     }
 
     pub(crate) fn publication_removed(&self) -> Arc<std::sync::atomic::AtomicBool> {
@@ -160,6 +177,7 @@ fn claim_send_admitted(
                 identity: connection.peer_identity?,
                 route_slot: connection.peer_node_id,
                 session_incarnation: connection.peer_session_incarnation,
+                peer_feature_flags: connection.peer_feature_flags,
                 _guard: connection.claimed_send_lifecycle.register(),
                 publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
@@ -421,4 +439,52 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
             .find(|c| c.conn_id == conn_id)
             .map_or(CONN_STATE_CLOSED, |c| c.state.load(Ordering::Acquire))
     })
+}
+
+/// Managers whose view of a peer lacks the service-session capability, as
+/// `(manager, peer)`. Readers hold their peer's handshake flags by value, so a
+/// test reaches them here rather than through the connection record.
+#[cfg(test)]
+static WITHOUT_SERVICE_SESSIONS: std::sync::Mutex<Vec<(usize, NodeId)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) struct ServiceSessionsOverride((usize, NodeId));
+
+#[cfg(test)]
+impl Drop for ServiceSessionsOverride {
+    fn drop(&mut self) {
+        WITHOUT_SERVICE_SESSIONS
+            .lock_or_recover()
+            .retain(|key| *key != self.0);
+    }
+}
+
+/// Present `peer` to `manager` as a node built without the service-session
+/// capability, for both the frames it sends and the frames its readers receive.
+/// Keep the returned override until the manager stops. Removing the override
+/// never touches the manager, so teardown may already have freed it.
+#[cfg(test)]
+pub(crate) fn clear_service_sessions_for_test(
+    manager: &HewConnMgr,
+    peer: NodeId,
+) -> ServiceSessionsOverride {
+    manager.connections.access(|connections| {
+        for connection in connections.iter_mut() {
+            if connection.peer_identity == Some(peer) {
+                connection.peer_feature_flags &= !super::HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS;
+            }
+        }
+    });
+    let key = (std::ptr::from_ref(manager) as usize, peer);
+    WITHOUT_SERVICE_SESSIONS.lock_or_recover().push(key);
+    ServiceSessionsOverride(key)
+}
+
+/// Whether a test presented `peer` to `manager` without service sessions.
+#[cfg(test)]
+pub(crate) fn lacks_service_sessions_for_test(manager: &HewConnMgr, peer: NodeId) -> bool {
+    WITHOUT_SERVICE_SESSIONS
+        .lock_or_recover()
+        .contains(&(std::ptr::from_ref(manager) as usize, peer))
 }

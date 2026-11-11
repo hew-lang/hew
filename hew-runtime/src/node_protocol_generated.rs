@@ -289,6 +289,54 @@ impl ServiceOffer {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServiceRetract {
+    pub(crate) grant_id: u64,
+    pub(crate) target: WireLocation,
+}
+impl ServiceRetract {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] =
+        &[Member::new("grant_id", 1, 0), Member::new("target", 2, 0)];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.grant_id;
+        sink.u64(*value);
+        sink.field(1);
+        let value = &self.target;
+        (value).write(sink);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut grant_id = None;
+        let mut target = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    grant_id = Some(source.read_u64(u64::MAX)?);
+                }
+                1 => {
+                    target = Some(WireLocation::read(source)?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            grant_id: grant_id.expect("checked required field"),
+            target: target.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MonitorDown {
     pub(crate) ref_id: u64,
     pub(crate) target: WireLocation,

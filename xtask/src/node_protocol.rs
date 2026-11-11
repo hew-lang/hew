@@ -10,6 +10,7 @@ const RUST: &str = "hew-runtime/src/node_protocol_generated.rs";
 const CDDL: &str = "hew-runtime/schemas/node-controls.generated.cddl";
 const ROOTS: &[&str] = &[
     "ServiceOffer",
+    "ServiceRetract",
     "MonitorDown",
     "RegistryGossip",
     "SwimControl",

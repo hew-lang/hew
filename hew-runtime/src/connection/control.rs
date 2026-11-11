@@ -78,8 +78,10 @@ pub(super) fn handle_control_frame(
         | crate::envelope::CTRL_RELAY_CLOSE => {
             super::relay::handle_control(mgr, conn_id, claim_token, control);
         }
-        crate::envelope::CTRL_SERVICE_OFFER | crate::envelope::CTRL_SERVICE_OFFER_RESULT => {
-            handle_service_frame(mgr, conn_id, claim_token, control);
+        crate::envelope::CTRL_SERVICE_OFFER
+        | crate::envelope::CTRL_SERVICE_OFFER_RESULT
+        | crate::envelope::CTRL_SERVICE_RETRACT => {
+            handle_service_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
         }
         CTRL_REGISTRY_GOSSIP => {
             handle_registry_gossip(mgr, peer_feature_flags, conn_id, claim_token, control);
@@ -849,6 +851,7 @@ pub(super) fn handle_link_down_frame(
 
 fn handle_service_frame(
     mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
     conn_id: c_int,
     publication: u64,
     control: &ControlFrame,
@@ -866,6 +869,18 @@ fn handle_service_frame(
                 publication,
                 &result,
             );
+        }
+        return;
+    }
+    let session_scoped = super::supports_service_sessions(peer_feature_flags);
+    #[cfg(test)]
+    let session_scoped =
+        session_scoped && !super::send::lacks_service_sessions_for_test(manager, peer.node_id);
+    if control.ctrl_kind == crate::envelope::CTRL_SERVICE_RETRACT {
+        if let Ok(retract) = crate::envelope::decode_service_retract_payload(&control.payload) {
+            if session_scoped && location_matches_node_session(retract.target, peer) {
+                manager.service_exports.retract(peer, retract.grant_id);
+            }
         }
         return;
     }
@@ -892,10 +907,12 @@ fn handle_service_frame(
         setup_id: offer.request_id,
         ref_id: offer.grant_id,
         target: offer.target,
-        status: if manager.service_exports.offer(offer, publication).is_ok() {
-            SETUP_STATUS_ACCEPTED
-        } else {
-            crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
+        status: match manager.service_exports.offer(offer, session_scoped) {
+            Ok(()) => SETUP_STATUS_ACCEPTED,
+            Err(crate::internal::types::AskError::WorkerAtCapacity) => {
+                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
+            }
+            Err(_) => SETUP_STATUS_REFUSED,
         },
     };
     send_setup_result_frame(

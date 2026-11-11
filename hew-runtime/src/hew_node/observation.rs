@@ -503,10 +503,9 @@ mod tests {
             }
             assert!(hew_node_watch_snapshot(watch).is_null());
             let (_ready, waker) = crate::wake::blocking::Readiness::new();
-            assert_eq!(
-                subscription.queue.poll_recv_ready(&Arc::new(waker)),
-                0,
-                "teardown is still blocked on its owned worker"
+            assert!(
+                matches!(subscription.queue.poll_recv_ready(&Arc::new(waker)), 0 | 1),
+                "EOF must wait for the node's owned worker; departure events may already be queued"
             );
             // Stop holds KNOWN_NODES while blocked on its owned worker. Actor
             // terminal retirement must not wait on that same teardown lock.

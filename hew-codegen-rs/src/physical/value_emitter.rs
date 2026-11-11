@@ -1294,6 +1294,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .module
             .releases
             .runs_user_code(DestroyAction::Variant(id));
+        // An indirect node of ordinary data is released on the thread's
+        // release walk, and its glue queues each child node there in turn, so
+        // a value of any depth releases in constant native stack. The order is
+        // unobservable because no `close` runs below it.
+        let walk = variant_layout.is_indirect && shared;
         if variant_layout.is_indirect || shared {
             let pointer = self.ctx.ptr_type(AddressSpace::default());
             let drop = self.glue_function(
@@ -1306,8 +1311,13 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                             CodegenError::FailClosed("variant drop lacks its node".into())
                         })?
                         .into_pointer_value();
-                    emitter.destroy_variant_object(node, glue, variant_layout)?;
-                    if variant_layout.is_indirect {
+                    emitter.destroy_variant_object(
+                        node,
+                        glue,
+                        variant_layout,
+                        walk.then_some(node),
+                    )?;
+                    if variant_layout.is_indirect && !walk {
                         emitter.free_variant_node(node, variant_layout)?;
                     }
                     emitter
@@ -1325,6 +1335,27 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         0,
                     ),
                 );
+            }
+            if walk {
+                let free_walk = get_or_declare_external(
+                    self.llvm,
+                    "hew_variant_free_walk",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+                )?;
+                self.builder
+                    .build_call(
+                        free_walk,
+                        &[
+                            value.into(),
+                            drop.as_global_value().as_pointer_value().into(),
+                            code_owner_slot(self.ctx, self.llvm).into(),
+                        ],
+                        "",
+                    )
+                    .llvm_ctx("release indirect variant on the release walk")?;
+                return Ok(());
             }
             let source = if variant_layout.is_indirect {
                 value.into_pointer_value()
@@ -1348,16 +1379,20 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder
             .build_store(source, value)
             .llvm_ctx("store physical variant destroy source")?;
-        self.destroy_variant_object(source, glue, variant_layout)
+        self.destroy_variant_object(source, glue, variant_layout, None)
     }
 
     /// Release the owned fields of the active case in `source`, a
-    /// tag-and-payload object; the object's own storage stays the caller's.
+    /// tag-and-payload object. The object's own storage stays the caller's,
+    /// unless `node` names it: that indirect node is freed once its payload is
+    /// read and before its fields are released, so a walk queueing the
+    /// children never holds the parents.
     fn destroy_variant_object(
         &self,
         source: PointerValue<'ctx>,
         glue: &PhysicalVariantGlue,
         variant_layout: &PhysicalVariantLayout,
+        node: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()> {
         let tag = self.load_variant_tag(source, variant_layout)?;
         let invalid = self
@@ -1384,12 +1419,19 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         for (index, (_, case_block)) in cases.iter().enumerate() {
             self.builder.position_at_end(*case_block);
             let recipe = &glue.variants[index];
-            if !recipe.fields.is_empty() {
+            if recipe.fields.is_empty() {
+                if let Some(node) = node {
+                    self.free_variant_node(node, variant_layout)?;
+                }
+            } else {
                 let payload_layout = &variant_layout.variants[index];
                 let source_ptr = self.variant_payload_ptr(source, variant_layout)?;
                 let payload = self
                     .load_value(source_ptr, payload_layout, "variant.destroy.payload")?
                     .into_struct_value();
+                if let Some(node) = node {
+                    self.free_variant_node(node, variant_layout)?;
+                }
                 for field_index in (0..recipe.fields.len()).rev() {
                     let field = &recipe.fields[field_index];
                     let Some(action) = field.destroy else {

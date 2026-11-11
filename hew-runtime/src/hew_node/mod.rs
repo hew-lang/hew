@@ -571,9 +571,20 @@ pub(crate) enum RemoteSetupKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingReplyKind {
     Ask(u64),
+    /// An offer to a peer without service sessions, bound to one publication.
     Offer(u64),
-    Import(u64),
+    /// An offer its recipient session acknowledges on any publication.
+    SessionOffer,
+    /// A wait for an offer from one issuer session.
+    Import,
     Setup(RemoteSetupKind, u64),
+}
+
+impl PendingReplyKind {
+    /// Session-scoped waits survive the loss of one connection.
+    fn session_scoped(self) -> bool {
+        matches!(self, Self::SessionOffer | Self::Import)
+    }
 }
 
 pub(crate) struct PendingReply {
@@ -722,6 +733,7 @@ impl ReplyRoutingTable {
     }
 
     /// Fail every pending reply tied to the given connection with `ask_error`.
+    /// Session-scoped offers and imports wait for the peer session instead.
     ///
     /// Drains the matching entries under the table lock (so a second failure
     /// path — e.g. a SWIM-DEAD verdict racing a socket drop — finds nothing and
@@ -735,7 +747,8 @@ impl ReplyRoutingTable {
             let request_ids = map
                 .iter()
                 .filter_map(|(&request_id, pending)| {
-                    (pending.connection == connection).then_some(request_id)
+                    (pending.connection == connection && !pending.kind.session_scoped())
+                        .then_some(request_id)
                 })
                 .collect::<Vec<_>>();
             request_ids
@@ -864,6 +877,28 @@ impl ReplyRoutingTable {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.get(&request_id) {
             Some(pending) if pending.connection == expected && pending.kind == kind => {
+                map.remove(&request_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Remove a session-scoped `request_id` registered by the same manager;
+    /// its peer session, not its first connection, owns the reply.
+    fn remove_if_manager(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        kind: PendingReplyKind,
+    ) -> Option<Arc<PendingReply>> {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get(&request_id) {
+            Some(pending)
+                if pending.connection.conn_mgr == expected.conn_mgr && pending.kind == kind =>
+            {
                 map.remove(&request_id)
             }
             _ => None,
@@ -1669,6 +1704,17 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
     if !matches!(state, cluster::MEMBER_DEAD | cluster::MEMBER_LEFT) {
         return;
     }
+    // The callback belongs to this node, which can differ from CURRENT_NODE.
+    // Fail service waits for its buried peer session through the same owner.
+    // SAFETY: membership callback dispatch pins this node and its manager.
+    if let Some(manager) = unsafe { node.conn_mgr.as_ref() } {
+        manager
+            .service_exports
+            .retire_session(crate::envelope::NodeSessionIdentity {
+                node_id: dead_identity,
+                session_incarnation: session,
+            });
+    }
     // SAFETY: registry belongs to the live callback-owning node.
     let registry = unsafe { &*node.registry };
     if !take_registry_names_if(
@@ -2000,6 +2046,39 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     0
 }
 
+/// How long node stop waits for departure sends before it cancels peer IO.
+/// A peer that stopped reading may exhaust the transport's buffers; the
+/// cancellation then ends a blocked send without waiting for that peer.
+const LEAVE_ANNOUNCE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Mark this node LEFT and send that state to every connected peer.
+///
+/// The sends run on their own thread because each may block on a peer that
+/// stopped reading. Stop waits at most [`LEAVE_ANNOUNCE_WAIT`] here, then
+/// cancels peer IO and joins the returned thread before freeing the manager.
+fn announce_leave(node: &HewNode) -> Option<JoinHandle<()>> {
+    if node.cluster.is_null() {
+        return None;
+    }
+    // SAFETY: the stopping node owns its cluster until teardown frees it.
+    unsafe { cluster::hew_cluster_leave(node.cluster) };
+    if node.conn_mgr.is_null() {
+        return None;
+    }
+    let manager = node.conn_mgr as usize;
+    let (sent, done) = std::sync::mpsc::channel();
+    let announcer = thread::Builder::new()
+        .name("hew-node-leave".into())
+        .spawn(move || {
+            // SAFETY: node stop joins this thread before it frees the manager.
+            unsafe { connection::hew_connmgr_announce_leave(manager as *mut HewConnMgr) };
+            let _ = sent.send(());
+        })
+        .ok()?;
+    let _ = done.recv_timeout(LEAVE_ANNOUNCE_WAIT);
+    Some(announcer)
+}
+
 /// Stop the node runtime.
 ///
 /// # Safety
@@ -2044,6 +2123,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             // cancellation drops pending request/reply owners without a worker.
             unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
         }
+        // Replies are flushed; tell peers this node is leaving while their
+        // connections still carry frames, so they record LEFT, not a crash.
+        let leave = announce_leave(node);
 
         {
             // A router still preparing a rejection may outlive the drain
@@ -2065,6 +2147,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         // below wait only on local work.
         // SAFETY: the node still owns its manager; it is freed below.
         unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
+        if let Some(leave) = leave {
+            crate::util::report_join_panic("hew node leave announcement", leave.join());
+        }
         stop_node_accept_thread(node);
 
         // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
@@ -2101,8 +2186,6 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
 
         if !node.cluster.is_null() {
-            // SAFETY: valid cluster pointer.
-            unsafe { cluster::hew_cluster_leave(node.cluster) };
             // SAFETY: valid cluster pointer from hew_cluster_new.
             unsafe { cluster::hew_cluster_free(node.cluster) };
             node.cluster = ptr::null_mut();

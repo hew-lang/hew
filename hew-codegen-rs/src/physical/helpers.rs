@@ -257,6 +257,17 @@ pub(super) fn stack_limit_slot<'ctx>(
     })
 }
 
+/// The defining image's code-owner slot, or null outside live code.
+pub(super) fn code_owner_slot<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+) -> inkwell::values::PointerValue<'ctx> {
+    module.get_global("HewLiveCodeOwner").map_or_else(
+        || ctx.ptr_type(AddressSpace::default()).const_null(),
+        |owner| owner.as_pointer_value(),
+    )
+}
+
 pub(super) fn external_unary_ptr<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,

@@ -1492,6 +1492,30 @@ static QUIC_MESH_OPS: HewTransportOps = HewTransportOps {
     destroy: Some(quic_mesh_destroy),
 };
 
+/// Finish the control stream carrying the node's final departure frame and
+/// wait for the peer to acknowledge all its bytes. Ordinary writes only enter
+/// Quinn's local buffers; immediately closing the connection can discard them.
+/// Node stop bounds this wait by cancelling the connection, which wakes it.
+pub(crate) fn finish_departure(transport: &HewTransport, conn: c_int) {
+    if !std::ptr::eq(transport.ops, &raw const QUIC_MESH_OPS) || transport.r#impl.is_null() {
+        return;
+    }
+    // SAFETY: the ops identity establishes the live transport implementation.
+    let qmt = unsafe { &*transport.r#impl.cast::<QuicMeshTransport>() };
+    let Some(connection) = qmt.get_conn(conn) else {
+        return;
+    };
+    let mut send = connection
+        .send
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(send) = send.as_mut() {
+        if send.finish().is_ok() {
+            let _ = qmt.rt.block_on(send.stopped());
+        }
+    }
+}
+
 /// The `quic_mesh` arm of [`crate::transport::hew_transport_cancel_io`].
 pub(crate) fn cancel_io(transport: &HewTransport) {
     if std::ptr::eq(transport.ops, &raw const QUIC_MESH_OPS) {

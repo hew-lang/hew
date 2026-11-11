@@ -114,6 +114,36 @@ test("runProgram hello_world returns stdout and zero exit code", async () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+for (const name of [
+  "scope-failure-budget",
+  "scope-failure-budget-exhaustion",
+]) {
+  test(`scope diagnostic budgeting preserves ${name}`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
+      "utf8",
+    );
+    const compiled = JSON.parse(
+      globalThis.__hewSandboxCompileToSandboxBytecode(
+        source,
+        "sandbox-vm-export",
+      ),
+    );
+    assert.deepEqual(compiled.diagnostics, []);
+    assert.ok(compiled.bytecode);
+    const trace = await runBytecode(compiled.bytecode, {
+      codecBridge: globalThis.__hewSandboxExecuteCodec,
+      calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+    });
+    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
+    assert.equal(trace.final_state.exit_code, 0);
+    assert.deepEqual(trace.final_state.stdout, []);
+    assert.deepEqual(trace.final_state.stderr, []);
+    assert.deepEqual(trace.final_state.diagnostics, []);
+    assert.deepEqual(trace.final_state.runtime_failures, []);
+  });
+}
+
 for (const [name, expected] of [
   ["capacity", "4\n4\nlimit\n"],
   ["alias", "8\nretained backing\n"],

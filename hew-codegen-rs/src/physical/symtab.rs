@@ -129,6 +129,12 @@ pub(super) fn emit_source_tables(module: &Module<'_>, physical: &PhysicalModule,
         linkage,
     );
     let ctx = module.get_context();
+    // The symbol table is assembled after optimization, but fault sites need
+    // its address during lowering. Replace this declaration with the final
+    // table once optimized callable boundaries are known.
+    if !physical.target.triple.starts_with("wasm") {
+        module.add_global(ctx.i8_type(), None, SYMTAB_SYMBOL);
+    }
     let flag = module.add_global(ctx.i8_type(), None, HAS_DEBUG_INFO_SYMBOL);
     flag.set_initializer(&ctx.i8_type().const_int(u64::from(has_debug), false));
     flag.set_constant(true);
@@ -202,7 +208,18 @@ pub(super) fn emit_symtab(module: &Module<'_>, physical: &PhysicalModule) -> Cod
         .array_type(u32::try_from(word_count).map_err(|_| {
             CodegenError::FailClosed("symtab exceeds the 32-bit table size".into())
         })?);
+    let declaration = module.get_global(SYMTAB_SYMBOL);
+    if let Some(declaration) = declaration {
+        declaration.set_name("__hew_symtab_pending");
+    }
     let table = module.add_global(array_type, None, SYMTAB_SYMBOL);
+    if let Some(declaration) = declaration {
+        declaration
+            .as_pointer_value()
+            .replace_all_uses_with(table.as_pointer_value());
+        // SAFETY: all uses have been redirected to the completed table.
+        unsafe { declaration.delete() };
+    }
     let base = table.as_pointer_value().const_to_int(i64_type);
     let mut words: Vec<IntValue<'_>> = bytes
         .chunks_exact(4)

@@ -941,6 +941,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.ctx.i32_type().into(),
                     self.ctx.ptr_type(AddressSpace::default()).into(),
                     self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
                 ],
                 false,
             ),
@@ -960,6 +961,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .get_global(hew_debug_abi::SITE_TABLE_SYMBOL)
                         .expect("source tables emitted before functions")
                         .as_pointer_value()
+                        .into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::SYMTAB_SYMBOL)
+                        .map_or_else(
+                            || self.ctx.ptr_type(AddressSpace::default()).const_null(),
+                            |table| table.as_pointer_value(),
+                        )
                         .into(),
                 ],
                 "fault.site",

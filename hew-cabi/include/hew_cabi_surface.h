@@ -3086,9 +3086,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1789] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_set_site_in_image",
      "{\"native\": \"fn hew_fault_set_site_in_image( *mut HewFault, u32, "
-     "*const u8, *const u8, )\", \"wasm32-wasip1\": \"fn "
+     "*const u8, *const u8, *const u8, )\", \"wasm32-wasip1\": \"fn "
      "hew_fault_set_site_in_image( *mut HewFault, u32, *const u8, *const u8, "
-     ")\"}",
+     "*const u8, )\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_take_message",

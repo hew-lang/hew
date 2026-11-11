@@ -129,10 +129,6 @@ pub fn has_debug_info() -> bool {
 
 /// The NUL-terminated name and the line and column of `byte_offset` in file
 /// `file_id`.
-fn locate(file_id: u32, byte_offset: Option<u32>) -> Option<SourcePosition> {
-    locate_in(image::file_table(), file_id, byte_offset)
-}
-
 fn locate_in(files: *const u8, file_id: u32, byte_offset: Option<u32>) -> Option<SourcePosition> {
     if file_id == NO_FILE {
         return None;
@@ -180,7 +176,15 @@ pub unsafe fn resolve_site_in(
 /// linker decides the order and a fault handler cannot sort.
 #[must_use]
 pub fn function_at(pc: usize) -> Option<HewFunction> {
-    let base = image::symtab();
+    // SAFETY: executable tables remain loaded for the process lifetime.
+    unsafe { function_at_in(image::file_table(), image::symtab(), pc) }
+}
+
+/// Resolve a frame against the tables of its originating image.
+///
+/// # Safety
+/// Both tables must remain loaded while the returned pointers are used.
+pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Option<HewFunction> {
     let symtab = table(base, TableKind::Symtab)?;
     let base = base as usize;
     (0..symtab.len()).find_map(|index| {
@@ -190,7 +194,7 @@ pub fn function_at(pc: usize) -> Option<HewFunction> {
         if !(start..end).contains(&pc) {
             return None;
         }
-        let position = locate(symbol.file_id, None).map(|position| SourcePosition {
+        let position = locate_in(files, symbol.file_id, None).map(|position| SourcePosition {
             line: symbol.decl_line,
             ..position
         });

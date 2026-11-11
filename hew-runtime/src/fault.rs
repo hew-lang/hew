@@ -59,11 +59,37 @@ struct FaultDiagnostic {
     record: Option<Mutex<Box<FailureRecord>>>,
     /// NUL-terminated source name owned for as long as the record can be read.
     site_file: OnceLock<Option<std::ffi::CString>>,
+    /// Names from the originating image, retained after that image unloads.
+    image_frames: OnceLock<Vec<Option<OwnedFrameText>>>,
     /// Owned source facts copied while the failing code image remains live.
     snapshot: OnceLock<Option<Arc<crate::failure_snapshot::FailureSnapshot>>>,
     /// The record has gone through [`hew_fault_raise`].
     raised: AtomicBool,
     reported: Mutex<bool>,
+}
+
+#[derive(Debug)]
+struct OwnedFrameText {
+    name: std::ffi::CString,
+    file: Option<std::ffi::CString>,
+    line: u32,
+}
+
+/// Copy a compiler table string without charging the failing actor.
+unsafe fn copy_image_text(text: *const std::ffi::c_char) -> Option<std::ffi::CString> {
+    if text.is_null() {
+        return None;
+    }
+    // SAFETY: the originating image remains live during this copy.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(text) }.to_bytes_with_nul();
+    if bytes.len() > 4096 {
+        return None;
+    }
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(bytes.len()).ok()?;
+    owned.extend_from_slice(bytes);
+    // SAFETY: the source C string has exactly one terminating NUL.
+    Some(unsafe { std::ffi::CString::from_vec_with_nul_unchecked(owned) })
 }
 
 impl FaultDiagnostic {
@@ -147,6 +173,7 @@ impl HewFault {
                 assertion,
                 record,
                 site_file: OnceLock::new(),
+                image_frames: OnceLock::new(),
                 snapshot: OnceLock::new(),
                 raised: AtomicBool::new(false),
                 reported: Mutex::new(false),
@@ -676,7 +703,7 @@ pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
     // SAFETY: the executable's source tables remain loaded for the process.
-    unsafe { set_site(fault, offset, crate::symtab_abi::resolve_site(offset)) };
+    unsafe { set_site(fault, offset, crate::symtab_abi::resolve_site(offset), None) };
 }
 
 /// Attach a site using the tables of the image that raised the fault.
@@ -690,17 +717,19 @@ pub unsafe extern "C" fn hew_fault_set_site_in_image(
     offset: u32,
     files: *const u8,
     sites: *const u8,
+    symbols: *const u8,
 ) {
     // SAFETY: the caller retains the originating image and its tables.
     let position = unsafe { crate::symtab_abi::resolve_site_in(files, sites, offset) };
-    // SAFETY: the caller supplies the unique live fault.
-    unsafe { set_site(fault, offset, position) };
+    // SAFETY: the caller supplies the unique live fault and its image tables.
+    unsafe { set_site(fault, offset, position, Some((files, symbols))) };
 }
 
 unsafe fn set_site(
     fault: *mut HewFault,
     offset: u32,
     position: Option<crate::symtab_abi::SourcePosition>,
+    image: Option<(*const u8, *const u8)>,
 ) {
     // SAFETY: the caller retains a unique live owner for this operation.
     let Some(fault) = (unsafe { fault.as_ref() }) else {
@@ -709,22 +738,53 @@ unsafe fn set_site(
     if let Some(record) = &fault.primary.record {
         let mut record = record.lock_or_recover();
         record.site.offset = offset;
-        if let Some(position) = position {
-            let owned = fault.primary.site_file.get_or_init(|| {
-                if position.file.is_null() {
-                    return None;
+        if let Some((files, symbols)) = image {
+            let frames = fault.primary.image_frames.get_or_init(|| {
+                let mut names = Vec::new();
+                if names.try_reserve_exact(record.frames().len()).is_err() {
+                    return names;
                 }
-                // SAFETY: the caller retains the source image through this call.
-                let bytes = unsafe { std::ffi::CStr::from_ptr(position.file) }.to_bytes_with_nul();
-                if bytes.len() > 4096 {
-                    return None;
+                for frame in record.frames() {
+                    // A return address is one past the actual call.
+                    // SAFETY: the caller retains this image's complete tables.
+                    let function = unsafe {
+                        crate::symtab_abi::function_at_in(
+                            files,
+                            symbols,
+                            frame.pc.saturating_sub(1),
+                        )
+                    };
+                    let owned = function.and_then(|function| {
+                        // SAFETY: table text remains live during this copy.
+                        let name = unsafe { copy_image_text(function.name) }?;
+                        // SAFETY: table text remains live during this copy.
+                        let file = function
+                            .position
+                            .and_then(|position| unsafe { copy_image_text(position.file) });
+                        let line = function.position.map_or(0, |position| position.line);
+                        Some(OwnedFrameText { name, file, line })
+                    });
+                    names.push(owned);
                 }
-                let mut copy = Vec::new();
-                copy.try_reserve_exact(bytes.len()).ok()?;
-                copy.extend_from_slice(bytes);
-                // SAFETY: the source C string contains exactly one trailing NUL.
-                Some(unsafe { std::ffi::CString::from_vec_with_nul_unchecked(copy) })
+                names
             });
+            for (frame, text) in record.frames.iter_mut().zip(frames) {
+                if let Some(text) = text {
+                    frame.hew_fn = text.name.as_ptr();
+                    frame.file = text
+                        .file
+                        .as_ref()
+                        .map_or(std::ptr::null(), |file| file.as_ptr());
+                    frame.line = text.line;
+                }
+            }
+        }
+        if let Some(position) = position {
+            // SAFETY: the source image remains live through this call.
+            let owned = fault
+                .primary
+                .site_file
+                .get_or_init(|| unsafe { copy_image_text(position.file) });
             record.site.file = owned
                 .as_ref()
                 .map_or(std::ptr::null(), |name| name.as_ptr());

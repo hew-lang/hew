@@ -2,6 +2,7 @@
 """Compile and execute the real C/C++ host client against this build of Hew."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -66,6 +67,58 @@ def shared_flags(directory, headers):
     if sys.platform == "darwin":
         return ["-dynamiclib"], ".dylib"
     return ["-shared"], ".so"
+
+
+def sanitized_failure_symbols(args, root, output, env):
+    """Resolve an instrumented failure using only the stripped Hew tables."""
+    executable = output / "sanitized-failure"
+    log = output / "sanitized-failure.ndjson"
+    run(
+        [
+            args.hew_bin,
+            "build",
+            "--release",
+            "--opt-level",
+            "0",
+            root / "tests/packaged-sdk/debug-failure.hew",
+            "-o",
+            executable,
+        ],
+        env=env,
+    )
+    result = subprocess.run(
+        [executable],
+        env=env | {"HEW_BACKTRACE": "1", "HEW_FAILURE_LOG": str(log)},
+        capture_output=True,
+        timeout=180,
+    )
+    if result.returncode != 1 or b"AddressSanitizer" in result.stderr:
+        raise RuntimeError(f"unexpected instrumented failure: {result.stderr!r}")
+    record = json.loads(log.read_text().splitlines()[0])
+    if record["message"] != "too big":
+        raise RuntimeError(f"wrong instrumented failure: {record}")
+    frame = next(
+        (frame for frame in record["frames"] if frame["hew_fn"] == "level2"), None
+    )
+    if frame is None:
+        raise RuntimeError(f"missing instrumented Hew frame: {record}")
+    resolved = run(
+        [
+            args.hew_bin,
+            "symbolize",
+            executable,
+            frame["pc"],
+            "--base=" + record["build"]["image_base"],
+            "--return-addresses",
+        ],
+        env=env,
+    )
+    if (
+        b"level2" not in resolved.stdout
+        or b"debug-failure.hew:1" not in resolved.stdout
+    ):
+        raise RuntimeError(f"instrumented frame did not resolve: {resolved.stdout!r}")
+    print("PASS stripped ASan failure symbols")
 
 
 def asynchronous_clients(args, root, directory, opt, env):
@@ -367,6 +420,8 @@ def main():
                 + (" / ASan+LSan" if args.sanitize else "")
             )
         asynchronous_clients(args, root, directory, opt, env)
+    if args.sanitize:
+        sanitized_failure_symbols(args, root, output, env)
 
 
 if __name__ == "__main__":

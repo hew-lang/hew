@@ -40,7 +40,15 @@ on:
       platforms:
         description: "Run the full gate, a platform subset, or the focused Windows debugger check."
         type: choice
-        options: [all, linux-x86_64, windows-x86_64, macos-aarch64, freebsd-x86_64, windows-debugger]
+        options:
+          [
+            all,
+            linux-x86_64,
+            windows-x86_64,
+            macos-aarch64,
+            freebsd-x86_64,
+            windows-debugger,
+          ]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -873,11 +881,18 @@ jobs:
 
       - uses: ./.workflow-actions/.github/actions/setup-ubuntu-dns
 
+      - name: Record FreeBSD VM host capacity
+        run: |
+          getconf _NPROCESSORS_ONLN
+          awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/' /proc/meminfo
+
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "15.1"
-          mem: 8192
+          # Full-LTO compiler linking showed material pressure at 8 GiB in
+          # controlled SDK builds; retain the measured 12 GiB headroom here too.
+          mem: 12288
           # Return JUnit reports without copying the guest's build tree.
           copyback: true
           prepare: |
@@ -956,7 +971,18 @@ jobs:
             command -v wasmtime && wasmtime --version
             command -v wasm-ld && wasm-ld --version
 
-            gmake test-release-lib-link
+            if /usr/bin/time -l gmake test-release-lib-link; then
+              :
+            else
+              build_status=$?
+              # Preserve the build failure and collect evidence before copyback.
+              # A killed compiler alone does not establish an OOM diagnosis.
+              sysctl hw.physmem hw.usermem vm.swap_total vm.stats.vm.v_free_count vm.stats.vm.v_page_size || true
+              swapinfo -h || true
+              vmstat -s || true
+              dmesg -a || true
+              exit "$build_status"
+            fi
 
             target/release/hew --version
             target/release/hew lsp --version

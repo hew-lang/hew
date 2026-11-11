@@ -2226,6 +2226,12 @@ fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
     target
 }
 
+/// Quote one LLDB command argument, independently of the host shell.
+fn lldb_script_import(path: &str) -> String {
+    let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("command script import \"{escaped}\"")
+}
+
 fn resolve_debugger_invocation(
     program_path: &Path,
     program_args: &[String],
@@ -2261,7 +2267,7 @@ fn resolve_debugger_invocation(
         let mut lldb_args = Vec::new();
         if let Some(script) = &lldb_script {
             lldb_args.push("-o".to_string());
-            lldb_args.push(format!("command script import {script}"));
+            lldb_args.push(lldb_script_import(script));
         }
         lldb_args.extend([
             "-o".to_string(),
@@ -2306,7 +2312,7 @@ fn resolve_debugger_attach(pid: u32) -> Result<(String, Vec<String>), String> {
     } else if which_exists("lldb") {
         let mut args = Vec::new();
         if let Some(script) = find_debug_script("hew_lldb.py") {
-            args.extend(["-o".to_string(), format!("command script import {script}")]);
+            args.extend(["-o".to_string(), lldb_script_import(&script)]);
         }
         args.extend([
             "-o".to_string(),

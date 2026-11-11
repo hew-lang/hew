@@ -142,14 +142,11 @@ pub(super) fn emit_source_tables(module: &Module<'_>, physical: &PhysicalModule,
     retain(module, flag);
 }
 
-/// Emit `__hew_symtab` from the optimized module: one entry per surviving
-/// function a Hew callable tags, in emission order. Runs after the pass
-/// pipeline so inlined bodies are gone and coroutine parts exist.
-///
-/// Each entry's `start` is the function's distance from the table and its
-/// `end` the next emitted function's, both PC-relative fixups. A trailing
-/// marker function bounds the last entry.
-pub(super) fn emit_symtab(module: &Module<'_>, physical: &PhysicalModule) -> CodegenResult<()> {
+/// Capture the optimized function layout before instrumentation adds helper
+/// functions that may be deduplicated or discarded by the linker.
+pub(super) fn capture_layout<'ctx>(
+    module: &Module<'ctx>,
+) -> CodegenResult<Vec<FunctionValue<'ctx>>> {
     let ctx = module.get_context();
     let marker = module.add_function(
         "__hew_shim_text_end",
@@ -161,10 +158,21 @@ pub(super) fn emit_symtab(module: &Module<'_>, physical: &PhysicalModule) -> Cod
     builder
         .build_return(None)
         .map_err(|error| CodegenError::Llvm(format!("symtab end marker: {error}")))?;
-    let defined: Vec<FunctionValue<'_>> = module
+    Ok(module
         .get_functions()
         .filter(|function| function.count_basic_blocks() > 0)
-        .collect();
+        .collect())
+}
+
+/// Emit `__hew_symtab` for the optimized callable layout. Each entry's start
+/// and end are PC-relative fixups to consecutive pre-instrumentation functions;
+/// a trailing marker bounds the last entry.
+pub(super) fn emit_symtab(
+    module: &Module<'_>,
+    physical: &PhysicalModule,
+    defined: &[FunctionValue<'_>],
+) -> CodegenResult<()> {
+    let ctx = module.get_context();
     let file_ids = table_file_ids(&physical.debug);
     let mut records = Vec::new();
     let mut bounds = Vec::new();

@@ -682,12 +682,19 @@ fn emit_physical_to_paths(
         symtab::emit_gdb_script_section(&llvm_module, dir, triple);
     }
     crate::llvm::run_module_pipeline(&llvm_module, &machine, opt_level)?;
+    // The optimized callable order is complete here, including coroutine
+    // parts. Capture it before instrumentation adds discardable helper bodies.
+    let symbols = if triple.starts_with("wasm") {
+        None
+    } else {
+        Some(symtab::capture_layout(&llvm_module)?)
+    };
     if address_sanitizer {
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)
             .map_err(CodegenError::FailClosed)?;
     }
-    if !triple.starts_with("wasm") {
-        symtab::emit_symtab(&llvm_module, verified.module())?;
+    if let Some(symbols) = symbols {
+        symtab::emit_symtab(&llvm_module, verified.module(), &symbols)?;
     }
     if let Some(path) = ll_path {
         llvm_module

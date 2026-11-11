@@ -1197,8 +1197,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         if !reply_consumed && !crash_reply.is_null() {
                             // SAFETY: the message owns this live reply ref.
                             unsafe {
-                                crate::reply_channel::hew_reply_channel_publish_crash_fallback(
+                                crate::reply_channel::publish_crash_fallback_with_failure(
                                     crash_reply.cast(),
+                                    a.native_completion
+                                        .as_ref()
+                                        .and_then(|completion| completion.fault_snapshot()),
                                 );
                             }
                         }
@@ -1902,7 +1905,12 @@ unsafe fn finish_failed_resume(
         // Classified as a handler trap so the waiter's null reply is
         // status-bearing, never a bare null.
         unsafe {
-            crate::reply_channel::hew_reply_channel_publish_crash_fallback(crash_reply.cast());
+            crate::reply_channel::publish_crash_fallback_with_failure(
+                crash_reply.cast(),
+                a.native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.fault_snapshot()),
+            );
         }
     }
 

@@ -2030,7 +2030,7 @@ fn scenario_inbound_isolation(kv: KeyValue, kx: string) -> i64 {
             .Fault { message } => panic(message),
         }
     }) {
-        .Err(ActorError.Trapped) => {}
+        .Err(ActorError.Trapped(_)) => {}
         _ => panic("remote handler fault lost its status"),
     }
     println("PASS inbound_isolation trapped");

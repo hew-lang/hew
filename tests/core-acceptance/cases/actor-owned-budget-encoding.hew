@@ -31,7 +31,7 @@ fn main() -> i64 {
     stopped(enough);
     let small = spawn Small { values: json.array() };
     match small.grow() {
-        .Err(.Trapped) => println("encoding limit"),
+        .Err(.Trapped(_)) => println("encoding limit"),
         _ => return 2,
     }
     stopped(small);

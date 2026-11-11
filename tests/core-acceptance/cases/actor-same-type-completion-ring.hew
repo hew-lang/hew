@@ -22,7 +22,7 @@ fn main() {
     a.link(b).expect("link a");
     b.link(a).expect("link b");
     match a.process(1) {
-        .Err(.Trapped) => println("trapped"),
+        .Err(.Trapped(_)) => println("trapped"),
         _ => panic("wait cycle must fault"),
     }
     println("done");

@@ -2951,6 +2951,75 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout_capacity(
     }
 }
 
+/// Allocate an empty descriptor-backed vector with exact capacity, returning
+/// null instead of aborting if its bounded storage cannot be allocated.
+///
+/// # Safety
+/// `layout` is a live compiler-verified element descriptor. A non-null result
+/// is one vector owner and must be released with `hew_vec_free_owned`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_try_new_with_elem_layout_capacity(
+    layout: *const HewValueLayout,
+    capacity: i64,
+) -> *mut HewVec {
+    let Some(descriptor) = (unsafe { layout.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let Ok(capacity) = usize::try_from(capacity) else {
+        return ptr::null_mut();
+    };
+    let Some(size) = capacity.checked_mul(descriptor.size) else {
+        return ptr::null_mut();
+    };
+    let align = descriptor.align.max(core::mem::align_of::<AtomicUsize>());
+    let offset = descriptor.align.max(core::mem::size_of::<AtomicUsize>());
+    let Some(bytes) = offset.checked_add(size.max(1)) else {
+        return ptr::null_mut();
+    };
+    let Ok(buffer_layout) = Layout::from_size_align(bytes, align) else {
+        return ptr::null_mut();
+    };
+    // SAFETY: the compiler emits a fully described element layout.
+    unsafe { validate_elem_layout(layout) };
+    let value = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast::<HewVec>();
+    if value.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: the computed layout is non-zero and valid for this allocation.
+    let base = if capacity == 0 {
+        ptr::null_mut()
+    } else {
+        unsafe { alloc(buffer_layout) }
+    };
+    if capacity != 0 && base.is_null() {
+        // SAFETY: no element or descriptor owner has been published yet.
+        unsafe { crate::mem::buf_free(value.cast()) };
+        return ptr::null_mut();
+    }
+    // SAFETY: the fresh header and optional aligned buffer are uniquely owned.
+    unsafe {
+        let data = if base.is_null() {
+            ptr::null_mut()
+        } else {
+            let data = base.add(offset);
+            data.sub(core::mem::size_of::<AtomicUsize>())
+                .cast::<AtomicUsize>()
+                .write(AtomicUsize::new(1));
+            data
+        };
+        (*value).data = data;
+        (*value).len = 0;
+        (*value).front = 0;
+        (*value).cap = capacity;
+        (*value).elem_size = descriptor.size;
+        (*value).elem_kind = ElemKind::Plain;
+        (*value).layout_storage = *descriptor;
+        (*value).layout = core::ptr::addr_of!((*value).layout_storage);
+        crate::code_owner::CodeRoot::retain_for_carrier(descriptor.code_owner);
+    }
+    value
+}
+
 /// Allocate a fresh buffer without geometric capacity rounding.
 unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
     // SAFETY: callers supply a new vector with no backing allocation.
@@ -5424,6 +5493,24 @@ mod vec_owned_tests {
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
             clone_fn: Some(clone_thunk),
             drop_fn: Some(drop_thunk),
+        }
+    }
+
+    #[test]
+    fn fallible_trace_vector_rejects_overflow_and_releases_owned_elements() {
+        let _guard = reset_counters();
+        let layout = owned_layout();
+        // SAFETY: this compiler-shaped descriptor remains live throughout.
+        unsafe {
+            assert!(
+                hew_vec_try_new_with_elem_layout_capacity(&raw const layout, i64::MAX).is_null()
+            );
+            let vector = hew_vec_try_new_with_elem_layout_capacity(&raw const layout, 1);
+            assert!(!vector.is_null());
+            let value = make_source(41);
+            hew_vec_push_owned_move(vector, (&raw const value).cast());
+            hew_vec_free_owned(vector);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
         }
     }
 

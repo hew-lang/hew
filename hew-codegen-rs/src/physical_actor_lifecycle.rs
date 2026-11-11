@@ -8,9 +8,9 @@ fn native_crash_context_type(ctx: &Context) -> StructType<'_> {
         &[
             ptr.into(),
             ctx.i32_type().into(),
-            ptr.into(),
             ctx.i64_type().into(),
             ctx.i32_type().into(),
+            ptr.into(),
         ],
         false,
     )
@@ -446,7 +446,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 )?;
                 let scope = call_value(builder, scope_new, &[token.into()], "crash.scope")?;
                 let duration = builder
-                    .build_load(i64_ty, field(3, "crash.budget")?, "crash.budget.ns")
+                    .build_load(i64_ty, field(2, "crash.budget")?, "crash.budget.ns")
                     .llvm_ctx("read child stop budget")?;
                 let deadline = get_or_declare_external(
                     &self.llvm,
@@ -520,39 +520,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .build_load(i32_ty, field(1, "crash.kind")?, "crash.kind.value")
                     .llvm_ctx("read crash kind")?
                     .into_int_value();
-                let message = builder
-                    .build_load(ptr, field(2, "crash.message")?, "crash.message.value")
-                    .llvm_ctx("borrow crash diagnostic")?;
-                let layout = &callable
-                    .params
-                    .get(1)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("crash hook lacks info parameter".into())
-                    })?
-                    .layout;
-                let object_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+                let failure = builder
+                    .build_load(ptr, field(4, "crash.failure")?, "crash.failure.value")
+                    .llvm_ctx("borrow retained failure")?
+                    .into_pointer_value();
+                let parameter = callable.params.get(1).ok_or_else(|| {
+                    CodegenError::FailClosed("crash hook lacks info parameter".into())
+                })?;
+                let object_ty = llvm_type(self.ctx, &parameter.layout.repr)?.into_struct_type();
                 let object = frame.storage(self.ctx, object_ty.into(), "crash.info")?;
-                let kind_ptr = builder
-                    .build_struct_gep(object_ty, object, 0, "crash.info.kind")
-                    .llvm_ctx("address crash info kind")?;
-                self.lifecycle_variant_store(
-                    builder,
-                    kind_ptr,
-                    hew_types::BuiltinType::CrashKind,
-                    kind,
-                )?;
-                let clone = get_or_declare_external(
-                    &self.llvm,
-                    "hew_string_clone",
-                    ptr.fn_type(&[ptr.into()], false),
-                )?;
-                let owned = call_value(builder, clone, &[message.into()], "crash.message.clone")?;
-                let message_ptr = builder
-                    .build_struct_gep(object_ty, object, 1, "crash.info.message")
-                    .llvm_ctx("address crash info message")?;
-                builder
-                    .build_store(message_ptr, owned)
-                    .llvm_ctx("store owned crash info message")?;
+                values.emit_failure_info(&parameter.ty, object, failure, kind)?;
                 let output_ty = llvm_type(
                     self.ctx,
                     &callable
@@ -602,7 +579,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .build_int_cast(tag, i32_ty, "crash.action.abi")
                     .llvm_ctx("convert crash ruling tag")?;
                 builder
-                    .build_store(field(4, "crash.action.out")?, tag)
+                    .build_store(field(3, "crash.action.out")?, tag)
                     .llvm_ctx("publish crash ruling to its owner")?;
                 builder
                     .build_unconditional_branch(done)
@@ -1131,16 +1108,16 @@ mod abi_tests {
                 field_size(|c: &HewNativeCrashContext| &c.kind),
             ),
             (
-                offset_of!(HewNativeCrashContext, message),
-                field_size(|c: &HewNativeCrashContext| &c.message),
-            ),
-            (
                 offset_of!(HewNativeCrashContext, stop_ns),
                 field_size(|c: &HewNativeCrashContext| &c.stop_ns),
             ),
             (
                 offset_of!(HewNativeCrashContext, action),
                 field_size(|c: &HewNativeCrashContext| &c.action),
+            ),
+            (
+                offset_of!(HewNativeCrashContext, failure),
+                field_size(|c: &HewNativeCrashContext| &c.failure),
             ),
         ];
         let mismatch = |mirror| {
@@ -1158,8 +1135,8 @@ mod abi_tests {
             &[
                 ptr.into(),
                 ctx.i32_type().into(),
-                ptr.into(),
                 ctx.i64_type().into(),
+                ptr.into(),
                 ctx.i64_type().into(),
             ],
             false,

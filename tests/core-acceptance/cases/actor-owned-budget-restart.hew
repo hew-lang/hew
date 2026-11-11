@@ -28,7 +28,7 @@ fn main() {
     let group = spawn Group;
     assert(group.buffer.fill().expect("first incarnation") == 4);
     match group.buffer.exceed() {
-        .Err(.Trapped) => {}
+        .Err(.Trapped(_)) => {}
         _ => panic("expected heap limit"),
     }
     restarted(group.buffer);

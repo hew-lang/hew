@@ -26,7 +26,7 @@ fn main() -> i64 {
         Result.Err(e) => match e {
             ActorError.Rejected(_) => 1,
             ActorError.Failed(_) => 2,
-            ActorError.Trapped => 3,
+            ActorError.Trapped(_) => 3,
             ActorError.Dead => 4,
             ActorError.TimedOut => 5,
             ActorError.NodeNotRunning => 6,

@@ -596,7 +596,8 @@ pub mod debug_accessors;
 pub mod failure_kinds;
 /// The one description of a failure, built at its origin.
 pub mod failure_record;
-mod failure_snapshot;
+#[doc(hidden)]
+pub mod failure_snapshot;
 pub mod internal;
 mod send_ptr;
 /// The runtime's reader of the compiler-emitted debug tables.

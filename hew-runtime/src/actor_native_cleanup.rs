@@ -14,16 +14,10 @@ use std::{collections::VecDeque, ffi::c_void, ptr, sync::Mutex};
 pub struct HewNativeCrashContext {
     pub state: *mut c_void,
     pub kind: crate::internal::types::CrashKind,
-    pub message: *const hew_cabi::string::HewString,
     pub stop_ns: i64,
     pub action: i32,
-}
-
-impl Drop for HewNativeCrashContext {
-    fn drop(&mut self) {
-        // SAFETY: this context owns the managed diagnostic through hook drain.
-        unsafe { hew_cabi::string::string_release(self.message.cast_mut()) };
-    }
+    /// Borrowed from the work item for the duration of the hook.
+    pub failure: *const c_void,
 }
 
 #[derive(Debug, Default)]
@@ -56,6 +50,7 @@ struct Work {
     driver: Option<Box<ReleaseDriver>>,
     crash_started: bool,
     crash: Option<HewNativeCrashContext>,
+    failure: Option<std::sync::Arc<crate::failure_snapshot::FailureSnapshot>>,
     stop_started: bool,
     state_started: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
@@ -219,6 +214,7 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             driver: None,
             crash_started: false,
             crash: None,
+            failure: None,
             stop_started: false,
             state_started: false,
             rc_sweep: None,
@@ -313,20 +309,30 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             if terminal == HewActorState::Crashed as i32 {
                 if let Some(start) = completion.crash {
                     let code = actor.error_code.load(Ordering::Acquire);
+                    let message = completion.fault_message().unwrap_or_else(|| {
+                        crate::internal::types::ExitReason::from_error_code(code)
+                            .trap_kind_name()
+                            .to_owned()
+                    });
+                    work.failure = Some(completion.fault_snapshot().unwrap_or_else(|| {
+                        std::sync::Arc::new(
+                            crate::failure_snapshot::FailureSnapshot::without_detail(
+                                code, &message,
+                            ),
+                        )
+                    }));
                     // SAFETY: terminal ownership retains this incarnation and tree.
                     let stop_ns = unsafe { crate::supervisor::actor_stop_budget(actor) };
                     work.crash = Some(HewNativeCrashContext {
                         state: actor.state,
                         kind: crate::internal::types::ExitReason::from_error_code(code)
                             .to_crash_kind(),
-                        message: hew_cabi::string::string_from_str(
-                            completion.fault_message().as_deref().unwrap_or_else(|| {
-                                crate::internal::types::ExitReason::from_error_code(code)
-                                    .trap_kind_name()
-                            }),
-                        ),
                         stop_ns,
                         action: 0,
+                        failure: std::sync::Arc::as_ptr(
+                            work.failure.as_ref().expect("retained failure"),
+                        )
+                        .cast(),
                     });
                     let context = work.crash.as_mut().expect("initialized crash context");
                     // SAFETY: boxed Work keeps the borrowed context and actor

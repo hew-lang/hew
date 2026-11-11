@@ -39,7 +39,7 @@ fn ask_error_id(err: ActorError) -> i64 {
     match err {
         ActorError.Rejected(_) => 1,
         ActorError.Failed(_) => 2,
-        ActorError.Trapped => 3,
+        ActorError.Trapped(_) => 3,
         ActorError.Dead => 4,
         ActorError.TimedOut => 5,
         ActorError.NodeNotRunning => 6,
@@ -94,7 +94,9 @@ fn test_lookup_error_taxonomy_variants() {
 fn test_ask_error_taxonomy_variants() {
     // Rejected owns a sealed request supplied by runtime admission; it cannot
     // be fabricated for this transport-only envelope.
-    assert(ask_error_id(ActorError.Trapped) == 3);
+    assert(ask_error_id(ActorError.Trapped(CrashInfo {
+        kind: .Fault, trap: .None, message: "", site: .None, trace: .None,
+    })) == 3);
     assert(ask_error_id(ActorError.Dead) == 4);
     assert(ask_error_id(ActorError.TimedOut) == 5);
     assert(ask_error_id(ActorError.NodeNotRunning) == 6);

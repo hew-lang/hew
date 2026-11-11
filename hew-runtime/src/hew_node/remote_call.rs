@@ -291,6 +291,7 @@ pub struct HewRemoteCall {
     pub(super) dispatch: *const c_void,
     pub(super) msg_type: i32,
     pub(super) reply_size: usize,
+    pub(crate) failure: Option<Arc<crate::failure_snapshot::FailureSnapshot>>,
 }
 
 impl HewRemoteCall {
@@ -390,6 +391,7 @@ pub(super) unsafe fn start_granted_call(
         dispatch,
         msg_type: message,
         reply_size,
+        failure: None,
     }))
 }
 
@@ -499,6 +501,10 @@ pub unsafe extern "C" fn hew_remote_call_take(
     else {
         return AskError::ConnectionDropped as i32;
     };
+    if reply.status == ReplyStatus::Failed && reply.ask_error == AskError::HandlerTrapped {
+        operation.failure =
+            crate::failure_snapshot::FailureSnapshot::decode_wire(&reply.data).map(Arc::new);
+    }
     // SAFETY: the ready operation and output retain the declared reply layout.
     unsafe { write_remote_reply(operation, &reply, output) }
 }
@@ -559,6 +565,10 @@ pub(crate) unsafe fn take_imported_request(
     else {
         return RequestOutcome::Completed(AskError::ConnectionDropped as i32);
     };
+    if reply.status == ReplyStatus::Failed && reply.ask_error == AskError::HandlerTrapped {
+        operation.failure =
+            crate::failure_snapshot::FailureSnapshot::decode_wire(&reply.data).map(Arc::new);
+    }
     match reply.status {
         ReplyStatus::Refused => RequestOutcome::Refused(reply.ask_error),
         ReplyStatus::Failed => RequestOutcome::Completed(reply.ask_error as i32),
@@ -576,6 +586,17 @@ pub(crate) unsafe fn take_imported_request(
             }
         },
     }
+}
+
+/// Borrow a selected remote call's decoded failure until the call is freed.
+/// # Safety
+/// `operation` remains live and is not concurrently mutated for this borrow.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_call_failure(operation: *const HewRemoteCall) -> *const c_void {
+    // SAFETY: the caller retains the selected operation.
+    unsafe { operation.as_ref() }
+        .and_then(|operation| operation.failure.as_ref())
+        .map_or(ptr::null(), |failure| Arc::as_ptr(failure).cast())
 }
 
 /// Release a call, withdrawing its registration so a late reply is dropped.

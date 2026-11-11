@@ -265,6 +265,53 @@ pub fn string_from_str(value: &str) -> *mut HewString {
     unsafe { string_alloc_utf8_unchecked(value.as_ptr(), value.len()) }
 }
 
+/// Copy UTF-8 into a managed string without aborting on allocation failure.
+/// `Some(null)` is the canonical empty string; `None` means unavailable.
+#[must_use]
+pub fn string_try_from_str(value: &str) -> Option<*mut HewString> {
+    if value.is_empty() {
+        return Some(core::ptr::null_mut());
+    }
+    let len = value.len();
+    let scalar_len = value.chars().count();
+    let indexed = scalar_len != len;
+    let header = core::mem::size_of::<HewStringHeader>();
+    let total = if indexed {
+        let align = core::mem::align_of::<usize>();
+        let table = len
+            .div_ceil(INDEX_STRIDE)
+            .checked_mul(core::mem::size_of::<usize>())?;
+        header
+            .checked_add(len)?
+            .checked_add(align - 1)?
+            .checked_div(align)?
+            .checked_mul(align)?
+            .checked_add(table)?
+    } else {
+        header.checked_add(len)?
+    };
+    isize::try_from(total).ok()?;
+    let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
+    if allocation.is_null() {
+        return None;
+    }
+    // SAFETY: the checked allocation contains the header, text and optional
+    // index; `value` supplies valid UTF-8 for the complete copy.
+    unsafe {
+        allocation.write(HewStringHeader {
+            byte_len: len,
+            capacity: len,
+            scalar_len,
+            rc: AtomicU32::new(1),
+        });
+        core::ptr::copy_nonoverlapping(value.as_ptr(), data(allocation.cast()).cast_mut(), len);
+        if indexed {
+            write_index(allocation.cast(), 0, 0);
+        }
+    }
+    Some(allocation.cast())
+}
+
 /// Validate and copy an arbitrary byte slice into one managed string.
 ///
 /// # Errors

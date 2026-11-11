@@ -540,6 +540,62 @@ fn fail_remote_reply_rejects_empty_and_trailing_payloads() {
 }
 
 #[test]
+fn remote_trap_retains_validated_failure_only_from_its_connection() {
+    let _guard = crate::runtime_test_guard();
+    let key = ConnectionKey {
+        conn_mgr: 91,
+        conn_id: 14,
+    };
+    let (id, _readiness, call) = remote_call_for_test(key);
+    let failure = crate::failure_snapshot::FailureSnapshot {
+        code: 212,
+        message: Some("broken".into()),
+        site: Some(crate::failure_snapshot::Location {
+            file: "remote.hew".into(),
+            line: 8,
+            column: 3,
+        }),
+        frames: None,
+        frames_omitted: 0,
+    };
+    let mut payload = vec![AskError::HandlerTrapped as u8];
+    payload.extend(failure.encode_wire().unwrap());
+    assert!(!fail_remote_reply(
+        std::ptr::without_provenance(92),
+        14,
+        0,
+        id,
+        &payload
+    ));
+    let mut invalid = payload.clone();
+    invalid.push(0);
+    assert!(!fail_remote_reply(
+        std::ptr::without_provenance(91),
+        14,
+        0,
+        id,
+        &invalid
+    ));
+    assert!(fail_remote_reply(
+        std::ptr::without_provenance(91),
+        14,
+        0,
+        id,
+        &payload
+    ));
+    // SAFETY: this test uniquely owns the ready call and releases it once.
+    unsafe {
+        assert_eq!(
+            hew_remote_call_take(call, ptr::null_mut()),
+            AskError::HandlerTrapped as i32
+        );
+        let retained = (*call).failure.clone().unwrap();
+        hew_remote_call_free(call);
+        assert_eq!(*retained, failure);
+    }
+}
+
+#[test]
 fn remote_reply_payload_length_mismatch_fails_closed_not_overread() {
     // A peer's reply payload whose length differs from the caller's static
     // `reply_size` must fail closed (null → PayloadSizeMismatch), never be

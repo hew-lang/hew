@@ -1378,8 +1378,13 @@ mod tests {
         assert_eq!(context.kind, crate::internal::types::CrashKind::Crashed);
         assert_eq!(state.calls, 0);
         assert_eq!(state.drops, 0);
-        // SAFETY: the context retains a managed diagnostic string.
-        assert!(!unsafe { hew_cabi::string::string_as_str(context.message) }.is_empty());
+        // SAFETY: the context retains its failure through the hook.
+        let message =
+            unsafe { crate::failure_snapshot::hew_failure_snapshot_message(context.failure) };
+        // SAFETY: the accessor returns one managed string owner.
+        assert!(!unsafe { hew_cabi::string::string_as_str(message) }.is_empty());
+        // SAFETY: release that owner after the read.
+        unsafe { hew_cabi::string::string_release(message) };
         state.calls += 1;
         context.action = crate::supervisor::CRASH_ACTION_KILL;
         // SAFETY: this synchronous callback owns its supplied invocation.

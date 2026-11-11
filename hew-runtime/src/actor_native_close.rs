@@ -98,6 +98,14 @@ impl NativeActorCompletion {
             .map(|fault| fault.message().to_owned())
     }
 
+    /// The same owned failure published to the crash hook and reply waiter.
+    pub(crate) fn fault_snapshot(&self) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
+        let fault = self.fault.lock_or_recover();
+        // SAFETY: this completion retains the code root; ordinary checked
+        // faults have already captured the snapshot at their origin.
+        unsafe { fault.as_ref()?.snapshot() }
+    }
+
     /// Retain a fault raised by terminal hooks or state release separately
     /// from the crash that caused cleanup. `stopped` observes only this fault.
     pub(crate) fn record_close_fault(&self, fault: crate::fault::HewFault) -> i32 {

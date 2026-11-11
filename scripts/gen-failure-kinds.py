@@ -16,6 +16,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "hew-runtime" / "src" / "failure_kinds.rs"
+FAILURE_SOURCE = ROOT / "std" / "failure.hew"
+TRAP_BEGIN = "// BEGIN GENERATED TRAP KINDS\n"
+TRAP_END = "// END GENERATED TRAP KINDS\n"
 
 # (code, constant suffix, kind name, one-line meaning)
 KINDS = [
@@ -141,6 +144,11 @@ def render() -> str:
     for code, _suffix, name, _doc in KINDS:
         w(f'    ({code}, "{name}"),\n')
     w("];\n\n")
+    w("/// Declaration-order tag of a public `TrapKind`, when known.\n")
+    w("#[must_use]\npub const fn trap_kind_tag(code: i32) -> Option<u32> {\n    match code {\n")
+    for tag, (code, _suffix, _name, _doc) in enumerate(KINDS):
+        w(f"        {code} => Some({tag}),\n")
+    w("        _ => None,\n    }\n}\n\n")
     for name, doc in UNCODED_KINDS:
         w(f"/// {doc}\n")
         w(f'pub const KIND_{name.upper()}: &str = "{name}";\n')
@@ -175,8 +183,17 @@ def render() -> str:
     return "".join(out)
 
 
+def render_failure_source(source: str) -> str:
+    before, rest = source.split(TRAP_BEGIN, 1)
+    _, after = rest.split(TRAP_END, 1)
+    variants = "".join(f"    /// {doc}\n    {name};\n" for _, _, name, doc in KINDS)
+    return before + TRAP_BEGIN + "/// A known runtime failure.\npub enum TrapKind {\n" + variants + "}\n" + TRAP_END + after
+
+
 def main() -> int:
     text = render()
+    source = FAILURE_SOURCE.read_text(encoding="utf-8")
+    failure_text = render_failure_source(source)
     if "--check" in sys.argv[1:]:
         current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
         if current != text:
@@ -185,8 +202,12 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        if source != failure_text:
+            print(f"{FAILURE_SOURCE.relative_to(ROOT)} is stale; run scripts/gen-failure-kinds.py", file=sys.stderr)
+            return 1
         return 0
     OUTPUT.write_text(text, encoding="utf-8")
+    FAILURE_SOURCE.write_text(failure_text, encoding="utf-8")
     return 0
 
 

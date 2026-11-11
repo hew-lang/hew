@@ -53,7 +53,7 @@ fn main() {
     let group = spawn Group;
     println(group.walker.floor().expect("floor in a handler"));
     match group.walker.unbounded() {
-        .Err(.Trapped) => println("walker overflowed"),
+        .Err(.Trapped(_)) => println("walker overflowed"),
         _ => panic("expected a stack overflow"),
     }
     restarted(group.walker);

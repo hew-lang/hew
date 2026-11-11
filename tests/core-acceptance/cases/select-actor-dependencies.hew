@@ -23,7 +23,7 @@ fn main() {
     // from its pending request; the actor-only alternative is a proven cycle.
     println(worker.choose(worker, true).expect("timer escape"));
     match worker.choose(worker, false) {
-        .Err(ActorError.Trapped) => println("actor cycle rejected"),
+        .Err(ActorError.Trapped(_)) => println("actor cycle rejected"),
         _ => panic("actor-only cycle was not rejected"),
     }
 }

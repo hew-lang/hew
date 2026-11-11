@@ -92,7 +92,7 @@ fn main() -> i64 {
     let full = spawn Full { text: payload };
     println(full.succeed().expect("direct variants charge nothing"));
     match full.tree() {
-        .Err(.Trapped) => println("indirect limit"),
+        .Err(.Trapped(_)) => println("indirect limit"),
         _ => return 2,
     }
     stopped(full);
@@ -104,7 +104,7 @@ fn main() -> i64 {
 
     let short = spawn Short { text: payload };
     match short.fail() {
-        .Err(.Trapped) => println("literal limit"),
+        .Err(.Trapped(_)) => println("literal limit"),
         _ => return 3,
     }
     stopped(short);

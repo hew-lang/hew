@@ -30,7 +30,7 @@ fn main() -> i64 {
     stopped(enough);
     let small = spawn Small { values: values };
     match small.detach() {
-        .Err(.Trapped) => println("detach transaction"),
+        .Err(.Trapped(_)) => println("detach transaction"),
         _ => return 2,
     }
     stopped(small);

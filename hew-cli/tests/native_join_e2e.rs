@@ -208,7 +208,7 @@ fn main() {
     let healthy = spawn Healthy;
     let (failed, success) = await fork (broken.fail(), healthy.echo());
     match failed {
-        .Err(ActorError.Trapped) => println("ordinary error"),
+        .Err(ActorError.Trapped(_)) => println("ordinary error"),
         .Err(_) => panic("wrong error"),
         .Ok(_) => panic("wrong success"),
     }

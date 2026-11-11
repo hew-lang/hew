@@ -59,6 +59,31 @@ pub const FAILURE_KINDS: &[(i32, &str)] = &[
     (216, "Failed"),
 ];
 
+/// Declaration-order tag of a public `TrapKind`, when known.
+#[must_use]
+pub const fn trap_kind_tag(code: i32) -> Option<u32> {
+    match code {
+        200 => Some(0),
+        201 => Some(1),
+        202 => Some(2),
+        203 => Some(3),
+        204 => Some(4),
+        205 => Some(5),
+        206 => Some(6),
+        207 => Some(7),
+        208 => Some(8),
+        209 => Some(9),
+        210 => Some(10),
+        211 => Some(11),
+        212 => Some(12),
+        213 => Some(13),
+        214 => Some(14),
+        215 => Some(15),
+        216 => Some(16),
+        _ => None,
+    }
+}
+
 /// A hardware signal the runtime does not classify further.
 pub const KIND_SIGNAL: &str = "Signal";
 /// A code that names no failure kind.

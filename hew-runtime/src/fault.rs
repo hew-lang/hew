@@ -178,7 +178,12 @@ impl HewFault {
                 // SAFETY: the caller retains the source and symbol tables until
                 // this first snapshot has finished copying their text.
                 Some(Arc::new(unsafe {
-                    crate::failure_snapshot::capture(&record, message)
+                    crate::failure_snapshot::capture(
+                        &record,
+                        message,
+                        crate::failure_record::Backtrace::current()
+                            != crate::failure_record::Backtrace::Off,
+                    )
                 }))
             })
             .clone()

@@ -785,6 +785,7 @@ fn remote_call_for_test(
         dispatch: test_dispatch(),
         msg_type: 7,
         reply_size: 0,
+        failure: None,
     }));
     (id, readiness, call)
 }

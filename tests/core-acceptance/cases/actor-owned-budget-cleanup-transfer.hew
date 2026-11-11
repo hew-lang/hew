@@ -64,7 +64,7 @@ fn main() -> i64 {
     started.close();
     let drain = spawn Drain;
     match drain.total(values, release) {
-        .Err(.Trapped) => println("cleanup transfer limit"),
+        .Err(.Trapped(_)) => println("cleanup transfer limit"),
         _ => return 2,
     }
     stopped(drain);

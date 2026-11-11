@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, OwnKind, SemModule, SemOpKind, SemTerminator, SirLoweringStatus,
@@ -894,4 +897,88 @@ fn main() -> i64 {
             "deferred comparison must prove its selected component body: {expected}"
         );
     }
+}
+
+/// The receiver operand of each runtime call of `family` in `main`, with the
+/// ownership of the operation that produced it.
+fn receiver_ownership(module: &SemModule, family: RuntimeCallFamily) -> Vec<OwnKind> {
+    let main = module
+        .functions
+        .iter()
+        .find(|f| module.defs.path(f.declaration) == "main")
+        .unwrap();
+    main.blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::RtCall {
+                family: called,
+                args,
+                ..
+            } if *called == family => Some(checked::source(main, args[0].operand.value)),
+            _ => None,
+        })
+        .map(|receiver| {
+            main.blocks
+                .iter()
+                .flat_map(hew_sir::SemBlock::operations)
+                .flat_map(|op| &op.results)
+                .find(|result| result.id == receiver)
+                .map(|result| result.own)
+                .expect("receiver operand has no producing operation")
+        })
+        .collect()
+}
+
+#[test]
+fn computed_lookup_keys_read_the_map_in_place() {
+    let module = lower_source(
+        r#"
+        fn main() -> i64 {
+            var values: HashMap<i64, string> = HashMap.new();
+            values.insert(7, "seven");
+            let step = 7;
+            let found = values.get(step * 1 + 0);
+            let present = values.contains_key(-step);
+            let indexed = values[step / 1];
+            if present { 1 } else { indexed.len() }
+        }
+        "#,
+    );
+    for family in [
+        RuntimeCallFamily::Map(MapValueOp::Get),
+        RuntimeCallFamily::Map(MapValueOp::ContainsKey),
+        RuntimeCallFamily::Map(MapValueOp::Index),
+    ] {
+        let receivers = receiver_ownership(&module, family);
+        assert!(!receivers.is_empty(), "{family:?} was not lowered");
+        assert!(
+            receivers.iter().all(|own| *own != OwnKind::Owned),
+            "{family:?} must borrow its receiver, not snapshot it: {receivers:?}"
+        );
+    }
+}
+
+#[test]
+fn a_later_argument_that_writes_the_map_keeps_the_receiver_snapshot() {
+    let module = lower_source(
+        r#"
+        fn main() -> i64 {
+            var values: HashMap<i64, string> = HashMap.new();
+            values.insert(7, "seven");
+            let found = values.get({
+                values.insert(14, "fourteen");
+                14
+            });
+            match found {
+                .Some(_) => 1,
+                .None => 0,
+            }
+        }
+        "#,
+    );
+    assert_eq!(
+        receiver_ownership(&module, RuntimeCallFamily::Map(MapValueOp::Get)),
+        [OwnKind::Owned],
+        "the lookup must read the map as it was before its key inserted"
+    );
 }

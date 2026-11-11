@@ -237,3 +237,21 @@ test('browser parsing bounds malformed long prefix and legacy path inputs', () =
   assert.ok(path.diagnostics.length >= 20_000);
   assert.ok(path.diagnostics.reduce((total, d) => total + d.message.length, 0) < 20_000 * 600);
 });
+
+
+test('computed collection keys preserve snapshots and fault cleanup', async t => {
+  const cases = [
+    ['collection-read-computed-argument', 'colour2\nreplaced\ntrue\nfalse\ncolour1\nabsent before insert\n5\ncolour3\nALPHA\nBETA\ntrue\n3\n', 0],
+    ['collection-read-computed-argument-fault', 'TEMPORARY\n1\nTEMPORARY\n', 1],
+    ['call-field-argument-computed-fault', 'OLD\n', 1],
+  ];
+  for (const [name, expected, exit] of cases) {
+    await t.test(name, async () => {
+      const code = readFileSync(`tests/core-acceptance/cases/${name}.hew`, 'utf8');
+      const output = compile('main.hew', [source('main.hew', code)]);
+      const {trace, stdout} = await execute(output);
+      assert.equal(stdout, expected);
+      assert.equal(trace.final_state.exit_code, exit);
+    });
+  }
+});

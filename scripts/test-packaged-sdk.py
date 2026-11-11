@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -69,6 +70,82 @@ def check_live_sdk(sdk, compiler_identity, run):
         stdout == b"41\n42\n" and not stderr, "relocated live session output changed"
     )
     return {"runtime_sha256": digest(runtime), "transport": manifest}
+
+
+def check_windows_debug_sdk(sdk, debug_archive, output, source, run):
+    """Exercise the relocated compiler, its matching symbols and generated PDBs."""
+    with zipfile.ZipFile(debug_archive) as package:
+        entries = package.infolist()
+        for entry in entries:
+            require(
+                not Path(entry.filename).is_absolute()
+                and ".." not in Path(entry.filename).parts,
+                f"invalid debug archive path: {entry.filename}",
+            )
+        pdbs = [entry for entry in entries if entry.filename.endswith("/hew.pdb")]
+        require(len(pdbs) == 1, "debug archive must contain one compiler PDB")
+        packaged_pdb = output / "packaged-hew.pdb"
+        with package.open(pdbs[0]) as source_file, packaged_pdb.open("wb") as target:
+            shutil.copyfileobj(source_file, target)
+
+    hew = sdk / "bin/hew.exe"
+    fixture = output / "p.hew"
+    shutil.copyfile(source, fixture)
+    binary = output / "p.exe"
+    generated_pdb = binary.with_suffix(".pdb")
+    run("debug-build", [hew, "build", "-g", fixture, "-o", binary])
+    require(generated_pdb.is_file(), "packaged compiler did not generate a PDB")
+
+    # The symbolizer must locate the adjacent PDB and reject a different build.
+    # This negative control ensures that the successful check actually loaded it.
+    adjacent_pdb = sdk / "bin/hew.pdb"
+    shutil.copyfile(generated_pdb, adjacent_pdb)
+    code, _, stderr = run(
+        "debug-wrong-pdb", [hew, "symbolize", hew, "0"], seconds=300, expected=None
+    )
+    require(
+        code != 0 and b"different build" in stderr,
+        "mismatched compiler PDB was not rejected",
+    )
+    shutil.copyfile(packaged_pdb, adjacent_pdb)
+    run("debug-compiler-pdb", [hew, "symbolize", hew, "0"], seconds=300)
+
+    failure_log = output / "failure.ndjson"
+    code, _, _ = run(
+        "debug-failure",
+        [binary],
+        expected=None,
+        extra_env={"HEW_BACKTRACE": "1", "HEW_FAILURE_LOG": str(failure_log)},
+    )
+    require(code != 0, "debug fixture did not fail")
+    record = json.loads(failure_log.read_text().splitlines()[0])
+    require(record["message"] == "too big", "debug fixture recorded the wrong failure")
+    frame = next(
+        (frame for frame in record["frames"] if frame["hew_fn"] == "level2"), None
+    )
+    require(frame is not None, "debug fixture did not record level2")
+    base = record["build"]["image_base"]
+    require(int(base, 16) != 0, "debug fixture has no runtime image base")
+    for label, symbol_file in (("image", binary), ("pdb", generated_pdb)):
+        _, stdout, _ = run(
+            f"debug-symbolize-{label}",
+            [
+                hew,
+                "symbolize",
+                symbol_file,
+                frame["pc"],
+                f"--base={base}",
+                "--return-addresses",
+            ],
+        )
+        require(
+            b"level2" in stdout and b"p.hew:3" in stdout,
+            f"{label} did not resolve the failure site",
+        )
+    return {
+        "archive_sha256": digest(debug_archive),
+        "compiler_pdb_sha256": digest(packaged_pdb),
+    }
 
 
 def require_register_recurrence(ir, loop_info):
@@ -144,6 +221,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--debug-archive", type=Path)
     parser.add_argument(
         "--experimental-live",
         action="store_true",
@@ -172,6 +250,12 @@ def main():
         "outcome": "running",
     }
     windows = sys.platform == "win32"
+    if windows and args.debug_archive is None:
+        parser.error("Windows SDK acceptance requires --debug-archive")
+    if args.debug_archive is not None and not windows:
+        parser.error("--debug-archive is currently supported only on Windows")
+    if args.debug_archive is not None and not args.debug_archive.is_file():
+        parser.error(f"debug archive does not exist: {args.debug_archive}")
     suffix = ".exe" if windows else ""
     allowed = {
         "HOME",
@@ -215,12 +299,14 @@ def main():
     def save():
         (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
-    def run(label, command, *, cwd=None, seconds=120, expected=0, input=None):
+    def run(
+        label, command, *, cwd=None, seconds=120, expected=0, input=None, extra_env=None
+    ):
         started = time.monotonic()
         process = subprocess.Popen(
             list(map(str, command)),
             cwd=cwd or output,
-            env=env,
+            env=env | (extra_env or {}),
             stdin=subprocess.PIPE if input is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -323,6 +409,16 @@ def main():
         if args.experimental_live:
             receipt["experimental_live"] = check_live_sdk(
                 sdk, receipt["hew_version"], run
+            )
+            save()
+
+        if windows:
+            receipt["windows_debug"] = check_windows_debug_sdk(
+                sdk,
+                args.debug_archive,
+                output,
+                root / "tests/packaged-sdk/debug-failure.hew",
+                run,
             )
             save()
 

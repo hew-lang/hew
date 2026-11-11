@@ -1191,10 +1191,11 @@ build-docs-reference: ## Release: generate the versioned language and API refere
 		--output-dir "$(DOCS_OUTPUT_DIR)"
 
 PACKAGED_SDK_ARCHIVE ?=
+PACKAGED_SDK_DEBUG_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance
 PACKAGED_SDK_EXPERIMENTAL_LIVE ?= 0
 test-packaged-sdk: ## Release: execute SDK source/ABI contracts (PACKAGED_SDK_ARCHIVE=...)
-	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
+	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(PACKAGED_SDK_DEBUG_ARCHIVE),--debug-archive "$(PACKAGED_SDK_DEBUG_ARCHIVE)") $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
 
 # Prove the shipped archive can link a real Rust staticlib through the public
 # `hew build --link-lib` interface. Rust controls archive member names, so the

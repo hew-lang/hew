@@ -199,6 +199,10 @@ impl LowerCtx<'_> {
     /// evaluation cost (an identifier, or a field/index projection rooted in a
     /// place).
     pub(super) fn for_in_iterable_is_place(expr: &Expr) -> bool {
+        hew_parser::stack::ensure_sufficient_stack(|| Self::for_in_iterable_is_place_inner(expr))
+    }
+
+    fn for_in_iterable_is_place_inner(expr: &Expr) -> bool {
         match expr {
             Expr::Ident(_) => true,
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {

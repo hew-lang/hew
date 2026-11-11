@@ -534,7 +534,7 @@ fn vec_new_with_error_element_remains_error_typed() {
     let span = 0..8;
     let func = (
         Expr::FieldAccess {
-            object: Box::new((Expr::Ident(Ident::new("Vec")), 0..3)),
+            object: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("Vec")), 0..3)),
             field: (Ident::new("new"), 0..0),
         },
         span.clone(),

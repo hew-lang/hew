@@ -12,12 +12,12 @@ impl LowerCtx<'_> {
     ) -> (HirExprKind, ResolvedTy) {
         if !self.task_result_lifetimes.contains(&self.mk_key(&span)) {
             let expression = self.unsupported_expr(span, "race lacks its checked result lifetime");
-            return (expression.kind, expression.ty);
+            return expression.into_parts();
         }
         let result_lifetime = crate::HirTaskScopeResult::checked();
         let Some(output) = self.checker_expr_ty_if_present(&span) else {
             let expression = self.unsupported_expr(span, "race requires its checked result type");
-            return (expression.kind, expression.ty);
+            return expression.into_parts();
         };
         let Some(kinds) = self
             .race_operands
@@ -26,7 +26,7 @@ impl LowerCtx<'_> {
             .filter(|kinds| kinds.len() == branches.len())
         else {
             let expression = self.unsupported_expr(span, "race requires checked operand kinds");
-            return (expression.kind, expression.ty);
+            return expression.into_parts();
         };
         let mut statements = Vec::new();
         let mut prepared = Vec::new();

@@ -76,6 +76,13 @@ threads-required = "num-test-threads"
 filter = "package(hew-cli) and binary(lsp_protocol)"
 threads-required = "num-test-threads"
 
+[[profile.default.overrides]]
+# This corpus check creates one frontend worker per available CPU. Reserve the
+# pool for its internal parallelism instead of scheduling it as one single-core
+# test alongside other compiler work. Keep the same corpus and hang deadline.
+filter = "binary(diagnostic_determinism) and test(/^reports_are_identical_across_checks$/)"
+threads-required = "num-test-threads"
+
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
 # `test_runner_e2e` used to be excluded here against "the ctest E2E suite";

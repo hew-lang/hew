@@ -1089,6 +1089,17 @@ impl LowerCtx<'_> {
         write: &mut HirExpr,
         prelude: &mut Vec<HirStmt>,
     ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.capture_compound_place_indices_inner(read, write, prelude);
+        });
+    }
+
+    fn capture_compound_place_indices_inner(
+        &mut self,
+        read: &mut HirExpr,
+        write: &mut HirExpr,
+        prelude: &mut Vec<HirStmt>,
+    ) {
         match (&mut read.kind, &mut write.kind) {
             (
                 HirExprKind::Index {

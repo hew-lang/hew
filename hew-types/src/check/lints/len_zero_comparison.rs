@@ -205,6 +205,10 @@ fn type_has_is_empty(ty: &Ty) -> bool {
 /// Best-effort source rendering of a receiver expression for the suggestion,
 /// restricted to identifier / field-path shapes that round-trip cleanly.
 fn render_receiver(expr: &Expr) -> Option<String> {
+    hew_parser::stack::ensure_sufficient_stack(|| render_receiver_inner(expr))
+}
+
+fn render_receiver_inner(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Ident(name) => Some(name.to_string()),
         Expr::FieldAccess { object, field } => {

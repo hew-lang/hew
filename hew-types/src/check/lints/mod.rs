@@ -649,12 +649,16 @@ fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
     }
 }
 
+pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+    hew_parser::stack::ensure_sufficient_stack(|| walk_expr_inner(expr, span, visitor));
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::match_same_arms,
     reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
 )]
-pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
     if !visitor.enters_nested_callables()
         && matches!(
@@ -700,12 +704,15 @@ pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
                 walk_expr(&base.0, &base.1, visitor);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            walk_expr(&left.0, &left.1, visitor);
+            walk_expr(&right.0, &right.1, visitor);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -715,10 +722,10 @@ pub fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             walk_expr(&right.0, &right.1, visitor);
         }
         Expr::Unary { operand, .. } => walk_expr(&operand.0, &operand.1, visitor),
-        Expr::ReturnError(inner)
-        | Expr::Clone(inner)
-        | Expr::Await(inner)
-        | Expr::PostfixTry(inner)
+        Expr::ReturnError(inner) | Expr::Clone(inner) | Expr::Await(inner) => {
+            walk_expr(&inner.0, &inner.1, visitor);
+        }
+        Expr::PostfixTry(inner)
         | Expr::Cast { expr: inner, .. }
         | Expr::FieldAccess { object: inner, .. } => walk_expr(&inner.0, &inner.1, visitor),
         Expr::Tuple(items) | Expr::Race(items) => {

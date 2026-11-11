@@ -120,6 +120,12 @@ impl Checker {
     /// checker calls this only after selecting that expression as a type or
     /// constructor path, so lexical value shadowing has already been ruled out.
     pub(in crate::check) fn note_import_use_of_expr_head(&mut self, expr: &Expr) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.note_import_use_of_expr_head_inner(expr);
+        });
+    }
+
+    fn note_import_use_of_expr_head_inner(&mut self, expr: &Expr) {
         match expr {
             Expr::Ident(name) => self.note_import_use(name.name.as_str()),
             Expr::FieldAccess { object, .. } => self.note_import_use_of_expr_head(&object.0),

@@ -188,13 +188,25 @@ fn esc_visit_block(block: &Block, name: &str, in_fork: bool, acc: &mut EscapeAcc
 /// `name`. `is_tail` is true when the value flows out of the closure's
 /// introducing scope; used to distinguish `EscapesViaBlockValue` from a
 /// generic `PassedToHigherOrder`.
+fn esc_visit_expr(
+    expr: &Expr,
+    name: &str,
+    in_fork: bool,
+    acc: &mut EscapeAccumulator,
+    is_tail: bool,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        esc_visit_expr_inner(expr, name, in_fork, acc, is_tail);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::match_same_arms,
     reason = "AST visitor over full Expr surface; arm-per-variant is the \
               clearest form even when some arms have identical bodies"
 )]
-fn esc_visit_expr(
+fn esc_visit_expr_inner(
     expr: &Expr,
     name: &str,
     in_fork: bool,

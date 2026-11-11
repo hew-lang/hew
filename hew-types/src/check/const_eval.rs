@@ -202,6 +202,14 @@ fn eval_inner(
     values: &mut impl FnMut(&Spanned<Expr>) -> Option<i128>,
     target: ConstIntegerTarget,
 ) -> Result<i128, ConstEvalError> {
+    hew_parser::stack::ensure_sufficient_stack(|| eval_inner_inner(expr, values, target))
+}
+
+fn eval_inner_inner(
+    expr: &Spanned<Expr>,
+    values: &mut impl FnMut(&Spanned<Expr>) -> Option<i128>,
+    target: ConstIntegerTarget,
+) -> Result<i128, ConstEvalError> {
     if let Some(value) = values(expr) {
         return Ok(value);
     }

@@ -142,8 +142,48 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        self.check_method_call_with_receiver_type(
+            (receiver, None),
+            method,
+            method_span,
+            explicit_type_args,
+            args,
+            span,
+        )
+    }
+
+    /// Finish a method link whose receiver was synthesized by the spine walk.
+    pub(in crate::check) fn check_method_call_after_receiver(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        receiver_ty: Ty,
+        method: &str,
+        method_span: Option<&Span>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        self.check_method_call_with_receiver_type(
+            (receiver, Some(receiver_ty)),
+            method,
+            method_span,
+            None,
+            args,
+            span,
+        )
+    }
+
+    fn check_method_call_with_receiver_type(
+        &mut self,
+        receiver: (&Spanned<Expr>, Option<Ty>),
+        method: &str,
+        method_span: Option<&Span>,
+        explicit_type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let (receiver, receiver_ty) = receiver;
         let result = self.check_method_call_inner(
-            receiver,
+            (receiver, receiver_ty),
             method,
             method_span,
             explicit_type_args,
@@ -256,13 +296,14 @@ impl Checker {
     )]
     pub(super) fn check_method_call_inner(
         &mut self,
-        receiver: &Spanned<Expr>,
+        receiver: (&Spanned<Expr>, Option<Ty>),
         method: &str,
         method_span: Option<&Span>,
         explicit_type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        let (receiver, receiver_ty) = receiver;
         if let Some(param) = self.binder_call_head(receiver) {
             return self.check_binder_associated_call(param, method, args, span);
         }
@@ -594,9 +635,12 @@ impl Checker {
             }
         }
 
-        self.place_base_depth += 1;
-        let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
-        self.place_base_depth -= 1;
+        let receiver_ty = receiver_ty.unwrap_or_else(|| {
+            self.place_base_depth += 1;
+            let ty = self.synthesize(&receiver.0, &receiver.1);
+            self.place_base_depth -= 1;
+            ty
+        });
         // Resolve projections before lookup without erasing an alias's own impl.
         let resolved = self.project_assoc_types(&self.subst.resolve(&receiver_ty));
         let resolved = self

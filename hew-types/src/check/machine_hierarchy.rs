@@ -854,6 +854,12 @@ impl Hierarchy {
 }
 
 pub(super) fn rewrite_target(expr: &mut Expr, target: Ident, initial: Ident, machine: Ident) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        rewrite_target_inner(expr, target, initial, machine);
+    });
+}
+
+fn rewrite_target_inner(expr: &mut Expr, target: Ident, initial: Ident, machine: Ident) {
     match expr {
         Expr::Ident(name) if *name == target => *name = initial,
         Expr::ContextVariant(variant) if variant.name == target => variant.name = initial,

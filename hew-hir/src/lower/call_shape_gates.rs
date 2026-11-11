@@ -238,6 +238,16 @@ pub(super) fn scan_block_for_call_shape(
     }
 }
 
+pub(super) fn scan_expr_for_call_shape(
+    expr: &HirExpr,
+    callable: &CallShapeTargets,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        scan_expr_for_call_shape_inner(expr, callable, diagnostics);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive HirExprKind match — every recursing variant is named \
@@ -251,7 +261,7 @@ pub(super) fn scan_block_for_call_shape(
               explicit per-variant decision rather than silently joining a \
               merged arm"
 )]
-pub(super) fn scan_expr_for_call_shape(
+fn scan_expr_for_call_shape_inner(
     expr: &HirExpr,
     callable: &CallShapeTargets,
     diagnostics: &mut Vec<HirDiagnostic>,

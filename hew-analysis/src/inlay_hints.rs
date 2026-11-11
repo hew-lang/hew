@@ -183,6 +183,12 @@ fn push_named_return_type_hint(
 }
 
 fn find_named_return_hint_offset(source: &str, fn_span: &Span) -> Option<usize> {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        find_named_return_hint_offset_inner(source, fn_span)
+    })
+}
+
+fn find_named_return_hint_offset_inner(source: &str, fn_span: &Span) -> Option<usize> {
     source
         .get(fn_span.start..fn_span.end)?
         .find('{')
@@ -345,11 +351,22 @@ fn collect_inlay_hints_from_stmt(
     }
 }
 
+fn collect_inlay_hints_from_expr(
+    source: &str,
+    expr: &Expr,
+    tc: &TypeCheckOutput,
+    hints: &mut Vec<InlayHint>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        collect_inlay_hints_from_expr_inner(source, expr, tc, hints);
+    });
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "explicit recursion over all expression variants keeps traversal correct"
 )]
-fn collect_inlay_hints_from_expr(
+fn collect_inlay_hints_from_expr_inner(
     source: &str,
     expr: &Expr,
     tc: &TypeCheckOutput,
@@ -382,12 +399,15 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &base.0, tc, hints);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            collect_inlay_hints_from_expr(source, &left.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -541,11 +561,10 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &object.0, tc, hints);
             collect_inlay_hints_from_expr(source, &index.0, tc, hints);
         }
-        Expr::Cast { expr: inner, .. }
-        | Expr::PostfixTry(inner)
-        | Expr::Await(inner)
-        | Expr::Yield(Some(inner))
-        | Expr::Return(Some(inner)) => {
+        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) => {
+            collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
+        }
+        Expr::Await(inner) | Expr::Yield(Some(inner)) | Expr::Return(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
         }
         Expr::Range { start, end, .. } => {

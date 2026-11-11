@@ -530,7 +530,10 @@ fn test_arity_mismatch_too_many_args() {
     // println_int takes 1 arg; call with 2
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
+            function: hew_parser::chain::Chain::new((
+                Expr::Ident(Ident::new("println_int")),
+                0..11,
+            )),
             type_args: None,
             args: vec![
                 CallArg::Positional((
@@ -566,7 +569,10 @@ fn test_arity_mismatch_too_few_args() {
     // println_int takes 1 arg; call with 0
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
+            function: hew_parser::chain::Chain::new((
+                Expr::Ident(Ident::new("println_int")),
+                0..11,
+            )),
             type_args: None,
             args: vec![],
             is_tail_call: false,

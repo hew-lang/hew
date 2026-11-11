@@ -2315,6 +2315,7 @@ dependencies = [
  "hew-lexer",
  "serde",
  "serde_json",
+ "stacker",
  "walkdir",
 ]
 
@@ -2495,7 +2496,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "stacker",
  "strum",
  "toml",
  "ts-rs",

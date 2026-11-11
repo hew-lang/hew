@@ -701,11 +701,20 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
         self.pop_scope();
     }
 
+    fn walk_expr(&mut self, expr: &'ast Expr, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+        hew_parser::stack::ensure_sufficient_stack(|| self.walk_expr_inner(expr, span, body));
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "expression traversal needs exhaustive variant coverage"
     )]
-    fn walk_expr(&mut self, expr: &'ast Expr, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+    fn walk_expr_inner(
+        &mut self,
+        expr: &'ast Expr,
+        span: &'ast Span,
+        body: Option<BodyInfo<'ast>>,
+    ) {
         self.visitor.visit_scope(span, &self.scopes);
         self.visitor.visit_expr(expr, span, Self::context(body));
         match expr {
@@ -744,8 +753,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&base.0, &base.1, body);
                 }
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
+            Expr::Binary { left, right, .. } => {
+                self.walk_expr(&left.0, &left.1, body);
+                self.walk_expr(&right.0, &right.1, body);
+            }
+            Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
@@ -773,11 +785,13 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&handler.0, &handler.1, body);
                 self.pop_scope();
             }
+            Expr::PostfixTry(operand) => {
+                self.walk_expr(&operand.0, &operand.1, body);
+            }
             Expr::Unary { operand, .. }
             | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::Await(operand)
-            | Expr::PostfixTry(operand)
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => {
                 self.walk_expr(&operand.0, &operand.1, body);
@@ -872,9 +886,8 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&duration.0, &duration.1, body);
                 self.walk_block(inner_body, body);
             }
-            Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-            }
+            Expr::ForkChild { expr, .. } => self.walk_expr(&expr.0, &expr.1, body),
+            Expr::Cast { expr, .. } => self.walk_expr(&expr.0, &expr.1, body),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr(expr) | StringPart::StructuralExpr(expr) = part {

@@ -85,6 +85,16 @@ fn expression(
     facts: &mut Facts,
     out: &mut Vec<TypeError>,
 ) -> Option<usize> {
+    hew_parser::stack::ensure_sufficient_stack(|| expression_inner(ctx, levels, value, facts, out))
+}
+
+fn expression_inner(
+    ctx: &LintCtx,
+    levels: &LintLevels,
+    value: &Spanned<Expr>,
+    facts: &mut Facts,
+    out: &mut Vec<TypeError>,
+) -> Option<usize> {
     let (expr, span) = value;
     let key = super::super::types::SpanKey::in_module(span, ctx.module_idx);
     // A checked constructor still establishes a fresh counter after its

@@ -179,11 +179,22 @@ impl LowerCtx<'_> {
         }
     }
 
+    pub(super) fn wrap_var_self_explicit_expr_returns(
+        &mut self,
+        expr: &mut HirExpr,
+        receiver: &HirBinding,
+        abi_return_ty: &ResolvedTy,
+    ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.wrap_var_self_explicit_expr_returns_inner(expr, receiver, abi_return_ty);
+        });
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "visitor mirrors HIR shape while avoiding nested function-like bodies"
     )]
-    pub(super) fn wrap_var_self_explicit_expr_returns(
+    fn wrap_var_self_explicit_expr_returns_inner(
         &mut self,
         expr: &mut HirExpr,
         receiver: &HirBinding,

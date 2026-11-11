@@ -421,6 +421,10 @@ impl Checker {
         &self,
         expr: &Expr,
     ) -> Option<(hew_parser::ast::Ident, PlacePath)> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.expr_place_inner(expr))
+    }
+
+    fn expr_place_inner(&self, expr: &Expr) -> Option<(hew_parser::ast::Ident, PlacePath)> {
         match expr {
             Expr::ChainValue => self
                 .chain_values

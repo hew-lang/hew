@@ -247,6 +247,10 @@ const PROTECTED: [&str; 6] = [
     "_$machine_departures",
 ];
 fn root(expr: &Spanned<Expr>) -> Option<Ident> {
+    hew_parser::stack::ensure_sufficient_stack(|| root_inner(expr))
+}
+
+fn root_inner(expr: &Spanned<Expr>) -> Option<Ident> {
     match &expr.0 {
         Expr::Ident(name) => Some(*name),
         Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => root(object),

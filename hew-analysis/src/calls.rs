@@ -232,11 +232,15 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
     }
 }
 
+fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
+    hew_parser::stack::ensure_sufficient_stack(|| collect_calls_in_expr_inner(spanned, calls));
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive match over all Expr variants is clearest as one function"
 )]
-fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
+fn collect_calls_in_expr_inner(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
     let (expr, expr_span) = spanned;
     match expr {
         Expr::Call { function, args, .. } => {
@@ -306,12 +310,15 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(else_expr, calls);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            collect_calls_in_expr(left.as_ref(), calls);
+            collect_calls_in_expr(right.as_ref(), calls);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,

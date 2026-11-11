@@ -88,11 +88,15 @@ impl Pass<'_, '_> {
             _ => self.checker.expr(expression, path),
         }
     }
+    fn statement(&mut self, statement: &Spanned<Stmt>, outer: &str) {
+        hew_parser::stack::ensure_sufficient_stack(|| self.statement_inner(statement, outer));
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the closed emitted-statement interpreter makes early-return and side-effect sequencing explicit"
     )]
-    fn statement(&mut self, statement: &Spanned<Stmt>, outer: &str) {
+    fn statement_inner(&mut self, statement: &Spanned<Stmt>, outer: &str) {
         let path = self.checker.term(and([outer.into(), self.alive.clone()]));
         if let Some(effect) = self
             .effects

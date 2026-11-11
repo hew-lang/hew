@@ -152,7 +152,7 @@ impl Parser<'_> {
                             })
                         } else {
                             self.error_invalid_literal_with_hint(
-                                format!("invalid integer literal '-{s}'"),
+                                invalid_int_literal_message(&format!("-{s}")),
                                 "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                             );
                             return None;
@@ -286,7 +286,7 @@ impl Parser<'_> {
                     Pattern::Literal(Literal::Integer { value: val, radix })
                 } else {
                     self.error_invalid_literal_with_hint(
-                        format!("invalid integer literal '{s}'"),
+                        invalid_int_literal_message(s),
                         "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                     );
                     return None;

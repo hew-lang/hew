@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-read-computed-argument"
+intent = "Read-only collection methods with a computed argument read the receiver in place, return independent values and still observe a receiver replaced by a later argument as its earlier value."
+source = "cases/collection-read-computed-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "colour2\nreplaced\ntrue\nfalse\ncolour1\nabsent before insert\n5\ncolour3\nALPHA\nBETA\ntrue\n3\n"
+exit = 0

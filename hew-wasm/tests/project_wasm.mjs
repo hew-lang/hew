@@ -208,3 +208,56 @@ fn main() {
   const trace = await runBytecode(output.bytecode, {codecBridge: compiler.executeCodec});
   assert.equal(trace.result, 'ok', JSON.stringify(trace.final_state));
 });
+
+
+test('flat postfix chains compile in WebAssembly and execute in the VM', async t => {
+  const cases = [
+    ['method chain', `fn main() { println(" x "${'.trim()'.repeat(1024)}); }`, 'x\n'],
+    ['user method chain', `type Cell { value: i64; } impl Cell { fn keep(self) -> Cell { self } } fn main() { println(Cell { value: 7 }${'.keep()'.repeat(1024)}.value); }`, '7\n'],
+    ['owned user method chain', `type Cell { value: string; } impl Cell { fn keep(self) -> Cell { self } fn take(consume self) -> Cell { self } } fn main() { println(Cell { value: "kept" }${'.keep().take()'.repeat(512)}.value); }`, 'kept\n'],
+    ['coalesce chain', `fn main() { let missing: Option<i64> = .None; println(missing${' ?? missing'.repeat(512)} ?? 7); }`, '7\n'],
+    ['owned postfix values', readFileSync('tests/core-acceptance/cases/postfix-chain-owned-values.hew', 'utf8'), 'cHAIN\n6\nMIDDLE\nG/0/1/2\nREFUSED\nbottom\nMISSING\nFOUND\n300\nTOP\nrabcdzz\naAbBtop\n'],
+  ];
+  for (const [name, code, expected] of cases) {
+    await t.test(name, async () => {
+      const output = compile('main.hew', [source('main.hew', code)]);
+      const {trace, stdout} = await execute(output);
+      assert.equal(stdout, expected);
+      assert.equal(trace.final_state.exit_code, 0);
+    });
+  }
+});
+
+test('browser parsing bounds malformed long prefix and legacy path inputs', () => {
+  const prefix = JSON.parse(compiler.format_source(`fn main() { let value = ${'- '.repeat(100_000)}1; }`));
+  assert.equal(prefix.formatted, null);
+  assert.ok(prefix.diagnostics.some(d => d.message.includes('maximum nesting depth exceeded')));
+  const path = JSON.parse(compiler.format_source(`fn main() { x${'::x'.repeat(20_000)} }`));
+  assert.equal(path.formatted, null);
+  assert.ok(path.diagnostics.length >= 20_000);
+  assert.ok(path.diagnostics.reduce((total, d) => total + d.message.length, 0) < 20_000 * 600);
+});
+
+
+test('computed collection keys preserve snapshots and fault cleanup', async t => {
+  const cases = [
+    ['collection-read-computed-argument', 'colour2\nreplaced\ntrue\nfalse\ncolour1\nabsent before insert\n5\ncolour3\nALPHA\nBETA\ntrue\n3\n', null],
+    ['collection-read-computed-argument-fault', 'TEMPORARY\n1\nTEMPORARY\n', 'divide_by_zero'],
+    ['call-field-argument-computed-fault', 'OLD\n', 'vector_bounds'],
+  ];
+  for (const [name, expected, trap] of cases) {
+    await t.test(name, async () => {
+      const code = readFileSync(`tests/core-acceptance/cases/${name}.hew`, 'utf8');
+      const output = compile('main.hew', [source('main.hew', code)]);
+      const {trace, stdout} = await execute(output);
+      assert.equal(stdout, expected);
+      if (trap) {
+        assert.notEqual(trace.result, 'ok');
+        assert.deepEqual(trace.final_state.runtime_failures.map(failure => failure.trap_kind), [trap]);
+      } else {
+        assert.equal(trace.result, 'ok');
+        assert.equal(trace.final_state.exit_code, 0);
+      }
+    });
+  }
+});

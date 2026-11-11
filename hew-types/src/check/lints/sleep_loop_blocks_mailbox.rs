@@ -167,11 +167,15 @@ fn find_in_arm(ctx: &LintCtx, levels: &LintLevels, arm: &MatchArm, out: &mut Vec
     find_in_expr(ctx, levels, &arm.body.0, out);
 }
 
+fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+    hew_parser::stack::ensure_sufficient_stack(|| find_in_expr_inner(ctx, levels, expr, out));
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every block-bearing expr shape"
 )]
-fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
+fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<TypeError>) {
     match expr {
         Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             find_in_block(ctx, levels, block, out);
@@ -300,12 +304,15 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 find_in_expr(ctx, levels, &value.0, out);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            find_in_expr(ctx, levels, &left.0, out);
+            find_in_expr(ctx, levels, &right.0, out);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -318,11 +325,12 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => {
             find_in_expr(ctx, levels, &operand.0, out);
         }
-        Expr::Cast { expr, .. } | Expr::FieldAccess { object: expr, .. } => {
+        Expr::Cast { expr, .. }
+        | Expr::FieldAccess { object: expr, .. }
+        | Expr::PostfixTry(expr) => {
             find_in_expr(ctx, levels, &expr.0, out);
         }
         Expr::Index { object, index } => {
@@ -605,11 +613,15 @@ fn bounded_call_args_have_sleep(args: &[CallArg]) -> bool {
     args.iter().any(|arg| bounded_expr_has_sleep(&arg.expr().0))
 }
 
+fn bounded_expr_has_sleep(expr: &Expr) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| bounded_expr_has_sleep_inner(expr))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every Expr shape to preserve boundary decisions"
 )]
-fn bounded_expr_has_sleep(expr: &Expr) -> bool {
+fn bounded_expr_has_sleep_inner(expr: &Expr) -> bool {
     match expr {
         Expr::Call { function, args, .. } => {
             matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "sleep" || name.name.as_str() == "sleep_until")
@@ -726,12 +738,12 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| bounded_expr_has_sleep(&key.0) || bounded_expr_has_sleep(&value.0)),
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
-        }
+        } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -741,11 +753,10 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => bounded_expr_has_sleep(&operand.0),
-        Expr::Cast { expr, .. } | Expr::FieldAccess { object: expr, .. } => {
-            bounded_expr_has_sleep(&expr.0)
-        }
+        Expr::Cast { expr, .. }
+        | Expr::FieldAccess { object: expr, .. }
+        | Expr::PostfixTry(expr) => bounded_expr_has_sleep(&expr.0),
         Expr::Index { object, index } => {
             bounded_expr_has_sleep(&object.0) || bounded_expr_has_sleep(&index.0)
         }
@@ -874,11 +885,15 @@ fn call_args_assign_identifier(args: &[CallArg], name: &str) -> bool {
         .any(|arg| expr_assigns_identifier(&arg.expr().0, name))
 }
 
+fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
+    hew_parser::stack::ensure_sufficient_stack(|| expr_assigns_identifier_inner(expr, name))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "expression visitor enumerates every Expr shape so assignment sites are not missed"
 )]
-fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
+fn expr_assigns_identifier_inner(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Block(block)
         | Expr::Scope { body: block }
@@ -988,12 +1003,12 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::MapLiteral { entries } => entries.iter().any(|(key, value)| {
             expr_assigns_identifier(&key.0, name) || expr_assigns_identifier(&value.0, name)
         }),
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
-        }
+        } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -1003,11 +1018,10 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
-        | Expr::PostfixTry(operand)
         | Expr::ForkChild { expr: operand, .. } => expr_assigns_identifier(&operand.0, name),
-        Expr::Cast { expr, .. } | Expr::FieldAccess { object: expr, .. } => {
-            expr_assigns_identifier(&expr.0, name)
-        }
+        Expr::Cast { expr, .. }
+        | Expr::FieldAccess { object: expr, .. }
+        | Expr::PostfixTry(expr) => expr_assigns_identifier(&expr.0, name),
         Expr::Index { object, index } => {
             expr_assigns_identifier(&object.0, name) || expr_assigns_identifier(&index.0, name)
         }

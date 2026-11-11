@@ -184,11 +184,21 @@ pub(super) fn scan_else_block_for_vec_index_gate(
 
 /// Recursively walk a `Spanned<Expr>` tree, gating `Vec<T>` `Expr::Index`
 /// nodes whose element type `T` is not in the runtime ABI's supported set.
+pub(super) fn scan_expr_for_vec_index_gate(
+    expr: &Spanned<Expr>,
+    expr_types: &HashMap<SpanKey, Ty>,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        scan_expr_for_vec_index_gate_inner(expr, expr_types, diagnostics);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
 )]
-pub(super) fn scan_expr_for_vec_index_gate(
+fn scan_expr_for_vec_index_gate_inner(
     expr: &Spanned<Expr>,
     expr_types: &HashMap<SpanKey, Ty>,
     diagnostics: &mut Vec<HirDiagnostic>,
@@ -214,12 +224,15 @@ pub(super) fn scan_expr_for_vec_index_gate(
                 scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            scan_expr_for_vec_index_gate(left, expr_types, diagnostics);
+            scan_expr_for_vec_index_gate(right, expr_types, diagnostics);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -298,7 +311,10 @@ pub(super) fn scan_expr_for_vec_index_gate(
             scan_expr_for_vec_index_gate(duration, expr_types, diagnostics);
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
         }
-        Expr::ForkChild { expr: inner, .. } | Expr::Cast { expr: inner, .. } => {
+        Expr::ForkChild { expr: inner, .. } => {
+            scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
+        }
+        Expr::Cast { expr: inner, .. } => {
             scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
         }
         Expr::StructInit { fields, base, .. } => {
@@ -335,9 +351,10 @@ pub(super) fn scan_expr_for_vec_index_gate(
             }
         }
         Expr::UnsafeBlock(b) => scan_block_for_vec_index_gate(b, expr_types, diagnostics),
-        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
             scan_expr_for_vec_index_gate(object, expr_types, diagnostics);
         }
+        Expr::Await(object) => scan_expr_for_vec_index_gate(object, expr_types, diagnostics),
         Expr::Is { lhs, rhs } => {
             scan_expr_for_vec_index_gate(lhs, expr_types, diagnostics);
             scan_expr_for_vec_index_gate(rhs, expr_types, diagnostics);

@@ -77,7 +77,13 @@ impl NativeActorCompletion {
     /// Claim one external trap and retain its diagnostic before any waiter
     /// can observe it. The same lock serializes competing requests with the
     /// actor's checked-fault owner.
-    pub(crate) fn claim_external_trap(&self, pending: &AtomicI32, code: i32) -> bool {
+    pub(crate) fn claim_external_trap(
+        &self,
+        pending: &AtomicI32,
+        code: i32,
+        actor_id: u64,
+        spawn_serial: u64,
+    ) -> bool {
         let mut retained = self.fault.lock_or_recover();
         if pending
             .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
@@ -86,7 +92,11 @@ impl NativeActorCompletion {
             return false;
         }
         if code > 0 && retained.is_none() {
-            *retained = Some(crate::fault::HewFault::external(code));
+            let fault = crate::fault::HewFault::external(code, actor_id, spawn_serial);
+            // Publish before the common breakpoint and before any losing
+            // requester can obtain the retained snapshot.
+            fault.raise();
+            *retained = Some(fault);
         }
         true
     }
@@ -530,7 +540,7 @@ mod tests {
                 let ready = Arc::clone(&ready);
                 std::thread::spawn(move || {
                     ready.wait();
-                    (code, completion.claim_external_trap(&pending, code))
+                    (code, completion.claim_external_trap(&pending, code, 0, 0))
                 })
             })
             .collect();

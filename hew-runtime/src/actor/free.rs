@@ -2942,7 +2942,14 @@ unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_co
                 .compare_exchange(0, error_code, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         },
-        |completion| completion.claim_external_trap(&a.pending_external_trap_code, error_code),
+        |completion| {
+            completion.claim_external_trap(
+                &a.pending_external_trap_code,
+                error_code,
+                a.id,
+                a.spawn_serial,
+            )
+        },
     );
     if !claimed {
         return true;

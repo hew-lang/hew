@@ -156,8 +156,16 @@ impl HewFault {
 
     /// A failure raised by the runtime outside a Hew handler. It has no
     /// originating Hew stack or source location to attribute to the actor.
-    pub(crate) fn external(code: i32) -> Self {
-        Self::build(code, None, None, false)
+    pub(crate) fn external(code: i32, actor_id: u64, spawn_serial: u64) -> Self {
+        let fault = Self::build(code, None, None, false);
+        if let Some(record) = &fault.primary.record {
+            let mut record = record.lock_or_recover();
+            record.actor.id = actor_id;
+            record.actor.spawn_serial = spawn_serial;
+            record.wall_time_ns = crate::failure_record::wall_time_ns();
+            record.build = crate::failure_record::build_info();
+        }
+        fault
     }
 
     fn new_with_assertion(
@@ -290,7 +298,7 @@ impl HewFault {
     }
 
     /// Raise every diagnostic that has not been raised yet.
-    fn raise(&self) {
+    pub(crate) fn raise(&self) {
         for diagnostic in self.diagnostics() {
             diagnostic.raise();
         }
@@ -1029,10 +1037,12 @@ fn write_record(record: &FailureRecord, message: Option<&str>, secondary: bool, 
     }
 }
 
+type PendingCrashCause = (Box<FailureRecord>, bool, Option<HewFault>);
+
 thread_local! {
     /// The failure an actor crash on this thread is about to record: the
     /// record and whether it already reached stderr.
-    static CRASH_CAUSE: std::cell::RefCell<Option<(Box<FailureRecord>, bool, Option<HewFault>)>> =
+    static CRASH_CAUSE: std::cell::RefCell<Option<PendingCrashCause>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1259,6 +1269,7 @@ mod tests {
         let clone = fault.clone();
         // SAFETY: the source text remains live through these calls.
         let first = unsafe { fault.snapshot() }.unwrap();
+        // SAFETY: the source text remains live through this call as well.
         let second = unsafe { clone.snapshot() }.unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         drop(path);

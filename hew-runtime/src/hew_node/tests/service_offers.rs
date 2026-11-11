@@ -6,6 +6,14 @@ use std::time::Instant;
 
 const HANDLER: &str = "tests.Counter.handle";
 
+struct ReleaseGate(Arc<super::super::inbound::TestGate>);
+
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 /// Wait for a cross-node effect; `false` when it did not happen in time.
 fn eventually(mut ready: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -376,11 +384,23 @@ fn non_current_node_stop_settles_only_its_own_session_offer() {
             PendingReplyKind::SessionOffer,
         );
         let (export, offer) = owner.export(request_id);
+        let owner_gate = ReleaseGate(
+            owner
+                .issuer_manager()
+                .service_exports
+                .offer_send_gate_for_test(offer.grant_id),
+        );
+        owner_gate.0.arm(true);
         if sent {
             owner
                 .issuer_manager()
                 .service_exports
                 .mark_delivered_for_test(offer.grant_id);
+            owner
+                .issuer_manager()
+                .service_exports
+                .observe_session(owner.recipient_session());
+            assert!(owner_gate.0.wait_for_enter(Duration::from_secs(10)));
         }
         let other = Pair::start(418, 419);
         let (other_id, unrelated) = reply_table().register_with_waker(
@@ -389,25 +409,51 @@ fn non_current_node_stop_settles_only_its_own_session_offer() {
             PendingReplyKind::SessionOffer,
         );
         let (other_export, other_offer) = other.export(other_id);
+        let other_gate = ReleaseGate(
+            other
+                .issuer_manager()
+                .service_exports
+                .offer_send_gate_for_test(other_offer.grant_id),
+        );
+        other_gate.0.arm(true);
         other
             .issuer_manager()
             .service_exports
             .mark_delivered_for_test(other_offer.grant_id);
+        // Active connections can precede the publication tail that replays
+        // outstanding offers. Force that replay, holding sends so a real ACK
+        // cannot complete either wait before its shutdown assertion.
+        other
+            .issuer_manager()
+            .service_exports
+            .observe_session(other.recipient_session());
+        assert!(other_gate.0.wait_for_enter(Duration::from_secs(10)));
         with_current_node(|current| *current = other.issuer.as_ptr() as usize);
-        // SAFETY: this pair owns the still-allocated non-current issuer node.
-        unsafe { assert_eq!(hew_node_stop(owner.issuer.as_ptr()), 0) };
+        let owner_addr = owner.issuer.as_ptr() as usize;
+        let stopper = thread::spawn(move || {
+            // SAFETY: the owner remains allocated until this thread is joined.
+            unsafe { hew_node_stop(owner_addr as *mut HewNode) }
+        });
+        let settled = eventually(|| pending.outcome.lock().unwrap().is_some());
         let outcome = pending
             .outcome
             .lock()
             .unwrap()
             .as_ref()
             .map(|reply| (reply.status, reply.ask_error));
+        // Closing the owner's export revokes its held send before settling
+        // this wait. Release the gate so teardown can join all local work.
+        owner_gate.0.release();
+        let stopped = stopper.join().expect("stop the non-current owner");
         let other_settled = unrelated.outcome.lock().unwrap().is_some();
         reply_table().fail(request_id, AskError::LocalShutdown);
         reply_table().fail(other_id, AskError::LocalShutdown);
         drop((export, other_export));
+        other_gate.0.release();
         owner.stop();
         other.stop();
+        assert_eq!(stopped, 0);
+        assert!(settled, "the owner's stop must settle its pending offer");
         assert_eq!(
             outcome,
             Some((ReplyStatus::Failed, AskError::LocalShutdown))
@@ -632,12 +678,6 @@ fn burial_settles_the_observing_nodes_receive() {
 /// or the channel lock. It must not publish the closed grant afterwards.
 #[test]
 fn closing_an_export_with_a_delayed_offer_does_not_publish_it() {
-    struct ReleaseGate(Arc<super::super::inbound::TestGate>);
-    impl Drop for ReleaseGate {
-        fn drop(&mut self) {
-            self.0.release();
-        }
-    }
     let _guard = crate::runtime_test_guard();
     let pair = Pair::start(389, 390);
     let waiting = pair.receive();

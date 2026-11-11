@@ -149,7 +149,14 @@ where
         return Arc::into_raw(operation);
     }
     if crate::shutdown::refuses_new_root_work() {
-        operation.complete(Err(IoFailure::shutting_down("native socket operation")));
+        // Root ingress closes before the listener sweep. An accept submitted
+        // in that interval must still unwind its caller through cancellation,
+        // rather than return an ordinary socket error to running user code.
+        if listener {
+            operation.cancel_and_wake();
+        } else {
+            operation.complete(Err(IoFailure::shutting_down("native socket operation")));
+        }
         return Arc::into_raw(operation);
     }
     let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() else {

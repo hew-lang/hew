@@ -599,6 +599,34 @@ fn listener_jobs_share_shutdown_admission_and_wake_their_caller() {
 }
 
 #[test]
+fn root_shutdown_cancels_new_listener_jobs_before_the_listener_sweep() {
+    let _runtime = crate::runtime_test_guard();
+    crate::shutdown::close_root_admission_for_test();
+    assert!(!crate::reactor::listener_admission_closed());
+
+    // Root ingress closes before listener admission during shutdown. An accept
+    // submitted in that interval must take its cancellation continuation.
+    // SAFETY: both operations are owned here until their final free.
+    unsafe {
+        let listener = library::submit_listener_job::<_, i32>(ptr::null(), |_| {
+            panic!("shutdown must not run a new listener job");
+        });
+        let status = hew_async_io_status(listener);
+        hew_async_io_free(listener);
+        assert_eq!(status, AsyncIoStatus::Cancelled as i32);
+
+        let socket = library::submit_socket_job::<_, i32>(ptr::null(), |_| {
+            panic!("shutdown must refuse new socket work");
+        });
+        let status = hew_async_io_status(socket);
+        let errno = hew_async_io_errno(socket);
+        hew_async_io_free(socket);
+        assert_eq!(status, AsyncIoStatus::Error as i32);
+        assert_eq!(errno, crate::stream_error::CANCELLED_ERRNO);
+    }
+}
+
+#[test]
 fn tcp_accept_shutdown_cancels_before_and_after_the_syscall_attempt() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();

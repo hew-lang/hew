@@ -28,7 +28,9 @@ fn stderr(output: &Output) -> String {
 #[test]
 fn expanded_ast_does_not_require_imported_bodies_to_type_check() {
     let dir = tempdir();
-    let directory = dir.path().canonicalize().unwrap();
+    let directory = dir.path().join("inspection paths\\sources");
+    std::fs::create_dir_all(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
     let input = directory.join("main.hew");
     let helper = directory.join("helpers.hew");
     let emitted = dir.path().join("emitted");
@@ -40,7 +42,8 @@ fn expanded_ast_does_not_require_imported_bodies_to_type_check() {
     );
     assert!(ast.status.success(), "{}", stderr(&ast));
     let dump = stdout(&ast);
-    assert!(dump.contains(helper.to_str().unwrap()), "{dump}");
+    let helper_path = format!("{helper:?}");
+    assert!(dump.contains(&helper_path), "{dump}");
     assert!(dump.contains("answer"), "{dump}");
     assert!(
         !emitted.exists(),
@@ -84,7 +87,9 @@ fn defs_and_hir_stop_before_ownership_validation() {
 #[test]
 fn hir_links_imported_helpers_actor_bodies_and_collection_sites() {
     let dir = tempdir();
-    let directory = dir.path().canonicalize().unwrap();
+    let directory = dir.path().join("inspection paths\\sources");
+    std::fs::create_dir_all(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
     let input = directory.join("main.hew");
     let helper = directory.join("helpers.hew");
     let source = r"import helpers;
@@ -119,11 +124,12 @@ fn main() {
     ] {
         assert!(dump.contains(identity), "missing {identity}: {dump}");
     }
+    let helper_path = format!("{helper:?}");
     let helper_file = dump
         .lines()
         .find_map(|line| {
             let line = line.trim();
-            (line.starts_with("file#") && line.contains(helper.to_str().unwrap()))
+            (line.starts_with("file#") && line.contains(&helper_path))
                 .then(|| line.split_whitespace().next().unwrap().to_string())
         })
         .expect("imported source has a checker file identity");

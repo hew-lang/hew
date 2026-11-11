@@ -1079,3 +1079,176 @@ fn node_stop_cancels_inbound_handshake_from_stalled_peer() {
     let mut rest = Vec::new();
     let _ = stalled.read_to_end(&mut rest);
 }
+
+/// Where a peer that accepted a node's dial stops responding.
+#[derive(Clone, Copy, Debug)]
+enum FreezePoint {
+    /// It never answers the handshake.
+    BeforeHandshake,
+    /// It sends part of its handshake record and then stalls.
+    MidHandshake,
+}
+
+/// Accept one dial and then freeze at `point`, keeping the socket open as a
+/// suspended process does. Returns the listener's port and a receiver that
+/// fires once the dial is in the frozen state.
+fn frozen_peer(
+    point: FreezePoint,
+) -> (
+    u16,
+    std::sync::mpsc::Receiver<std::net::TcpStream>,
+    thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind frozen peer");
+    let port = listener.local_addr().expect("frozen peer address").port();
+    let (frozen_tx, frozen_rx) = std::sync::mpsc::channel();
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept the node's dial");
+        // The dialling node writes its handshake record first; reading it
+        // proves the dial is now waiting on this peer.
+        let mut header = [0u8; 4];
+        stream.read_exact(&mut header).expect("handshake header");
+        let mut record = vec![0u8; u32::from_le_bytes(header) as usize];
+        stream.read_exact(&mut record).expect("handshake record");
+        if matches!(point, FreezePoint::MidHandshake) {
+            stream
+                .write_all(&64u32.to_le_bytes())
+                .and_then(|()| stream.write_all(&[0u8; 8]))
+                .expect("partial handshake record");
+        }
+        let _ = frozen_tx.send(stream);
+    });
+    (port, frozen_rx, peer)
+}
+
+/// A peer that accepted the node's dial and then froze cannot hold node stop,
+/// whichever handshake phase it froze in.
+#[test]
+fn node_stop_is_bounded_by_a_peer_frozen_during_a_dial() {
+    for point in [FreezePoint::BeforeHandshake, FreezePoint::MidHandshake] {
+        let _guard = crate::runtime_test_guard();
+        let dir = tempfile::tempdir().expect("frozen-dial keydir");
+        let path = dir.path().join("node.key");
+        let identity =
+            crate::encryption::noise_identity_load_or_create(&path).expect("mint node identity");
+        let (node, _) = start_tcp_node_pinning(132, identity, &path, &[]);
+        let (port, frozen, peer) = frozen_peer(point);
+
+        let node_addr = node.as_ptr() as usize;
+        let dialler = thread::spawn(move || {
+            let target = CString::new(format!("127.0.0.1:{port}")).expect("dial target");
+            // SAFETY: the node stays allocated until this thread is joined.
+            unsafe { hew_node_connect(node_addr as *mut HewNode, target.as_ptr()) }
+        });
+        let stream = frozen.recv().expect("peer froze the dial");
+
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        let stopper = thread::spawn(move || {
+            // SAFETY: the node stays allocated until this thread is joined.
+            let _ = stopped_tx.send(unsafe { hew_node_stop(node_addr as *mut HewNode) });
+        });
+        let Ok(rc) = stopped_rx.recv_timeout(Duration::from_secs(30)) else {
+            std::mem::forget(node);
+            panic!("hew_node_stop must not wait on a peer frozen {point:?}");
+        };
+        assert_eq!(rc, 0);
+        stopper.join().expect("stop thread");
+        assert_ne!(
+            dialler.join().expect("dial thread"),
+            0,
+            "a frozen dial fails"
+        );
+        drop(stream);
+        peer.join().expect("frozen peer thread");
+        drop(node);
+    }
+}
+
+/// Forward bytes between a dialler and `target` until `freeze` is set; after
+/// that, read nothing more, keeping both sockets open as a suspended process
+/// does. Dropping the returned sender releases the sockets.
+fn freezable_proxy(
+    target: u16,
+) -> (
+    u16,
+    Arc<AtomicBool>,
+    std::sync::mpsc::Sender<()>,
+    Vec<thread::JoinHandle<()>>,
+) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind proxy");
+    let port = listener.local_addr().expect("proxy address").port();
+    let freeze = Arc::new(AtomicBool::new(false));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release_rx));
+    let flag = Arc::clone(&freeze);
+    let acceptor = thread::spawn(move || {
+        let (client, _) = listener.accept().expect("proxy accept");
+        let server = std::net::TcpStream::connect(("127.0.0.1", target)).expect("proxy dial");
+        let pumps = [
+            (client.try_clone().unwrap(), server.try_clone().unwrap()),
+            (server, client),
+        ]
+        .map(|(mut from, mut to)| {
+            let flag = Arc::clone(&flag);
+            let release = Arc::clone(&release);
+            thread::spawn(move || {
+                let mut buffer = [0u8; 4096];
+                while let Ok(read) = from.read(&mut buffer) {
+                    if read == 0 || flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if to.write_all(&buffer[..read]).is_err() {
+                        break;
+                    }
+                }
+                // Frozen: keep both sockets open until the test releases them.
+                let _ = release.lock_or_recover().recv();
+                drop((from, to));
+            })
+        });
+        for pump in pumps {
+            pump.join().expect("proxy pump");
+        }
+    });
+    (port, freeze, release_tx, vec![acceptor])
+}
+
+/// A connected, published peer that freezes cannot hold node stop: the LEFT
+/// announcement to it is bounded and its blocked IO is cancelled.
+#[test]
+fn node_stop_is_bounded_by_a_published_peer_that_froze() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let (node_a, _, node_b, node_b_port) = start_authorized_tcp_pair(133, 134);
+    let (proxy_port, freeze, release, proxy) = freezable_proxy(node_b_port);
+    let connect_addr = CString::new(format!("127.0.0.1:{proxy_port}")).expect("proxy addr");
+    // SAFETY: node_a and the connect addr are valid for this call.
+    unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+    // SAFETY: both nodes are valid here.
+    unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+    freeze.store(true, Ordering::Release);
+
+    let node_addr = node_a.as_ptr() as usize;
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let stopper = thread::spawn(move || {
+        // SAFETY: the node stays allocated until this thread is joined.
+        let _ = stopped_tx.send(unsafe { hew_node_stop(node_addr as *mut HewNode) });
+    });
+    let Ok(rc) = stopped_rx.recv_timeout(Duration::from_secs(30)) else {
+        std::mem::forget(node_a);
+        panic!("hew_node_stop must not wait on a published peer that froze");
+    };
+    assert_eq!(rc, 0);
+    stopper.join().expect("stop thread");
+    drop(release);
+    for thread in proxy {
+        thread.join().expect("proxy thread");
+    }
+    // SAFETY: node_b is valid.
+    unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
+    crate::registry::hew_registry_clear();
+}

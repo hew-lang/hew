@@ -2000,6 +2000,39 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     0
 }
 
+/// How long node stop waits for departure sends before it cancels peer IO.
+/// A peer that stopped reading may exhaust the transport's buffers; the
+/// cancellation then ends a blocked send without waiting for that peer.
+const LEAVE_ANNOUNCE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Mark this node LEFT and send that state to every connected peer.
+///
+/// The sends run on their own thread because each may block on a peer that
+/// stopped reading. Stop waits at most [`LEAVE_ANNOUNCE_WAIT`] here, then
+/// cancels peer IO and joins the returned thread before freeing the manager.
+fn announce_leave(node: &HewNode) -> Option<JoinHandle<()>> {
+    if node.cluster.is_null() {
+        return None;
+    }
+    // SAFETY: the stopping node owns its cluster until teardown frees it.
+    unsafe { cluster::hew_cluster_leave(node.cluster) };
+    if node.conn_mgr.is_null() {
+        return None;
+    }
+    let manager = node.conn_mgr as usize;
+    let (sent, done) = std::sync::mpsc::channel();
+    let announcer = thread::Builder::new()
+        .name("hew-node-leave".into())
+        .spawn(move || {
+            // SAFETY: node stop joins this thread before it frees the manager.
+            unsafe { connection::hew_connmgr_announce_leave(manager as *mut HewConnMgr) };
+            let _ = sent.send(());
+        })
+        .ok()?;
+    let _ = done.recv_timeout(LEAVE_ANNOUNCE_WAIT);
+    Some(announcer)
+}
+
 /// Stop the node runtime.
 ///
 /// # Safety
@@ -2044,6 +2077,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             // cancellation drops pending request/reply owners without a worker.
             unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
         }
+        // Replies are flushed; tell peers this node is leaving while their
+        // connections still carry frames, so they record LEFT, not a crash.
+        let leave = announce_leave(node);
 
         {
             // A router still preparing a rejection may outlive the drain
@@ -2065,6 +2101,9 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         // below wait only on local work.
         // SAFETY: the node still owns its manager; it is freed below.
         unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
+        if let Some(leave) = leave {
+            crate::util::report_join_panic("hew node leave announcement", leave.join());
+        }
         stop_node_accept_thread(node);
 
         // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
@@ -2101,8 +2140,6 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
 
         if !node.cluster.is_null() {
-            // SAFETY: valid cluster pointer.
-            unsafe { cluster::hew_cluster_leave(node.cluster) };
             // SAFETY: valid cluster pointer from hew_cluster_new.
             unsafe { cluster::hew_cluster_free(node.cluster) };
             node.cluster = ptr::null_mut();

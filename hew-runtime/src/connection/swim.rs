@@ -228,6 +228,53 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     0
 }
 
+/// Announce this node's graceful departure to every connected SWIM peer.
+///
+/// Node stop marks the local member LEFT and then calls this while peer IO
+/// still works, so peers record a departure instead of suspecting a crash.
+/// The frame carries the LEFT entry itself rather than waiting in the gossip
+/// queue, which caps each batch and may hold older events ahead of it. A send
+/// to a peer that stopped reading can block; node stop bounds its wait for
+/// this call and then cancels peer IO, which ends that send.
+///
+/// # Safety
+///
+/// `mgr` must be null or a valid manager pointer for the duration of the call.
+pub(crate) unsafe fn hew_connmgr_announce_leave(mgr: *mut HewConnMgr) {
+    // SAFETY: caller guarantees `mgr` is null or valid for the call.
+    let Some(mgr_ref) = (unsafe { mgr.as_ref() }) else {
+        return;
+    };
+    // SAFETY: the cluster pointer is owned by the live manager.
+    let Some(cluster) = (unsafe { mgr_ref.cluster.as_ref() }) else {
+        return;
+    };
+    let Some(local) = node_session_for_route(mgr_ref, cluster, mgr_ref.local_node_id) else {
+        return;
+    };
+    let incarnation = cluster.local_incarnation();
+    let payload = SwimControlPayload {
+        msg_type: crate::cluster::SWIM_MSG_GOSSIP,
+        from: local,
+        incarnation,
+        target: None,
+        gossip: vec![SwimGossipEntry {
+            member: local,
+            state: crate::cluster::MEMBER_LEFT,
+            incarnation,
+        }],
+    };
+    let Some(frame) = encode_swim_control(&payload) else {
+        return;
+    };
+    // SAFETY: caller guarantees manager pointer validity for this call.
+    for peer in unsafe { hew_connmgr_active_swim_peers(mgr) } {
+        if let Some(claim) = claim_swim_send_to_route(mgr_ref, peer) {
+            let _ = claim.send(&frame);
+        }
+    }
+}
+
 /// Return the node IDs of all active gossip-capable peer connections.
 ///
 /// The SWIM driver uses this to choose indirect-probe relays (K random peers

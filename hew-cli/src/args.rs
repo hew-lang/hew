@@ -485,6 +485,9 @@ pub struct DebugArgs {
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// Build a persistent executable and print an editor launch configuration as JSON.
+    #[arg(long)]
+    pub print_config: bool,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Arguments to pass to the debugger/program (after --).

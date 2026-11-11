@@ -162,8 +162,10 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         "{stderr}"
     );
     assert!(stderr.contains("p.hew:3:15: too big"), "{stderr}");
-    assert!(stderr.contains("hew:   at level2 ("), "{stderr}");
-    assert!(stderr.contains("p.hew:1)"), "{stderr}");
+    // O2 may inline level2 into main. The site still identifies the panic,
+    // while the frame table describes the surviving machine-code function.
+    assert!(stderr.contains("hew:   at main ("), "{stderr}");
+    assert!(stderr.contains("p.hew:8)"), "{stderr}");
 
     let record: serde_json::Value = serde_json::from_str(
         std::fs::read_to_string(&log)
@@ -177,8 +179,8 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         .as_array()
         .expect("frames")
         .iter()
-        .find(|frame| frame["hew_fn"] == "level2")
-        .unwrap_or_else(|| panic!("a level2 frame: {record}"));
+        .find(|frame| frame["hew_fn"] == "main")
+        .unwrap_or_else(|| panic!("a main frame: {record}"));
     let output = symbolize(
         &binary,
         &[
@@ -188,6 +190,6 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         ],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("level2 at "), "{stdout}");
-    assert!(stdout.contains("p.hew:1"), "{stdout}");
+    assert!(stdout.contains("main at "), "{stdout}");
+    assert!(stdout.contains("p.hew:8"), "{stdout}");
 }

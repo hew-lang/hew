@@ -1831,6 +1831,11 @@ fn cmd_run_native(
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
+    // Interactive runs show Hew frames by default. An explicit setting,
+    // including `0`, remains authoritative.
+    if std::env::var_os("HEW_BACKTRACE").is_none() {
+        command.env("HEW_BACKTRACE", "1");
+    }
     match a.deterministic_env() {
         Some(config) => command.env("HEW_DETERMINISTIC", config),
         None => command.env_remove("HEW_DETERMINISTIC"),
@@ -2108,6 +2113,10 @@ fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
+    if a.print_config {
+        print_debug_config(a, &input, &options, &target);
+        return;
+    }
     let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
     let (debugger, debugger_args) =
@@ -2122,6 +2131,73 @@ fn cmd_debug(a: &args::DebugArgs) {
 
     eprintln!("Launching {debugger} with debug build of {input}...");
     exit_after_debugger_run(&debugger, &debugger_args, artifact);
+}
+
+/// Build a durable executable for an external editor and print its launch
+/// configuration. A lease-owned temporary executable would disappear as soon
+/// as this command exits, before the editor can start it.
+fn print_debug_config(
+    args: &args::DebugArgs,
+    input: &str,
+    options: &compile::CompileOptions,
+    target: &target::ExecutionTarget,
+) {
+    let cwd = std::env::current_dir().unwrap_or_else(|error| {
+        eprintln!("Error: cannot find the current directory: {error}");
+        std::process::exit(1);
+    });
+    let directory = cwd.join("target").join("hew-debug");
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("Error: cannot create {}: {error}", directory.display());
+        std::process::exit(1);
+    }
+    let stem = args
+        .input
+        .file_stem()
+        .unwrap_or_else(|| std::ffi::OsStr::new("hew"));
+    // Distinguish identically named files in different directories without
+    // placing an absolute source path below the output directory.
+    use std::hash::{Hash, Hasher};
+    let source = if args.input.is_absolute() {
+        args.input.clone()
+    } else {
+        cwd.join(&args.input)
+    };
+    let mut identity = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut identity);
+    let name = format!("{}-{:016x}", stem.to_string_lossy(), identity.finish());
+    let output = target.executable_path(&directory, &name);
+    let spec =
+        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        });
+    compile_build_binary(
+        Path::new(input),
+        &output,
+        &spec,
+        true,
+        hew_codegen_rs::OptLevel::O0,
+        false,
+        &args.link_libs,
+        options,
+    )
+    .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
+    let program = output.to_string_lossy();
+    let cwd = cwd.to_string_lossy();
+    let config = if cfg!(target_os = "windows") {
+        serde_json::json!({"name": "Debug Hew", "type": "cppvsdbg", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd})
+    } else if cfg!(target_os = "macos") {
+        serde_json::json!({"name": "Debug Hew", "type": "lldb", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd,
+            "preRunCommands": ["breakpoint set --name hew_fault_raise"]})
+    } else {
+        serde_json::json!({"name": "Debug Hew", "type": "cppdbg", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd, "MIMode": "gdb",
+            "setupCommands": [{"text": "-break-insert hew_fault_raise"}]})
+    };
+    println!("{config}");
 }
 
 fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
@@ -2152,6 +2228,9 @@ fn resolve_debugger_invocation(
             gdb_args.push("-x".to_string());
             gdb_args.push(script.clone());
         }
+        // Stop at the common raise point before a failure unwinds, so the
+        // debugger can inspect the failing frame and its record.
+        gdb_args.extend(["-ex".to_string(), "break hew_fault_raise".to_string()]);
         gdb_args.push("--args".to_string());
         gdb_args.push(program);
         gdb_args.extend(program_args.iter().cloned());
@@ -2163,6 +2242,10 @@ fn resolve_debugger_invocation(
             lldb_args.push("-o".to_string());
             lldb_args.push(format!("command script import {script}"));
         }
+        lldb_args.extend([
+            "-o".to_string(),
+            "breakpoint set --name hew_fault_raise".to_string(),
+        ]);
         lldb_args.push("--".to_string());
         lldb_args.push(program);
         lldb_args.extend(program_args.iter().cloned());

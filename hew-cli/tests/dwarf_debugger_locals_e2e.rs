@@ -1355,3 +1355,67 @@ fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
         "timeout diagnostic must name the deadline and confirm cleanup: {message}"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hew_debug_stops_at_the_failure_raise() {
+    require_codegen();
+    require_debugger();
+    let dir = workspace();
+    let src = dir.path().join("failure.hew");
+    std::fs::write(&src, "fn main() { panic(\"boom\"); }\n").expect("write source");
+    let mut command = Command::new(hew_binary());
+    command.arg("debug").arg(&src);
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
+        "hew debug stops at failure",
+        std::time::Duration::from_mins(5),
+        b"run\nquit\ny\n",
+    )
+    .expect("run hew debug under gdb");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Breakpoint 1, hew_fault_raise"),
+        "debugger did not stop at the raise:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn debug_config_keeps_a_runnable_program_for_an_editor() {
+    require_codegen();
+    let dir = workspace();
+    let src = dir.path().join("config.hew");
+    std::fs::write(&src, "fn main() { println(42); }\n").expect("write source");
+    let mut command = Command::new(hew_binary());
+    command
+        .current_dir(dir.path())
+        .args(["debug", "--print-config"]);
+    command.arg(&src).args(["--", "argument"]);
+    let output = try_run_bounded_command(
+        command,
+        "build editor debug config",
+        std::time::Duration::from_mins(5),
+    )
+    .expect("run hew debug --print-config");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON configuration");
+    assert_eq!(config["type"], "cppdbg");
+    assert_eq!(config["args"][0], "argument");
+    let program = config["program"].as_str().expect("program path");
+    let run = Command::new(program)
+        .output()
+        .expect("launch retained executable");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(run.stdout, b"42\n");
+}

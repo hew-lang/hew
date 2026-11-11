@@ -177,13 +177,12 @@ pub(super) fn declaration_location(
         let span =
             hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, target)?;
         return Some(Location {
-            uri: target_uri,
+            uri: uri.clone(),
             range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
         });
     }
-    if let Some(target_doc) =
-        documents.get(&super::analysis::open_document_uri(&target_uri, documents))
-    {
+    let target_uri = super::analysis::open_document_uri(&target_uri, documents);
+    if let Some(target_doc) = documents.get(&target_uri) {
         let span = hew_analysis::identity::declaration_name_span(
             &target_doc.source,
             &target_doc.parse_result,

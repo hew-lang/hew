@@ -228,7 +228,8 @@ jobs:
 
       - name: Install cargo-xwin
         if: matrix.builder == 'xwin'
-        run: cargo install cargo-xwin --locked --version 0.23.0
+        # xwin 0.10 handles the current SDK manifest's payload path separators.
+        run: cargo install cargo-xwin --locked --version 0.23.1
 
       - name: Build FreeBSD release library
         if: matrix.builder == 'zig' && !matrix.build_std

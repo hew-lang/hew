@@ -202,7 +202,8 @@ remains `continue-on-error: true` until this validation path has proven itself
 through a full release cycle.
 
 Tag releases build `hew.lib` on Linux with Rust 1.96.0 and `cargo-xwin`
-0.23.0, then publish it between jobs under the full
+0.23.1, whose SDK manifest reader handles current payload path separators, then
+publish it between jobs under the full
 `x86_64-pc-windows-msvc` Rust triple. The Windows job keeps the native
 compiler and support-binary builds, links a real Hew consumer against the
 downloaded library, and runs the packaged compile/run smoke before the

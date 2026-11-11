@@ -136,6 +136,32 @@ for (const [name, expected] of [
   });
 }
 
+for (const name of [
+  "scope-failure-budget",
+  "scope-failure-budget-exhaustion",
+]) {
+  test(`actor-owned scope recovery preserves ${name}`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
+      "utf8",
+    );
+    const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+      source,
+      "sandbox-vm-export",
+    );
+    const compiled = typeof output === "string" ? JSON.parse(output) : output;
+    assert.deepEqual(compiled.diagnostics, []);
+    assert.ok(compiled.bytecode);
+    const trace = await runBytecode(compiled.bytecode);
+    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
+    assert.equal(trace.final_state.exit_code, 0);
+    assert.deepEqual(trace.final_state.stdout, []);
+    assert.deepEqual(trace.final_state.stderr, []);
+    assert.deepEqual(trace.final_state.diagnostics, []);
+    assert.deepEqual(trace.final_state.sandbox_rejections, []);
+  });
+}
+
 test("actor-owned task publication reserves result and pending callable storage", async () => {
   const result = await runProgram(
     `

@@ -228,7 +228,8 @@ jobs:
 
       - name: Install cargo-xwin
         if: matrix.builder == 'xwin'
-        run: cargo install cargo-xwin --locked --version 0.23.0
+        # xwin 0.10 handles the current SDK manifest's payload path separators.
+        run: cargo install cargo-xwin --locked --version 0.23.1
 
       # scripts/release-lib.py adds the archive's frame-pointer and path-remap
       # flags, then strips debug info from every member but the runtime's.

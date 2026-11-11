@@ -17,6 +17,29 @@ cp "$archive" "$tmp/.ast-grep/cache/tree-sitter-hew.tar.gz"
 mkdir -p "$tmp/.ast-grep/tree-sitter-tool/bin"
 cp "$ROOT/.ast-grep/tree-sitter-tool/bin/tree-sitter" "$tmp/.ast-grep/tree-sitter-tool/bin/"
 
+# A bootstrap install must keep compiler-loaded build dependencies unstripped.
+# Use the real pinned binary after recording the Cargo invocation, so the rest
+# of this test still exercises the grammar builder and its version checks.
+mkdir -p "$tmp/bootstrap-bin"
+cat >"$tmp/bootstrap-bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP:-}" == none ]]
+[[ "$1" == install ]]
+while [[ $# -gt 0 && "$1" != --root ]]; do shift; done
+[[ $# -eq 2 ]]
+mkdir -p "$2/bin"
+cp "$HEW_BOOTSTRAP_TREE_SITTER" "$2/bin/tree-sitter"
+printf '%s\n' "$CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP" >"$HEW_BOOTSTRAP_RECEIPT"
+EOF
+chmod +x "$tmp/bootstrap-bin/cargo"
+export HEW_BOOTSTRAP_TREE_SITTER="$ROOT/.ast-grep/tree-sitter-tool/bin/tree-sitter"
+export HEW_BOOTSTRAP_RECEIPT="$tmp/bootstrap-strip"
+rm "$tmp/.ast-grep/tree-sitter-tool/bin/tree-sitter"
+PATH="$tmp/bootstrap-bin:$PATH" "$tmp/scripts/build-ast-grep-lang.sh" --bootstrap
+[[ "$(cat "$HEW_BOOTSTRAP_RECEIPT")" == none ]]
+rm "$tmp/.ast-grep/hew-lang.so" "$tmp/.ast-grep/hew-lang.stamp"
+
 # Exercise both supported checksum command shapes, independent of which one is
 # installed on the host running this contract test.
 mkdir -p "$tmp/hash-bin"

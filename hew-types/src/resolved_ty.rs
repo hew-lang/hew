@@ -520,6 +520,7 @@ impl ResolvedTy {
                     BuiltinType::Generator => BuiltinAnchor::Generator,
                     BuiltinType::Vec => BuiltinAnchor::Vec,
                     BuiltinType::HashMap => BuiltinAnchor::HashMap,
+                    BuiltinType::HashSet => BuiltinAnchor::HashSet,
                     BuiltinType::Stream => BuiltinAnchor::Stream,
 
                     BuiltinType::NodeId => BuiltinAnchor::NodeId,
@@ -1867,6 +1868,21 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hashset_impl_receiver_uses_its_builtin_anchor() {
+        let defs = crate::DefTable::new();
+        let receiver =
+            ResolvedTy::named_builtin(crate::BuiltinType::HashSet, vec![ResolvedTy::I64]);
+        let instance = receiver
+            .impl_receiver_instance(&defs)
+            .expect("HashSet impl identity");
+        assert_eq!(
+            instance.nominal.declaration(),
+            crate::DefTable::anchor(BuiltinAnchor::HashSet)
+        );
+        assert_eq!(instance.args, vec![ResolvedTy::I64]);
+    }
 
     #[test]
     fn callable_keys_preserve_capabilities_and_capture_storage() {

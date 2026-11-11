@@ -45,6 +45,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: nextest@0.9.120

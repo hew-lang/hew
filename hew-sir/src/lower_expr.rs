@@ -28,8 +28,22 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, SirLoweringError> {
+        if let Some(value) = self.lower_receiver_chain(expr)? {
+            return Ok(value);
+        }
         let loan_floor = self.scope_loans.len();
-        let value = self.lower_expr_inner(expr, binding_use)?;
+        let value = hew_parser::stack::ensure_sufficient_stack(|| {
+            self.lower_expr_inner(expr, binding_use)
+        })?;
+        self.finish_expression_value(expr, value, loan_floor)
+    }
+
+    pub(super) fn finish_expression_value(
+        &mut self,
+        expr: &HirExpr,
+        value: ValueId,
+        loan_floor: usize,
+    ) -> Result<ValueId, SirLoweringError> {
         self.current_site = Some(expr.site);
         if self.is_open()
             && matches!(

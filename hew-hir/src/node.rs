@@ -1121,7 +1121,14 @@ impl StaticTraitSelf {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// One typed expression.
+///
+/// A postfix chain (`a.b().c[0]?`), an optional-chain run or a `??` run is
+/// one node level per link, and lowering puts the previous link in a call's
+/// arguments, a match's scrutinee or an arm's body as often as in a receiver
+/// field. So a chain is as deep as its source is long: the node drops by
+/// draining all expression children into a worklist, and clones, compares and prints
+/// through the stack-growth helper.
 pub struct HirExpr {
     pub node: HirNodeId,
     pub site: SiteId,
@@ -1129,6 +1136,274 @@ pub struct HirExpr {
     pub intent: IntentKind,
     pub kind: HirExprKind,
     pub span: Span,
+}
+
+impl HirExpr {
+    /// Take this node's fields out, leaving it an empty leaf that drops
+    /// without work.
+    #[must_use]
+    pub fn into_parts(mut self) -> (HirExprKind, ResolvedTy) {
+        let kind = std::mem::replace(&mut self.kind, HirExprKind::Unsupported(String::new()));
+        let ty = std::mem::replace(&mut self.ty, ResolvedTy::Unit);
+        (kind, ty)
+    }
+
+    /// A leaf left behind where a drained child was.
+    fn vacant() -> Self {
+        Self {
+            node: HirNodeId(0),
+            site: SiteId(0),
+            ty: ResolvedTy::Unit,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Unsupported(String::new()),
+            span: 0..0,
+        }
+    }
+}
+
+impl HirExprKind {
+    /// Move every expression child into the drop worklist. Lowering can put a
+    /// flat source chain inside generated blocks, intrinsics and adapters, so
+    /// the owning node exhaustively accounts for its children.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every HIR expression edge has one exhaustive drop decision"
+    )]
+    fn drain_children(&mut self, pending: &mut Vec<HirExpr>) {
+        fn take(child: &mut HirExpr, pending: &mut Vec<HirExpr>) {
+            if !matches!(child.kind, HirExprKind::Unsupported(_)) {
+                pending.push(std::mem::replace(child, HirExpr::vacant()));
+            }
+        }
+        fn optional(child: &mut Option<Box<HirExpr>>, pending: &mut Vec<HirExpr>) {
+            pending.extend(child.take().map(|child| *child));
+        }
+        fn block(block: &mut HirBlock, pending: &mut Vec<HirExpr>) {
+            optional(&mut block.tail, pending);
+            for statement in std::mem::take(&mut block.statements) {
+                match statement.kind {
+                    HirStmtKind::Let(_, value) | HirStmtKind::Return(value) => {
+                        pending.extend(value);
+                    }
+                    HirStmtKind::Expr(value) | HirStmtKind::Destructure { value, .. } => {
+                        pending.push(value);
+                    }
+                    HirStmtKind::Assign { target, value, .. } => {
+                        pending.push(target);
+                        pending.push(*value);
+                    }
+                    HirStmtKind::Defer { body, .. } => pending.push(*body),
+                }
+            }
+        }
+        match self {
+            Self::Call {
+                callee: receiver,
+                args,
+                ..
+            }
+            | Self::ActorMessage { receiver, args, .. }
+            | Self::ActorDelivery { receiver, args, .. }
+            | Self::ActorAsk { receiver, args, .. }
+            | Self::ActorGenStream { receiver, args, .. }
+            | Self::CallDynMethod { receiver, args, .. }
+            | Self::VarSelfMethodCall { receiver, args, .. }
+            | Self::ResolvedImplCall { receiver, args, .. } => {
+                take(receiver, pending);
+                pending.append(args);
+            }
+            Self::CallTraitMethodStatic { receiver, args, .. } => {
+                if let StaticTraitSelf::Receiver(receiver) = receiver {
+                    take(receiver, pending);
+                }
+                pending.append(args);
+            }
+            Self::RcIntrinsic {
+                receiver, value, ..
+            } => {
+                optional(receiver, pending);
+                optional(value, pending);
+            }
+            Self::Match { scrutinee, arms } => {
+                take(scrutinee, pending);
+                for arm in std::mem::take(arms) {
+                    pending.push(arm.body);
+                    pending.extend(arm.guard);
+                }
+            }
+            Self::Index {
+                container: left,
+                index: right,
+            }
+            | Self::BorrowedIndex {
+                container: left,
+                index: right,
+            }
+            | Self::Binary { left, right, .. }
+            | Self::IdentityCompare { left, right }
+            | Self::RangeValue {
+                start: left,
+                end: right,
+                ..
+            }
+            | Self::ScopeRecovery {
+                scope: left,
+                handler: right,
+                ..
+            } => {
+                take(left, pending);
+                take(right, pending);
+            }
+            Self::FieldAccess { object: child, .. }
+            | Self::TupleIndex { tuple: child, .. }
+            | Self::NumericCast { value: child, .. }
+            | Self::SaturatingWidthCast { value: child, .. }
+            | Self::TryWidthCast { value: child, .. }
+            | Self::CoerceToDynTrait { value: child, .. }
+            | Self::AwaitTask { operand: child, .. }
+            | Self::GeneratorNext {
+                receiver: child, ..
+            }
+            | Self::WireCodec { operand: child, .. }
+            | Self::RecordCloneCall { src: child, .. }
+            | Self::CallableSpecialize { source: child, .. }
+            | Self::Unary { operand: child, .. }
+            | Self::Closure { body: child, .. }
+            | Self::ArrayRepeat { value: child }
+            | Self::SubsumedValue { source: child } => take(child, pending),
+            Self::Slice {
+                container,
+                start,
+                end,
+            } => {
+                take(container, pending);
+                optional(start, pending);
+                optional(end, pending);
+            }
+            Self::RangeAdapt { range, adapter } => {
+                take(range, pending);
+                if let HirRangeAdapter::Step(step) = adapter {
+                    take(step, pending);
+                }
+            }
+            Self::Yield { value, .. } | Self::Break { value, .. } | Self::Return { value, .. } => {
+                optional(value, pending);
+            }
+            Self::Block(body)
+            | Self::Scope { body, .. }
+            | Self::ForkBlock { body, .. }
+            | Self::GenBlock { body, .. }
+            | Self::Loop { body, .. } => block(body, pending),
+            Self::While {
+                condition: value,
+                body,
+                ..
+            }
+            | Self::ForRange {
+                range: value, body, ..
+            }
+            | Self::ScopeDeadline {
+                duration: value,
+                body,
+                ..
+            } => {
+                take(value, pending);
+                block(body, pending);
+            }
+            Self::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                take(condition, pending);
+                take(then_expr, pending);
+                optional(else_expr, pending);
+            }
+            Self::StructInit { fields, base, .. } => {
+                pending.extend(std::mem::take(fields).into_iter().map(|(_, value)| value));
+                optional(base, pending);
+            }
+            Self::Spawn { args, .. } => {
+                pending.extend(std::mem::take(args).into_iter().map(|(_, value)| value));
+            }
+            Self::MachineVariantCtor { payload, .. } => {
+                pending.extend(payload.take().into_iter().flatten().map(|(_, value)| value));
+            }
+            Self::TupleLiteral { elements }
+            | Self::ArrayLiteral { elements }
+            | Self::TaskRace {
+                members: elements, ..
+            } => pending.append(elements),
+            Self::Select(select) => {
+                for arm in std::mem::take(&mut select.arms) {
+                    pending.push(arm.body);
+                    let (HirSelectArmKind::StreamNext { stream: value }
+                    | HirSelectArmKind::Call { call: value }
+                    | HirSelectArmKind::TaskAwait { task: value }
+                    | HirSelectArmKind::AfterTimer { duration: value }) = arm.kind;
+                    pending.push(*value);
+                }
+            }
+            Self::Literal(_)
+            | Self::RegexLiteralRef { .. }
+            | Self::BindingRef { .. }
+            | Self::ContextReader { .. }
+            | Self::ActorSelf
+            | Self::Continue { .. }
+            | Self::Unsupported(_) => {}
+        }
+    }
+}
+
+impl Drop for HirExpr {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        self.kind.drain_children(&mut pending);
+        while let Some(mut expr) = pending.pop() {
+            expr.kind.drain_children(&mut pending);
+        }
+    }
+}
+
+impl Clone for HirExpr {
+    fn clone(&self) -> Self {
+        hew_parser::stack::ensure_sufficient_stack(|| Self {
+            node: self.node,
+            site: self.site,
+            ty: self.ty.clone(),
+            intent: self.intent,
+            kind: self.kind.clone(),
+            span: self.span.clone(),
+        })
+    }
+}
+
+impl PartialEq for HirExpr {
+    fn eq(&self, other: &Self) -> bool {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.node == other.node
+                && self.site == other.site
+                && self.ty == other.ty
+                && self.intent == other.intent
+                && self.kind == other.kind
+                && self.span == other.span
+        })
+    }
+}
+
+impl std::fmt::Debug for HirExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            f.debug_struct("HirExpr")
+                .field("node", &self.node)
+                .field("site", &self.site)
+                .field("ty", &self.ty)
+                .field("intent", &self.intent)
+                .field("kind", &self.kind)
+                .field("span", &self.span)
+                .finish()
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2352,4 +2627,181 @@ pub enum HirLiteral {
     /// by the parser (range 0..=255 for array elements; UTF-8 decode for
     /// byte strings). MIR lowering emits `Instr::BytesLit`.
     Bytes(Vec<u8>),
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::{HirExpr, HirExprKind, HirMatchArm, HirMatchArmPredicate};
+    use crate::ids::{HirNodeId, SiteId};
+    use crate::IntentKind;
+    use hew_types::runtime_call::RuntimeCallFamily;
+    use hew_types::{CallTarget, ResolvedTy};
+
+    fn expr(kind: HirExprKind) -> HirExpr {
+        HirExpr {
+            node: HirNodeId(1),
+            site: SiteId(1),
+            ty: ResolvedTy::I64,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..1,
+        }
+    }
+
+    fn leaf() -> HirExpr {
+        expr(HirExprKind::Literal(super::HirLiteral::Integer(0)))
+    }
+
+    fn arm(body: HirExpr) -> HirMatchArm {
+        HirMatchArm {
+            scope: None,
+            predicate: HirMatchArmPredicate::Wildcard,
+            bindings: Vec::new(),
+            payload_predicates: Vec::new(),
+            payload_variant_predicates: Vec::new(),
+            pattern_bindings: Vec::new(),
+            guard: None,
+            body,
+            span: 0..1,
+        }
+    }
+
+    #[test]
+    fn generated_blocks_and_range_adapters_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut spine = leaf();
+                for link in 0..20_000 {
+                    spine = expr(match link % 4 {
+                        0 => HirExprKind::RangeAdapt {
+                            range: Box::new(spine),
+                            adapter: super::HirRangeAdapter::Reverse,
+                        },
+                        1 => HirExprKind::RangeAdapt {
+                            range: Box::new(leaf()),
+                            adapter: super::HirRangeAdapter::Step(Box::new(spine)),
+                        },
+                        2 => HirExprKind::Block(super::HirBlock {
+                            node: HirNodeId(1),
+                            scope: crate::ids::ScopeId(1),
+                            statements: vec![super::HirStmt {
+                                node: HirNodeId(1),
+                                kind: super::HirStmtKind::Let(
+                                    super::HirBinding {
+                                        id: crate::ids::BindingId(1),
+                                        name: String::new(),
+                                        ty: ResolvedTy::I64,
+                                        mutable: false,
+                                        span: 0..1,
+                                        is_consume: false,
+                                    },
+                                    Some(spine),
+                                ),
+                                span: 0..1,
+                            }],
+                            tail: None,
+                            ty: ResolvedTy::I64,
+                            span: 0..1,
+                        }),
+                        _ => HirExprKind::Block(super::HirBlock {
+                            node: HirNodeId(1),
+                            scope: crate::ids::ScopeId(1),
+                            statements: Vec::new(),
+                            tail: Some(Box::new(spine)),
+                            ty: ResolvedTy::I64,
+                            span: 0..1,
+                        }),
+                    });
+                }
+                let copy = spine.clone();
+                assert!(copy == spine);
+                drop(copy);
+                drop(spine);
+            })
+            .expect("spawn")
+            .join()
+            .expect("a generated block or range adapter chain overflowed");
+    }
+
+    #[test]
+    fn rc_intrinsic_chains_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                for receiver_edge in [true, false] {
+                    let mut spine = leaf();
+                    for _ in 0..20_000 {
+                        let (receiver, value) = if receiver_edge {
+                            (Some(Box::new(spine)), None)
+                        } else {
+                            (None, Some(Box::new(spine)))
+                        };
+                        spine = expr(HirExprKind::RcIntrinsic {
+                            op: hew_types::RcIntrinsicOp::Clone,
+                            payload_ty: ResolvedTy::I64,
+                            receiver,
+                            value,
+                            result_ty: ResolvedTy::I64,
+                        });
+                    }
+                    drop(spine);
+                }
+            })
+            .expect("spawn")
+            .join()
+            .expect("an Rc intrinsic chain overflowed");
+    }
+
+    #[test]
+    fn a_long_hir_spine_is_cloned_compared_and_dropped_on_a_small_stack() {
+        // The positions lowering nests a chain through: a method call's
+        // receiver argument, a try's scrutinee, an optional chain's or a
+        // `??`'s arm body, a field's object, an index's container and a cast's
+        // operand, 20,000 links deep.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut spine = leaf();
+                for link in 0..20_000_u32 {
+                    let inner = Box::new(spine);
+                    spine = expr(match link % 6 {
+                        0 => HirExprKind::Call {
+                            target: CallTarget::Runtime(RuntimeCallFamily::StringTrim),
+                            callee: Box::new(leaf()),
+                            args: vec![*inner, leaf()],
+                            evaluation_order: Vec::new(),
+                        },
+                        1 => HirExprKind::Match {
+                            scrutinee: inner,
+                            arms: vec![arm(leaf())],
+                        },
+                        2 => HirExprKind::Match {
+                            scrutinee: Box::new(leaf()),
+                            arms: vec![arm(leaf()), arm(*inner)],
+                        },
+                        3 => HirExprKind::FieldAccess {
+                            object: inner,
+                            field: String::new(),
+                        },
+                        4 => HirExprKind::Index {
+                            container: inner,
+                            index: Box::new(leaf()),
+                        },
+                        _ => HirExprKind::NumericCast {
+                            value: inner,
+                            from_ty: ResolvedTy::I64,
+                            to_ty: ResolvedTy::I64,
+                        },
+                    });
+                }
+                let copy = spine.clone();
+                assert!(copy == spine);
+                drop(copy);
+                drop(spine);
+            })
+            .expect("spawn")
+            .join()
+            .expect("a long HIR spine overflowed");
+    }
 }

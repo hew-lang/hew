@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod ast_eq;
+pub mod chain;
 pub mod diagnostic;
 pub mod fmt;
 pub mod init_analysis;
@@ -9,6 +10,7 @@ pub mod loop_analysis;
 pub mod macro_syntax;
 pub mod module;
 pub mod parser;
+pub mod stack;
 pub mod tail_call;
 pub mod wire;
 

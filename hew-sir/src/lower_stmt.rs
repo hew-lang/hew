@@ -494,11 +494,15 @@ impl Builder<'_, '_> {
     /// when the result is unused.  A unit direct call is different: there is
     /// no semantic value to define, but the call itself must remain in SIR so
     /// later lowering can realize its call/continuation CFG edge.
+    pub(super) fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), SirLoweringError> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.lower_discarded_expr_inner(expr))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "effect-position dispatch keeps control flow and cleanup together"
     )]
-    pub(super) fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), SirLoweringError> {
+    fn lower_discarded_expr_inner(&mut self, expr: &HirExpr) -> Result<(), SirLoweringError> {
         // A statement whose value is discarded reaches several lowerings that
         // do not go through `lower_expr_inner`, so stamp its source point here
         // as well: a call statement's terminator must name its own line.

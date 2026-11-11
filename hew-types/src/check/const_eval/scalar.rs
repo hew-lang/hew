@@ -20,6 +20,17 @@ pub fn eval_scalar_const_expr(
     pointer_width: u8,
     facts: &mut impl FnMut(&Spanned<Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
 ) -> Result<ConstantValue, ConstEvalError> {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        eval_scalar_const_expr_inner(expr, expected, pointer_width, facts)
+    })
+}
+
+fn eval_scalar_const_expr_inner(
+    expr: &Spanned<Expr>,
+    expected: &ResolvedTy,
+    pointer_width: u8,
+    facts: &mut impl FnMut(&Spanned<Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
+) -> Result<ConstantValue, ConstEvalError> {
     let (ty, value) = facts(expr);
     let ty = ty.as_ref().unwrap_or(expected);
     if let Some(value) = value {

@@ -5,7 +5,9 @@ use hew_parser::ast::{Ident, Path};
 
 impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
+        let mut lowered = hew_parser::stack::ensure_sufficient_stack(|| {
+            self.lower_expr_with_tail_coercion(expr, intent)
+        });
         let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
         lowered.ty = normalized_ty;
 
@@ -133,7 +135,7 @@ impl LowerCtx<'_> {
                 if let Expr::Ident(owner) = &object.0 {
                     if hew_types::lookup_builtin_type(owner.name.as_str()).is_some() {
                         let compatibility = Expr::Call {
-                            function: Box::new((
+                            function: hew_parser::chain::Chain::new((
                                 Expr::Ident(Ident::new(&format!(
                                     "{owner}::{field}",
                                     field = field.0
@@ -183,7 +185,7 @@ impl LowerCtx<'_> {
                 if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
                     if let Expr::Ident(owner) = &target.0 {
                         let compatibility = Expr::Call {
-                            function: Box::new((
+                            function: hew_parser::chain::Chain::new((
                                 Expr::Ident(Ident::new(&format!(
                                     "{owner}::{method}",
                                     method = method.0
@@ -210,7 +212,7 @@ impl LowerCtx<'_> {
                     )
                 {
                     let compatibility = Expr::Call {
-                        function: Box::new((
+                        function: hew_parser::chain::Chain::new((
                             Expr::Ident(Ident::new(&qualified)), // TRANSITION(P1): deleted by A1 commit 2
                             receiver.1.clone(),
                         )),
@@ -634,12 +636,13 @@ impl LowerCtx<'_> {
                         right,
                         span.clone(),
                     );
+                    let (kind, ty) = call.into_parts();
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        ty: call.ty.clone(),
+                        ty,
                         intent,
-                        kind: call.kind,
+                        kind,
                         span,
                     };
                 }
@@ -953,10 +956,10 @@ impl LowerCtx<'_> {
                     };
                     let batch =
                         self.lower_fork_batch(branches, output_ty, span.clone(), result_lifetime);
-                    (batch.kind, batch.ty)
+                    batch.into_parts()
                 } else {
                     let child = self.lower_fork_invocation(expr, result_lifetime);
-                    (child.kind, child.ty)
+                    child.into_parts()
                 }
             }
 
@@ -1186,7 +1189,7 @@ impl LowerCtx<'_> {
                 if let Some(item_ty) = self.failing_generator_item.clone() {
                     let value = self.lower_expr(value, IntentKind::Consume);
                     let exit = self.failing_generator_exit(value, &item_ty, &span);
-                    (exit.kind, ResolvedTy::Never)
+                    (exit.into_parts().0, ResolvedTy::Never)
                 } else if self.result_return_coercions.get(&self.mk_key(&span))
                     == Some(&hew_types::ResultReturnKind::Error)
                 {
@@ -1833,7 +1836,7 @@ impl LowerCtx<'_> {
                     &result_ty,
                     &span,
                 );
-                (lowered.kind, result_ty)
+                (lowered.into_parts().0, result_ty)
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.

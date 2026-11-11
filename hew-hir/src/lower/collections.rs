@@ -1063,7 +1063,7 @@ impl LowerCtx<'_> {
             let clone_span = span.start..span.start;
             let clone_call = (
                 Expr::MethodCall {
-                    receiver: Box::new(receiver.clone()),
+                    receiver: hew_parser::chain::Chain::new(receiver.clone()),
                     method: (Ident::new("clone"), clone_span.clone()),
                     args: Vec::new(),
                 },

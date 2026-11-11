@@ -7,6 +7,7 @@
 )]
 use super::*;
 use crate::ast::ParameterOwnership;
+use crate::chain::Chain;
 
 impl Parser<'_> {
     // ── Expressions (Pratt Precedence) ──
@@ -146,7 +147,7 @@ impl Parser<'_> {
                     );
                     (
                         Expr::RecordInitSuffix {
-                            target: Box::new(generic),
+                            target: crate::chain::Chain::new(generic),
                             fields,
                             base,
                         },
@@ -156,7 +157,7 @@ impl Parser<'_> {
             }
             other => (
                 Expr::RecordInitSuffix {
-                    target: Box::new(other),
+                    target: crate::chain::Chain::new(other),
                     fields,
                     base,
                 },
@@ -172,7 +173,7 @@ impl Parser<'_> {
         let end = self.peek_span().start;
         Some((
             Expr::GenericApplySuffix {
-                target: Box::new(lhs),
+                target: Chain::new(lhs),
                 type_args,
             },
             start..end,
@@ -203,6 +204,12 @@ impl Parser<'_> {
     pub(crate) fn parse_expr(&mut self) -> Option<Spanned<Expr>> {
         let _guard = self.enter_recursion()?;
         self.parse_expr_bp(0)
+    }
+
+    /// Count prefix operands as syntactic nesting, just like parentheses.
+    fn parse_prefix_operand(&mut self, rbp: u8) -> Option<Spanned<Expr>> {
+        let _guard = self.enter_recursion()?;
+        self.parse_expr_bp(rbp)
     }
 
     /// True while a bare identifier directly followed by `{` must be read as an
@@ -307,7 +314,7 @@ impl Parser<'_> {
                 "to duplicate a value, write `clone x`",
             );
             self.advance()?; // consume `&` and recover on the operand
-            return self.parse_expr_bp(min_bp);
+            return self.parse_prefix_operand(min_bp);
         }
 
         // Prefix operators
@@ -321,14 +328,14 @@ impl Parser<'_> {
             // unary precedence so `clone a + b` is `(clone a) + b` and
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
-            let operand = self.parse_expr_bp(UNARY_BP)?;
+            let operand = self.parse_prefix_operand(UNARY_BP)?;
             let end = self.peek_span().start;
             (Expr::Clone(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -343,7 +350,7 @@ impl Parser<'_> {
                     // carrier represents every magnitude the checker can admit,
                     // so there is nothing the parser must fold early. HIR folds
                     // it once the checker has picked a concrete width.
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -354,7 +361,7 @@ impl Parser<'_> {
                     )
                 }
                 Token::Tilde => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = self.peek_span().start;
                     (
                         Expr::Unary {
@@ -365,7 +372,7 @@ impl Parser<'_> {
                     )
                 }
                 Token::Await => {
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
                 }
@@ -374,7 +381,7 @@ impl Parser<'_> {
                     // the type checker rejects with either
                     // `UnsafeOperationRequiresBlock` (outside unsafe) or a
                     // "not lowered in v0.5" diagnostic (inside unsafe).
-                    let operand = self.parse_expr_bp(rbp)?;
+                    let operand = self.parse_prefix_operand(rbp)?;
                     let end = operand.1.end;
                     (
                         Expr::Unary {
@@ -432,7 +439,7 @@ impl Parser<'_> {
                     }
                     self.advance();
                     let end = self.peek_span().start;
-                    lhs = (Expr::PostfixTry(Box::new(lhs)), start..end);
+                    lhs = (Expr::PostfixTry(Chain::new(lhs)), start..end);
                     continue;
                 }
                 Some(Token::QuestionDot) => {
@@ -451,7 +458,7 @@ impl Parser<'_> {
                     let expr_start = lhs.1.start;
                     lhs = (
                         Expr::Cast {
-                            expr: Box::new(lhs),
+                            expr: Chain::new(lhs),
                             ty,
                         },
                         expr_start..end,
@@ -476,7 +483,7 @@ impl Parser<'_> {
                         let end = self.peek_span().start;
                         lhs = (
                             Expr::Call {
-                                function: Box::new(lhs),
+                                function: Chain::new(lhs),
                                 type_args: Some(type_args),
                                 args,
                                 is_tail_call: false,
@@ -553,17 +560,26 @@ impl Parser<'_> {
 
             // Optional recovery binds below logical/range operators. Defaults
             // associate right: a ?? b ?? c means a ?? (b ?? c).
+            // A run is read in a loop, each operand above `??`, and folded
+            // from the right, so its length costs no parser recursion.
             if self.peek() == Some(&Token::QuestionQuestion) && min_bp <= 2 {
-                self.advance();
-                let right = self.parse_expr_bp(2)?;
-                let end = right.1.end;
-                lhs = (
-                    Expr::Coalesce {
-                        left: Box::new(lhs),
-                        right: Box::new(right),
-                    },
-                    start..end,
-                );
+                let mut operands = vec![(start, lhs)];
+                while self.eat(&Token::QuestionQuestion) {
+                    let operand_start = self.peek_span().start;
+                    operands.push((operand_start, self.parse_expr_bp(3)?));
+                }
+                let (_, mut right) = operands.pop().expect("a `??` run has a right operand");
+                while let Some((left_start, left)) = operands.pop() {
+                    let end = right.1.end;
+                    right = (
+                        Expr::Coalesce {
+                            left: Chain::new(left),
+                            right: Chain::new(right),
+                        },
+                        left_start..end,
+                    );
+                }
+                lhs = right;
                 continue;
             }
             // `handle` remains a contextual identifier: parameter and function
@@ -760,7 +776,7 @@ impl Parser<'_> {
                     Expr::Literal(Literal::Integer { value: val, radix })
                 } else {
                     self.error_invalid_literal_with_hint(
-                        format!("invalid integer literal '{s}'"),
+                        invalid_int_literal_message(s),
                         "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                     );
                     return None;
@@ -1410,7 +1426,7 @@ impl Parser<'_> {
                     let actor_end = self.peek_span().start;
                     target = (
                         Expr::FieldAccess {
-                            object: Box::new(target),
+                            object: Chain::new(target),
                             field: actor_name,
                         },
                         start..actor_end,
@@ -1911,40 +1927,52 @@ impl Parser<'_> {
         Some(params)
     }
 
+    /// `receiver?.body`, where a run `a?.b?.c` nests to the right as
+    /// `a?.(b?.c)`. The links are read in a loop and folded from the right,
+    /// so a run's length costs no parser recursion.
     fn parse_optional_chain(&mut self, receiver: Spanned<Expr>) -> Option<Spanned<Expr>> {
-        if matches!(
-            self.peek_at(self.pos + 1),
-            Some(Token::LeftBracket | Token::LeftParen)
-        ) {
-            self.error(
-                "optional chains require a named member; use `?.get(index)` instead of `?.[index]`"
-                    .to_string(),
-            );
-            return None;
-        }
-        let start = receiver.1.start;
-        let placeholder = (
-            Expr::ChainValue,
-            self.peek_span().start..self.peek_span().start + 1,
-        );
-        let mut body = self.parse_dot_postfix(placeholder)?;
+        let mut links = vec![receiver];
         loop {
-            body = match self.peek() {
-                Some(Token::Dot) => self.parse_dot_postfix(body)?,
-                Some(Token::LeftParen) => self.parse_call_postfix(body)?,
-                Some(Token::LeftBracket) => self.parse_index_postfix(body)?,
-                Some(Token::QuestionDot) => self.parse_optional_chain(body)?,
-                _ => break,
-            };
+            if matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::LeftBracket | Token::LeftParen)
+            ) {
+                self.error(
+                    "optional chains require a named member; use `?.get(index)` instead of `?.[index]`"
+                        .to_string(),
+                );
+                return None;
+            }
+            let placeholder = (
+                Expr::ChainValue,
+                self.peek_span().start..self.peek_span().start + 1,
+            );
+            let mut body = self.parse_dot_postfix(placeholder)?;
+            loop {
+                body = match self.peek() {
+                    Some(Token::Dot) => self.parse_dot_postfix(body)?,
+                    Some(Token::LeftParen) => self.parse_call_postfix(body)?,
+                    Some(Token::LeftBracket) => self.parse_index_postfix(body)?,
+                    _ => break,
+                };
+            }
+            links.push(body);
+            if self.peek() != Some(&Token::QuestionDot) {
+                break;
+            }
         }
-        let end = body.1.end;
-        Some((
-            Expr::OptionalChain {
-                receiver: Box::new(receiver),
-                body: Box::new(body),
-            },
-            start..end,
-        ))
+        let mut body = links.pop().expect("an optional chain has a body");
+        while let Some(receiver) = links.pop() {
+            let span = receiver.1.start..body.1.end;
+            body = (
+                Expr::OptionalChain {
+                    receiver: Chain::new(receiver),
+                    body: Chain::new(body),
+                },
+                span,
+            );
+        }
+        Some(body)
     }
 
     #[allow(
@@ -1962,7 +1990,7 @@ impl Parser<'_> {
             let end = self.peek_span().start;
             return Some((
                 Expr::FieldAccess {
-                    object: Box::new(lhs),
+                    object: Chain::new(lhs),
                     field,
                 },
                 start..end,
@@ -2005,7 +2033,7 @@ impl Parser<'_> {
 
             Some((
                 Expr::MethodCall {
-                    receiver: Box::new(lhs),
+                    receiver: Chain::new(lhs),
                     method,
                     args,
                 },
@@ -2015,7 +2043,7 @@ impl Parser<'_> {
             let end = method.1.end;
             Some((
                 Expr::FieldAccess {
-                    object: Box::new(lhs),
+                    object: Chain::new(lhs),
                     field: method,
                 },
                 start..end,
@@ -2255,7 +2283,7 @@ impl Parser<'_> {
 
         let (function, type_args) = match lhs {
             (Expr::GenericApplySuffix { target, type_args }, _) => (target, Some(type_args)),
-            other => (Box::new(other), None),
+            other => (Chain::new(other), None),
         };
 
         Some((
@@ -2315,7 +2343,7 @@ impl Parser<'_> {
             );
             return Some((
                 Expr::Index {
-                    object: Box::new(lhs),
+                    object: Chain::new(lhs),
                     index: Box::new(range_expr),
                 },
                 start..end_pos,
@@ -2361,7 +2389,7 @@ impl Parser<'_> {
             );
             return Some((
                 Expr::Index {
-                    object: Box::new(lhs),
+                    object: Chain::new(lhs),
                     index: Box::new(range_expr),
                 },
                 start..end_pos,
@@ -2383,7 +2411,7 @@ impl Parser<'_> {
 
         Some((
             Expr::Index {
-                object: Box::new(lhs),
+                object: Chain::new(lhs),
                 index: Box::new(index),
             },
             start..end,

@@ -138,26 +138,31 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
     }
 }
 
+fn expr_contains_defer(expr: &Expr) -> bool {
+    crate::stack::ensure_sufficient_stack(|| expr_contains_defer_inner(expr))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive defer scan over all expression variants"
 )]
-fn expr_contains_defer(expr: &Expr) -> bool {
+fn expr_contains_defer_inner(expr: &Expr) -> bool {
     match expr {
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
-        | Expr::OptionalChain {
-            receiver: left,
-            body: right,
+        Expr::Coalesce { left, right } => {
+            expr_contains_defer(&left.0) || expr_contains_defer(&right.0)
         }
+        Expr::OptionalChain { receiver, body } => {
+            expr_contains_defer(&receiver.0) || expr_contains_defer(&body.0)
+        }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
             ..
         } => expr_contains_defer(&left.0) || expr_contains_defer(&right.0),
+        Expr::PostfixTry(operand) => expr_contains_defer(&operand.0),
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
-        | Expr::PostfixTry(operand)
         | Expr::ReturnError(operand)
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
@@ -275,9 +280,8 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                     expr_contains_defer(&timeout.duration.0) || expr_contains_defer(&timeout.body.0)
                 })
         }
-        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
-            expr_contains_defer(&expr.0)
-        }
+        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) => expr_contains_defer(&expr.0),
+        Expr::Cast { expr, .. } => expr_contains_defer(&expr.0),
         Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
             expr_contains_defer(&object.0)
         }
@@ -371,18 +375,25 @@ fn mark_stmt(stmt: &mut Stmt) {
     }
 }
 
+fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
+    crate::stack::ensure_sufficient_stack(|| mark_expr_inner(expr, is_tail_position));
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive tail-position scan over all expression variants"
 )]
-fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
+fn mark_expr_inner(expr: &mut Expr, is_tail_position: bool) {
     match expr {
-        Expr::Coalesce { left, right }
-        | Expr::OptionalChain {
-            receiver: left,
-            body: right,
+        Expr::Coalesce { left, right } => {
+            mark_expr(&mut left.0, false);
+            mark_expr(&mut right.0, is_tail_position);
         }
-        | Expr::Handle {
+        Expr::OptionalChain { receiver, body } => {
+            mark_expr(&mut receiver.0, false);
+            mark_expr(&mut body.0, is_tail_position);
+        }
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -396,9 +407,9 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         }
         // `clone <operand>` wraps its operand's value, so no call inside the
         // operand is in tail position — same as the other unary forms.
+        Expr::PostfixTry(operand) => mark_expr(&mut operand.0, false),
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
-        | Expr::PostfixTry(operand)
         | Expr::ReturnError(operand)
         | Expr::Clone(operand) => {
             mark_expr(&mut operand.0, false);
@@ -556,9 +567,8 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut timeout.body.0, is_tail_position);
             }
         }
-        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
-            mark_expr(&mut expr.0, false);
-        }
+        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) => mark_expr(&mut expr.0, false),
+        Expr::Cast { expr, .. } => mark_expr(&mut expr.0, false),
         Expr::FieldAccess { object, .. } | Expr::GenericApplySuffix { target: object, .. } => {
             mark_expr(&mut object.0, false);
         }

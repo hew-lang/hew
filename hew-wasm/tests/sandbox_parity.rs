@@ -1712,6 +1712,21 @@ fn assert_case(case: &ParityCase, stdin: &str) {
 
 #[cfg(unix)]
 #[test]
+fn postfix_chain_owned_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "postfix_chain_owned_values",
+            source_rel: "tests/core-acceptance/cases/postfix-chain-owned-values.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn quoted_file_import_aliases_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

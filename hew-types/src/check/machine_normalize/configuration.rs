@@ -344,7 +344,7 @@ impl Builder {
     fn result(&mut self, name: &str, value: Spanned<Expr>) -> Spanned<Expr> {
         let callee = self.variant(Ident::new(name), Vec::new(), Vec::new());
         self.expr(Expr::Call {
-            function: Box::new(callee),
+            function: hew_parser::chain::Chain::new(callee),
             args: vec![hew_parser::ast::CallArg::Positional(value)],
             type_args: None,
             is_tail_call: false,

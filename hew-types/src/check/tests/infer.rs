@@ -297,7 +297,7 @@ mod non_root_module_inference_scope {
         let root_id = ModulePath::root();
 
         let cast_expr = Expr::Cast {
-            expr: Box::new((Expr::Ident(Ident::new("x")), 20..21)),
+            expr: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("x")), 20..21)),
             ty: (TypeExpr::Infer, 25..26),
         };
         let let_stmt = Stmt::Let {

@@ -186,13 +186,20 @@ impl Checker {
     /// hint for the inner `Vec::new()` because it is unbound). Only `let` /
     /// `var` bindings produce hints in this slice.
     pub(super) fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
+        hew_parser::stack::ensure_sufficient_stack(|| self.scan_expr_for_stack_hints_inner(expr));
+    }
+
+    fn scan_expr_for_stack_hints_inner(&mut self, expr: &Expr) {
         match expr {
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
+            } => {
+                self.scan_expr_for_stack_hints(&left.0);
+                self.scan_expr_for_stack_hints(&right.0);
             }
-            | Expr::Handle {
+            Expr::Handle {
                 operand: left,
                 body: right,
                 ..

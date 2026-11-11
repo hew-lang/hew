@@ -43,6 +43,17 @@ impl Checker {
         span: &Span,
         scopes: &[DangerousRcScope],
     ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.check_expr_is_rc_param_return_inner(expr, span, scopes);
+        });
+    }
+
+    fn check_expr_is_rc_param_return_inner(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        scopes: &[DangerousRcScope],
+    ) {
         match expr {
             Expr::Coalesce { right, .. } => {
                 self.check_expr_is_rc_param_return(&right.0, &right.1, scopes);
@@ -380,6 +391,16 @@ impl Checker {
         expr: &Expr,
         scopes: &[DangerousRcScope],
     ) -> Option<DangerousRcBinding> {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.dangerous_source_in_expr_inner(expr, scopes)
+        })
+    }
+
+    fn dangerous_source_in_expr_inner(
+        &mut self,
+        expr: &Expr,
+        scopes: &[DangerousRcScope],
+    ) -> Option<DangerousRcBinding> {
         match expr {
             Expr::Ident(name) => Self::lookup_dangerous_binding(name.name.as_str(), scopes),
             Expr::Call { function, args, .. }
@@ -473,11 +494,21 @@ impl Checker {
 
     /// Recursively scan statements for `return <rc_param_ident>`,
     /// `break <rc_param_ident>`, and nested control-flow bodies.
+    pub(in crate::check) fn scan_stmts_for_rc_param_return(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        scopes: &mut Vec<DangerousRcScope>,
+    ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.scan_stmts_for_rc_param_return_inner(stmts, scopes);
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "borrowed Rc escape scanning covers many statement forms"
     )]
-    pub(in crate::check) fn scan_stmts_for_rc_param_return(
+    fn scan_stmts_for_rc_param_return_inner(
         &mut self,
         stmts: &[Spanned<Stmt>],
         scopes: &mut Vec<DangerousRcScope>,
@@ -721,11 +752,30 @@ impl Checker {
         }
     }
 
+    pub(super) fn scan_stmts_for_owned_handle_field_return(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        receiver_name: &str,
+        type_name: crate::TypeHead,
+        method_name: &str,
+        bindings: &mut HashMap<String, (String, String)>,
+    ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.scan_stmts_for_owned_handle_field_return_inner(
+                stmts,
+                receiver_name,
+                type_name,
+                method_name,
+                bindings,
+            );
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "owned-handle bind-then-return scanning covers many statement forms"
     )]
-    pub(super) fn scan_stmts_for_owned_handle_field_return(
+    fn scan_stmts_for_owned_handle_field_return_inner(
         &mut self,
         stmts: &[Spanned<Stmt>],
         receiver_name: &str,
@@ -852,11 +902,32 @@ impl Checker {
         }
     }
 
+    pub(super) fn check_expr_for_owned_handle_field_return(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        receiver_name: &str,
+        type_name: crate::TypeHead,
+        method_name: &str,
+        bindings: &mut HashMap<String, (String, String)>,
+    ) {
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            self.check_expr_for_owned_handle_field_return_inner(
+                expr,
+                span,
+                receiver_name,
+                type_name,
+                method_name,
+                bindings,
+            );
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "owned-handle return-position scanning covers many expression forms"
     )]
-    pub(super) fn check_expr_for_owned_handle_field_return(
+    fn check_expr_for_owned_handle_field_return_inner(
         &mut self,
         expr: &Expr,
         span: &Span,
@@ -964,15 +1035,19 @@ impl Checker {
                     );
                 }
             }
-            Expr::Coalesce { right: body, .. }
-            | Expr::Handle { body, .. }
-            | Expr::OptionalChain { body, .. } => {
+            Expr::Coalesce { right: body, .. } | Expr::OptionalChain { body, .. } => {
+                self.check_expr_for_owned_handle_field_return(
+                    &body.0,
+                    &body.1,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                    &mut bindings.clone(),
+                );
+            }
+            Expr::Handle { body, error, .. } => {
                 let mut branch_bindings = bindings.clone();
-                if let Expr::Handle {
-                    error: (Some(name), _),
-                    ..
-                } = expr
-                {
+                if let (Some(name), _) = error {
                     branch_bindings.remove(name.name.as_str());
                 }
                 self.check_expr_for_owned_handle_field_return(

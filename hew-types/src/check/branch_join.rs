@@ -161,6 +161,10 @@ enum BranchValue {
 }
 
 fn expr_value(expr: &Expr) -> BranchValue {
+    hew_parser::stack::ensure_sufficient_stack(|| expr_value_inner(expr))
+}
+
+fn expr_value_inner(expr: &Expr) -> BranchValue {
     match expr {
         Expr::ContextVariant(_) => BranchValue::Contextual,
         Expr::Call { function, .. } if matches!(function.0, Expr::ContextVariant(_)) => {

@@ -44,6 +44,13 @@ impl Builder<'_, '_> {
         &mut self,
         target: &HirExpr,
     ) -> Result<WritablePath, SirLoweringError> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.resolve_writable_path_inner(target))
+    }
+
+    fn resolve_writable_path_inner(
+        &mut self,
+        target: &HirExpr,
+    ) -> Result<WritablePath, SirLoweringError> {
         let (root, projections) = self.projection_chain(target)?;
         if matches!(root.kind, HirExprKind::BorrowedIndex { .. }) {
             return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "an affine collection element is borrowed; a writable path requires a semantic copy".into() });

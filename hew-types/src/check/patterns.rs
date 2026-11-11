@@ -851,7 +851,9 @@ impl Checker {
         if self.bind_pattern_recording {
             // Nested sub-pattern: its binders belong to the top-level delta
             // already being recorded by an enclosing call.
-            self.bind_pattern_inner(pattern, ty, is_mutable, span);
+            hew_parser::stack::ensure_sufficient_stack(|| {
+                self.bind_pattern_inner(pattern, ty, is_mutable, span);
+            });
             return;
         }
         self.bind_pattern_recording = true;

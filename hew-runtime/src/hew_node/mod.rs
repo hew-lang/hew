@@ -571,9 +571,20 @@ pub(crate) enum RemoteSetupKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingReplyKind {
     Ask(u64),
+    /// An offer to a peer without service sessions, bound to one publication.
     Offer(u64),
-    Import(u64),
+    /// An offer its recipient session acknowledges on any publication.
+    SessionOffer,
+    /// A wait for an offer from one issuer session.
+    Import,
     Setup(RemoteSetupKind, u64),
+}
+
+impl PendingReplyKind {
+    /// Session-scoped waits survive the loss of one connection.
+    fn session_scoped(self) -> bool {
+        matches!(self, Self::SessionOffer | Self::Import)
+    }
 }
 
 pub(crate) struct PendingReply {
@@ -722,6 +733,7 @@ impl ReplyRoutingTable {
     }
 
     /// Fail every pending reply tied to the given connection with `ask_error`.
+    /// Session-scoped offers and imports wait for the peer session instead.
     ///
     /// Drains the matching entries under the table lock (so a second failure
     /// path — e.g. a SWIM-DEAD verdict racing a socket drop — finds nothing and
@@ -735,7 +747,8 @@ impl ReplyRoutingTable {
             let request_ids = map
                 .iter()
                 .filter_map(|(&request_id, pending)| {
-                    (pending.connection == connection).then_some(request_id)
+                    (pending.connection == connection && !pending.kind.session_scoped())
+                        .then_some(request_id)
                 })
                 .collect::<Vec<_>>();
             request_ids
@@ -864,6 +877,28 @@ impl ReplyRoutingTable {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.get(&request_id) {
             Some(pending) if pending.connection == expected && pending.kind == kind => {
+                map.remove(&request_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Remove a session-scoped `request_id` registered by the same manager;
+    /// its peer session, not its first connection, owns the reply.
+    fn remove_if_manager(
+        &self,
+        request_id: u64,
+        expected: ConnectionKey,
+        kind: PendingReplyKind,
+    ) -> Option<Arc<PendingReply>> {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get(&request_id) {
+            Some(pending)
+                if pending.connection.conn_mgr == expected.conn_mgr && pending.kind == kind =>
+            {
                 map.remove(&request_id)
             }
             _ => None,
@@ -1668,6 +1703,17 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
     };
     if !matches!(state, cluster::MEMBER_DEAD | cluster::MEMBER_LEFT) {
         return;
+    }
+    // The callback belongs to this node, which can differ from CURRENT_NODE.
+    // Fail service waits for its buried peer session through the same owner.
+    // SAFETY: membership callback dispatch pins this node and its manager.
+    if let Some(manager) = unsafe { node.conn_mgr.as_ref() } {
+        manager
+            .service_exports
+            .retire_session(crate::envelope::NodeSessionIdentity {
+                node_id: dead_identity,
+                session_incarnation: session,
+            });
     }
     // SAFETY: registry belongs to the live callback-owning node.
     let registry = unsafe { &*node.registry };

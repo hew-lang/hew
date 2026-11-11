@@ -15,12 +15,78 @@ use std::sync::{Arc, Mutex, Weak};
 
 const SERVICE_EXPORT_LIMIT: usize = 256;
 const SERVICE_OFFER_LIMIT: usize = 256;
+/// Closed session-scoped grants whose retraction each successor publication of
+/// the recipient session repeats. A conforming recipient that misses more than
+/// this many retractions keeps the oldest ones until the issuer session ends;
+/// the issuer still refuses every call on them.
+const SERVICE_RETRACT_LIMIT: usize = SERVICE_EXPORT_LIMIT;
+/// Session-scoped grants this recipient already imported, so a re-sent offer is
+/// acknowledged without importing the grant twice. An issuer has at most
+/// `SERVICE_EXPORT_LIMIT` live grants and retracts the ones it closes; an
+/// evicted entry matters only for an offer re-sent after this many newer
+/// imports.
+const SERVICE_IMPORTED_LIMIT: usize = SERVICE_EXPORT_LIMIT;
 
 #[derive(Debug)]
 struct ExportRecord {
     authority: ExportAuthority,
     dispatch: usize,
     offer: ServiceOfferPayload,
+    /// The recipient session acknowledges this offer on any of its
+    /// publications, and closing the grant retracts it.
+    session_scoped: bool,
+    acknowledged: bool,
+    delivery: Arc<OfferDelivery>,
+}
+
+struct OfferDelivery {
+    live: AtomicBool,
+    #[cfg(test)]
+    before_send: Arc<super::inbound::TestGate>,
+}
+
+impl std::fmt::Debug for OfferDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OfferDelivery")
+            .field("live", &self.live)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ExportRecord {
+    fn drop(&mut self) {
+        self.delivery.live.store(false, Ordering::Release);
+    }
+}
+
+impl ExportRecord {
+    fn awaiting_acknowledgement(&self) -> bool {
+        self.session_scoped && !self.acknowledged
+    }
+}
+
+/// An offer queued at the recipient until a receive takes it.
+struct QueuedOffer {
+    offer: ServiceOfferPayload,
+    session_scoped: bool,
+}
+
+/// A closed grant whose retraction the recipient may not have read yet.
+struct Retraction {
+    recipient: NodeSessionIdentity,
+    grant_id: u64,
+    target: Location,
+}
+
+fn issuer_session(offer: &ServiceOfferPayload) -> NodeSessionIdentity {
+    NodeSessionIdentity {
+        node_id: offer.target.node(),
+        session_incarnation: offer.target.incarnation(),
+    }
+}
+
+fn superseded_by(session: NodeSessionIdentity, current: NodeSessionIdentity) -> bool {
+    session.node_id == current.node_id && session.session_incarnation < current.session_incarnation
 }
 
 /// A role grant owns the declared role authority, independently of its worker.
@@ -78,10 +144,111 @@ struct ImportWaiter {
 
 struct ServiceState {
     closed: bool,
+    /// The connection manager that owns these exports. It is used only under
+    /// this lock while `closed` is false: manager free closes the exports
+    /// before releasing the manager.
+    manager: *const crate::connection::HewConnMgr,
     next_grant: u64,
     exports: HashMap<u64, ExportRecord>,
-    offers: VecDeque<ServiceOfferPayload>,
+    retractions: VecDeque<Retraction>,
+    offers: VecDeque<QueuedOffer>,
+    imported: VecDeque<ServiceOfferPayload>,
     waiters: Vec<ImportWaiter>,
+}
+
+// SAFETY: the manager pointer is dereferenced only under the state lock while
+// the owning manager is open; see `ServiceState::manager`.
+unsafe impl Send for ServiceState {}
+
+impl ServiceState {
+    /// Send one control frame to `recipient` on its current publication when
+    /// that publication negotiated service sessions. A missing or failed send
+    /// is repeated by the recipient session's next publication.
+    fn send_to_session(
+        &self,
+        recipient: NodeSessionIdentity,
+        ctrl_kind: u64,
+        payload: Vec<u8>,
+        fallback: Option<crate::connection::SendClaim>,
+        delivery: Option<Arc<OfferDelivery>>,
+    ) {
+        if self.closed || self.manager.is_null() {
+            return;
+        }
+        // SAFETY: an open state's manager outlives this lock; see `manager`.
+        let manager = unsafe { &*self.manager };
+        let Some(claim) =
+            crate::connection::claim_send_by_identity(manager, recipient.node_id, None)
+                .or(fallback)
+        else {
+            return;
+        };
+        if claim.peer_session() != recipient || !claim.service_sessions() {
+            return;
+        }
+        let Ok(bytes) = crate::envelope::encode_control_frame(&crate::envelope::ControlFrame {
+            version: crate::envelope::WIRE_VERSION,
+            ctrl_kind,
+            payload,
+        }) else {
+            return;
+        };
+        let _ = claim.submit(
+            move || {
+                if let Some(delivery) = delivery {
+                    #[cfg(test)]
+                    delivery.before_send.hit();
+                    // Preparation runs under the channel's send lock. Closing
+                    // a grant before this point must not publish a later offer
+                    // after its retraction, even if pool workers run out of order.
+                    if !delivery.live.load(Ordering::Acquire) {
+                        return None;
+                    }
+                }
+                Some(bytes)
+            },
+            |_| {},
+        );
+    }
+
+    fn send_offer(
+        &self,
+        offer: &ServiceOfferPayload,
+        fallback: Option<crate::connection::SendClaim>,
+        delivery: Arc<OfferDelivery>,
+    ) {
+        if let Ok(payload) = crate::envelope::encode_service_offer_payload(offer) {
+            self.send_to_session(
+                offer.recipient,
+                crate::envelope::CTRL_SERVICE_OFFER,
+                payload,
+                fallback,
+                Some(delivery),
+            );
+        }
+    }
+
+    fn send_retraction(&self, retraction: &Retraction) {
+        self.send_to_session(
+            retraction.recipient,
+            crate::envelope::CTRL_SERVICE_RETRACT,
+            crate::envelope::encode_service_retract_payload(
+                &crate::envelope::ServiceRetractPayload {
+                    grant_id: retraction.grant_id,
+                    target: retraction.target,
+                },
+            ),
+            None,
+            None,
+        );
+    }
+
+    fn remember_import(&mut self, offer: &ServiceOfferPayload) {
+        if self.imported.len() >= SERVICE_IMPORTED_LIMIT {
+            self.imported.pop_front();
+        }
+        self.imported.push_back(offer.clone());
+    }
 }
 
 pub(crate) struct ServiceExports {
@@ -99,9 +266,12 @@ impl Default for ServiceExports {
         Self {
             state: Mutex::new(ServiceState {
                 closed: false,
+                manager: std::ptr::null(),
                 next_grant: 1,
                 exports: HashMap::new(),
+                retractions: VecDeque::new(),
                 offers: VecDeque::new(),
+                imported: VecDeque::new(),
                 waiters: Vec::new(),
             }),
         }
@@ -109,30 +279,83 @@ impl Default for ServiceExports {
 }
 
 impl ServiceExports {
+    /// Bind the manager that sends this node's offers and retractions.
+    pub(crate) fn bind(&self, manager: *const crate::connection::HewConnMgr) {
+        self.state.lock_or_recover().manager = manager;
+    }
+
+    /// A publication of `peer` is current. Grants and offers bound to an older
+    /// session of that node retire; offers and retractions for this session
+    /// that it may not have read are sent again on the new publication.
     pub(crate) fn observe_session(&self, peer: NodeSessionIdentity) {
-        let retired = {
+        let mut failed = Vec::new();
+        {
             let mut state = self.state.lock_or_recover();
             state.exports.retain(|_, record| {
-                record.offer.recipient.node_id != peer.node_id
-                    || record.offer.recipient.session_incarnation >= peer.session_incarnation
-            });
-            state.offers.retain(|offer| {
-                offer.target.node() != peer.node_id
-                    || offer.target.incarnation() >= peer.session_incarnation
-            });
-            let mut retired = Vec::new();
-            state.waiters.retain(|waiter| {
-                let current = waiter.issuer.node_id != peer.node_id
-                    || waiter.issuer.session_incarnation >= peer.session_incarnation;
-                if !current {
-                    retired.extend(waiter.pending.upgrade());
+                let current = !superseded_by(record.offer.recipient, peer);
+                if !current && record.awaiting_acknowledgement() {
+                    failed.push(record.offer.request_id);
                 }
                 current
             });
-            retired
+            state
+                .retractions
+                .retain(|retraction| !superseded_by(retraction.recipient, peer));
+            state
+                .offers
+                .retain(|queued| !superseded_by(issuer_session(&queued.offer), peer));
+            state
+                .imported
+                .retain(|offer| !superseded_by(issuer_session(offer), peer));
+            state.waiters.retain(|waiter| {
+                let current = !superseded_by(waiter.issuer, peer);
+                if !current {
+                    failed.extend(waiter.pending.upgrade().map(|pending| pending.request_id));
+                }
+                current
+            });
+            for retraction in state.retractions.iter().filter(|r| r.recipient == peer) {
+                state.send_retraction(retraction);
+            }
+            for record in state.exports.values().filter(|record| {
+                record.offer.recipient == peer && record.awaiting_acknowledgement()
+            }) {
+                state.send_offer(&record.offer, None, Arc::clone(&record.delivery));
+            }
+        }
+        if let Some(table) = super::reply_table_opt() {
+            for request_id in failed {
+                table.fail(request_id, AskError::StaleRef);
+            }
+        }
+    }
+
+    /// Membership buried `peer`: an offer to it or a receive from it cannot
+    /// complete on a later publication of that session, so it fails now.
+    pub(crate) fn retire_session(&self, peer: NodeSessionIdentity) {
+        let failed = {
+            let state = self.state.lock_or_recover();
+            state
+                .exports
+                .values()
+                .filter(|record| {
+                    record.offer.recipient == peer && record.awaiting_acknowledgement()
+                })
+                .map(|record| record.offer.request_id)
+                .chain(
+                    state
+                        .waiters
+                        .iter()
+                        .filter(|waiter| waiter.issuer == peer)
+                        .filter_map(|waiter| waiter.pending.upgrade())
+                        .map(|pending| pending.request_id),
+                )
+                .collect::<Vec<_>>()
         };
-        for pending in retired {
-            super::reply_table().fail(pending.request_id, AskError::StaleRef);
+        if let Some(table) = super::reply_table_opt() {
+            for request_id in failed {
+                table.fail(request_id, AskError::Partition);
+            }
         }
     }
 
@@ -141,7 +364,9 @@ impl ServiceExports {
             let mut state = self.state.lock_or_recover();
             state.closed = true;
             state.exports.clear();
+            state.retractions.clear();
             state.offers.clear();
+            state.imported.clear();
             std::mem::take(&mut state.waiters)
         };
         for waiter in waiters {
@@ -197,6 +422,13 @@ impl ServiceExports {
                 authority,
                 dispatch,
                 offer: offer.clone(),
+                session_scoped: false,
+                acknowledged: false,
+                delivery: Arc::new(OfferDelivery {
+                    live: AtomicBool::new(true),
+                    #[cfg(test)]
+                    before_send: Arc::default(),
+                }),
             },
         );
         Ok((
@@ -208,37 +440,91 @@ impl ServiceExports {
         ))
     }
 
+    /// Send an exported grant's offer and repeat it on each publication of the
+    /// recipient session until that session acknowledges it. The offer goes
+    /// on the session's current publication; `acquired`, the publication the
+    /// export was requested on, carries it while a successor is still being
+    /// admitted, since that successor's publication repeats it.
+    pub(super) fn deliver(&self, grant_id: u64, acquired: Option<crate::connection::SendClaim>) {
+        let mut state = self.state.lock_or_recover();
+        let Some(record) = state.exports.get_mut(&grant_id) else {
+            return;
+        };
+        record.session_scoped = true;
+        let offer = record.offer.clone();
+        let delivery = Arc::clone(&record.delivery);
+        state.send_offer(&offer, acquired, delivery);
+    }
+
+    #[cfg(test)]
+    pub(super) fn offer_send_gate_for_test(&self, grant_id: u64) -> Arc<super::inbound::TestGate> {
+        Arc::clone(
+            &self.state.lock_or_recover().exports[&grant_id]
+                .delivery
+                .before_send,
+        )
+    }
+
+    /// Record that this grant's offer reached its session-scoped recipient
+    /// without sending it, as if the acknowledgement were lost in transit.
+    #[cfg(test)]
+    pub(super) fn mark_delivered_for_test(&self, grant_id: u64) {
+        if let Some(record) = self.state.lock_or_recover().exports.get_mut(&grant_id) {
+            record.session_scoped = true;
+        }
+    }
+
+    /// Whether an offer for `grant_id` from `issuer` is queued for a receive.
+    #[cfg(test)]
+    pub(super) fn holds_offer(&self, issuer: NodeSessionIdentity, grant_id: u64) -> bool {
+        self.state.lock_or_recover().offers.iter().any(|queued| {
+            issuer_session(&queued.offer) == issuer && queued.offer.grant_id == grant_id
+        })
+    }
+
+    /// Admit an authenticated offer. A session-scoped offer this node already
+    /// holds or imported is acknowledged again without a second import.
     pub(crate) fn offer(
         &self,
         offer: ServiceOfferPayload,
-        publication: u64,
+        session_scoped: bool,
     ) -> Result<(), AskError> {
         let mut state = self.state.lock_or_recover();
         if state.closed {
             return Err(AskError::LocalShutdown);
         }
-        if state.offers.iter().any(|existing| {
-            existing.target.node() == offer.target.node()
-                && existing.target.incarnation() == offer.target.incarnation()
-                && existing.grant_id == offer.grant_id
-        }) {
-            return Err(AskError::Unauthorized);
+        let issuer = issuer_session(&offer);
+        let same_grant = |held: &ServiceOfferPayload| {
+            issuer_session(held) == issuer && held.grant_id == offer.grant_id
+        };
+        if let Some(held) = state
+            .offers
+            .iter()
+            .map(|queued| &queued.offer)
+            .chain(state.imported.iter())
+            .find(|held| same_grant(held))
+        {
+            return if *held == offer {
+                Ok(())
+            } else {
+                Err(AskError::Unauthorized)
+            };
         }
         state
             .waiters
             .retain(|waiter| waiter.pending.strong_count() != 0);
-        if let Some(index) = state.waiters.iter().position(|waiter| {
-            waiter.issuer.node_id == offer.target.node()
-                && waiter.issuer.session_incarnation == offer.target.incarnation()
-                && waiter
-                    .pending
-                    .upgrade()
-                    .is_some_and(|pending| pending.kind == PendingReplyKind::Import(publication))
-        }) {
+        if let Some(index) = state
+            .waiters
+            .iter()
+            .position(|waiter| waiter.issuer == issuer)
+        {
             let waiter = state.waiters.remove(index);
             if let Some(pending) = waiter.pending.upgrade() {
                 if waiter.handlers == offer.handlers {
                     if Self::complete_import(&pending, &offer) {
+                        if session_scoped {
+                            state.remember_import(&offer);
+                        }
                         return Ok(());
                     }
                 } else {
@@ -249,8 +535,22 @@ impl ServiceExports {
         if state.offers.len() >= SERVICE_OFFER_LIMIT {
             return Err(AskError::WorkerAtCapacity);
         }
-        state.offers.push_back(offer);
+        state.offers.push_back(QueuedOffer {
+            offer,
+            session_scoped,
+        });
         Ok(())
+    }
+
+    /// The issuer closed `grant_id`: an offer still queued for it is no longer
+    /// receivable, and the grant needs no further de-duplication.
+    pub(crate) fn retract(&self, issuer: NodeSessionIdentity, grant_id: u64) {
+        let mut state = self.state.lock_or_recover();
+        let other_grant = |held: &ServiceOfferPayload| {
+            issuer_session(held) != issuer || held.grant_id != grant_id
+        };
+        state.offers.retain(|queued| other_grant(&queued.offer));
+        state.imported.retain(|offer| other_grant(offer));
     }
 
     pub(super) fn receive(
@@ -264,15 +564,20 @@ impl ServiceExports {
         if state.closed {
             return Err(AskError::LocalShutdown);
         }
-        if let Some(index) = state.offers.iter().position(|offer| {
-            offer.target.node() == issuer.node_id
-                && offer.target.incarnation() == issuer.session_incarnation
-        }) {
-            if state.offers[index].handlers != handlers {
+        if let Some(index) = state
+            .offers
+            .iter()
+            .position(|queued| issuer_session(&queued.offer) == issuer)
+        {
+            if state.offers[index].offer.handlers != handlers {
                 return Err(AskError::Unauthorized);
             }
-            if Self::complete_import(pending, &state.offers[index]) {
-                state.offers.remove(index);
+            if Self::complete_import(pending, &state.offers[index].offer) {
+                if let Some(queued) = state.offers.remove(index) {
+                    if queued.session_scoped {
+                        state.remember_import(&queued.offer);
+                    }
+                }
             }
             return Ok(());
         }
@@ -318,8 +623,8 @@ impl ServiceExports {
         publication: u64,
         result: &crate::envelope::SetupResultPayload,
     ) -> bool {
-        let state = self.state.lock_or_recover();
-        let Some(record) = state.exports.get(&result.ref_id) else {
+        let mut state = self.state.lock_or_recover();
+        let Some(record) = state.exports.get_mut(&result.ref_id) else {
             return false;
         };
         if record.offer.request_id != result.setup_id
@@ -328,14 +633,26 @@ impl ServiceExports {
         {
             return false;
         }
-        let Some(pending) = super::reply_table().remove_if_connection(
-            result.setup_id,
-            connection,
-            PendingReplyKind::Offer(publication),
-        ) else {
+        let accepted = result.status == crate::envelope::SETUP_STATUS_ACCEPTED;
+        let pending = if record.session_scoped {
+            record.acknowledged |= accepted;
+            super::reply_table().remove_if_manager(
+                result.setup_id,
+                connection,
+                PendingReplyKind::SessionOffer,
+            )
+        } else {
+            super::reply_table().remove_if_connection(
+                result.setup_id,
+                connection,
+                PendingReplyKind::Offer(publication),
+            )
+        };
+        drop(state);
+        let Some(pending) = pending else {
             return false;
         };
-        if result.status == crate::envelope::SETUP_STATUS_ACCEPTED {
+        if accepted {
             ReplyRoutingTable::complete_pending(
                 &pending,
                 ReplyOutcome {
@@ -427,10 +744,31 @@ pub(super) struct ExportLease {
 }
 
 impl Drop for ExportLease {
+    /// Closing the export revokes the grant; a session-scoped recipient is
+    /// told so that an offer it has not yet received stays unreceivable.
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.upgrade() {
-            owner.state.lock_or_recover().exports.remove(&self.grant_id);
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        let mut state = owner.state.lock_or_recover();
+        let Some(record) = state.exports.remove(&self.grant_id) else {
+            return;
+        };
+        if !record.session_scoped || state.closed {
+            return;
         }
+        if state.retractions.len() >= SERVICE_RETRACT_LIMIT {
+            state.retractions.pop_front();
+        }
+        let retraction = Retraction {
+            recipient: record.offer.recipient,
+            grant_id: record.offer.grant_id,
+            target: record.offer.target,
+        };
+        // Revoke queued offers before a worker can send the retraction.
+        drop(record);
+        state.send_retraction(&retraction);
+        state.retractions.push_back(retraction);
     }
 }
 

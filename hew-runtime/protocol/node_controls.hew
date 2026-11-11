@@ -36,6 +36,12 @@ pub type ServiceOffer {
 }
 
 #[wire]
+pub type ServiceRetract {
+    grant_id: u64 @1;
+    target: WireLocation @2;
+}
+
+#[wire]
 pub type MonitorDown {
     ref_id: u64 @1;
     target: WireLocation @2;

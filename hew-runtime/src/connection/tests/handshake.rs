@@ -75,6 +75,21 @@ fn schema_hash_mismatch_rejected() {
 }
 
 #[test]
+fn service_sessions_are_optional_for_handshake_compatibility() {
+    let local = local_handshake(test_node_identity(1), 1, [3; NOISE_STATIC_PUBKEY_LEN]);
+    let mut legacy = local_handshake(test_node_identity(2), 1, [4; NOISE_STATIC_PUBKEY_LEN]);
+    legacy.feature_flags &= !HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS;
+    let legacy = HewHandshake::deserialize(&legacy.serialize()).unwrap();
+    assert!(version_compatible(&local, &legacy));
+    assert!(schema_compatible(&local, &legacy));
+    assert!(super::super::handshake::negotiates_responder_commit(
+        &local, &legacy
+    ));
+    assert!(supports_service_sessions(local.feature_flags));
+    assert!(!supports_service_sessions(legacy.feature_flags));
+}
+
+#[test]
 fn handshake_rejects_invalid_identity_session_key_and_old_fixed_record() {
     let local = local_handshake(test_node_identity(1), 1, [3; NOISE_STATIC_PUBKEY_LEN]);
     let encoded = local.serialize();

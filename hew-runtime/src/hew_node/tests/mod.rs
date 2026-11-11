@@ -9,6 +9,7 @@ mod inbound;
 mod lifecycle;
 mod remote_wire;
 mod reply;
+mod service_offers;
 mod swim;
 
 /// Ask deadline for tests whose outcome IS the timeout: no reply can ever

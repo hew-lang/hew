@@ -203,10 +203,10 @@ pub unsafe extern "C" fn hew_service_acquire_new(
                 }
                 let claim = peer_claim(manager, peer)?;
                 let connection = ConnectionKey::new(manager, claim.connection_id());
-                let kind = if export {
-                    PendingReplyKind::Offer(claim.publication_token)
-                } else {
-                    PendingReplyKind::Import(claim.publication_token)
+                let kind = match (export, claim.service_sessions()) {
+                    (true, true) => PendingReplyKind::SessionOffer,
+                    (true, false) => PendingReplyKind::Offer(claim.publication_token),
+                    (false, _) => PendingReplyKind::Import,
                 };
                 // SAFETY: the operation retains the generated readiness target.
                 let owned = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
@@ -278,6 +278,12 @@ fn start_export(
         location,
         handlers,
     )?;
+    if claim.service_sessions() {
+        // The recorded grant is offered on the session's current publication
+        // and again on each successor until the recipient acknowledges it.
+        manager.service_exports.deliver(offer.grant_id, Some(claim));
+        return Ok(lease);
+    }
     let payload = crate::envelope::encode_service_offer_payload(&offer)
         .map_err(|_| AskError::EncodeFailed)?;
     let bytes = crate::envelope::encode_control_frame(&crate::envelope::ControlFrame {

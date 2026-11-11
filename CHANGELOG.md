@@ -15,6 +15,9 @@
   split debug symbols.
 - Capture available browser sandbox frames and reject mixed version 12 and 13
   distributed peers explicitly.
+- Reduce temporary allocations in native and browser string interpolation while
+  preserving evaluation order. Ordinary string growth can retain extra capacity
+  and change when a bounded actor reaches its heap limit.
 
 ## [0.10.0-rc2] - 2026-11-11
 

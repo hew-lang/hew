@@ -2962,6 +2962,7 @@ pub unsafe extern "C" fn hew_vec_try_new_with_elem_layout_capacity(
     layout: *const HewValueLayout,
     capacity: i64,
 ) -> *mut HewVec {
+    // SAFETY: the caller supplies a live compiler-verified descriptor or null.
     let Some(descriptor) = (unsafe { layout.as_ref() }) else {
         return ptr::null_mut();
     };
@@ -2989,6 +2990,7 @@ pub unsafe extern "C" fn hew_vec_try_new_with_elem_layout_capacity(
     let base = if capacity == 0 {
         ptr::null_mut()
     } else {
+        // SAFETY: the computed layout is non-zero and valid.
         unsafe { alloc(buffer_layout) }
     };
     if capacity != 0 && base.is_null() {

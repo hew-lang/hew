@@ -133,6 +133,10 @@ pub fn link_executable(
 /// Supplying `hew_lib` prevents in-process callers from accidentally resolving
 /// the archive relative to their host executable rather than the compiler
 /// whose pipeline they are invoking.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the link plan is assembled and executed at one boundary"
+)]
 pub(crate) fn link_executable_with_hew_lib(
     object_path: &str,
     output_path: &str,

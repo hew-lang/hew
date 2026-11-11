@@ -59,7 +59,11 @@ fn last_failure_outlives_its_unloaded_image() {
         hew_fault_set_site_in_image(fault, 0, files.cast(), sites.cast(), std::ptr::null());
         assert_eq!(libc::dlclose(handle), 0);
         let mut info: libc::Dl_info = std::mem::zeroed();
-        assert_eq!(libc::dladdr(files, &mut info), 0, "image must be unloaded");
+        assert_eq!(
+            libc::dladdr(files, &raw mut info),
+            0,
+            "image must be unloaded"
+        );
         let record = &*hew_debug_last_fault();
         assert_eq!(CStr::from_ptr(record.site.file).to_bytes(), b"retired.hew");
         assert_eq!((record.site.line, record.site.col), (2, 3));
@@ -72,7 +76,6 @@ fn last_failure_outlives_its_unloaded_image() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn frames_from_the_originating_image_survive_unload() {
-    let _guard = IMAGE_TEST_LOCK.lock().unwrap();
     use hew_debug_abi::SymbolRecord;
     use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -86,6 +89,7 @@ fn frames_from_the_originating_image_survive_unload() {
         }
     }
 
+    let _guard = IMAGE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("image.c");
     let assembly = dir.path().join("tables.S");
@@ -144,7 +148,11 @@ void run_trace(void (*callback)(const unsigned char *, const unsigned char *, co
         assert!(!fault.is_null());
         assert_eq!(libc::dlclose(handle), 0);
         let mut info: libc::Dl_info = std::mem::zeroed();
-        assert_eq!(libc::dladdr(entry, &mut info), 0, "image must be unloaded");
+        assert_eq!(
+            libc::dladdr(entry, &raw mut info),
+            0,
+            "image must be unloaded"
+        );
         let record = &*hew_debug_last_fault();
         let frame = record
             .frames()

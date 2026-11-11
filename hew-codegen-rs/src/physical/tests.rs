@@ -1706,6 +1706,7 @@ fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
             &verified,
             &PhysicalEmitOptions {
                 module_name: "loop_chunk_symbols",
+                debug_script_dir: None,
                 out_dir: dir.path(),
                 target_triple: Some(&triple),
                 opt_level,

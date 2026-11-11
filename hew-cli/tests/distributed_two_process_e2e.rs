@@ -109,7 +109,7 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation, stdou
                     .find_map(|line| line.strip_prefix("LINK_ORIGIN "))
                     .expect("fixture must publish the authenticated remote Location");
                 assert_eq!(
-                    crash.remote_origin.as_deref(),
+                    crash.remote_origin,
                     Some(location),
                     "linked crash must retain its exact remote node, actor and incarnation; stdout:\n{stdout}\nstderr:\n{stderr}"
                 );

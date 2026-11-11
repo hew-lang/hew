@@ -1694,7 +1694,9 @@ impl PhysicalSourceFile {
         let prior = self
             .continuation_bytes
             .partition_point(|byte| *byte < start);
-        let continuation_count = u32::try_from(before - prior).ok()?;
+        let Ok(continuation_count) = u32::try_from(before - prior) else {
+            return None;
+        };
         offset
             .checked_sub(start)?
             .checked_sub(continuation_count)?

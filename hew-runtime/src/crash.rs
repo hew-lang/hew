@@ -590,8 +590,8 @@ mod tests {
             let crash = crashes.back().unwrap();
             assert_eq!(crash.site_file(), Some("retired.hew"));
             assert_eq!(crash.site.line, 4);
-            // SAFETY: the crash entry owns its copied frame name.
             assert_eq!(
+                // SAFETY: the crash entry owns its copied frame name.
                 unsafe { std::ffi::CStr::from_ptr(crash.frames[0].hew_fn) }.to_bytes(),
                 b"retired.hew"
             );

@@ -400,6 +400,10 @@ pub(super) fn send_trap_reply(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a reply carries its routing, status and optional diagnostic"
+)]
 fn send_failure_reply(
     target_node_id: u16,
     request_id: u64,

@@ -2154,6 +2154,7 @@ fn print_debug_config(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
 ) {
+    use std::hash::{Hash, Hasher};
     let cwd = std::env::current_dir().unwrap_or_else(|error| {
         eprintln!("Error: cannot find the current directory: {error}");
         std::process::exit(1);
@@ -2169,7 +2170,6 @@ fn print_debug_config(
         .unwrap_or_else(|| std::ffi::OsStr::new("hew"));
     // Distinguish identically named files in different directories without
     // placing an absolute source path below the output directory.
-    use std::hash::{Hash, Hasher};
     let source = if source_input.is_absolute() {
         source_input.clone()
     } else {

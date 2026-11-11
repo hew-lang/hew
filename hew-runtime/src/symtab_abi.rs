@@ -84,41 +84,6 @@ fn table(start: *const u8, kind: TableKind) -> Option<Table<'static>> {
     Table::parse(bytes, kind).ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hew_debug_abi::{FileRecord, SiteEntry, TableWriter};
-    use std::ffi::CStr;
-
-    #[test]
-    fn site_ids_resolve_in_the_originating_image() {
-        let files_a = TableWriter::files(&[FileRecord {
-            name: "first.hew",
-            line_starts: &[0],
-            md5: [0; 16],
-        }]);
-        let files_b = TableWriter::files(&[FileRecord {
-            name: "second.hew",
-            line_starts: &[0, 10],
-            md5: [0; 16],
-        }]);
-        let sites = TableWriter::sites(&[SiteEntry {
-            file_id: 0,
-            byte_offset: 12,
-            column: 3,
-        }]);
-        // SAFETY: both complete table allocations live through these reads.
-        let a = unsafe { resolve_site_in(files_a.as_ptr(), sites.as_ptr(), 0) }.unwrap();
-        // SAFETY: as above, with a different originating image.
-        let b = unsafe { resolve_site_in(files_b.as_ptr(), sites.as_ptr(), 0) }.unwrap();
-        // SAFETY: the source pointers borrow the still-live table allocations.
-        assert_eq!(unsafe { CStr::from_ptr(a.file) }.to_bytes(), b"first.hew");
-        // SAFETY: as above.
-        assert_eq!(unsafe { CStr::from_ptr(b.file) }.to_bytes(), b"second.hew");
-        assert_eq!((a.line, b.line, b.col), (1, 2, 3));
-    }
-}
-
 /// Whether the compiler emitted debug information for this image.
 #[must_use]
 pub fn has_debug_info() -> bool {
@@ -161,6 +126,7 @@ pub fn resolve_site(site: u32) -> Option<SourcePosition> {
 /// # Safety
 /// Each non-null pointer must point to a complete compiler-emitted table and
 /// its image must remain loaded while the returned source pointer is used.
+#[must_use]
 pub unsafe fn resolve_site_in(
     files: *const u8,
     sites: *const u8,
@@ -184,6 +150,7 @@ pub fn function_at(pc: usize) -> Option<HewFunction> {
 ///
 /// # Safety
 /// Both tables must remain loaded while the returned pointers are used.
+#[must_use]
 pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Option<HewFunction> {
     let symtab = table(base, TableKind::Symtab)?;
     let base = base as usize;
@@ -203,4 +170,39 @@ pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Op
             position: position.filter(|position| position.line != 0),
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_debug_abi::{FileRecord, SiteEntry, TableWriter};
+    use std::ffi::CStr;
+
+    #[test]
+    fn site_ids_resolve_in_the_originating_image() {
+        let files_a = TableWriter::files(&[FileRecord {
+            name: "first.hew",
+            line_starts: &[0],
+            md5: [0; 16],
+        }]);
+        let files_b = TableWriter::files(&[FileRecord {
+            name: "second.hew",
+            line_starts: &[0, 10],
+            md5: [0; 16],
+        }]);
+        let sites = TableWriter::sites(&[SiteEntry {
+            file_id: 0,
+            byte_offset: 12,
+            column: 3,
+        }]);
+        // SAFETY: both complete table allocations live through these reads.
+        let a = unsafe { resolve_site_in(files_a.as_ptr(), sites.as_ptr(), 0) }.unwrap();
+        // SAFETY: as above, with a different originating image.
+        let b = unsafe { resolve_site_in(files_b.as_ptr(), sites.as_ptr(), 0) }.unwrap();
+        // SAFETY: the source pointers borrow the still-live table allocations.
+        assert_eq!(unsafe { CStr::from_ptr(a.file) }.to_bytes(), b"first.hew");
+        // SAFETY: as above.
+        assert_eq!(unsafe { CStr::from_ptr(b.file) }.to_bytes(), b"second.hew");
+        assert_eq!((a.line, b.line, b.col), (1, 2, 3));
+    }
 }

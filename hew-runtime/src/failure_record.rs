@@ -759,6 +759,10 @@ struct LastFaultStorage {
 }
 
 impl LastFaultStorage {
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "this constant initializes fixed static debugger storage"
+    )]
     const EMPTY: Self = Self {
         record: FailureRecord::EMPTY,
         site_file: [0; LAST_FAULT_TEXT_CAPACITY],
@@ -774,7 +778,7 @@ impl LastFaultStorage {
         for (index, byte) in dest.iter_mut().enumerate() {
             // SAFETY: the publisher retains the source image during this copy;
             // stop at its terminator or the bounded destination length.
-            let next = unsafe { source.add(index).read() } as u8;
+            let next = unsafe { source.cast::<u8>().add(index).read() };
             *byte = next;
             if next == 0 {
                 return dest.as_ptr().cast();
@@ -1614,8 +1618,8 @@ mod tests {
         drop(path);
         drop(function);
         assert_eq!(storage.record.site_file(), Some("loaded.hew"));
-        // SAFETY: storage owns the copied name for this read.
         assert_eq!(
+            // SAFETY: storage owns the copied name for this read.
             unsafe { static_str(storage.record.frames[0].hew_fn) },
             Some("loaded.handler")
         );

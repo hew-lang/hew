@@ -18,6 +18,8 @@
 - Reduce temporary allocations in native and browser string interpolation while
   preserving evaluation order. Ordinary string growth can retain extra capacity
   and change when a bounded actor reaches its heap limit.
+- Compile long flat binary expressions and pattern alternatives in the browser,
+  retaining left-to-right evaluation, overflow checks and failure cleanup.
 
 ## [0.10.0-rc2] - 2026-11-11
 

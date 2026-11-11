@@ -764,6 +764,8 @@ pub static hew_last_fault_record: LastFault =
     LastFault(std::cell::UnsafeCell::new(FailureRecord::EMPTY));
 
 static LAST_FAULT_WRITER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_FAULT_PRESENT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Publish `record` as the last failure. Async-signal-safe: a writer that
 /// finds another write in progress drops its update rather than wait.
@@ -776,6 +778,7 @@ pub fn publish_last_fault(record: &FailureRecord) {
     }
     // SAFETY: the writer flag gives this thread exclusive access.
     unsafe { *hew_last_fault_record.0.get() = *record };
+    LAST_FAULT_PRESENT.store(record.code != 0, Ordering::Release);
     LAST_FAULT_WRITER.store(false, Ordering::Release);
 }
 
@@ -795,14 +798,16 @@ pub fn last_fault() -> Option<FailureRecord> {
 }
 
 /// The last failure's storage, or null if no failure was raised.
+///
+/// A debugger may inspect the pointer only while all threads that can publish
+/// a failure are stopped. Rust callers that need a concurrent snapshot use
+/// [`last_fault`] instead.
 #[must_use]
 pub fn last_fault_ptr() -> *const FailureRecord {
-    // SAFETY: a racy read of one i32 only decides between two pointers.
-    let code = unsafe { (*hew_last_fault_record.0.get()).code };
-    if code == 0 {
-        std::ptr::null()
-    } else {
+    if LAST_FAULT_PRESENT.load(Ordering::Acquire) && !LAST_FAULT_WRITER.load(Ordering::Acquire) {
         hew_last_fault_record.0.get().cast_const()
+    } else {
+        std::ptr::null()
     }
 }
 
@@ -1526,6 +1531,22 @@ mod tests {
         }
         assert_eq!(image::gnu_build_id(&notes), Some(&[1u8, 2, 3, 4, 5][..]));
         assert_eq!(image::gnu_build_id(&notes[..20]), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn debugger_pointer_query_is_safe_during_publication() {
+        let writer = std::thread::spawn(|| {
+            for _ in 0..10_000 {
+                publish_last_fault(&FailureRecord::new(212));
+            }
+        });
+        for _ in 0..10_000 {
+            // A pointer is only a query here; dereferencing it requires the
+            // debugger to stop the publishing threads first.
+            let _ = last_fault_ptr();
+        }
+        writer.join().unwrap();
     }
 
     #[cfg(not(target_arch = "wasm32"))]

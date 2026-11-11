@@ -23,6 +23,7 @@ pub(crate) fn retain() {
 }
 
 /// The most recent failure raised in this process, or null if none was.
+/// Inspect the returned storage only while failure publishers are stopped.
 #[no_mangle]
 pub extern "C" fn hew_debug_last_fault() -> *const FailureRecord {
     crate::failure_record::last_fault_ptr()

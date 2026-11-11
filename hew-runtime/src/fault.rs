@@ -124,7 +124,13 @@ impl FaultDiagnostic {
     /// The record to report: the origin's, or a bare one for a marker.
     fn report_record(&self) -> FailureRecord {
         let mut record = self.record.as_ref().map_or_else(
-            || FailureRecord::new(self.code),
+            || {
+                let mut record = FailureRecord::new(self.code);
+                // Completion markers do not capture an origin, but an
+                // unhandled marker still belongs to the current actor turn.
+                crate::crash::describe_current_actor(&mut record);
+                record
+            },
             |record| **record.lock_or_recover(),
         );
         if record.message_len == 0 {
@@ -1084,6 +1090,12 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     // Unlike eprintln!, an output error must not panic across this C boundary.
     let mut report = crate::output::Report::new(crate::output::Stream::Err);
     let failed = write_unreported(fault, &mut report).is_err();
+    let context = crate::execution_context::current_context();
+    if !failed && !report.is_empty() && !context.is_null() {
+        // SAFETY: the installed context remains live throughout this report.
+        let target = unsafe { (*context).actor_link_target };
+        let _ = report.write_all(crate::crash::remote_origin(target).as_bytes());
+    }
     if !crate::actor::hew_actor_self().is_null() {
         // The actor crash that follows records this failure without
         // printing it a second time.

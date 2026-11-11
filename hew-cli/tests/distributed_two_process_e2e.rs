@@ -144,7 +144,7 @@ struct ActorCrash<'a> {
     remote_origin: Option<&'a str>,
 }
 
-/// The crash records whose actor line names the handler `context`.
+/// The crash records whose actor type or handler matches `context`.
 ///
 /// A record starts `hew: failure: <Kind> (<code>)`; an actor's turn adds
 /// `hew:   in actor <Type>#<id> handler <context>`, and a crash delivered by a
@@ -161,10 +161,13 @@ fn actor_crashes<'a>(stderr: &'a str, context: &str) -> Vec<ActorCrash<'a>> {
         let mut remote_origin = None;
         while let Some(detail) = lines.next_if(|next| next.starts_with("hew:   ")) {
             if let Some(rest) = detail.strip_prefix("hew:   in actor ") {
-                actor = rest.split_once(" handler ").and_then(|(id, handler)| {
-                    let handler = handler.split(" (thread ").next().unwrap_or(handler);
-                    (handler == context)
-                        .then(|| id.rsplit_once('#')?.1.parse::<u64>().ok())
+                let (id, detail) = rest.split_once(' ').unwrap_or((rest, ""));
+                actor = id.rsplit_once('#').and_then(|(actor_type, id)| {
+                    let handler = detail
+                        .strip_prefix("handler ")
+                        .and_then(|value| value.split_whitespace().next());
+                    (actor_type == context || handler == Some(context))
+                        .then(|| id.parse::<u64>().ok())
                         .flatten()
                 });
             } else if let Some(location) =

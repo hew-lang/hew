@@ -192,6 +192,10 @@ impl Report {
             bytes: Vec::new(),
         }
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
 }
 
 impl Write for Report {

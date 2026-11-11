@@ -291,7 +291,7 @@ pub(crate) fn record_logical_crash(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+pub(crate) fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
     link_target
         .and_then(crate::monitor::HewNotificationTarget::remote_location)
         .map_or_else(String::new, |location| {
@@ -300,7 +300,7 @@ fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+pub(crate) fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
     String::new()
 }
 

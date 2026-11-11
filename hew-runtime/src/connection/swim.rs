@@ -270,7 +270,9 @@ pub(crate) unsafe fn hew_connmgr_announce_leave(mgr: *mut HewConnMgr) {
     // SAFETY: caller guarantees manager pointer validity for this call.
     for peer in unsafe { hew_connmgr_active_swim_peers(mgr) } {
         if let Some(claim) = claim_swim_send_to_route(mgr_ref, peer) {
-            let _ = claim.send(&frame);
+            if claim.send(&frame) == 0 {
+                claim.finish_departure();
+            }
         }
     }
 }

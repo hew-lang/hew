@@ -828,8 +828,13 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # a generic command from observed compiler output.
 baselines: node-protocol syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: version-locks-check node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
+
+# Check every tracked lock containing a local workspace package.
+.PHONY: version-locks-check
+version-locks-check:
+	$(PYTHON) scripts/version-locks.py --check
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
 # node_modules already matches package-lock.json (hash-stamped). Split out

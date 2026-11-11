@@ -641,6 +641,30 @@ jobs:
         with:
           version: 22.1.5
 
+      - name: Provision Windows debugger
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $debugger = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (-not (Test-Path -LiteralPath $debugger)) {
+            $sdk = Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
+              Where-Object { $_.DisplayName -match "Windows Software Development Kit" -and $_.BundleCachePath } |
+              Sort-Object DisplayVersion -Descending | Select-Object -First 1
+            if (-not $sdk -or -not (Test-Path -LiteralPath $sdk.BundleCachePath)) {
+              throw "The cached Windows SDK installer was not found"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $sdk.BundleCachePath
+            if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "CN=Microsoft") {
+              throw "The cached Windows SDK installer does not have a valid Microsoft signature"
+            }
+            $install = Start-Process -FilePath $sdk.BundleCachePath -ArgumentList @(
+              "/features", "OptionId.WindowsDesktopDebuggers", "/q", "/norestart"
+            ) -Wait -PassThru
+            if ($install.ExitCode -notin @(0, 3010)) { throw "Windows debugger installation failed: $($install.ExitCode)" }
+          }
+          if (-not (Test-Path -LiteralPath $debugger)) { throw "cdb.exe was not installed" }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Parent $debugger)
+
       - name: Build and prove release library consumer linking
         shell: bash
         run: make test-release-lib-link
@@ -679,6 +703,11 @@ jobs:
         # Linux x86_64 owns the portable syntax suite. Keep filesystem and
         # CRLF formatter coverage on Windows.
         run: make -k SHELL=bash test-strict hew-fmt-fidelity NEXTEST_WORKSPACE_EXCLUDE="hew-lexer hew-parser"
+
+      - name: Run Windows debugger acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome == 'success' }}
+        shell: bash
+        run: HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci -p hew-cli --test windows_pdb_e2e --run-ignored only
 
       # Snapshot before later test targets can rebuild the failing workspace's binaries.
       - name: Collect failed Windows workspace binaries

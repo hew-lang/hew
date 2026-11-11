@@ -1,0 +1,29 @@
+name: Setup hosted Ubuntu DNS
+description: Configure the shared resolver before hosted Ubuntu provisioning.
+
+outputs:
+  resolver:
+    description: Resolver selected for disposable hosted Ubuntu consumers.
+    value: ${{ steps.configure.outputs.resolver }}
+
+runs:
+  using: composite
+  steps:
+    - name: Configure the hosted Ubuntu resolver
+      id: configure
+      if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+      shell: bash
+      run: |
+        set -euo pipefail
+        source /etc/os-release
+        if [[ "$ID" != ubuntu ]]; then
+          exit 0
+        fi
+        # Hosted Azure DNS can fail Ubuntu mirror lookups. Establish the host
+        # resolver before apt or new containers inherit its configuration.
+        resolver=1.1.1.1
+        interface=$(ip -o route get "$resolver" | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+        test -n "$interface"
+        sudo resolvectl dns "$interface" "$resolver"
+        sudo resolvectl flush-caches
+        echo "resolver=$resolver" >> "$GITHUB_OUTPUT"

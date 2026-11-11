@@ -42,7 +42,11 @@ jobs:
       - name: Checkout apt-push
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/actions/setup-ubuntu-dns
+
+      - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Download the release's distro packages
         shell: bash

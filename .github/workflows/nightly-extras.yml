@@ -64,6 +64,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-ubuntu-dns
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq
@@ -89,6 +91,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - uses: ./.github/actions/setup-ubuntu-dns
       - name: Install native link prerequisites
         run: |
           sudo apt-get update -qq

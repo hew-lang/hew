@@ -849,6 +849,10 @@ fn extract_call_target(body: &Block) -> Option<(String, usize)> {
 
 /// Extract the callee name and argument count from a call expression.
 fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
+    hew_parser::stack::ensure_sufficient_stack(|| call_target_from_expr_inner(expr))
+}
+
+fn call_target_from_expr_inner(expr: &Expr) -> Option<(String, usize)> {
     match expr {
         Expr::Call { function, args, .. } => {
             if let Expr::Ident(name) = &function.0 {
@@ -998,6 +1002,13 @@ fn is_immediate_terminating_guard(block: &Block) -> bool {
 /// constructs the *same* wrapper type and initialises one of its declared fields
 /// with such a forward.
 fn handle_forwarding_call_from_expr(expr: &Expr, ctx: &WrapperForward) -> Option<(String, usize)> {
+    hew_parser::stack::ensure_sufficient_stack(|| handle_forwarding_call_from_expr_inner(expr, ctx))
+}
+
+fn handle_forwarding_call_from_expr_inner(
+    expr: &Expr,
+    ctx: &WrapperForward,
+) -> Option<(String, usize)> {
     match expr {
         Expr::Call { function, args, .. } => {
             let Expr::Ident(name) = &function.0 else {
@@ -1073,6 +1084,22 @@ fn extract_wrapper_constructor_target(
 }
 
 fn wrapper_constructor_call_from_expr(
+    expr: &Expr,
+    wrapper_simple_name: &str,
+    field_names: &HashSet<String>,
+    extern_fn_names: &HashSet<String>,
+) -> Option<(String, usize)> {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        wrapper_constructor_call_from_expr_inner(
+            expr,
+            wrapper_simple_name,
+            field_names,
+            extern_fn_names,
+        )
+    })
+}
+
+fn wrapper_constructor_call_from_expr_inner(
     expr: &Expr,
     wrapper_simple_name: &str,
     field_names: &HashSet<String>,

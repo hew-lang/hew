@@ -230,7 +230,7 @@ impl Builder {
     fn some_value(&mut self, value: Spanned<Expr>) -> Spanned<Expr> {
         let function = self.variant(Ident::new("Some"), Vec::new(), Vec::new());
         self.expr(Expr::Call {
-            function: Box::new(function),
+            function: hew_parser::chain::Chain::new(function),
             type_args: None,
             args: vec![CallArg::Positional(value)],
             is_tail_call: false,

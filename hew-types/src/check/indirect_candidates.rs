@@ -182,11 +182,12 @@ impl Checker {
                 candidates.join(self.callable_candidates_for_expr(&right.0, &right.1));
                 candidates
             }
-            Expr::Clone(value)
-            | Expr::Cast { expr: value, .. }
+            Expr::Cast { expr: value, .. }
             | Expr::PostfixTry(value)
-            | Expr::Index { object: value, .. }
-            | Expr::ArrayRepeat { value, .. } => {
+            | Expr::Index { object: value, .. } => {
+                self.callable_candidates_for_expr(&value.0, &value.1)
+            }
+            Expr::Clone(value) | Expr::ArrayRepeat { value, .. } => {
                 self.callable_candidates_for_expr(&value.0, &value.1)
             }
             _ => IndirectCallCandidates::unknown(),

@@ -839,11 +839,17 @@ fn collect_locals_from_stmt(
     }
 }
 
+fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
+    hew_parser::stack::ensure_sufficient_stack(|| {
+        collect_locals_from_expr_inner(expr, offset, locals);
+    });
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive AST match — splitting would obscure the traversal"
 )]
-fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
+fn collect_locals_from_expr_inner(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
         Expr::Block(block) | Expr::Scope { body: block } => {
             collect_locals_from_block(block, offset, locals);
@@ -897,8 +903,11 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Binary { left, right, .. } => {
+            collect_locals_from_spanned_expr(left, offset, locals);
+            collect_locals_from_spanned_expr(right, offset, locals);
+        }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,

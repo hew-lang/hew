@@ -3657,11 +3657,15 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn can_format_expr_inline(expr: &Expr) -> bool {
+        crate::stack::ensure_sufficient_stack(|| Self::can_format_expr_inline_inner(expr))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive expression-shape classifier stays readable as one match"
     )]
-    fn can_format_expr_inline(expr: &Expr) -> bool {
+    fn can_format_expr_inline_inner(expr: &Expr) -> bool {
         match expr {
             Expr::Literal(_)
             | Expr::Ident(_)
@@ -3699,16 +3703,17 @@ impl<'a> Formatter<'a> {
             Expr::Unary { operand, .. }
             | Expr::ReturnError(operand)
             | Expr::Clone(operand)
-            | Expr::PostfixTry(operand)
             | Expr::Await(operand)
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
-            | Expr::OptionalChain {
-                receiver: left,
-                body: right,
+            Expr::PostfixTry(operand) => Self::can_format_expr_inline(&operand.0),
+            Expr::Coalesce { left, right } => {
+                Self::can_format_expr_inline(&left.0) && Self::can_format_expr_inline(&right.0)
             }
+            Expr::OptionalChain { receiver, body } => {
+                Self::can_format_expr_inline(&receiver.0) && Self::can_format_expr_inline(&body.0)
+            }
+            Expr::Binary { left, right, .. }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -4403,6 +4408,14 @@ impl<'a> Formatter<'a> {
     /// Format an expression that appears as the object/receiver of a postfix
     /// operation (`.`, `[]`, `?`), adding parentheses when required for correct
     /// re-parsing.
+    /// Keep a try separate from a following `.` or `?` token.
+    fn format_try_adjacent_receiver(&mut self, expr: &Spanned<Expr>) {
+        self.format_receiver(expr);
+        if matches!(expr.0, Expr::PostfixTry(_)) && self.output.ends_with('?') {
+            self.write(" ");
+        }
+    }
+
     fn format_receiver(&mut self, expr: &Spanned<Expr>) {
         if Self::needs_receiver_parens(&expr.0) && self.chooses_parens(&expr.1) {
             self.write("(");
@@ -4473,6 +4486,10 @@ impl<'a> Formatter<'a> {
     /// field access, or a call whose callee and arguments are themselves
     /// atoms. A parenthesized operand is compound.
     fn is_range_atom(&self, expr: &Spanned<Expr>) -> bool {
+        crate::stack::ensure_sufficient_stack(|| self.is_range_atom_inner(expr))
+    }
+
+    fn is_range_atom_inner(&self, expr: &Spanned<Expr>) -> bool {
         if self.source_parenthesizes(&expr.1) {
             return false;
         }
@@ -4503,7 +4520,9 @@ impl<'a> Formatter<'a> {
         if self.source_parenthesizes(&expr.1) {
             self.format_expr(expr);
         } else {
-            self.format_expr_prec_bare(expr, parent_prec, is_right);
+            crate::stack::ensure_sufficient_stack(|| {
+                self.format_expr_prec_bare(expr, parent_prec, is_right);
+            });
         }
     }
 
@@ -4562,7 +4581,7 @@ impl<'a> Formatter<'a> {
             self.flush_inline_comments(open);
             self.write("(");
         }
-        self.format_expr_unparenthesized(expr);
+        crate::stack::ensure_sufficient_stack(|| self.format_expr_unparenthesized(expr));
         for &(_, _, close) in parens.iter().rev() {
             self.flush_inline_comments(close);
             self.write(")");
@@ -4957,7 +4976,7 @@ impl<'a> Formatter<'a> {
                 method,
                 args,
             } => {
-                self.format_receiver(receiver);
+                self.format_try_adjacent_receiver(receiver);
                 self.flush_comments_before_token_after(receiver.1.end);
                 self.write(".");
                 self.write_ident(method.0);
@@ -5056,7 +5075,7 @@ impl<'a> Formatter<'a> {
                     self.format_expr(object);
                     self.write(")");
                 } else {
-                    self.format_receiver(object);
+                    self.format_try_adjacent_receiver(object);
                 }
                 self.flush_comments_before_token_after(object.1.end);
                 self.write(".");
@@ -5080,11 +5099,11 @@ impl<'a> Formatter<'a> {
                 self.format_type_expr(&ty.0);
             }
             Expr::PostfixTry(expr) => {
-                self.format_receiver(expr);
+                self.format_try_adjacent_receiver(expr);
                 self.write("?");
             }
             Expr::OptionalChain { receiver, body } => {
-                self.format_receiver(receiver);
+                self.format_try_adjacent_receiver(receiver);
                 self.write("?");
                 self.format_expr(body);
             }
@@ -5962,23 +5981,26 @@ fn source_column(source: &str, pos: usize) -> usize {
 /// The operand an expression's source begins with: the receiver of a postfix
 /// chain or the left side of an operator, followed while it starts where the
 /// whole expression does.
-fn leftmost_operand(expr: &Spanned<Expr>) -> &Spanned<Expr> {
-    let inner = match &expr.0 {
-        Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => object,
-        Expr::MethodCall { receiver, .. } | Expr::OptionalChain { receiver, .. } => receiver,
-        Expr::Call { function, .. } => function,
-        Expr::Binary { left, .. } | Expr::Coalesce { left, .. } => left,
-        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) | Expr::Await(inner) => inner,
-        Expr::Is { lhs, .. } => lhs,
-        Expr::Range {
-            start: Some(start), ..
-        } => start,
-        _ => return expr,
-    };
-    if inner.1.start == expr.1.start {
-        leftmost_operand(inner)
-    } else {
-        expr
+fn leftmost_operand(mut expr: &Spanned<Expr>) -> &Spanned<Expr> {
+    loop {
+        let inner: &Spanned<Expr> = match &expr.0 {
+            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => object,
+            Expr::MethodCall { receiver, .. } | Expr::OptionalChain { receiver, .. } => receiver,
+            Expr::Call { function, .. } => function,
+            Expr::Binary { left, .. } => left,
+            Expr::Coalesce { left, .. } => left,
+            Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) => inner,
+            Expr::Await(inner) => inner,
+            Expr::Is { lhs, .. } => lhs,
+            Expr::Range {
+                start: Some(start), ..
+            } => start,
+            _ => return expr,
+        };
+        if inner.1.start != expr.1.start {
+            return expr;
+        }
+        expr = inner;
     }
 }
 

@@ -1599,6 +1599,64 @@ fn parse_nested_blocks_past_limit_terminates_with_bounded_errors() {
 }
 
 #[test]
+fn long_prefix_operator_runs_hit_the_nesting_limit() {
+    // Each prefix operator nests its operand one level, like a parenthesis,
+    // so a run of them is refused at MAX_DEPTH instead of recursing once per
+    // operator until the stack runs out.
+    for prefix in ["-", "!", "~", "& ", "clone "] {
+        let errors = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let source = format!("fn main() {{ let _x = {}1; }}", prefix.repeat(100_000));
+                parse(&source).errors
+            })
+            .expect("failed to spawn thread")
+            .join()
+            .expect("thread panicked");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("maximum nesting depth exceeded")),
+            "{prefix}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn an_overlong_integer_literal_is_quoted_by_its_start() {
+    let digits = "1".repeat(100_000);
+    let errors = parse(&format!("fn main() {{ let _x = {digits}; }}")).errors;
+    let message = &errors
+        .first()
+        .expect("an invalid literal is refused")
+        .message;
+    assert!(
+        message.starts_with("invalid integer literal '1111"),
+        "{message}"
+    );
+    assert!(message.len() < 100, "{message}");
+    let errors = parse("fn main() { let _x = 99999999999999999999999999999999999999999; }").errors;
+    assert!(
+        errors[0]
+            .message
+            .contains("'99999999999999999999999999999999…' (41 characters)"),
+        "{}",
+        errors[0].message
+    );
+}
+
+#[test]
+fn prefix_operator_runs_below_the_limit_still_parse() {
+    let errors = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| parse(&format!("fn main() {{ let _x = {}1; }}", "- ".repeat(48))).errors)
+        .expect("failed to spawn thread")
+        .join()
+        .expect("thread panicked");
+    assert!(errors.is_empty(), "errors: {errors:?}");
+}
+
+#[test]
 fn expression_nesting_below_limit_still_parses() {
     let errors = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
@@ -6371,6 +6429,15 @@ fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
 
 #[test]
 fn legacy_path_separators_on_one_long_line_stay_linear() {
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(legacy_path_separators_on_one_long_line_body)
+        .expect("spawn parser thread")
+        .join()
+        .expect("long malformed path overflows the parser stack");
+}
+
+fn legacy_path_separators_on_one_long_line_body() {
     // Each separated `::` reports the line it sits on; the quoted context is
     // bounded so a long line does not cost quadratic memory.
     let source = format!("fn main() {{ x{} }}", "::x".repeat(20_000));

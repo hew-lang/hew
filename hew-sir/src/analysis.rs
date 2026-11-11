@@ -151,35 +151,39 @@ impl CfgIndex {
     }
 }
 
+/// Depth-first postorder from `root`, with an explicit stack: a body's
+/// longest path can be as long as its block count, which a recursive walk
+/// would spend as native stack.
 fn visit_reachable_postorder(
-    block: BlockId,
+    root: BlockId,
     known_blocks: &BTreeSet<BlockId>,
     successors: &BTreeMap<BlockId, Vec<EdgeRef>>,
     edge_targets: &BTreeMap<EdgeRef, BlockId>,
     reachable: &mut BTreeSet<BlockId>,
     postorder: &mut Vec<BlockId>,
 ) {
-    if !reachable.insert(block) {
+    if !reachable.insert(root) {
         return;
     }
-    if let Some(edges) = successors.get(&block) {
-        for edge in edges {
-            let Some(target) = edge_targets.get(edge).copied() else {
-                continue;
-            };
-            if known_blocks.contains(&target) {
-                visit_reachable_postorder(
-                    target,
-                    known_blocks,
-                    successors,
-                    edge_targets,
-                    reachable,
-                    postorder,
-                );
-            }
+    // Each entry is a block and the index of its next successor edge.
+    let mut stack = vec![(root, 0usize)];
+    while let Some(&(block, next)) = stack.last() {
+        let edge = successors.get(&block).and_then(|edges| edges.get(next));
+        let Some(edge) = edge else {
+            postorder.push(block);
+            stack.pop();
+            continue;
+        };
+        if let Some(top) = stack.last_mut() {
+            top.1 += 1;
+        }
+        let Some(target) = edge_targets.get(edge).copied() else {
+            continue;
+        };
+        if known_blocks.contains(&target) && reachable.insert(target) {
+            stack.push((target, 0));
         }
     }
-    postorder.push(block);
 }
 
 /// Dominance over the reachable CFG of one semantic function.
@@ -509,7 +513,7 @@ mod tests {
     use hew_hir::ItemId;
     use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 
-    use super::{build_cfg_index, compute_dominators, EdgeRef};
+    use super::{build_cfg_index, compute_dominators, CfgIndex, EdgeRef};
     use crate::{
         BlockArg, BlockId, CallableId, CallableInstance, Edge, FunctionSourceOrigin, Operand,
         SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
@@ -744,6 +748,34 @@ mod tests {
             &[BlockId(0), BlockId(1), BlockId(2), BlockId(3)]
         );
         assert_eq!(index, build_cfg_index(&function));
+    }
+
+    #[test]
+    fn cfg_index_orders_a_long_block_chain_without_deep_recursion() {
+        // A straight-line body with one block per call is as deep as it is
+        // long. Index 200k blocks on a 256 KiB stack: a walk that recursed
+        // per block would overflow it many times over.
+        const BLOCKS: u32 = 200_000;
+        let rpo = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let edges = (0..BLOCKS - 1).map(|source| {
+                    (
+                        EdgeRef {
+                            source: BlockId(source),
+                            slot: SuccessorSlot(0),
+                        },
+                        BlockId(source + 1),
+                    )
+                });
+                CfgIndex::from_edges(BlockId(0), (0..BLOCKS).map(BlockId), edges)
+                    .rpo()
+                    .to_vec()
+            })
+            .expect("spawn")
+            .join()
+            .expect("indexing a long chain overflowed");
+        assert_eq!(rpo, (0..BLOCKS).map(BlockId).collect::<Vec<_>>());
     }
 
     #[test]

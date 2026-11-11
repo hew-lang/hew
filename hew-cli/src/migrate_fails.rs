@@ -1162,34 +1162,39 @@ impl Planner<'_> {
 
     /// Whether `expr` is an operator or postfix chain whose leftmost operand
     /// is a block-like expression.
-    fn led_by_block(expr: &Expr) -> bool {
-        let leftmost = match expr {
-            Expr::Binary { left: inner, .. }
-            | Expr::MethodCall {
-                receiver: inner, ..
+    fn led_by_block(mut expr: &Expr) -> bool {
+        loop {
+            let leftmost: &Spanned<Expr> = match expr {
+                Expr::Binary { left: inner, .. }
+                | Expr::Is { lhs: inner, .. }
+                | Expr::Range {
+                    start: Some(inner), ..
+                } => inner,
+                Expr::MethodCall {
+                    receiver: inner, ..
+                }
+                | Expr::FieldAccess { object: inner, .. }
+                | Expr::Index { object: inner, .. }
+                | Expr::Cast { expr: inner, .. }
+                | Expr::Call {
+                    function: inner, ..
+                }
+                | Expr::Coalesce { left: inner, .. }
+                | Expr::PostfixTry(inner) => inner,
+                _ => return false,
+            };
+            if matches!(
+                leftmost.0,
+                Expr::Block(_)
+                    | Expr::UnsafeBlock(_)
+                    | Expr::If { .. }
+                    | Expr::IfLet { .. }
+                    | Expr::Match { .. }
+            ) {
+                return true;
             }
-            | Expr::FieldAccess { object: inner, .. }
-            | Expr::Index { object: inner, .. }
-            | Expr::Cast { expr: inner, .. }
-            | Expr::Call {
-                function: inner, ..
-            }
-            | Expr::Coalesce { left: inner, .. }
-            | Expr::Is { lhs: inner, .. }
-            | Expr::PostfixTry(inner)
-            | Expr::Range {
-                start: Some(inner), ..
-            } => &inner.0,
-            _ => return false,
-        };
-        matches!(
-            leftmost,
-            Expr::Block(_)
-                | Expr::UnsafeBlock(_)
-                | Expr::If { .. }
-                | Expr::IfLet { .. }
-                | Expr::Match { .. }
-        ) || Self::led_by_block(leftmost)
+            expr = &leftmost.0;
+        }
     }
 
     fn is_unit(expr: &Spanned<Expr>) -> bool {

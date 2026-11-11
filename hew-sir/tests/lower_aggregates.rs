@@ -701,8 +701,14 @@ fn main() -> i64 {
 }
 
 #[test]
-fn earlier_arguments_capture_owned_fields_before_later_effects() {
-    for later in [r#"{ holder.items = ["new"]; 0 }"#, "indices[99]"] {
+fn earlier_arguments_capture_owned_fields_only_before_later_writes() {
+    // A later write requires a snapshot; a read that can only fault keeps
+    // the earlier field and its loan available to failure cleanup.
+    for (later, captures) in [
+        (r#"{ holder.items = ["new"]; 0 }"#, true),
+        ("indices[99]", false),
+        ("indices[0] / 0", false),
+    ] {
         let lowered = lower_source(&format!(
             r#"
             type Holder {{ items: Vec<string>; }}
@@ -738,7 +744,7 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
                 _ => None,
             })
             .unwrap();
-        assert!(
+        assert_eq!(
             main.blocks
                 .iter()
                 .flat_map(hew_sir::SemBlock::operations)
@@ -747,7 +753,8 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
                         && op.results[0].id == checked::source(main, captured)
                         && op.results[0].own == hew_sir::OwnKind::Owned
                 }),
-            "later mutation or failure requires a captured independent value"
+            captures,
+            "`{later}`: only a later write requires a captured independent value"
         );
     }
 }

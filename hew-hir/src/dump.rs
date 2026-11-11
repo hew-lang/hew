@@ -343,12 +343,16 @@ fn dump_payload_variant_predicate(
     }
 }
 
+fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, indent: usize) {
+    hew_parser::stack::ensure_sufficient_stack(|| dump_expr_inner(defs, out, expr, indent));
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single match on HirExprKind variants; each arm renders one variant \
               and splitting would obscure the dump's per-variant locality"
 )]
-fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, indent: usize) {
+fn dump_expr_inner(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, indent: usize) {
     let pad = " ".repeat(indent);
     writeln!(
         out,

@@ -583,15 +583,15 @@ impl LowerCtx<'_> {
             .expect("single argument checked above");
         let rendered = self.lower_display_dispatch(value, span.clone());
         let lowered = match name {
-            "to_string" => (rendered.kind, rendered.ty),
+            "to_string" => rendered.into_parts(),
             "print" => {
                 let call = self.build_catalog_call("print_str", vec![rendered], span.clone());
-                (call.kind, call.ty)
+                call.into_parts()
             }
             // `println`
             _ => {
                 let call = self.build_catalog_call("println_str", vec![rendered], span.clone());
-                (call.kind, call.ty)
+                call.into_parts()
             }
         };
         Ok(lowered)

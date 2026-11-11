@@ -4,8 +4,7 @@
 
 ## [0.11.0-rc1] - 2026-11-11
 
-- Prepare first-class failure diagnostics and debugging for candidate
-  qualification; platform and packaged-toolchain results remain pending.
+- Add first-class failure diagnostics and native debugging support.
 - Retain owned crash kind, optional trap, message, source site and trace through
   actor hooks and trapped local and remote calls, including budget-safe fallback.
 - Change `ActorError.Trapped` to carry `CrashInfo`; migrate matching arms and

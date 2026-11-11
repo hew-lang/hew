@@ -421,6 +421,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         caller,
         request_deadline,
         value_owner: std::ptr::null(),
+        actor_message_type: message_type,
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -968,6 +969,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         crate::request_state::message_deadline(msg_ref.envelope)
                     },
                     value_owner: std::ptr::null(),
+                    actor_message_type: msg_ref.msg_type,
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context

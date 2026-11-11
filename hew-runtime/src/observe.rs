@@ -577,12 +577,6 @@ pub(crate) fn record_supervisor_giveup() {
     SUPERVISOR_GIVEUPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
-/// The actor and message type the calling worker shard is dispatching.
-#[must_use]
-pub(crate) fn current_msg_type() -> i32 {
-    TURN_MSG_TYPE[current_shard()].load(Ordering::Relaxed)
-}
-
 /// The calling thread's worker index plus one; zero off the worker pool.
 #[must_use]
 pub(crate) fn current_worker_id() -> u32 {

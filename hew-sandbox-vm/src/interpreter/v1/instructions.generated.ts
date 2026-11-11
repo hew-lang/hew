@@ -304,7 +304,14 @@ export type ManagedType = {
   | { kind: "slice"; element: number; share_on_copy: boolean }
   | { kind: "map"; key: number; value: number }
   | { kind: "set"; element: number }
-  | { kind: "aggregate"; fields: Array<number> }
+  | {
+      kind: "aggregate";
+      /**
+       * The canonical record shape when this layout represents a record.
+       */
+      shape?: number | null;
+      fields: Array<number>;
+    }
   | {
       kind: "variant";
       shape: number;

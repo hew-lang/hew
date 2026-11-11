@@ -1376,6 +1376,13 @@
             "kind": {
               "const": "aggregate",
               "type": "string"
+            },
+            "shape": {
+              "description": "The canonical record shape when this layout represents a record.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
             }
           },
           "required": ["kind", "fields"],

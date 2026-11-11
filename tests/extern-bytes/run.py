@@ -149,7 +149,7 @@ def main():
                 "fault_cleanup",
                 1,
                 b"owned extern bytes released: 1\n",
-                b"hew: failure: DivideByZero (202)\n",
+                b"hew: failure: DivideByZero (202) at ./fault_cleanup.hew:10:25\n",
             ),
             ("aggregate_results", 0, b"C aggregate results preserve all fields\n", b""),
         ):

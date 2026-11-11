@@ -212,9 +212,11 @@ static void compiled_policy(void) {
   for (int attempt = 0; attempt < 2; ++attempt) {
     static const unsigned char rejected[] = "reject: caf\xc3\xa9\0tail";
     static const unsigned char diagnostic[] =
-        "hew: failure: UserPanic (212): REJECT: CAF\xc3\x89\0TAIL\n";
+        "hew: failure: UserPanic (212) at ./config_policy.hew:8:9: REJECT: "
+        "CAF\xc3\x89\0TAIL\n";
     static const unsigned char consumed_diagnostic[] =
-        "hew: failure: UserPanic (212): reject: caf\xc3\xa9\0tail\n";
+        "hew: failure: UserPanic (212) at ./config_policy.hew:15:9: reject: "
+        "caf\xc3\xa9\0tail\n";
     const unsigned char *expected_error =
         attempt ? consumed_diagnostic : diagnostic;
     const size_t expected_len =

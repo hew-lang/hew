@@ -187,7 +187,8 @@ pub(crate) fn describe_current_actor(record: &mut FailureRecord) {
             (*actor).dispatch.map_or(0, |dispatch| dispatch as usize),
         )
     };
-    let msg_type = crate::observe::current_msg_type();
+    // SAFETY: this is the active turn carrier, restored on every resume.
+    let msg_type = unsafe { (*context).actor_message_type };
     describe_actor(record, id, msg_type, dispatch);
     record.actor.spawn_serial = serial;
     record.worker_id = crate::observe::current_worker_id();
@@ -290,7 +291,7 @@ pub(crate) fn record_logical_crash(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+pub(crate) fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
     link_target
         .and_then(crate::monitor::HewNotificationTarget::remote_location)
         .map_or_else(String::new, |location| {
@@ -299,7 +300,7 @@ fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+pub(crate) fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
     String::new()
 }
 

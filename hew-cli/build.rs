@@ -8,12 +8,7 @@ use hew_mir::physical::{ParamCarrier, SemParamPassing};
 use hew_types::ResolvedTy;
 
 fn main() {
-    // `hew.exe` exports the runtime symbols it links, so the MSVC linker
-    // would write its import library as `hew.lib` beside it, clobbering the
-    // `hew-lib` staticlib of the same name in the same Cargo output directory.
-    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        println!("cargo:rustc-link-arg-bins=/NOIMPLIB");
-    }
+    configure_linker_outputs();
     let build = std::thread::Builder::new()
         .name("hew-presentation-renderers".into())
         .stack_size(hew_compile::COMPILER_STACK_SIZE)
@@ -35,6 +30,19 @@ fn main() {
         .expect("start presentation renderer compiler");
     if let Err(error) = build.join() {
         std::panic::resume_unwind(error);
+    }
+}
+
+fn configure_linker_outputs() {
+    if std::env::var("TARGET").unwrap().ends_with("-windows-msvc") {
+        // LLVM and native dependencies export symbols from the driver. Its
+        // default import library would collide with hew-lib's static archive
+        // in Cargo's deps directory, so keep this linker side product private.
+        let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+        println!(
+            "cargo:rustc-link-arg-bin=hew=/IMPLIB:{}",
+            out.join("hew-cli-import.lib").display()
+        );
     }
 }
 

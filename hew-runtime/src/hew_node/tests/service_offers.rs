@@ -44,6 +44,10 @@ impl Pair {
         unsafe {
             connect_with_retry(recipient.as_ptr(), &address);
             wait_for_handshake(recipient.as_ptr(), issuer.as_ptr());
+            // No initial publisher may replay an offer after a test marks
+            // its acknowledgement lost or pauses its successor publication.
+            assert!((&*(*issuer.as_ptr()).conn_mgr)
+                .wait_for_inbound_admissions_for_test(Duration::from_secs(10)));
         }
         Self {
             issuer,
@@ -81,19 +85,22 @@ impl Pair {
     }
 
     fn recipient_session(&self) -> NodeSessionIdentity {
-        // SAFETY: the recipient node is live.
-        let recipient = unsafe { (*self.recipient.as_ptr()).auth.node_identity().unwrap() };
-        connection::claim_send_by_identity(self.issuer_manager(), recipient, None)
-            .unwrap()
-            .peer_session()
+        Self::node_session(&self.recipient)
     }
 
     fn issuer_session(&self) -> NodeSessionIdentity {
-        // SAFETY: the issuer node is live.
-        let issuer = unsafe { (*self.issuer.as_ptr()).auth.node_identity().unwrap() };
-        connection::claim_send_by_identity(self.recipient_manager(), issuer, None)
-            .unwrap()
-            .peer_session()
+        Self::node_session(&self.issuer)
+    }
+
+    fn node_session(node: &TestNode) -> NodeSessionIdentity {
+        // A live node's frozen auth snapshot owns its durable session. A
+        // transport claim can disappear while a replacement is publishing.
+        // SAFETY: the test retains this live node through the snapshot read.
+        let auth = unsafe { &(*node.as_ptr()).auth };
+        NodeSessionIdentity {
+            node_id: auth.node_identity().unwrap(),
+            session_incarnation: auth.session_incarnation().unwrap(),
+        }
     }
 
     fn export(&self, request_id: u64) -> (super::super::service::ExportLease, ServiceOfferPayload) {
@@ -176,9 +183,10 @@ fn lost_offer_acknowledgement_survives_a_connection_replacement() {
     let _guard = crate::runtime_test_guard();
     let pair = Pair::start(375, 376);
     let issuer_manager = pair.issuer_manager();
+    let original_connection = pair.issuer_connection();
     // Both waits are registered on the connection the replacement drops.
     let (request_id, offer_pending) = reply_table().register_with_waker(
-        pair.issuer_connection(),
+        original_connection,
         None,
         PendingReplyKind::SessionOffer,
     );
@@ -194,6 +202,13 @@ fn lost_offer_acknowledgement_survives_a_connection_replacement() {
         .unwrap();
     assert_eq!(imported(&first), Some(offer.grant_id));
     let waiting = pair.receive();
+
+    // Force both original readers' loss notifications before the successor
+    // can acknowledge anything. These session-owned waits must survive.
+    fail_remote_replies_for_connection(issuer_manager, original_connection.conn_id);
+    fail_remote_replies_for_connection(pair.recipient_manager(), waiting.connection.conn_id);
+    assert!(offer_pending.outcome.lock().unwrap().is_none());
+    assert!(waiting.outcome.lock().unwrap().is_none());
 
     // SAFETY: both nodes stay live; this publishes a successor connection.
     unsafe { connect_with_retry(pair.recipient.as_ptr(), &pair.address) };

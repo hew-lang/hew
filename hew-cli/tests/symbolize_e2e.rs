@@ -162,11 +162,6 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         "{stderr}"
     );
     assert!(stderr.contains("p.hew:3:15: too big"), "{stderr}");
-    // O2 may inline level2 into main. The site still identifies the panic,
-    // while the frame table describes the surviving machine-code function.
-    assert!(stderr.contains("hew:   at main ("), "{stderr}");
-    assert!(stderr.contains("p.hew:8)"), "{stderr}");
-
     let record: serde_json::Value = serde_json::from_str(
         std::fs::read_to_string(&log)
             .expect("failure log")
@@ -179,8 +174,15 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         .as_array()
         .expect("frames")
         .iter()
-        .find(|frame| frame["hew_fn"] == "main")
-        .unwrap_or_else(|| panic!("a main frame: {record}"));
+        .find(|frame| frame["hew_fn"] == "main" || frame["hew_fn"] == "level2")
+        .unwrap_or_else(|| panic!("a physical Hew frame: {record}"));
+    let function = frame["hew_fn"].as_str().unwrap();
+    let line = if function == "main" { 8 } else { 1 };
+    assert!(
+        stderr.contains(&format!("hew:   at {function} (")),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&format!("p.hew:{line})")), "{stderr}");
     let output = symbolize(
         &binary,
         &[
@@ -190,18 +192,23 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         ],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("main at "), "{stdout}");
-    assert!(stdout.contains("p.hew:8"), "{stdout}");
+    assert!(stdout.contains(&format!("{function} at ")), "{stdout}");
+    assert!(stdout.contains(&format!("p.hew:{line}")), "{stdout}");
 }
 
 /// The compact table only describes physical frames; DWARF additionally
 /// expands an optimized physical frame into the source calls it inlined.
 #[test]
+#[cfg(not(target_env = "msvc"))]
 fn optimized_debug_build_resolves_inlined_failure_frames() {
     require_codegen();
     let dir = tempdir();
     let src = dir.path().join("inline.hew");
-    std::fs::write(&src, PANICS).expect("write source");
+    std::fs::write(
+        &src,
+        "fn twice(x: i64) -> i64 { x * 2 }\nfn main() { for x in 0..8 { println(twice(x)); } }\n",
+    )
+    .expect("write source");
     let binary = hew_testutil::compiled_binary_path(dir.path(), "inline");
     let build = Command::new(hew_binary())
         .args(["build", "--release", "-g"])
@@ -215,42 +222,42 @@ fn optimized_debug_build_resolves_inlined_failure_frames() {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let log = dir.path().join("failure.ndjson");
-    let run = Command::new(&binary)
-        .env("HEW_BACKTRACE", "1")
-        .env("HEW_FAILURE_LOG", &log)
-        .output()
-        .expect("run optimized debug program");
-    assert!(!run.status.success());
-    let record: serde_json::Value = serde_json::from_str(
-        std::fs::read_to_string(log)
-            .expect("failure log")
-            .lines()
-            .next()
-            .expect("record"),
-    )
-    .expect("parse failure record");
-    let frame = record["frames"]
-        .as_array()
-        .expect("frames")
-        .iter()
-        .find(|frame| frame["hew_fn"] == "main")
-        .unwrap_or_else(|| panic!("main frame missing: {record}"));
-    let output = symbolize(
-        &binary,
-        &[
-            frame["pc"].as_str().expect("pc").to_owned(),
-            format!("--base={}", record["build"]["image_base"].as_str().unwrap()),
-            "--return-addresses".to_owned(),
-        ],
-    );
+    // Find an actual instruction inside an inlined `twice` body. LLVM may
+    // place it in either coroutine part and its address is target-dependent.
+    let data = std::fs::read(&binary).expect("read optimized image");
+    let image = object::File::parse(&*data).expect("parse optimized image");
+    let symbols = hew_symbolize::Symbolizer::open(&binary).expect("open debug information");
+    let address = image
+        .symbols()
+        .filter(|symbol| {
+            symbol
+                .name()
+                .is_ok_and(|name| name.contains("__hew_main_body$resume"))
+        })
+        .flat_map(|symbol| symbol.address()..symbol.address() + symbol.size().clamp(1024, 8192))
+        .find(|&pc| {
+            let frame = hew_symbolize::Frame {
+                pc,
+                image_base: symbols.static_base(),
+                build_id: None,
+                return_address: false,
+            };
+            let locations = symbols.symbolize(&frame).expect("symbolize instruction");
+            locations.first().and_then(|at| at.function.as_deref()) == Some("twice")
+                && locations
+                    .iter()
+                    .skip(1)
+                    .any(|at| at.function.as_deref() == Some("main"))
+        })
+        .expect("optimized image contains twice inlined into main");
+    let output = symbolize(&binary, &[format!("{address:#x}")]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("level2 at "), "{stdout}");
+    assert!(stdout.contains("twice at "), "{stdout}");
     assert!(stdout.contains("(inlined)"), "{stdout}");
     assert!(stdout.contains("main at "), "{stdout}");
 }

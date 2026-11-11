@@ -87,7 +87,15 @@ fn cdb_stops_at_source_and_reads_a_live_local() {
     let dir = tempdir();
     let binary = build(dir.path());
     let mut command = Command::new("cdb.exe");
-    command.args(["-lines", "-c", "bu `p.hew:3`;g"]).arg(binary);
+    // A source line can cover several disjoint instructions. CDB defaults to
+    // rejecting those matches unless ambiguous breakpoint resolution is enabled.
+    command
+        .args([
+            "-lines",
+            "-c",
+            "dx @$debuggerRootNamespace.Debugger.Settings.EngineInitialization.ResolveAmbiguousBreakpoints = true; bu `p.hew:3`; g",
+        ])
+        .arg(binary);
     let output = hew_testutil::run_command_bounded_with_stdin(
         &mut command,
         "cdb source breakpoint",
@@ -101,7 +109,10 @@ fn cdb_stops_at_source_and_reads_a_live_local() {
         "{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("level2"), "{stdout}");
+    assert!(
+        stdout.contains("Breakpoint") && stdout.contains("level2"),
+        "{stdout}"
+    );
     assert!(stdout.lines().any(is_twelve_local), "{stdout}");
 }
 

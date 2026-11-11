@@ -67,6 +67,14 @@ its stack unwinds. Use `hew build -g main.hew -o app` to keep an executable
 for a later session. Add `--release` to optimize it; optimized code can inline
 functions and remove local variables.
 
+In CDB, one source line can map to several instructions. If a source-line
+breakpoint reports an ambiguous symbol, enable resolution for that debugger
+session (CDB 10.0.25310.1001 or newer):
+
+```text
+dx @$debuggerRootNamespace.Debugger.Settings.EngineInitialization.ResolveAmbiguousBreakpoints = true
+```
+
 For an editor using a GDB, LLDB or Windows debugger adapter, run
 `hew debug --print-config main.hew` and use the JSON it prints as a launch
 configuration. The command builds an executable under `target/hew-debug` in

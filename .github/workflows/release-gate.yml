@@ -38,9 +38,9 @@ on:
         type: string
         default: ""
       platforms:
-        description: "Run the full gate or resume a platform subset for the same source."
+        description: "Run the full gate, a platform subset, or the focused Windows debugger check."
         type: choice
-        options: [all, linux-x86_64, windows-x86_64, macos-aarch64]
+        options: [all, linux-x86_64, windows-x86_64, macos-aarch64, windows-debugger]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -91,7 +91,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|linux-x86_64|windows-x86_64|macos-aarch64) ;;
+            all|linux-x86_64|windows-x86_64|macos-aarch64|windows-debugger) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -133,7 +133,10 @@ jobs:
             printf '| Tested source commit | %s |\n' "${SOURCE_SHA}"
             printf '| Workflow commit | %s |\n' "${WORKFLOW_SHA}"
             printf '| Platform selection | %s |\n' "${PLATFORMS}"
-            if [[ "${PLATFORMS}" != all ]]; then
+            if [[ "${PLATFORMS}" == windows-debugger ]]; then
+              echo
+              echo 'Debugger-only check: this is not Windows platform or release qualification.'
+            elif [[ "${PLATFORMS}" != all ]]; then
               echo
               echo 'Partial qualification: record this source revision and combine successful results according to the release runbook, including sanitizer evidence.'
             fi
@@ -537,7 +540,8 @@ jobs:
     if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'macos-aarch64'
     name: Release Gate — macOS aarch64
     runs-on: macos-15
-    timeout-minutes: 180
+    # Workspace tests and the full native corpus share this job's budget.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -646,8 +650,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64'
-    name: Release Gate — Windows x86_64
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-debugger'
+    name: ${{ needs.gate-release-checks.outputs.platforms == 'windows-debugger' && 'Focused check — Windows debugger only' || 'Release Gate — Windows x86_64' }}
     runs-on: windows-2022
     timeout-minutes: 240
     env:
@@ -711,11 +715,13 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Parent $debugger)
 
       - name: Build and prove release library consumer linking
+        if: needs.gate-release-checks.outputs.platforms != 'windows-debugger'
         id: windows-release-build
         shell: bash
         run: make test-release-lib-link
 
       - name: Verify binaries
+        if: needs.gate-release-checks.outputs.platforms != 'windows-debugger'
         shell: bash
         run: |
           target/release/hew.exe lsp --version && echo "hew lsp runs"
@@ -726,6 +732,7 @@ jobs:
       # lane provisions it (install.sh on Linux, brew on macOS, pkg on FreeBSD)
       # — this lane did not, so its WASI coverage never actually ran.
       - name: Install WASI prerequisites
+        if: needs.gate-release-checks.outputs.platforms != 'windows-debugger'
         shell: pwsh
         run: |
           # Unpack the published archive rather than using the convenience
@@ -744,6 +751,7 @@ jobs:
           & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
+        if: needs.gate-release-checks.outputs.platforms != 'windows-debugger'
         id: workspace-tests
         shell: bash
         # Linux x86_64 owns the portable syntax suite. Keep filesystem and
@@ -801,14 +809,19 @@ jobs:
 
       - name: Prepare Windows debugger test runtime
         id: windows-debug-runtime
-        if: ${{ !cancelled() && steps.windows-debugger.outcome == 'success' && steps.windows-release-build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.windows-debugger.outcome == 'success' && (steps.windows-release-build.outcome == 'success' || needs.gate-release-checks.outputs.platforms == 'windows-debugger') }}
         shell: bash
         run: make SHELL=bash hew-native
 
       - name: Run Windows debugger acceptance
         if: ${{ !cancelled() && steps.windows-debug-runtime.outcome == 'success' }}
         shell: bash
-        run: HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci-focused -p hew-cli --test windows_pdb_e2e --run-ignored only
+        run: |
+          if [[ "${{ needs.gate-release-checks.outputs.platforms }}" == windows-debugger ]]; then
+            HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci-focused -p hew-cli --test windows_pdb_e2e --run-ignored all
+          else
+            HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci-focused -p hew-cli --test windows_pdb_e2e --run-ignored only
+          fi
 
       - name: Run C-ABI crate tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}

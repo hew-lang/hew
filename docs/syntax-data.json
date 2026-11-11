@@ -77,6 +77,7 @@
   },
   "contextual_identifiers": {
     "always": "Machine eventless transition trigger (contextual before a transition source).",
+    "backoff": "Supervisor and supervisor-child restart-delay clause (backoff: <std.restart.Backoff>)",
     "block": "Overflow policy: block sender",
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "coalesce": "Mailbox overflow policy",

@@ -56,7 +56,7 @@ pub(super) fn bind_frame_roots<'ctx>(
             .as_pointer_value();
         roots.extend(scopes.values().map(|slot| (scope_layout, *slot, present)));
     }
-    frame.bind_root_entries(module.ctx, &module.llvm, builder, &roots)?;
+    frame.bind_root_entries(module.ctx, builder, &roots)?;
     Ok(())
 }
 

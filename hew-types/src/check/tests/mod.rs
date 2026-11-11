@@ -191,7 +191,7 @@ pub(super) fn check_source_in_canonical_std_module_with_index(
         module_doc: None,
     };
     (
-        Checker::new(ModuleRegistry::new(vec![])).check_program(&program),
+        Checker::new(test_registry()).check_program(&program),
         module_idx,
     )
 }

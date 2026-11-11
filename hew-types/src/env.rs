@@ -859,12 +859,21 @@ impl TypeEnv {
         )
     }
 
+    /// Bind `name` after every binding already in `scope`, so a same-scope
+    /// redefinition sits at its own declaration's position for the
+    /// scope-exit lints.
+    fn bind(scope: &mut IndexMap<Ident, Binding>, name: Ident, binding: Binding) {
+        scope.shift_remove(&name);
+        scope.insert(name, binding);
+    }
+
     /// Define a variable in the current scope (synthetic, no source span — not warned about).
     pub fn define(&mut self, name: impl LexicalName, ty: Ty, is_mutable: bool) {
         let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
+            Self::bind(
+                scope,
                 name,
                 Binding {
                     id,
@@ -1004,7 +1013,8 @@ impl TypeEnv {
         let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
+            Self::bind(
+                scope,
                 name,
                 Binding {
                     id,
@@ -1104,7 +1114,8 @@ impl TypeEnv {
         let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
+            Self::bind(
+                scope,
                 name,
                 Binding {
                     id,

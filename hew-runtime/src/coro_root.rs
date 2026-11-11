@@ -200,7 +200,10 @@ unsafe fn drive_root(
     let mut ready = false;
     loop {
         // SAFETY: this driver owns the frame/state and consumes one wake per poll.
-        if let Some(status) = unsafe { poll_root(&mut frame, state, ready) } {
+        let polled = unsafe { poll_root(&mut frame, state, ready) };
+        // Each poll returns with no Hew frame live on the process thread.
+        crate::stack_limit::rearm();
+        if let Some(status) = polled {
             return status;
         }
         readiness.wait();

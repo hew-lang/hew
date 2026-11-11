@@ -530,7 +530,7 @@ pub const CRASH_ACTION_KILL: i32 = 2;
 pub use crate::internal::types::{
     ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_STACK_OVERFLOW,
 };
 
 /// C-unwind trap entry point invoked by generated code for a logical Hew
@@ -699,7 +699,7 @@ impl ConstructionReadiness {
 
     fn wait(&self, deadline: Instant) {
         if crate::driver::active() {
-            crate::driver::drain_poll(Duration::ZERO);
+            crate::driver::drain_poll(Duration::ZERO, false);
         } else {
             let ready = self.ready.lock_or_recover();
             if !*ready {
@@ -768,12 +768,6 @@ fn signal_group_restart(supervisor: crate::lifetime::local_handles::HewLocalPidI
 
 /// Overflow policy: drop new messages.
 const OVERFLOW_DROP_NEW: c_int = 1;
-
-/// Default maximum restart delay in milliseconds (30 seconds).
-const DEFAULT_MAX_RESTART_DELAY_MS: u64 = 30_000;
-
-/// Initial restart delay in milliseconds.
-const INITIAL_RESTART_DELAY_MS: u64 = 100;
 
 // ---------------------------------------------------------------------------
 // Child spec
@@ -1131,7 +1125,6 @@ pub(crate) struct SupervisorChildSpec {
 /// unrepresentable and prevents a whole-`HewSupervisor` reference from
 /// aliasing concurrent raw roster updates.
 pub(crate) struct SupervisorRoster {
-    backoff: Option<(u64, u64)>,
     children: Vec<*mut HewActor>,
     child_specs: Vec<InternalChildSpec>,
     child_count: usize,
@@ -1714,45 +1707,41 @@ impl Drop for CircuitBreakerState {
     }
 }
 
-/// Existing per-role delay state, shared by actors, pools and nested supervisors.
-#[derive(Debug)]
+/// Per-role restart delay state, shared by actors, pools and nested supervisors.
+///
+/// A role restarts without delay unless its own or its supervisor's `backoff`
+/// selects a positive initial delay; a zero `initial_ns` never arms a deadline.
+#[derive(Debug, Default)]
 struct RestartBackoff {
     initial_ns: u64,
     maximum_ns: u64,
     delay_ns: u64,
     next_restart_time_ns: u64,
-    selected: bool,
     published: bool,
 }
 
-impl Default for RestartBackoff {
-    fn default() -> Self {
-        Self {
-            initial_ns: INITIAL_RESTART_DELAY_MS * 1_000_000,
-            maximum_ns: DEFAULT_MAX_RESTART_DELAY_MS * 1_000_000,
-            delay_ns: 0,
-            next_restart_time_ns: 0,
-            selected: false,
-            published: false,
-        }
-    }
-}
-
 impl RestartBackoff {
-    fn configured(policy: Option<(u64, u64)>) -> Self {
-        policy.map_or_else(Self::default, |(initial_ns, maximum_ns)| Self {
+    /// A zero `initial_ns` restarts without delay.
+    fn configured(initial_ns: u64, maximum_ns: u64) -> Self {
+        Self {
             initial_ns,
             maximum_ns,
-            selected: true,
             ..Self::default()
-        })
+        }
+    }
+
+    /// Whether this role delays its restarts.
+    const fn selected(&self) -> bool {
+        self.initial_ns > 0
     }
 
     fn advance(&mut self, now_ns: u64, window_ns: u64) {
+        if !self.selected() {
+            return;
+        }
         // Publication replaces the pending deadline with the start of healthy
         // execution. Downtime must not reset the per-role exponent.
-        let healthy = self.selected
-            && self.published
+        let healthy = self.published
             && self.delay_ns > 0
             && now_ns.saturating_sub(self.next_restart_time_ns) >= window_ns;
         self.delay_ns = if self.delay_ns == 0 || healthy {
@@ -1764,8 +1753,14 @@ impl RestartBackoff {
         self.published = false;
     }
 
+    /// Whether a replacement was published after the pending delay was armed,
+    /// as a group restart of this role's siblings does.
+    const fn replaced_since_armed(&self) -> bool {
+        self.published
+    }
+
     fn published(&mut self) {
-        if self.selected {
+        if self.selected() {
             self.next_restart_time_ns = monotonic_time_ns();
             self.published = true;
         }
@@ -2307,9 +2302,8 @@ fn restart_delay_allows_restart(spec: &InternalChildSpec) -> bool {
     now_ns >= spec.backoff.next_restart_time_ns
 }
 
-/// Apply exponential backoff delay to the child spec.
+/// Advance a declared restart delay after a failed replacement spawn.
 fn apply_restart_backoff(spec: &mut InternalChildSpec) {
-    // Legacy allocation-failure recovery retains its established delay policy.
     spec.backoff.advance(monotonic_time_ns(), u64::MAX);
 }
 

@@ -1,0 +1,8 @@
+schema = 1
+
+[[target]]
+name = "fuzz_stdlib_text"
+source = "fuzz_targets/fuzz_stdlib_text.c"
+adapter = "stdlib_text.hew"
+export = "fuzz_input=hxfuzz_input"
+sanitizer = "address"

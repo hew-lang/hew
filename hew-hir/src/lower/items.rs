@@ -421,10 +421,12 @@ impl LowerCtx<'_> {
             // Pass impl-level type params so that methods of e.g. `impl<U> Trait for Wrapper<U>`
             // carry `U` as a `HirFn::type_params` entry — required for monomorphization
             // of generic-over-generic impl methods (W3.022 Stage 3).
+            // The method's own span: its declaration line and the extent that
+            // bounds its scopes, not the enclosing impl block's.
             let Some(hir_method) = self.lower_fn_with_name_and_impl_params(
                 method,
                 &symbol,
-                span.clone(),
+                method.fn_span.clone(),
                 &type_params,
                 Some(declaration),
             ) else {
@@ -455,6 +457,7 @@ impl LowerCtx<'_> {
                     .entry(declaration)
                     .or_insert_with(|| symbol.clone());
             }
+            self.note_item_receiver(hir_method.id);
             method_item_ids.push(hir_method.id);
             items.push(HirItem::Function(hir_method));
             method_names.push(method.name.to_string());
@@ -555,13 +558,16 @@ impl LowerCtx<'_> {
                         // bodies degrades to a bare fail-closed line (never a false
                         // caret against the root source). This is the exact producer
                         // an absence-from-a-foreign-set proxy misclassified.
+                        // The body is the trait's declaration, so its span is
+                        // the trait method's, in the trait's file: the same
+                        // coordinates as its scopes and sites.
                         let receiver = self.current_impl_self_ty.clone().expect("impl receiver");
                         let hir_method =
                             self.with_default_receiver(default_method.trait_id, &receiver, |ctx| {
                                 ctx.lower_fn_with_name_and_impl_params(
                                     &fn_decl,
                                     &symbol,
-                                    span.clone(),
+                                    default_method.method.span.clone(),
                                     &type_params,
                                     synthetic_default_declaration,
                                 )
@@ -576,6 +582,7 @@ impl LowerCtx<'_> {
                                     .or_insert_with(|| symbol.clone());
                             }
                         }
+                        self.note_item_receiver(hir_method.id);
                         method_item_ids.push(hir_method.id);
                         items.push(HirItem::Function(hir_method));
                         method_names.push(fn_decl.name.to_string());

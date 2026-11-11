@@ -71,7 +71,13 @@ fn build_program_with_floor_module(module_path: &[&str], floor_src: &str) -> Pro
 }
 
 fn lower_with_checker(program: &Program) -> (hew_hir::LowerOutput, TypeCheckOutput) {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    // The floor module names the checkout's shipped source: the checkout is
+    // the std root this check is given.
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-hir has a workspace parent")
+        .to_path_buf();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo]));
     let tco = checker.check_program(program);
     let output = lower_program_host_target(program, &tco, &ResolutionCtx);
     (output, tco)

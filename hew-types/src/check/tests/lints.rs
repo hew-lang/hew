@@ -51,6 +51,23 @@ fn unused_variable_warnings_follow_declaration_order() {
 }
 
 #[test]
+fn redefined_binding_warns_at_its_own_position() {
+    // A same-scope redefinition replaces the earlier binding; its lint must
+    // follow the bindings declared between the two, not the first slot.
+    let source = "fn main() {\n    let a1 = 1;\n    let a2 = 2;\n    let a1 = 3;\n}";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let unused: Vec<(usize, &str)> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::UnusedVariable)
+        .map(|w| (w.span.start, source[w.span.clone()].trim()))
+        .collect();
+    assert_eq!(unused, [(36, "a2"), (52, "a1")], "{:?}", output.warnings);
+}
+
+#[test]
 fn shared_bare_variant_resolves_to_first_declared_enum() {
     // Several enums share `Red`; the bare-variant refusal must name the same
     // owner every run, whatever order the type table iterates in.

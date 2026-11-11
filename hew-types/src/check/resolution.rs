@@ -1377,6 +1377,14 @@ impl Checker {
         });
     }
 
+    pub(super) fn record_deferred_negate_check(&mut self, span: &Span, operand: &Ty) {
+        self.deferred_negate_checks.push(DeferredNegateCheck {
+            span: span.clone(),
+            operand: operand.clone(),
+            source_module: self.current_diagnostic_source_module(),
+        });
+    }
+
     pub(super) fn record_deferred_monomorphic_site(
         &mut self,
         span: &Span,
@@ -1518,6 +1526,26 @@ impl Checker {
             })
             .collect();
         self.errors.extend(deferred_cast_errors);
+
+        // A negation checked while its operand was still an inference
+        // variable (`let a = 5; let b = -a; let c: u32 = b;`) is refused here
+        // once the operand settles unsigned, so it never reaches SIR.
+        let deferred_negate_errors: Vec<_> = std::mem::take(&mut self.deferred_negate_checks)
+            .into_iter()
+            .filter_map(|check| {
+                let operand = self.subst.resolve(&check.operand);
+                operand.is_unsigned().then(|| {
+                    let mut err = TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        check.span.clone(),
+                        format!("cannot negate type `{}`", operand.user_facing()),
+                    );
+                    err.source_module = check.source_module;
+                    err
+                })
+            })
+            .collect();
+        self.errors.extend(deferred_negate_errors);
 
         // Re-run every `is` whose operands were still inference variables when
         // the expression was checked (a closure body checked before its call

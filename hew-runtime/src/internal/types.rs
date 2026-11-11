@@ -640,6 +640,8 @@ impl ExitReason {
     /// - `HeapExceeded` → `CrashKind::HeapExceeded` (the per-actor arena cap).
     /// - `ActorUnhandledFailure` → `CrashKind::HandlerFailed`.
     /// - `ActorTimerOverdue` → `CrashKind::TimerOverdue`.
+    /// - `StackOverflow` → `CrashKind::StackOverflow` (a resource limit, like
+    ///   the arena cap).
     /// - every other fault class (traps, signals, send failures, internal
     ///   compiler-invariant traps, wire-decode failures) → `CrashKind::Crashed`.
     /// - `Normal` is not a crash; it projects to `Crashed` defensively but a
@@ -654,6 +656,7 @@ impl ExitReason {
             ExitReason::HeapExceeded => CrashKind::HeapExceeded,
             ExitReason::ActorUnhandledFailure => CrashKind::HandlerFailed,
             ExitReason::ActorTimerOverdue => CrashKind::TimerOverdue,
+            ExitReason::StackOverflow => CrashKind::StackOverflow,
             ExitReason::IntegerOverflow
             | ExitReason::DivideByZero
             | ExitReason::SignedMinDivNegOne
@@ -666,7 +669,6 @@ impl ExitReason {
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
             | ExitReason::UserPanic
-            | ExitReason::StackOverflow
             | ExitReason::Failed
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
@@ -679,7 +681,8 @@ impl ExitReason {
 ///
 /// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
 /// tag a Hew `CrashKind` value carries): `Fault = 0`, `HeapExceeded = 1`,
-/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`. M-7 delivers this tag in a typed
+/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`,
+/// `StackOverflow = 5`. M-7 delivers this tag in a typed
 /// `CrashNotification { target, kind }` to a linked actor's exit hook; the
 /// `as i32` tag is the wire value.
 ///
@@ -699,6 +702,8 @@ pub enum CrashKind {
     HandlerFailed = 3,
     /// An actor-owned timer missed its handler-start deadline.
     TimerOverdue = 4,
+    /// A call exhausted the actor's stack.
+    StackOverflow = 5,
 }
 
 impl CrashKind {
@@ -749,6 +754,10 @@ mod crash_kind_projection_tests {
         assert_eq!(
             CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
             CrashKind::TimerOverdue.tag()
+        );
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_STACK_OVERFLOW),
+            CrashKind::StackOverflow.tag()
         );
     }
 
@@ -813,6 +822,7 @@ mod crash_kind_projection_tests {
             ExitReason::WireDecodeFailed,
             ExitReason::JoinBranchFailed,
             ExitReason::UserPanic,
+            ExitReason::StackOverflow,
             ExitReason::Signal(-1),
             ExitReason::Normal,
         ];

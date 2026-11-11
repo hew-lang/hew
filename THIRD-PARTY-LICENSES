@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (407 packages)
+  Apache License 2.0 (409 packages)
   MIT License (115 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
@@ -6590,6 +6590,7 @@ limitations under the License.
 ================================================================================
 Apache License 2.0
   * ambient-authority 0.0.2 — https://github.com/sunfishcode/ambient-authority
+  * arbitrary 1.5.0 — https://github.com/rust-fuzz/arbitrary/
   * arrayvec 0.5.2 — https://github.com/bluss/arrayvec
   * atomic-waker 1.1.2 — https://github.com/smol-rs/atomic-waker
   * autocfg 1.5.1 — https://github.com/cuviper/autocfg
@@ -9256,6 +9257,7 @@ Apache License 2.0
   * hew-mir 0.10.0-rc1 — https://github.com/hew-lang/hew
   * hew-observe 0.10.0-rc1 — https://github.com/hew-lang/hew
   * hew-observe-protocol 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-parity-gen 0.10.0-rc1 — https://github.com/hew-lang/hew
   * hew-parser 0.10.0-rc1 — https://github.com/hew-lang/hew
   * hew-pkg 0.10.0-rc1 — https://github.com/hew-lang/hew
   * hew-runtime 0.10.0-rc1 — https://github.com/hew-lang/hew
@@ -11667,8 +11669,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 MIT License
+  * pulldown-cmark 0.13.5 — https://github.com/raphlinus/pulldown-cmark
   * pulldown-cmark-escape 0.11.0 — https://github.com/raphlinus/pulldown-cmark
-  * pulldown-cmark 0.13.4 — https://github.com/raphlinus/pulldown-cmark
 
 The MIT License
 

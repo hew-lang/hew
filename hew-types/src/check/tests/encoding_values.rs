@@ -332,7 +332,14 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
                  fn identity(value: Envelope<Option<{spelling}>>) -> Envelope<Option<{spelling}>> {{ value }}"
             )));
 
-            let output = check_items(items);
+            // The import names the checkout's shipped source, so the checkout
+            // is the std root this check is given.
+            let output = Checker::new(test_registry()).check_program(&Program {
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+                module_graph: None,
+                items,
+                module_doc: None,
+            });
             assert!(
                 output.errors.is_empty(),
                 "{import_source}: {:?}",
@@ -408,7 +415,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
         })
         .unwrap();
     graph.topo_order = vec![json, relay_id, root];
-    let output = Checker::default().check_program(&Program {
+    let output = Checker::new(test_registry()).check_program(&Program {
         expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         items,
         module_graph: Some(graph),
@@ -634,7 +641,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
             graph.add_module(node).unwrap();
         }
         graph.topo_order = vec![module, root];
-        let output = Checker::default().check_program(&Program {
+        let output = Checker::new(test_registry()).check_program(&Program {
             expansions: hew_parser::macro_syntax::ExpansionMap::default(),
             items,
             module_graph: Some(graph),

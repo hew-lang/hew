@@ -31,3 +31,9 @@ fn main() {
     }
 }
 ```
+
+## Nesting
+
+Arrays and maps may nest 127 levels deep: the same limit `json.parse`, the
+typed `decode` functions and `msgpack.to_json` use. Deeper input is refused, so
+every document `to_json` converts is one `json.parse` reads back.

@@ -25,10 +25,11 @@ impl Checker {
             .collect();
         for (module, source) in sources {
             let Some(provider) = &provider else {
-                let package = if self
-                    .module_registry
-                    .source_has_stdlib_authority(&source, self.defs.module_path(module))
-                {
+                let package = if crate::module_registry::is_canonical_stdlib_module_source(
+                    &source,
+                    self.defs.module_path(module),
+                    self.module_registry.std_roots(),
+                ) {
                     PackageOrigin::StandardLibrary
                 } else {
                     PackageOrigin::Compilation

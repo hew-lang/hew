@@ -48,6 +48,9 @@ pub struct HirModule {
     /// with a body was lowered from: 0 for the root file. Every site and scope
     /// inside the item indexes that file.
     pub item_files: HashMap<ItemId, u32>,
+    /// The concrete or generic `Self` of each impl method body, keyed by item
+    /// id: the receiver a person names the method by (`i64` in `i64.describe`).
+    pub item_receivers: HashMap<ItemId, ResolvedTy>,
     /// `ItemId`s of function items whose bodies PROVABLY index the root
     /// compilation unit's source text: functions lowered natively from the
     /// root file (module index 0), EXCLUDING generated trait default-method
@@ -734,6 +737,9 @@ pub struct HirSupervisorChild {
     /// Per-child graceful-stop deadline from the `stop:` clause.
     /// `None` means the supervisor default applies.
     pub stop: Option<HirExpr>,
+    /// Per-child restart delay from the `backoff:` clause, evaluated once
+    /// against construction config. `None` inherits the supervisor's policy.
+    pub backoff: Option<HirExpr>,
     /// Real, verifier-registered site for this child declaration, minted from
     /// the same monotonic allocator as every other HIR site
     /// (`self.ids.site()`). MIR diagnostics that have no specific

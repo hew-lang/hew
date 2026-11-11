@@ -456,20 +456,81 @@ fn supervisor_restart_one_for_one_runs_under_wasi() {
     assert_native_wasi_cases(&["supervisor-restart-one-for-one"]);
 }
 
-#[test]
-fn supervised_actor_lifecycle_runs_under_wasi() {
-    assert_native_wasi_cases(&[
-        "actor-typed-notifications",
-        "actor-notification-hooks-suspend",
-        "supervisor-wired-start-fault",
-        "actor-init-deferred-supervised-fault",
-        "supervisor-role-observations",
-        "supervisor-wired-stop-during-reconstruction",
-        "supervisor-stop-waits-for-stop-hooks",
-        "driver-supervisor-backoff-cancel",
-        "actor-start-fault-contained",
-        "actor-periodic-handlers",
-    ]);
+// Each fixture keeps native/WASI and O0/O2 coverage under its own test deadline.
+// An aggregate test accumulates compiler work across every fixture before the
+// runner can report a result or identify a slow case.
+mod supervised_actor_lifecycle {
+    use super::assert_native_wasi_cases;
+
+    #[test]
+    fn actor_typed_notifications() {
+        assert_native_wasi_cases(&["actor-typed-notifications"]);
+    }
+
+    #[test]
+    fn actor_notification_hooks_suspend() {
+        assert_native_wasi_cases(&["actor-notification-hooks-suspend"]);
+    }
+
+    #[test]
+    fn supervisor_wired_start_fault() {
+        assert_native_wasi_cases(&["supervisor-wired-start-fault"]);
+    }
+
+    #[test]
+    fn actor_init_deferred_supervised_fault() {
+        assert_native_wasi_cases(&["actor-init-deferred-supervised-fault"]);
+    }
+
+    #[test]
+    fn supervisor_role_observations() {
+        assert_native_wasi_cases(&["supervisor-role-observations"]);
+    }
+
+    #[test]
+    fn supervisor_wired_stop_during_reconstruction() {
+        assert_native_wasi_cases(&["supervisor-wired-stop-during-reconstruction"]);
+    }
+
+    #[test]
+    fn supervisor_stop_waits_for_stop_hooks() {
+        assert_native_wasi_cases(&["supervisor-stop-waits-for-stop-hooks"]);
+    }
+
+    #[test]
+    fn supervisor_restart_backoff_cancel() {
+        assert_native_wasi_cases(&["supervisor-restart-backoff-cancel"]);
+    }
+
+    #[test]
+    fn supervisor_child_backoff() {
+        assert_native_wasi_cases(&["supervisor-child-backoff"]);
+    }
+
+    #[test]
+    fn supervisor_group_restart_absorbs_delay() {
+        assert_native_wasi_cases(&["supervisor-group-restart-absorbs-delay"]);
+    }
+
+    #[test]
+    fn supervisor_group_restart_repeated() {
+        assert_native_wasi_cases(&["supervisor-group-restart-repeated"]);
+    }
+
+    #[test]
+    fn supervisor_restart_backoff_invalid() {
+        assert_native_wasi_cases(&["supervisor-restart-backoff-invalid"]);
+    }
+
+    #[test]
+    fn actor_start_fault_contained() {
+        assert_native_wasi_cases(&["actor-start-fault-contained"]);
+    }
+
+    #[test]
+    fn actor_periodic_handlers() {
+        assert_native_wasi_cases(&["actor-periodic-handlers"]);
+    }
 }
 
 /// Signed division and remainder of the minimum by -1 trap with
@@ -680,8 +741,10 @@ fn assert_native_wasi_cases(names: &[&str]) {
                 if target != "native" {
                     build.args(["--target", target]);
                 }
+                let started = std::time::Instant::now();
                 let compiled =
                     support::run_bounded_command(build, format!("build {name} {target} O{level}"));
+                eprintln!("built {name} {target} O{level} in {:?}", started.elapsed());
                 support::assert_success(&compiled, &format!("build {name} {target} O{level}"));
                 let mut run = if target == "native" {
                     let mut command = Command::new(&binary);
@@ -706,8 +769,10 @@ fn assert_native_wasi_cases(names: &[&str]) {
                     run.arg(&binary);
                 }
                 run.current_dir(repo_root());
+                let started = std::time::Instant::now();
                 let output =
                     support::run_bounded_command(run, format!("run {name} {target} O{level}"));
+                eprintln!("ran {name} {target} O{level} in {:?}", started.elapsed());
                 assert!(
                     output.status.code().map(i64::from) == expected["exit"].as_integer(),
                     "{name} {target} O{level}: {}",
@@ -1422,4 +1487,38 @@ fn main() {
             "wasm32-wasi"
         );
     }
+}
+
+/// Stack exhaustion fails with `StackOverflow` under WASI as natively: the
+/// module's entry checks fire before wasmtime's own call-stack limit, so a
+/// supervisor restarts the recursing actor and an unsupervised root exits 1.
+#[test]
+fn stack_overflow_is_a_supervisable_failure_under_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let cases = repo_root().join("tests/core-acceptance/cases");
+    let run = |name: &str| {
+        let source = cases.join(name);
+        let source = source.to_str().expect("case path must be valid UTF-8");
+        run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
+    };
+
+    let supervised = run("stack-overflow-supervised-restart.hew");
+    assert!(
+        supervised.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&supervised.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&supervised.stdout),
+        "10000\n10000\nunbounded cleanup ran\nwalker overflowed\n0\n10000\n10000\nprocess continued\n"
+    );
+
+    let root = run("stack-overflow-unsupervised-root.hew");
+    assert_eq!(root.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&root.stdout),
+        "descending\nmain cleanup ran\n"
+    );
+    assert!(String::from_utf8_lossy(&root.stderr).contains("hew: failure: StackOverflow (215)"));
 }

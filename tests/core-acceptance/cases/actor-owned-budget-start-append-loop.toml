@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-owned-budget-start-append-loop"
+intent = "A bounded actor's start hook charges vector growth inside a batched append loop and refuses past its budget."
+source = "cases/actor-owned-budget-start-append-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 1

@@ -113,6 +113,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/float_classification.hew",
     },
     ParityCase {
+        // Negation at each signed width, at a width settled after the
+        // negation, and at the contextual float width.
+        test_name: "signed_negation",
+        source_rel: "examples/sandbox-graduation/signed_negation.hew",
+    },
+    ParityCase {
         // Integer bit methods and wrapping, saturating and checked arithmetic
         // at narrow, signed and unsigned receiver widths.
         test_name: "integer_bit_methods",
@@ -1136,6 +1142,33 @@ fn actor_completion_ring_reports_failure_without_deadlocking() {
     }
 }
 
+/// Unbounded recursion fails with `StackOverflow` on both engines: an actor
+/// is restarted by its supervisor, and in `main` the process exits 1 after its
+/// cleanup. The floor depth succeeds in main, a handler and a task.
+#[cfg(unix)]
+#[test]
+fn stack_overflow_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "stack_overflow_supervised_restart",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-supervised-restart.hew",
+        },
+        ParityCase {
+            test_name: "stack_overflow_unsupervised_root",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-unsupervised-root.hew",
+        },
+        ParityCase {
+            test_name: "stack_overflow_callback",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-callback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn authored_error_sources_match_native() {
@@ -2013,6 +2046,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         )),
         "failure_edges" => Some(include_str!(
             "../../tests/core-acceptance/cases/failure-edges.toml"
+        )),
+        "signed_negation" => Some(include_str!(
+            "../../tests/core-acceptance/cases/signed-negation.toml"
         )),
         _ => None,
     }

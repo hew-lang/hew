@@ -98,6 +98,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 enabled.into(),
                 self.active_fault.into(),
                 self.active_status.into(),
+                frame.state.into(),
             ],
             "loop.exit",
         )?
@@ -207,10 +208,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.ctx.bool_type().into(),
                     pointer.into(),
                     pointer.into(),
+                    pointer.into(),
                 ],
                 false,
             ),
-            Some(Linkage::Private),
+            // Internal, not private: the chunk stays local but keeps a symbol,
+            // so profilers and debuggers can name its machine code.
+            Some(Linkage::Internal),
         );
         // Inlining into a resumable body would make CoroSplit spill the loop's
         // PHIs again. This boundary runs once per remaining shared budget.
@@ -302,6 +306,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value_callbacks: self.value_callbacks,
             ramps: self.ramps,
             frame: None,
+            chunk_invocation: Some(
+                value
+                    .get_nth_param(6)
+                    .expect("chunk invocation")
+                    .into_pointer_value(),
+            ),
             task_scopes: BTreeMap::new(),
             debug: None,
         };

@@ -58,6 +58,7 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
         }
         Role::CrashKindHandlerFailed => super::package::RuntimeVariantRole::CrashKindHandlerFailed,
         Role::CrashKindTimerOverdue => super::package::RuntimeVariantRole::CrashKindTimerOverdue,
+        Role::CrashKindStackOverflow => super::package::RuntimeVariantRole::CrashKindStackOverflow,
         Role::OptionSome => super::package::RuntimeVariantRole::OptionSome,
         Role::OptionNone => super::package::RuntimeVariantRole::OptionNone,
         Role::ResultOk => super::package::RuntimeVariantRole::ResultOk,
@@ -941,7 +942,7 @@ impl<'m> Walker<'m> {
                     strategy,
                     max_restarts,
                     window_secs,
-                    backoff,
+                    backoff: _,
                     children,
                     startup_order,
                 } = supervisor;
@@ -950,11 +951,11 @@ impl<'m> Walker<'m> {
                     strategy: restart_strategy(*strategy),
                     max_restarts: *max_restarts,
                     window_secs: *window_secs,
-                    backoff: backoff.is_some(),
                     startup_order: startup_order.clone(),
                     children: children
                         .iter()
-                        .map(|child| {
+                        .enumerate()
+                        .map(|(index, child)| {
                             let hew_sir::SemSupervisorChild {
                                 name,
                                 dependencies,
@@ -962,6 +963,7 @@ impl<'m> Walker<'m> {
                                 restart,
                                 stop_deadline,
                                 pool_count,
+                                backoff: _,
                                 spawn,
                             } = child;
                             Ok(SupervisorChild {
@@ -985,6 +987,7 @@ impl<'m> Walker<'m> {
                                     _ => None,
                                 },
                                 is_pool: pool_count.is_some(),
+                                backoff: supervisor.child_backoff(index).is_some(),
                                 spawn: self.function_id(*spawn)?,
                             })
                         })

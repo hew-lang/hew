@@ -595,6 +595,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
         let documents = hew_compile::SourceSet::new();
+        let std_roots = hew_types::module_registry::stdlib_search_paths();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -603,7 +604,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &std_roots,
             documents: &documents,
         };
 
@@ -640,7 +641,7 @@ fn main() {
             "right branch should reuse resolved diamond_base import items"
         );
 
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(std_roots.clone()));
         let output = checker.check_program(&program);
         let unresolved: Vec<_> = output
             .errors
@@ -685,6 +686,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
         let documents = hew_compile::SourceSet::new();
+        let std_roots = hew_types::module_registry::stdlib_search_paths();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -693,7 +695,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &std_roots,
             documents: &documents,
         };
 
@@ -706,7 +708,7 @@ fn main() {
         .expect("transitive fixture should build a module graph");
         program.module_graph = Some(module_graph);
 
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(std_roots.clone()));
         let output = checker.check_program(&program);
         assert!(
             output.errors.is_empty(),
@@ -743,6 +745,7 @@ fn main() {
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
         let documents = hew_compile::SourceSet::new();
+        let std_roots = hew_types::module_registry::stdlib_search_paths();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -751,7 +754,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &std_roots,
             documents: &documents,
         };
         let module_graph = build_module_graph(
@@ -763,7 +766,7 @@ fn main() {
         .expect("fixture must build a module graph");
         program.module_graph = Some(module_graph);
 
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(std_roots.clone()));
         let tco = checker.check_program(&program);
 
         assert!(
@@ -851,6 +854,7 @@ fn main() {
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
         let documents = hew_compile::SourceSet::new();
+        let std_roots = hew_types::module_registry::stdlib_search_paths();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -859,7 +863,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &std_roots,
             documents: &documents,
         };
         let module_graph = build_module_graph(
@@ -871,7 +875,7 @@ fn main() {
         .expect("fixture must build a module graph");
         program.module_graph = Some(module_graph);
 
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(std_roots.clone()));
         let tco = checker.check_program(&program);
 
         assert!(
@@ -911,6 +915,7 @@ fn main() {
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
         let documents = hew_compile::SourceSet::new();
+        let std_roots = hew_types::module_registry::stdlib_search_paths();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -919,7 +924,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &std_roots,
             documents: &documents,
         };
         let module_graph = build_module_graph(
@@ -931,7 +936,7 @@ fn main() {
         .expect("fixture must build a module graph");
         program.module_graph = Some(module_graph);
 
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
+        let mut checker = hew_types::Checker::new(ModuleRegistry::new(std_roots.clone()));
         let tco = checker.check_program(&program);
 
         assert!(

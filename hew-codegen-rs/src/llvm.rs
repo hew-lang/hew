@@ -111,7 +111,10 @@ pub(crate) fn run_module_pipeline(
         // as an invariant branch. Once the main pipeline has promoted scalar
         // storage and established checked arithmetic bounds, unswitch that
         // choice and fold its CFG instead of cloning cyclic regions in emission.
-        OptLevel::O2 => "default<O2>,function(loop-simplify,lcssa,loop-mssa(simple-loop-unswitch<nontrivial>),instcombine,simplifycfg,loop(loop-rotate),instcombine,simplifycfg)",
+        // A bare `instcombine` in a textual pipeline verifies that it reached
+        // a fixpoint and aborts compilation otherwise; the default pipelines
+        // do not, and this cleanup tail must not either.
+        OptLevel::O2 => "default<O2>,function(loop-simplify,lcssa,loop-mssa(simple-loop-unswitch<nontrivial>),instcombine<no-verify-fixpoint>,simplifycfg,loop(loop-rotate),instcombine<no-verify-fixpoint>,simplifycfg)",
     };
     module
         .run_passes(

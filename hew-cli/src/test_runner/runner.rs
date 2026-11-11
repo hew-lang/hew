@@ -192,7 +192,7 @@ pub struct TestCompilePaths {
 impl TestCompilePaths {
     /// Resolve the standard library and runtime archive before scheduling work.
     pub fn resolve() -> Result<Self, String> {
-        let module_search_paths = hew_types::module_registry::stdlib_search_paths();
+        let module_search_paths = hew_compile::FrontendOptions::default().std_roots();
         let target = crate::target::TargetSpec::from_requested(None)
             .map_err(|error| format!("cannot determine the host target: {error}"))?;
         let hew_lib = crate::link::find_hew_lib(

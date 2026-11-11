@@ -22,7 +22,7 @@ pub(crate) fn build_policy(
                 .to_path_buf()
         };
         policy.insert(&root, Path::new("."));
-        for root in hew_types::module_registry::stdlib_search_paths() {
+        for root in hew_compile::FrontendOptions::default().std_roots() {
             policy.insert(&root.join("std"), Path::new("std"));
         }
     }

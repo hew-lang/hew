@@ -659,6 +659,8 @@ pub enum SupervisorErrorKind {
     IntensityWindow,
     /// A restart delay configuration must use the ordinary stdlib policy value.
     BackoffType,
+    /// A `restart: temporary` child declares `backoff:`, which it never uses.
+    TemporaryBackoff,
     /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
     DuplicateChild,
     /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
@@ -689,6 +691,7 @@ impl SupervisorErrorKind {
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
             Self::BackoffType => "SupervisorBackoffType",
+            Self::TemporaryBackoff => "SupervisorTemporaryBackoff",
             Self::DuplicateChild => "SupervisorDuplicateChild",
             Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
             Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
@@ -752,6 +755,9 @@ pub enum TypeErrorKind {
     ImportPreludeCollision,
     /// A source declaration attempts to replace an always-in-scope prelude name.
     PreludeDeclCollision,
+    /// The selected standard-library source lacks a declaration the prelude
+    /// requires, so the std the compilation was given is incomplete.
+    MalformedStdSource,
     /// A module path was used where a runtime value expression was required.
     ModuleUsedAsValue,
     /// A type path was used where a runtime value expression was required.
@@ -1509,6 +1515,7 @@ impl TypeErrorKind {
             Self::ImportBindingCollision => "E_IMPORT_BINDING_COLLISION",
             Self::ImportPreludeCollision => "E_IMPORT_PRELUDE_COLLISION",
             Self::PreludeDeclCollision => "E_PRELUDE_DECL_COLLISION",
+            Self::MalformedStdSource => "E_MALFORMED_STD_SOURCE",
             Self::ModuleUsedAsValue => "E_MODULE_USED_AS_VALUE",
             Self::TypeUsedAsValue => "E_TYPE_USED_AS_VALUE",
             Self::PathMemberNotFound => "E_PATH_MEMBER_NOT_FOUND",
@@ -2177,6 +2184,7 @@ mod tests {
                 TypeErrorKind::PreludeDeclCollision,
                 "E_PRELUDE_DECL_COLLISION",
             ),
+            (TypeErrorKind::MalformedStdSource, "E_MALFORMED_STD_SOURCE"),
             (TypeErrorKind::ModuleUsedAsValue, "E_MODULE_USED_AS_VALUE"),
             (TypeErrorKind::TypeUsedAsValue, "E_TYPE_USED_AS_VALUE"),
             (TypeErrorKind::PathMemberNotFound, "E_PATH_MEMBER_NOT_FOUND"),
@@ -2209,6 +2217,7 @@ mod tests {
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
             SupervisorErrorKind::BackoffType,
+            SupervisorErrorKind::TemporaryBackoff,
             SupervisorErrorKind::DuplicateChild,
             SupervisorErrorKind::StrategyPoolMismatch,
             SupervisorErrorKind::WiredToUnknownSibling,

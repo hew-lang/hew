@@ -1,7 +1,7 @@
 use super::{
-    cstring_copy_release, cstring_from_string_copy, string_as_bytes, string_as_str,
+    cstring_copy_release, cstring_from_string_copy, string_as_bytes, string_as_str, string_concat,
     string_from_cstr_copy, string_from_str, string_from_utf8, string_release, string_retain,
-    string_to_cstring, StringFromCStrError,
+    string_scalar_at, string_scalar_len, string_to_cstring, StringFromCStrError,
 };
 use std::ffi::CString;
 
@@ -120,5 +120,32 @@ fn rust_cstring_copy_has_independent_lifetime_and_rejects_nul() {
         );
         assert_eq!(string_as_str(nul), "a\0b");
         string_release(nul);
+    }
+}
+
+#[test]
+fn concat_copies_both_operands_into_one_exact_string() {
+    let left = string_from_str("ab");
+    // Long enough to need the scalar index, with multibyte scalars on both
+    // sides of the index stride.
+    let right = string_from_str(&"é中".repeat(24));
+    // SAFETY: every handle is live until its release below.
+    unsafe {
+        let joined = string_concat(left, right);
+        let expected = format!("ab{}", "é中".repeat(24));
+        assert_eq!(string_as_str(joined), expected);
+        assert_eq!(string_scalar_len(joined), expected.chars().count());
+        for (index, scalar) in expected.chars().enumerate() {
+            assert_eq!(string_scalar_at(joined, index), Some(scalar));
+        }
+        assert_eq!(string_as_str(left), "ab");
+        let left_only = string_concat(left, core::ptr::null());
+        assert_eq!(string_as_str(left_only), "ab");
+        assert_ne!(left_only, left, "the result is a fresh owner");
+        assert!(string_concat(core::ptr::null(), core::ptr::null()).is_null());
+        string_release(left_only);
+        string_release(joined);
+        string_release(right);
+        string_release(left);
     }
 }

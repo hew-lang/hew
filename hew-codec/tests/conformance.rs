@@ -909,3 +909,32 @@ fn decode_error_display_covers_every_variant() {
         assert_eq!(error.to_string(), text);
     }
 }
+
+#[test]
+fn numbers_beyond_f64_are_refused_and_underflow_rounds_to_zero() {
+    let big_integer = "9".repeat(400);
+    let documents = [
+        (Format::Json, "[1e400]".to_owned()),
+        (Format::Json, "[-1e400]".to_owned()),
+        (Format::Json, format!("[{big_integer}]")),
+        (Format::Toml, "a = [1e400]".to_owned()),
+        (Format::Toml, "a = [-1e400]".to_owned()),
+    ];
+    for (format, text) in &documents {
+        let result = Source::new(*format, text.as_bytes());
+        assert!(result.is_err(), "{format:?} accepted {text}");
+    }
+    for (format, text) in [
+        (Format::Json, "[1e-400]"),
+        (Format::Yaml, "[1e-400]"),
+        (Format::Toml, "a = [1e-400]"),
+    ] {
+        assert!(
+            Source::new(format, text.as_bytes()).is_ok(),
+            "{format:?} refused {text}"
+        );
+    }
+    // The explicit spellings of infinity stay accepted.
+    assert!(Source::new(Format::Yaml, b"[.inf, -.inf]").is_ok());
+    assert!(Source::new(Format::Toml, b"a = [inf, -inf]").is_ok());
+}

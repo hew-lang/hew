@@ -7,11 +7,11 @@
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
     ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
-    CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
-    ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImplTypeAlias,
-    ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal,
-    MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
+    CallArg, ChildClause, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl,
+    ConstParam, ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
+    ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl,
+    ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam,
+    Literal, MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
     MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
     OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
     QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
@@ -797,6 +797,10 @@ pub struct Parser<'src> {
     pub(crate) pos: usize,
     pub(crate) errors: Vec<ParseError>,
     pub(crate) depth: Rc<Cell<usize>>,
+    /// Index in `errors` of the one "maximum nesting depth exceeded" report.
+    /// Past the limit every nested construct fails, so later failures add
+    /// nothing; an index past `errors.len()` was rolled back with them.
+    pub(crate) depth_error: Option<usize>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     pub(crate) angle_mutations: Vec<(usize, (Token<'src>, Span))>,

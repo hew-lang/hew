@@ -8,16 +8,16 @@ use std::ops::Range;
 use finl_unicode::categories::CharacterCategories;
 
 use crate::ast::{
-    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
-    FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item,
-    LambdaParam, Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MachineTrigger, MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param,
-    ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WireMetadata, WireReserved,
+    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildClause,
+    ChildSpec, CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock,
+    ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix,
+    Item, LambdaParam, Literal, MachineDecl, MachineState, MachineTransition,
+    MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
+    OverflowPolicy, Param, ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl,
+    RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata, WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -110,20 +110,92 @@ pub fn format_source(source: &str, program: &Program) -> String {
 fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(text)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((text.len(), text.len())));
-    for (start, end) in spans {
-        let gap = text[gap_start..start].replace("\r\n", "\n");
-        if crlf {
-            out.push_str(&gap.replace('\n', "\r\n"));
-        } else {
-            out.push_str(&gap);
-        }
+    for (start, end) in line_ending_spans(text) {
+        out.push_str(&normalize_layout_line_endings(
+            &text[gap_start..start],
+            crlf,
+        ));
         out.push_str(&text[start..end]);
         gap_start = end;
     }
     out
+}
+
+/// Normalize a layout gap, including comments. Consume the whole CR run
+/// before each LF so normalization is idempotent even for `\r\r\n`.
+/// Standalone CRs remain comment content; callers exclude literal and raw
+/// macro spans, whose bytes are program content.
+fn normalize_layout_line_endings(text: &str, crlf: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch == '\n' {
+            while out.ends_with('\r') {
+                out.pop();
+            }
+            if crlf {
+                out.push('\r');
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Contents protected from layout normalization. Raw macro token trees are
+/// observable through `stringify!`, so their line endings must stay verbatim,
+/// just like a string literal. Doc tokens, however, include a terminal CR
+/// that belongs to their following line break.
+fn line_ending_spans(text: &str) -> Vec<(usize, usize)> {
+    use hew_lexer::Token;
+
+    let tokens: Vec<_> = hew_lexer::Lexer::new(text).collect();
+    let mut spans = Vec::with_capacity(tokens.len() + 1);
+    let mut index = 0;
+    while index < tokens.len() {
+        let raw_macro = match tokens.get(index..index + 3) {
+            Some([(Token::Identifier(name), _), (Token::Bang, _), (Token::LeftParen, _)]) => {
+                !crate::macro_syntax::is_builtin_macro(name)
+                    || index > 0 && matches!(tokens[index - 1].0, Token::Dot)
+            }
+            Some([(Token::Macro, _), (name, _), (Token::LeftBrace, _)]) => {
+                crate::parser::Parser::is_ident_token(name)
+            }
+            _ => false,
+        };
+        if raw_macro {
+            let mut depth = 0usize;
+            let close = tokens[index + 2..].iter().position(|(token, _)| {
+                match token {
+                    Token::LeftParen
+                    | Token::LeftBrace
+                    | Token::LeftBracket
+                    | Token::HashBracket => depth += 1,
+                    Token::RightParen | Token::RightBrace | Token::RightBracket => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                depth == 0
+            });
+            if let Some(close) = close {
+                let close = index + 2 + close;
+                spans.push((tokens[index].1.start, tokens[close].1.end));
+                index = close + 1;
+                continue;
+            }
+        }
+        let (token, span) = &tokens[index];
+        let end = match token {
+            Token::DocComment(t) | Token::InnerDocComment(t) => {
+                span.start + t.trim_end_matches('\r').len()
+            }
+            _ => span.end,
+        };
+        spans.push((span.start, end));
+        index += 1;
+    }
+    spans.push((text.len(), text.len()));
+    spans
 }
 
 /// Format `program` with the comments of `source`, refusing any output that
@@ -553,9 +625,9 @@ impl<'a> Formatter<'a> {
     }
 
     /// Write `open`, the items separated by commas, then `close`. When the
-    /// source list between the bracket tokens `bounds` holds comments, the
-    /// list breaks one item per line so every comment stays beside the item
-    /// it annotates; `angles` counts `<…>` as nesting (type lists). The
+    /// source list between the bracket tokens `bounds` breaks across lines,
+    /// keep one item per line. Nested groups lay out their own line breaks;
+    /// `angles` counts `<…>` as nesting (type lists). The
     /// broken layout ends the last item with a comma when `last_comma`.
     #[expect(
         clippy::too_many_arguments,
@@ -572,9 +644,9 @@ impl<'a> Formatter<'a> {
         mut fmt_item: impl FnMut(&mut Self, &T),
     ) {
         let layout = bounds.and_then(|(open_token, close_token)| {
-            let commented = self.list_has_line_comment(open_token, close_token);
+            let multiline = self.list_has_line_break(open_token, close_token);
             let starts = self.list_item_starts(open_token, close_token, angles);
-            (commented && starts.len() == items.len()).then_some((starts, open_token, close_token))
+            (multiline && starts.len() == items.len()).then_some((starts, open_token, close_token))
         });
         let Some((starts, open_token, close_token)) = layout else {
             self.write(open);
@@ -611,12 +683,9 @@ impl<'a> Formatter<'a> {
         self.write(close.trim_start().trim_start_matches(','));
     }
 
-    /// Whether a line comment (or a block comment spanning lines) sits
-    /// directly in the list between the bracket tokens `open` and `close`,
-    /// outside any nested bracket group, which lays out its own comments.
-    /// A block comment on one line stays inline beside its item.
-    fn list_has_line_comment(&self, open: usize, close: usize) -> bool {
-        let breaks_line = |c: &Comment| c.text.starts_with("//") || c.text.contains('\n');
+    /// Whether the list has a line break outside its nested bracket groups,
+    /// including any line or multiline comments between its items.
+    fn list_has_line_break(&self, open: usize, close: usize) -> bool {
         let mut index = open;
         while index < close {
             // `index` is a token at the list's own level; the next one
@@ -628,11 +697,7 @@ impl<'a> Formatter<'a> {
                 .copied()
                 .unwrap_or(index);
             let gap = self.tokens[after].1.end..self.tokens[after + 1].1.start;
-            let commented = self.comments[self.next_comment..]
-                .iter()
-                .take_while(|c| c.span.start < gap.end)
-                .any(|c| gap.contains(&c.span.start) && breaks_line(c));
-            if commented {
+            if self.source[gap].contains('\n') {
                 return true;
             }
             index = after + 1;
@@ -2177,13 +2242,15 @@ impl<'a> Formatter<'a> {
         // Sections and members print in source order; a synthesized machine
         // keeps the canonical order the list is built in.
         let mut members: Vec<(usize, MachineMember<'_>)> = Vec::new();
-        if !decl.events.is_empty() {
-            let at = self.machine_section(span_start, span_end, "events");
-            members.push((at, MachineMember::Events));
+        // A section written empty (`events {}`) still prints: dropping it
+        // would change the source's tokens.
+        let events_at = self.machine_section(span_start, span_end, "events");
+        if !decl.events.is_empty() || events_at > 0 {
+            members.push((events_at, MachineMember::Events));
         }
-        if !decl.emits.is_empty() {
-            let at = self.machine_section(span_start, span_end, "emits");
-            members.push((at, MachineMember::Emits));
+        let emits_at = self.machine_section(span_start, span_end, "emits");
+        if !decl.emits.is_empty() || emits_at > 0 {
+            members.push((emits_at, MachineMember::Emits));
         }
         members.extend(
             decl.states
@@ -2256,17 +2323,27 @@ impl<'a> Formatter<'a> {
     }
 
     /// Start of the machine-body section keyword `word` (`events`, `emits`,
-    /// `default`) directly inside the machine's braces; 0 without source.
+    /// `default`) directly inside the machine's braces and opening a `{`
+    /// body, so a state of that name is not taken for it; 0 without source.
     fn machine_section(&self, start: usize, end: usize, word: &str) -> usize {
         let mut depth = 0usize;
-        for (token, span) in &self.tokens[self.token_at_or_after(start)..] {
+        let first = self.token_at_or_after(start);
+        for (index, (token, span)) in self.tokens.iter().enumerate().skip(first) {
             if span.start >= end {
                 break;
             }
             match token {
                 hew_lexer::Token::LeftBrace => depth += 1,
                 hew_lexer::Token::RightBrace => depth = depth.saturating_sub(1),
-                _ if depth == 1 && self.source[span.clone()] == *word => return span.start,
+                _ if depth == 1
+                    && self.source[span.clone()] == *word
+                    && matches!(
+                        self.tokens.get(index + 1),
+                        Some((hew_lexer::Token::LeftBrace, _))
+                    ) =>
+                {
+                    return span.start;
+                }
                 _ => {}
             }
         }
@@ -2980,46 +3057,72 @@ impl<'a> Formatter<'a> {
         if !spec.args.is_empty() {
             self.format_record_literal_body(&spec.args, &spec.arg_labels, None, None);
         }
-        // Pool arity is a clause, so it prints outside the braces. It comes
-        // first among the clauses because arity binds to the template the
-        // braces just described.
-        if let Some(count) = &spec.count {
-            self.write(" count: ");
-            self.format_expr(count);
-        }
-        if let Some(restart) = &spec.restart {
-            self.write(" restart: ");
-            match restart {
-                RestartPolicy::Permanent => self.write("permanent"),
-                RestartPolicy::Transient => self.write("transient"),
-                RestartPolicy::Temporary => self.write("temporary"),
-            }
-        }
-        if let Some(stop) = &spec.stop {
-            self.write(" stop: ");
-            if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
-                self.write("0s");
-            } else {
-                self.format_expr(stop);
-            }
-        }
-        // `wired_to:` was silently dropped by the old formatter — preserve it.
-        // HashMap iteration order is non-deterministic, so emit keys sorted to
-        // keep the round-trip stable and idempotent.
-        if let Some(wired_to) = &spec.wired_to {
-            if !wired_to.is_empty() {
-                let mut entries: Vec<(&String, &String)> = wired_to.iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(b.0));
-                self.write(" wired_to: { ");
-                self.comma_sep(&entries, |f, (key, sibling)| {
-                    f.write(key);
-                    f.write(": ");
-                    f.write(sibling);
-                });
-                self.write(" }");
-            }
+        // Suffix clauses are order-independent; reprint them as written. A
+        // child built without a recorded order prints arity first, since it
+        // binds to the template the braces just described.
+        let order: &[ChildClause] = if spec.clause_order.is_empty() {
+            &[
+                ChildClause::Count,
+                ChildClause::Restart,
+                ChildClause::Backoff,
+                ChildClause::Stop,
+                ChildClause::WiredTo,
+            ]
+        } else {
+            &spec.clause_order
+        };
+        for clause in order {
+            self.format_child_clause(spec, *clause);
         }
         self.write(";\n");
+    }
+
+    fn format_child_clause(&mut self, spec: &ChildSpec, clause: ChildClause) {
+        match clause {
+            ChildClause::Count => {
+                if let Some(count) = &spec.count {
+                    self.write(" count: ");
+                    self.format_expr(count);
+                }
+            }
+            ChildClause::Restart => {
+                if let Some(restart) = &spec.restart {
+                    self.write(" restart: ");
+                    self.write(match restart {
+                        RestartPolicy::Permanent => "permanent",
+                        RestartPolicy::Transient => "transient",
+                        RestartPolicy::Temporary => "temporary",
+                    });
+                }
+            }
+            ChildClause::Backoff => {
+                if let Some(backoff) = &spec.backoff {
+                    self.write(" backoff: ");
+                    self.format_expr(backoff);
+                }
+            }
+            ChildClause::Stop => {
+                if let Some(stop) = &spec.stop {
+                    self.write(" stop: ");
+                    if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
+                        self.write("0s");
+                    } else {
+                        self.format_expr(stop);
+                    }
+                }
+            }
+            ChildClause::WiredTo => {
+                if let Some(wired_to) = spec.wired_to.as_ref().filter(|w| !w.is_empty()) {
+                    self.write(" wired_to: { ");
+                    self.comma_sep(wired_to, |f, (key, sibling)| {
+                        f.write(key);
+                        f.write(": ");
+                        f.write(sibling);
+                    });
+                    self.write(" }");
+                }
+            }
+        }
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
@@ -3754,6 +3857,23 @@ impl<'a> Formatter<'a> {
         self.write("}");
     }
 
+    fn format_let_pattern(&mut self, pattern: &Spanned<Pattern>) {
+        // The parser represents `_ = value;` as a wildcard let statement.
+        // Preserve its spelling rather than introducing a keyword, including
+        // inside inline generator blocks.
+        let bare_discard = !self.source.is_empty()
+            && matches!(pattern.0, Pattern::Wildcard)
+            && self
+                .token_at_or_after(pattern.1.start)
+                .checked_sub(1)
+                .and_then(|index| self.tokens.get(index))
+                .is_some_and(|(token, _)| !matches!(token, hew_lexer::Token::Let));
+        if !bare_discard {
+            self.write("let ");
+        }
+        self.format_pattern(pattern);
+    }
+
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -3762,8 +3882,7 @@ impl<'a> Formatter<'a> {
                 value,
                 else_block,
             } => {
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3861,8 +3980,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write_indent();
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -4165,8 +4283,11 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Whether an arm body ends at its opening block's `}` without a comma.
+    /// The parser decides from the body's first token, so a block that a
+    /// postfix or operator continues (`{ p }.n`) counts as well.
     fn is_block_arm_expr(&self, body: &Spanned<Expr>) -> bool {
-        if !crate::parser::Parser::is_block_expr(&body.0) {
+        if !crate::parser::Parser::is_block_expr(&leftmost_operand(body).0) {
             return false;
         }
         if self.source.is_empty() {
@@ -5217,8 +5338,21 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_pattern(&mut self, pat: &Spanned<Pattern>) {
+        // Grouping parentheses around a pattern are dropped by the parser,
+        // as around an expression; read them back from the tokens.
+        let parens = self.source_parens(&pat.1);
+        for &(token, open, _) in &parens {
+            self.printed_parens.insert(token);
+            self.flush_inline_comments(open);
+            self.write("(");
+        }
         self.flush_inline_comments(pat.1.start);
         self.format_pattern_kind(pat);
+        for &(_, _, close) in parens.iter().rev() {
+            self.flush_inline_comments(close);
+            self.write(")");
+            self.prev_source_pos = self.prev_source_pos.max(close + 1);
+        }
         if pat.1.start < pat.1.end {
             self.prev_source_pos = self.prev_source_pos.max(pat.1.end);
         }
@@ -5823,6 +5957,29 @@ fn source_column(source: &str, pos: usize) -> usize {
         i -= 1;
     }
     end - i
+}
+
+/// The operand an expression's source begins with: the receiver of a postfix
+/// chain or the left side of an operator, followed while it starts where the
+/// whole expression does.
+fn leftmost_operand(expr: &Spanned<Expr>) -> &Spanned<Expr> {
+    let inner = match &expr.0 {
+        Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => object,
+        Expr::MethodCall { receiver, .. } | Expr::OptionalChain { receiver, .. } => receiver,
+        Expr::Call { function, .. } => function,
+        Expr::Binary { left, .. } | Expr::Coalesce { left, .. } => left,
+        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) | Expr::Await(inner) => inner,
+        Expr::Is { lhs, .. } => lhs,
+        Expr::Range {
+            start: Some(start), ..
+        } => start,
+        _ => return expr,
+    };
+    if inner.1.start == expr.1.start {
+        leftmost_operand(inner)
+    } else {
+        expr
+    }
 }
 
 #[cfg(test)]
@@ -7380,6 +7537,14 @@ impl<T> Vec<T> {
     fn supervisor_backoff_expression_roundtrips_in_source_order() {
         let source = "supervisor Team(config: Config) {\n    intensity: 5 within 60s;\n    backoff: restart.exponential(initial: config.initial, maximum: 5s);\n\n    child worker: Worker;\n}\n";
         assert_eq!(roundtrip(source), source);
+    }
+
+    #[test]
+    fn child_clauses_reprint_in_source_order() {
+        let canonical = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);\n    child cache: Cache restart: transient backoff: restart.immediate() stop: 5s;\n}\n";
+        assert_eq!(roundtrip(canonical), canonical);
+        let reordered = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } backoff: restart.exponential(initial: 1s, maximum: 1m) restart: permanent;\n    child cache: Cache stop: 5s wired_to: { z: upstream, a: upstream } backoff: restart.immediate() restart: transient;\n}\n";
+        assert_eq!(roundtrip(reordered), reordered);
     }
 
     #[test]

@@ -770,6 +770,11 @@ is_separately_gated_or_reject_fixture() {
         # main_entry_exit.rs asserts the entry-bound diagnostic on this source.
         return 0
         ;;
+    hew-compile/tests/fixtures/determinism_*.hew)
+        # diagnostic_determinism.rs checks that these deliberately diagnosed
+        # sources report identically on every check.
+        return 0
+        ;;
     hew-live/examples/live_router.hew | hew-live/tests/fixtures/router.hew | hew-live/tests/fixtures/preview_router.hew | hew-live/src/component/network/node.hew)
         # These prepared sources import WIT-generated modules. test-live-source
         # and test-live-network compile them in their actual service context.

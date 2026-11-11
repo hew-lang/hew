@@ -6,8 +6,8 @@ use super::{
     initialized, partial, runtime_param_carrier, runtime_receiver_release, semantic_type_facts,
     storage, variant_glue, vector_glue, verify_map_call, verify_set_call, verify_value_recipe,
     verify_vector_call, wire, ArgumentTransfer, BTreeSet, BlockId, BorrowDependents, BuiltinType,
-    CloneAction, FaultState, FlowState, InitState, OwnKind, PhysicalEdge, PhysicalError,
-    PhysicalFunction, PhysicalModule, PhysicalRuntimeCarrier, PhysicalSelectSource,
+    CloneAction, FaultState, FlowState, InitState, OwnKind, PhysicalBlock, PhysicalEdge,
+    PhysicalError, PhysicalFunction, PhysicalModule, PhysicalRuntimeCarrier, PhysicalSelectSource,
     PhysicalTerminator, PhysicalValueRecipe, ResolvedTy, ReturnTransfer, RuntimeArgumentEffect,
     RuntimeCallFamily, RuntimeResultEffect, SemParamPassing, StorageId, StorageOrigin,
     ValueCapability,
@@ -434,7 +434,7 @@ pub(crate) fn terminator_successors(
             successors.push((cancel.target, cancelled));
             Ok(successors)
         }
-        PhysicalTerminator::Safepoint { normal, cancel } => {
+        PhysicalTerminator::Safepoint { normal, cancel, .. } => {
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(
                     "safepoint cannot overwrite an active fault",
@@ -447,6 +447,20 @@ pub(crate) fn terminator_successors(
                 successors.push(apply_edge(function, borrows, cancel, state, block)?);
             }
             Ok(successors)
+        }
+        PhysicalTerminator::StackCheck { normal, overflow } => {
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "stack check cannot overwrite an active fault",
+                ));
+            }
+            let normal = apply_edge(function, borrows, normal, state.clone(), block)?;
+            state.fault = FaultState::Active;
+            state.exit = defer::CANCEL;
+            Ok(vec![
+                normal,
+                apply_edge(function, borrows, overflow, state, block)?,
+            ])
         }
         PhysicalTerminator::Sleep {
             duration: operand,
@@ -943,8 +957,10 @@ pub(crate) fn verify_terminator(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     blocks: &BTreeSet<BlockId>,
-    terminator: &PhysicalTerminator,
+    block: &PhysicalBlock,
 ) -> Result<(), PhysicalError> {
+    let terminator = &block.terminator;
+    let is_entry = block.id == function.entry;
     let slot = |id: StorageId| {
         function
             .storage
@@ -1389,7 +1405,25 @@ pub(crate) fn verify_terminator(
             edge(cancel)?;
             edge(unwind)
         }
-        PhysicalTerminator::Safepoint { normal, cancel } => {
+        PhysicalTerminator::StackCheck { normal, overflow } => {
+            if !is_entry {
+                return Err(PhysicalError::new(
+                    "a stack check is only a function's entry",
+                ));
+            }
+            edge(normal)?;
+            edge(overflow)
+        }
+        PhysicalTerminator::Safepoint {
+            normal,
+            cancel,
+            checks_stack,
+        } => {
+            if *checks_stack && (!is_entry || cancel.is_none()) {
+                return Err(PhysicalError::new(
+                    "a stack-checking safepoint is only a function's cancellable entry",
+                ));
+            }
             let mandatory_close = module
                 .resources
                 .iter()

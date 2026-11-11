@@ -77,10 +77,7 @@ pub(crate) fn add_embedded_standard_library(options: &mut hew_compile::FrontendO
     if options.documents.uses_filesystem() {
         return;
     }
-    let roots = options
-        .module_search_paths
-        .clone()
-        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths);
+    let roots = options.std_roots();
     for (path, text) in embedded_standard_library() {
         let relative = path.strip_prefix("./").unwrap_or(path);
         for root in &roots {

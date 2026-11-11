@@ -12,8 +12,46 @@ use crate::util::{CondvarExt, MutexExt};
 use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
+/// Retire buried members whose retention has ended, then everything this
+/// manager keeps for them.
+///
+/// The membership table decides retirement. A `Retired` claim whose route
+/// slot no longer has a member belongs to a retired peer: the claim, its
+/// session replay fence and its routing session go together, which frees the
+/// route slot for another identity. A claim mid-admission or published is a
+/// live owner and stays. Holding the claims lock fences route publication,
+/// which needs this identity's claim to publish.
+pub(crate) fn retire_departed_peers(mgr: &HewConnMgr, now_ms: u64) {
+    if mgr.cluster.is_null() {
+        return;
+    }
+    // SAFETY: the manager's cluster outlives every caller holding the manager.
+    let cluster = unsafe { &*mgr.cluster };
+    cluster.retire_buried(now_ms);
+    let (lock, condvar) = &mgr.claims;
+    let mut claims = lock.lock_or_recover();
+    let mut forgotten = Vec::new();
+    claims.retain(|identity, claim| {
+        let retired =
+            claim.state == ClaimState::Retired && cluster.member_state(claim.route_slot) == -1;
+        if retired {
+            forgotten.push(*identity);
+        }
+        !retired
+    });
+    for identity in &forgotten {
+        // SAFETY: the manager's routing table is null or live with it.
+        unsafe { crate::routing::hew_routing_forget_node(mgr.routing_table, *identity) };
+    }
+    drop(claims);
+    if !forgotten.is_empty() {
+        condvar.notify_all();
+    }
+}
+
 /// Project a receiver-local alias from the canonical identity claims. Retired
-/// claims retain identity for departure observations and session replay fences.
+/// claims retain identity for departure observations and session replay fences
+/// until the membership table retires the member.
 pub(crate) fn identity_for_route_slot(mgr: &HewConnMgr, route_slot: u16) -> Option<NodeId> {
     if route_slot == mgr.local_node_id {
         return mgr.local_identity;
@@ -86,7 +124,11 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.get(&identity) {
-        Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => {
+        Some(claim)
+            if claim
+                .carrier()
+                .is_some_and(|(carrier, _)| carrier == conn_id) =>
+        {
             route_slot
         }
         _ => 0,
@@ -133,10 +175,25 @@ pub(crate) fn local_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Optio
 /// same `conn_id` and adopt that successor's authority. The publication token
 /// is unique per admission (`next_publication_token`), so a stale reader's
 /// gate resolves to deny the moment its own claim is gone.
+#[cfg(test)]
 pub(crate) fn wait_authenticated_peer_node_id_for_conn(
     mgr: &HewConnMgr,
     conn_id: c_int,
     claim_token: u64,
+) -> u16 {
+    wait_admitted_peer_node_id_for_conn(mgr, conn_id, claim_token, |state| {
+        state == ClaimState::Published
+    })
+}
+
+/// As [`wait_authenticated_peer_node_id_for_conn`], granting authority to a
+/// settled claim in any state `admits` accepts. SWIM admits a buried peer's
+/// refuting claim too, so the peer can learn of its burial and refute it.
+pub(crate) fn wait_admitted_peer_node_id_for_conn(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    admits: impl Fn(ClaimState) -> bool,
 ) -> u16 {
     let deadline = std::time::Instant::now() + Duration::from_millis(CLAIM_RESERVE_WAIT_MS);
     let (lock, condvar) = &mgr.claims;
@@ -147,7 +204,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
             .find(|(_, claim)| claim.conn_id == conn_id && claim.publication_token == claim_token)
             .map(|(node_id, claim)| (*node_id, claim.route_slot, claim.state));
         match own_claim {
-            Some((claimed, route_slot, ClaimState::Published)) => {
+            Some((claimed, route_slot, state)) if admits(state) => {
                 // Our admission published. Publication happens strictly after
                 // the connections-list install, so the entry is present; bind
                 // it by the same publication token (never bare `conn_id`) and
@@ -179,9 +236,35 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
                 let (next_guard, _timeout) = condvar.wait_timeout_or_recover(guard, remaining);
                 guard = next_guard;
             }
-            // No claim owned by this admission: superseded, aborted, or a
-            // claimless (node_id 0) connection — no authority, deny now.
-            Some((_, _, ClaimState::Retired)) | None => return 0,
+            // A settled claim `admits` refuses carries no authority.
+            Some(_) => return 0,
+            None => {
+                // A published connection that a reservation is replacing
+                // carries the peer's traffic until that settles; otherwise
+                // this one was superseded, aborted, or is claimless (node_id
+                // 0) — no authority, deny now.
+                let Some((carried, route_slot)) = guard
+                    .iter()
+                    .find(|(_, claim)| claim.carrier() == Some((conn_id, claim_token)))
+                    .map(|(node_id, claim)| (*node_id, claim.route_slot))
+                else {
+                    return 0;
+                };
+                drop(guard);
+                return mgr.connections.access(|conns| {
+                    conns
+                        .iter()
+                        .find(|c| {
+                            c.conn_id == conn_id
+                                && c.publication_token == claim_token
+                                && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                                && c.posture == Posture::Strict
+                                && c.peer_identity == Some(carried)
+                                && c.peer_node_id == route_slot
+                        })
+                        .map_or(0, |c| c.peer_node_id)
+                });
+            }
         }
     }
 }

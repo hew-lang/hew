@@ -315,34 +315,34 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     success_count
 }
 
-/// Re-announce every local name to each authenticated peer.
-///
-/// A peer that declared this session dead dropped its names. The refutation
-/// readmits the session over the same connection, which never repeats the
-/// admission flush, so the names are sent again here. Each one goes through
-/// the ordinary broadcast and so queues behind any parked flush.
-///
-/// # Safety
-///
-/// `mgr` must be a valid connection manager pointer for the duration of the
-/// call.
-pub(super) unsafe fn reannounce_local_names(mgr: *mut HewConnMgr) {
-    // SAFETY: caller guarantees manager pointer validity.
-    let mgr_ref = unsafe { &*mgr };
+/// Re-announce every local name over a connection whose peer buried this
+/// node. The peer dropped them, and readmitting this session repeats no
+/// admission flush. The names queue behind any parked flush.
+pub(super) fn reannounce_local_names(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
     // SAFETY: the node pins its registry through every manager owner.
     let (Some(registry), Some(node_id), Some(session_incarnation)) = (
-        unsafe { mgr_ref.registry.as_ref() },
-        mgr_ref.local_identity,
-        mgr_ref.local_session_incarnation,
+        unsafe { mgr.registry.as_ref() },
+        mgr.local_identity,
+        mgr.local_session_incarnation,
     ) else {
         return;
     };
-    let session = crate::envelope::NodeSessionIdentity {
-        node_id,
-        session_incarnation,
-    };
-    for (name, location) in registry.local_names(session) {
-        // SAFETY: caller guarantees manager pointer validity.
-        unsafe { hew_connmgr_broadcast_registry_gossip(mgr, &name, location, true) };
+    let frames = registry
+        .local_names(crate::envelope::NodeSessionIdentity {
+            node_id,
+            session_incarnation,
+        })
+        .into_iter()
+        .filter_map(|(name, location)| encode_registry_gossip_control(&name, location, true))
+        .collect();
+    let parked = mgr.pending_registry_flush_count.load(Ordering::Acquire) != 0
+        && mgr.pending_registry_flush.access(|map| {
+            map.get(&conn_id)
+                .is_some_and(|pending| pending.token == publication_token)
+        });
+    if parked {
+        park_pending_registry_flush(mgr, conn_id, publication_token, frames, 0, false);
+    } else {
+        send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
     }
 }

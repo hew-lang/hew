@@ -81,15 +81,23 @@ struct ParameterTransfer {
 
 /// Demand flows backwards through checked substitutions. Cleanup-only
 /// parameters need their release effects; executable dispatch retains types.
+///
+/// `settled` owners already carry their final demands in `parameters` and
+/// `values`: a checkpoint's dependencies never call a root body, so demand
+/// only flows from them to the new owners scanned here.
 fn effect_parameters(
     checker: &CleanupSession<'_>,
     graph: &EffectGraph,
+    (mut parameters, mut values): (HashMap<EffectBody, Parameters>, HashSet<EffectBody>),
+    settled: &HashSet<EffectBody>,
 ) -> (HashMap<EffectBody, Parameters>, HashSet<EffectBody>) {
-    let mut parameters: HashMap<EffectBody, Parameters> = HashMap::new();
-    let mut values = HashSet::new();
     let mut users: HashMap<EffectBody, Vec<ParameterTransfer>> = HashMap::new();
     let empty = Actuals::new();
-    for release in &graph.releases {
+    for release in graph
+        .releases
+        .iter()
+        .filter(|release| !settled.contains(&release.owner))
+    {
         let targets = checker.cleanup_effect_targets(release, &empty, true);
         if targets.iter().any(|target| {
             matches!(
@@ -108,7 +116,11 @@ fn effect_parameters(
                 .or_insert(demand);
         }
     }
-    for body in graph.once_releases.keys() {
+    for body in graph
+        .once_releases
+        .keys()
+        .filter(|body| !settled.contains(*body))
+    {
         let targets = checker.once_cleanup_targets(body, graph, &empty, true);
         if targets.iter().any(|target| {
             matches!(
@@ -128,7 +140,11 @@ fn effect_parameters(
         }
     }
     for (site, call) in &graph.calls {
-        let Some(owner) = &call.owner else {
+        let Some(owner) = call
+            .owner
+            .as_ref()
+            .filter(|owner| !settled.contains(*owner))
+        else {
             continue;
         };
         if matches!(
@@ -336,7 +352,7 @@ struct Instance {
     values: usize,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Node {
     users: Vec<(usize, String)>,
     witness: Option<String>,
@@ -357,6 +373,35 @@ impl Dependencies {
 
     fn body(&mut self, instance: Instance, witness: &str) {
         self.bodies.push((instance, witness.to_string()));
+    }
+}
+
+/// A solved graph's owned answers: the demands, every interned instance and
+/// its witness, and the value environments they were solved in. A checkpoint
+/// keeps its dependencies' progress and each root resumes from a copy.
+#[derive(Clone, Default)]
+pub(super) struct EffectProgress {
+    parameters: HashMap<EffectBody, Parameters>,
+    value_parameters: HashSet<EffectBody>,
+    identities: HashMap<Instance, usize>,
+    body_instances: HashSet<(EffectBody, bool, bool)>,
+    instances: Vec<Instance>,
+    nodes: Vec<Node>,
+    values: OriginEnvironments,
+}
+
+impl EffectProgress {
+    /// Formals whose context-free sources answered a query in this progress.
+    pub(super) fn read_formals(&self) -> &HashSet<crate::env::TypeBindingId> {
+        self.values.read_formals()
+    }
+}
+
+impl std::fmt::Debug for EffectProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EffectProgress")
+            .field("instances", &self.instances.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -383,6 +428,64 @@ impl<'a> EffectSolver<'a> {
         checker: &'a Checker,
         graph: &'a EffectGraph,
         flows: &HashMap<SpanKey, Vec<super::super::CallableArgumentFlow>>,
+    ) -> Self {
+        let values = Checker::value_environments(flows);
+        Self::start(
+            checker,
+            graph,
+            EffectProgress {
+                parameters: HashMap::new(),
+                value_parameters: HashSet::new(),
+                identities: HashMap::new(),
+                body_instances: HashSet::new(),
+                instances: Vec::new(),
+                nodes: Vec::new(),
+                values,
+            },
+            &HashSet::new(),
+        )
+    }
+
+    /// Continue a checkpoint's solved dependency graph with a root's bodies.
+    /// `settled` names the dependency bodies whose answers `progress` holds;
+    /// the root's flows must reach only its own formals (the caller checks).
+    pub(super) fn resume(
+        checker: &'a Checker,
+        graph: &'a EffectGraph,
+        flows: &HashMap<SpanKey, Vec<super::super::CallableArgumentFlow>>,
+        mut progress: EffectProgress,
+        settled: &HashSet<EffectBody>,
+        settled_flows: &HashSet<SpanKey>,
+    ) -> Self {
+        Checker::extend_value_sources(
+            flows
+                .iter()
+                .filter(|(site, _)| !settled_flows.contains(*site))
+                .flat_map(|(_, flows)| flows),
+            &mut progress.values,
+        );
+        Self::start(checker, graph, progress, settled)
+    }
+
+    /// The owned answers so far, for a checkpoint to share with its roots.
+    pub(super) fn into_progress(self) -> EffectProgress {
+        debug_assert!(self.changed.is_empty() && self.expanded == self.nodes.len());
+        EffectProgress {
+            parameters: self.parameters,
+            value_parameters: self.value_parameters,
+            identities: self.identities,
+            body_instances: self.body_instances,
+            instances: self.instances,
+            nodes: self.nodes,
+            values: self.values.into_inner(),
+        }
+    }
+
+    fn start(
+        checker: &'a Checker,
+        graph: &'a EffectGraph,
+        progress: EffectProgress,
+        settled: &HashSet<EffectBody>,
     ) -> Self {
         let checker = CleanupSession::new(checker);
         let mut calls: HashMap<_, Vec<_>> = HashMap::new();
@@ -411,7 +514,17 @@ impl<'a> EffectSolver<'a> {
         for releases in releases.values_mut() {
             releases.sort_by(|left, right| left.witness.cmp(&right.witness));
         }
-        let (parameters, value_parameters) = effect_parameters(&checker, graph);
+        let EffectProgress {
+            parameters,
+            value_parameters,
+            identities,
+            body_instances,
+            instances,
+            nodes,
+            values,
+        } = progress;
+        let (parameters, value_parameters) =
+            effect_parameters(&checker, graph, (parameters, value_parameters), settled);
         let mut solver = Self {
             checker,
             graph,
@@ -419,17 +532,21 @@ impl<'a> EffectSolver<'a> {
             releases,
             parameters,
             value_parameters,
-            identities: HashMap::new(),
-            body_instances: HashSet::new(),
-            instances: Vec::new(),
-            nodes: Vec::new(),
-            expanded: 0,
+            identities,
+            body_instances,
+            instances,
+            expanded: nodes.len(),
+            nodes,
             changed: VecDeque::new(),
-            values: RefCell::new(Checker::value_environments(flows)),
+            values: RefCell::new(values),
         };
         // Seed roots before answering any query, so hash-map iteration cannot
         // change which suspending dependency supplies a diagnostic witness.
-        let mut bodies: Vec<_> = graph.bodies.keys().collect();
+        let mut bodies: Vec<_> = graph
+            .bodies
+            .keys()
+            .filter(|body| !settled.contains(*body))
+            .collect();
         bodies.sort_by_key(|body| body_order(body));
         for body in bodies {
             for unknown in [false, true] {

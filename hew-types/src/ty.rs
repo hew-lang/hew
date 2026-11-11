@@ -120,12 +120,7 @@ pub struct TraitObjectBound {
 }
 
 impl TraitObjectBound {
-    fn fmt_with_numeric_names(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        i64_name: &str,
-        f64_name: &str,
-    ) -> fmt::Result {
+    fn render(&self, f: &mut fmt::Formatter<'_>, spelling: Spelling) -> fmt::Result {
         write!(f, "{}", self.trait_name)?;
         if !self.args.is_empty() || !self.assoc_bindings.is_empty() {
             write!(f, "<")?;
@@ -134,7 +129,7 @@ impl TraitObjectBound {
                 if needs_comma {
                     write!(f, ", ")?;
                 }
-                arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                arg.render(f, spelling)?;
                 needs_comma = true;
             }
             for (name, ty) in &self.assoc_bindings {
@@ -142,7 +137,7 @@ impl TraitObjectBound {
                     write!(f, ", ")?;
                 }
                 write!(f, "{name} = ")?;
-                ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                ty.render(f, spelling)?;
                 needs_comma = true;
             }
             write!(f, ">")?;
@@ -1061,17 +1056,12 @@ impl Ty {
         clippy::too_many_lines,
         reason = "type display covers all type variants recursively"
     )]
-    fn fmt_with_numeric_names(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        i64_name: &str,
-        f64_name: &str,
-    ) -> fmt::Result {
+    fn render(&self, f: &mut fmt::Formatter<'_>, spelling: Spelling) -> fmt::Result {
         match self {
             Ty::I8 => write!(f, "i8"),
             Ty::I16 => write!(f, "i16"),
             Ty::I32 => write!(f, "i32"),
-            Ty::I64 => write!(f, "{i64_name}"),
+            Ty::I64 => write!(f, "i64"),
             Ty::U8 => write!(f, "u8"),
             Ty::U16 => write!(f, "u16"),
             Ty::U32 => write!(f, "u32"),
@@ -1079,7 +1069,7 @@ impl Ty {
             Ty::Isize => write!(f, "isize"),
             Ty::Usize => write!(f, "usize"),
             Ty::F32 => write!(f, "f32"),
-            Ty::F64 => write!(f, "{f64_name}"),
+            Ty::F64 => write!(f, "f64"),
             Ty::IntLiteral => write!(f, "<int literal>"),
             Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
@@ -1090,14 +1080,17 @@ impl Ty {
             Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
-            Ty::Var(v) => write!(f, "{v}"),
+            Ty::Var(v) => match spelling {
+                Spelling::Internal => write!(f, "{v}"),
+                Spelling::Source => write!(f, "_"),
+            },
             Ty::Generator {
                 yields, returns, ..
             } => {
                 write!(f, "Generator<")?;
-                yields.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                yields.render(f, spelling)?;
                 write!(f, ", ")?;
-                returns.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                returns.render(f, spelling)?;
                 write!(f, ">")
             }
             Ty::Tuple(elems) => {
@@ -1106,18 +1099,18 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    elem.render(f, spelling)?;
                 }
                 write!(f, ")")
             }
             Ty::Array(elem, size) => {
                 write!(f, "[")?;
-                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                elem.render(f, spelling)?;
                 write!(f, "; {size}]")
             }
             Ty::Slice(elem) => {
                 write!(f, "[")?;
-                elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                elem.render(f, spelling)?;
                 write!(f, "]")
             }
             // An anonymous actor's handle has no nominal: it reads like the
@@ -1135,15 +1128,15 @@ impl Ty {
                             if i > 0 {
                                 write!(f, ", ")?;
                             }
-                            item.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            item.render(f, spelling)?;
                         }
                     }
-                    single => single.fmt_with_numeric_names(f, i64_name, f64_name)?,
+                    single => single.render(f, spelling)?,
                 }
                 write!(f, ")")?;
                 if !matches!(args[1], Ty::Unit) {
                     write!(f, " -> ")?;
-                    args[1].fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    args[1].render(f, spelling)?;
                 }
                 Ok(())
             }
@@ -1155,7 +1148,7 @@ impl Ty {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                        arg.render(f, spelling)?;
                     }
                     write!(f, ">")?;
                 }
@@ -1180,10 +1173,10 @@ impl Ty {
                     if param.ownership == crate::ParameterOwnership::Consume {
                         write!(f, "consume ")?;
                     }
-                    param.ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    param.ty.render(f, spelling)?;
                 }
                 write!(f, ") -> ")?;
-                ret.fmt_with_numeric_names(f, i64_name, f64_name)
+                ret.render(f, spelling)
             }
             Ty::GenericCallable {
                 parameters,
@@ -1200,7 +1193,7 @@ impl Ty {
                     write!(f, "{}", parameter.parameter)?;
                     for (index, bound) in parameter.bounds.iter().enumerate() {
                         write!(f, "{}", if index == 0 { ": " } else { " + " })?;
-                        bound.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                        bound.render(f, spelling)?;
                     }
                 }
                 write!(f, ">(")?;
@@ -1211,10 +1204,10 @@ impl Ty {
                     if param.ownership == crate::ParameterOwnership::Consume {
                         write!(f, "consume ")?;
                     }
-                    param.ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    param.ty.render(f, spelling)?;
                 }
                 write!(f, ") -> ")?;
-                ret.fmt_with_numeric_names(f, i64_name, f64_name)
+                ret.render(f, spelling)
             }
             Ty::Pointer {
                 is_mutable,
@@ -1225,11 +1218,11 @@ impl Ty {
                 } else {
                     write!(f, "*const ")?;
                 }
-                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
+                pointee.render(f, spelling)
             }
             Ty::Borrow { pointee } => {
                 write!(f, "&")?;
-                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
+                pointee.render(f, spelling)
             }
             Ty::TraitObject { traits } => {
                 write!(f, "dyn ")?;
@@ -1240,7 +1233,7 @@ impl Ty {
                     if index != 0 {
                         write!(f, " + ")?;
                     }
-                    bound.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    bound.render(f, spelling)?;
                 }
                 if traits.len() != 1 {
                     write!(f, ")")?;
@@ -1249,13 +1242,13 @@ impl Ty {
             }
             Ty::Task(inner) => {
                 write!(f, "<task<")?;
-                inner.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                inner.render(f, spelling)?;
                 write!(f, ">>")
             }
             Ty::AssocType {
                 base, assoc_name, ..
             } => {
-                base.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                base.render(f, spelling)?;
                 write!(f, "::{assoc_name}")
             }
             Ty::Error => write!(f, "<error>"),
@@ -2401,15 +2394,24 @@ impl Ty {
 #[derive(Debug)]
 pub struct UserFacingTy<'a>(&'a Ty);
 
+/// How a type renders an unresolved inference variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spelling {
+    /// Compiler-internal text: `?T<n>`, stable only within one check.
+    Internal,
+    /// Diagnostic text: `_`, the placeholder a programmer writes.
+    Source,
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_numeric_names(f, "i64", "f64")
+        self.render(f, Spelling::Internal)
     }
 }
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        source_spelling(&self.0.materialize_literal_defaults()).fmt(f)
+        source_spelling(&self.0.materialize_literal_defaults()).render(f, Spelling::Source)
     }
 }
 

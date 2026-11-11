@@ -112,9 +112,11 @@ pub enum CallableInstance {
         supervisor: crate::SupervisorId,
         child: u32,
     },
-    /// Ordinary restart policy evaluated once against borrowed config.
+    /// Ordinary restart policy evaluated once against borrowed config: the
+    /// supervisor's own when `child` is `None`, otherwise that child's override.
     SupervisorBackoff {
         supervisor: crate::SupervisorId,
+        child: Option<u32>,
     },
 }
 
@@ -711,6 +713,7 @@ pub enum RuntimeVariantRole {
     CrashKindPartitionDetected,
     CrashKindHandlerFailed,
     CrashKindTimerOverdue,
+    CrashKindStackOverflow,
     OptionSome,
     OptionNone,
     ResultOk,
@@ -1659,8 +1662,21 @@ pub enum SemOpKind {
 impl SemOpKind {
     /// Operations whose owned result can allocate or acquire managed backing
     /// storage. They require a checked control boundary before publication.
+    ///
+    /// A direct variant, like an aggregate, stores its fields inline: moving an
+    /// owned field into it keeps the same backing identities, so it allocates
+    /// and acquires nothing. Only an indirect variant boxes its payload.
     #[must_use]
-    pub const fn is_managed_materialization(&self) -> bool {
+    pub fn is_managed_materialization(&self, variant_shapes: &[SemVariantShape]) -> bool {
+        match self {
+            Self::VariantMake { shape, .. } => variant_shapes
+                .get(shape.0 as usize)
+                .is_none_or(|shape| shape.is_indirect),
+            _ => self.acquires_managed_storage(),
+        }
+    }
+
+    const fn acquires_managed_storage(&self) -> bool {
         matches!(
             self,
             Self::ConstStr(_)
@@ -1672,7 +1688,6 @@ impl SemOpKind {
                 | Self::VariantProjectCopy { .. }
                 | Self::ClosureMake { .. }
                 | Self::DynMake { .. }
-                | Self::VariantMake { .. }
                 | Self::ArrayRepeat { .. }
                 | Self::ArrayMake { .. }
                 | Self::GeneratorMake { .. }
@@ -2287,6 +2302,11 @@ pub enum SemTerminator {
     /// A compiler-authored scheduling boundary. Cancellation follows the
     /// current lexical cleanup; polling has no operation-failure edge.
     /// An authored close has private cleanup ancestry and no cancellation exit.
+    ///
+    /// A function's entry safepoint is also where a call finds its thread's
+    /// stack exhausted: the frame leaves through `cancel` with a
+    /// `StackOverflow` fault, so the callee's parameters follow the same
+    /// cleanup as a cancellation (HEW-SPEC-2026 §2.2).
     Safepoint {
         resume: Edge,
         cancel: Option<Edge>,

@@ -237,6 +237,54 @@ mod tests {
     }
 
     #[test]
+    fn setext_attributes_after_a_definition_line() {
+        for (md, heading) in [
+            ("`\n:\\\n  {}\n -", "\\"),
+            ("`\n:\x0c\\\n  \x0c{a}\n -", "\x0c\\"),
+        ] {
+            // SAFETY: both helpers hold their managed input and release the result.
+            let (raw, safe) = unsafe { (md_to_html(md), md_to_html_safe(md)) };
+            assert_eq!(
+                raw,
+                format!("<dl>\n<dt>`</dt>\n<dd>\n<h2>{heading}</h2>\n</dd>\n</dl>\n"),
+                "{md:?}"
+            );
+            assert_eq!(safe, raw);
+        }
+    }
+
+    #[test]
+    fn setext_heading_trims_attributes_and_keeps_a_trailing_backslash() {
+        for (md, expected) in [
+            (
+                "x  2\n:x\n  {}\n -\n",
+                "<dl>\n<dt>x  2</dt>\n<dd>\n<h2>x</h2>\n</dd>\n</dl>\n",
+            ),
+            (
+                "x  2\n:x\\\n  {}\n -\n",
+                "<dl>\n<dt>x  2</dt>\n<dd>\n<h2>x\\</h2>\n</dd>\n</dl>\n",
+            ),
+            (
+                "x  2\n:x\\\n -\n",
+                "<dl>\n<dt>x  2</dt>\n<dd>\n<h2>x\\</h2>\n</dd>\n</dl>\n",
+            ),
+            (
+                "x  2\n- x\n   {}\n  -\n",
+                "<p>x  2</p>\n<ul>\n<li>\n<h2>x</h2>\n</li>\n</ul>\n",
+            ),
+            (
+                "x  2\n> x\n>  {}\n> -\n",
+                "<p>x  2</p>\n<blockquote>\n<h2>x</h2>\n</blockquote>\n",
+            ),
+        ] {
+            // SAFETY: both helpers hold their managed input and release the result.
+            let (raw, safe) = unsafe { (md_to_html(md), md_to_html_safe(md)) };
+            assert_eq!(raw, expected, "{md:?}");
+            assert_eq!(safe, expected, "{md:?}");
+        }
+    }
+
+    #[test]
     fn heading() {
         // SAFETY: test helper uses valid pointers.
         let html = unsafe { md_to_html("# Hello World") };

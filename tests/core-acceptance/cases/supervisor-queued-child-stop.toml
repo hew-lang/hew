@@ -5,6 +5,9 @@ source = "cases/supervisor-queued-child-stop.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20
 
+[case.env]
+HEW_DETERMINISTIC = ""
+
 [case.expected]
 stdout = "parked\nreleased\n"
 exit = 0

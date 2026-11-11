@@ -159,7 +159,7 @@ impl BoundedChild {
                 // Job creation failed: spawn normally and rely on taskkill fallback.
                 let child = spawn_with_retry(|| command.spawn())
                     .map_err(|e| format!("cannot spawn child process: {e}"))?;
-                return Ok(Self { child, job: None });
+                Ok(Self { child, job: None })
             }
             Ok(job) => {
                 // Spawn suspended: the child holds no locks and has spawned no
@@ -220,26 +220,23 @@ impl BoundedChild {
     /// all pipe write-end handles are released before we join drain threads.
     #[cfg(windows)]
     fn terminate_process_group(&mut self) -> Result<bool, String> {
-        match self.job.as_ref() {
-            Some(job) => {
-                job.terminate()?;
-                // Reap the root child. It may have already exited on its own
-                // (that is the scenario where the Job Object path is essential
-                // — the root is gone but descendants may still be alive).
-                self.child
-                    .wait()
-                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-                Ok(true)
-            }
-            None => {
-                // Job assignment failed at spawn time; fall back to taskkill.
-                // Only exit 0 counts as proof of tree termination.
-                let tree_killed = windows_kill_taskkill(&mut self.child)?;
-                self.child
-                    .wait()
-                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-                Ok(tree_killed)
-            }
+        if let Some(job) = self.job.as_ref() {
+            job.terminate()?;
+            // Reap the root child. It may have already exited on its own
+            // (that is the scenario where the Job Object path is essential
+            // — the root is gone but descendants may still be alive).
+            self.child
+                .wait()
+                .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+            Ok(true)
+        } else {
+            // Job assignment failed at spawn time; fall back to taskkill.
+            // Only exit 0 counts as proof of tree termination.
+            let tree_killed = windows_kill_taskkill(&mut self.child)?;
+            self.child
+                .wait()
+                .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+            Ok(tree_killed)
         }
     }
 
@@ -949,21 +946,21 @@ mod windows_job {
     use std::os::windows::io::AsRawHandle;
     use std::process::Child;
 
-    type HANDLE = *mut core::ffi::c_void;
-    type BOOL = i32;
-    type DWORD = u32;
+    type Handle = *mut core::ffi::c_void;
+    type Bool = i32;
+    type Dword = u32;
 
-    const FALSE: BOOL = 0;
+    const FALSE: Bool = 0;
 
     extern "system" {
         fn CreateJobObjectW(
             lp_job_attributes: *mut core::ffi::c_void,
             lp_name: *const u16,
-        ) -> HANDLE;
-        fn AssignProcessToJobObject(h_job: HANDLE, h_process: HANDLE) -> BOOL;
-        fn TerminateJobObject(h_job: HANDLE, u_exit_code: u32) -> BOOL;
-        fn CloseHandle(h_object: HANDLE) -> BOOL;
-        fn GetLastError() -> DWORD;
+        ) -> Handle;
+        fn AssignProcessToJobObject(h_job: Handle, h_process: Handle) -> Bool;
+        fn TerminateJobObject(h_job: Handle, u_exit_code: u32) -> Bool;
+        fn CloseHandle(h_object: Handle) -> Bool;
+        fn GetLastError() -> Dword;
     }
 
     // NtResumeProcess is not in the Win32 SDK headers but is a stable
@@ -974,7 +971,7 @@ mod windows_job {
     // thread handle that CreateProcess returns.
     #[link(name = "ntdll")]
     extern "system" {
-        fn NtResumeProcess(process_handle: HANDLE) -> i32; // NTSTATUS
+        fn NtResumeProcess(process_handle: Handle) -> i32; // NTSTATUS
     }
 
     /// Resume all threads in a child process that was created suspended.
@@ -983,11 +980,12 @@ mod windows_job {
     /// thread.  For a freshly `CREATE_SUSPENDED` process this unblocks the
     /// primary thread and lets the process start executing.
     pub(super) fn resume_child_process(child: &Child) -> Result<(), String> {
-        let handle = child.as_raw_handle() as HANDLE;
+        let handle = child.as_raw_handle() as Handle;
         // SAFETY: handle is valid for the lifetime of child.
         // NTSTATUS: values < 0 are errors; >= 0 are success codes.
         let status = unsafe { NtResumeProcess(handle) };
         if status < 0 {
+            // SAFETY: GetLastError is always safe to call.
             let code = unsafe { GetLastError() };
             Err(format!(
                 "NtResumeProcess failed: NTSTATUS {status:#010x} (last error {code})"
@@ -997,11 +995,12 @@ mod windows_job {
         }
     }
 
-    pub(super) struct WindowsJob(HANDLE);
+    pub(super) struct WindowsJob(Handle);
 
-    // SAFETY: The HANDLE is valid until `CloseHandle` is called in `Drop`.
-    // We never share the HANDLE across threads without synchronisation.
+    // SAFETY: The handle is valid until `CloseHandle` is called in `Drop`.
+    // We never share the handle across threads without synchronisation.
     unsafe impl Send for WindowsJob {}
+    // SAFETY: every operation on the handle is a thread-safe kernel call.
     unsafe impl Sync for WindowsJob {}
 
     impl WindowsJob {
@@ -1023,7 +1022,7 @@ mod windows_job {
         /// Must be called immediately after spawn, before the child can itself
         /// spawn grandchildren (which would otherwise not be in the job).
         pub(super) fn assign(&self, child: &Child) -> Result<(), String> {
-            let process_handle = child.as_raw_handle() as HANDLE;
+            let process_handle = child.as_raw_handle() as Handle;
             // SAFETY: both handles are valid at this point.
             let ok = unsafe { AssignProcessToJobObject(self.0, process_handle) };
             if ok == FALSE {

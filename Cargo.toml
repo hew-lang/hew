@@ -29,9 +29,16 @@ members = [
   "hew-codegen-rs",
   "hew-capability-gen",
   "hew-testutil",
+  "hew-parity-gen",
   "xtask",
 ]
-exclude = ["hew-parser/fuzz"]
+exclude = [
+  "hew-parser/fuzz",
+  "hew-runtime/fuzz",
+  "hew-std/fuzz",
+  "hew-codec/fuzz",
+  "vendor/pulldown-cmark",
+]
 resolver = "2"
 
 [workspace.package]
@@ -42,7 +49,9 @@ authors = ["Stephen Olesen <slepp@slepp.ca>"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` reads every number back to the f64 it was printed from;
+# the default fast path can land one unit in the last place away.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 toml = "1"
@@ -142,3 +151,6 @@ lto = "off"
 [profile.release-lib.package."*"]
 debug = 0
 strip = "none"
+
+[patch.crates-io]
+pulldown-cmark = { path = "vendor/pulldown-cmark" }

@@ -10,6 +10,9 @@
 # the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
 [test-groups]
 subprocess-intensive = { max-threads = 8 }
+# Keep the per-fixture lifecycle tests at the aggregate test’s previous
+# compiler concurrency while giving each fixture its own deadline and result.
+wasi-lifecycle = { max-threads = 1 }
 # ffi-native-link: tests that invoke clang/ld to link a real FFI executable.
 # Keep these links serial so their cold native work does not contend with sibling
 # FFI links during the full workspace run.
@@ -32,6 +35,10 @@ default-filter = "not package(hew-wasm)"
 # fine for pure in-process tests.  The subprocess-intensive group above provides
 # the finer-grained cap for tests that spawn child processes.
 test-threads = "num-cpus"
+
+[[profile.default.overrides]]
+filter = "binary(wasi_run_e2e) and test(supervised_actor_lifecycle::)"
+test-group = "wasi-lifecycle"
 
 [[profile.default.overrides]]
 # eval_e2e and package-manager eval tests each spawn the full hew compiler binary (AOT
@@ -80,6 +87,10 @@ default-filter = "not package(hew-wasm)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+filter = "binary(wasi_run_e2e) and test(supervised_actor_lifecycle::)"
+test-group = "wasi-lifecycle"
 
 [[profile.ci.overrides]]
 # The Intel macOS release-gate runner is roughly three times slower than the

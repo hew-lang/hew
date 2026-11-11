@@ -1,0 +1,4 @@
+a: !!binary AAEC
+b: !custom {x: 1}
+c: .nan
+d: -.inf

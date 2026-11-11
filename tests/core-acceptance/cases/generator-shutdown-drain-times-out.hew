@@ -1,0 +1,14 @@
+// A generator's clock reads zero, so its sleeping actor can never wake. The
+// shutdown drain still reaches its window on the runtime clock and fails.
+actor Sleeper {
+    receive fn go() {
+        sleep(100ms);
+        println("woke");
+    }
+}
+
+fn main() {
+    let s = spawn Sleeper;
+    let _ = mailbox(s, on_full: .Wait).go();
+    println("main done");
+}

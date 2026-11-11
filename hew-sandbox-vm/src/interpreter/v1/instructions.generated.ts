@@ -925,6 +925,7 @@ export type RuntimeVariantRole =
   | "CrashKindPartitionDetected"
   | "CrashKindHandlerFailed"
   | "CrashKindTimerOverdue"
+  | "CrashKindStackOverflow"
   | "OptionSome"
   | "OptionNone"
   | "ResultOk"
@@ -1021,6 +1022,11 @@ export type SupervisorChild = {
   stop_ns?: number | null;
   stop_config?: number | null;
   is_pool?: boolean;
+  /**
+   * Construction transfers this child's effective restart delay as an
+   * `(initial, maximum)` argument pair after the config, in declaration order.
+   */
+  backoff?: boolean;
   spawn: number;
 };
 export type SupervisorPoolOp = "Len" | "Member" | "Get";
@@ -1029,7 +1035,6 @@ export type SupervisorShape = {
   strategy: RestartStrategy;
   max_restarts: number;
   window_secs: number;
-  backoff?: boolean;
   children: Array<SupervisorChild>;
   startup_order?: Array<number>;
 };
@@ -1253,7 +1258,8 @@ export type TrapName =
   | "signed_min_div_neg_one"
   | "shift_out_of_range"
   | "vector_bounds"
-  | "actor_refused";
+  | "actor_refused"
+  | "stack_overflow";
 export type ValueCapability = {
   id: number;
   capability: Capability;

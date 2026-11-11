@@ -409,8 +409,9 @@ fn control_frame_before_install_applies_registry_event_after_real_publish() {
         // spawning the reader.
         let token =
             next_publication_token(&*mgr).expect("the publication token space is not exhausted");
-        let ClaimReservation::Reserved { superseded: None } =
-            reserve_claim(&*mgr, 5, None, 30, token)
+        let ClaimReservation::Reserved {
+            superseded: None, ..
+        } = reserve_claim(&*mgr, 5, None, 30, token)
         else {
             panic!("fresh reservation must succeed without supersession");
         };

@@ -38,6 +38,8 @@ struct HewRcInner {
     transfer_key: usize,
     transfer_owner: Option<Arc<RcAllocations>>,
     dying: bool,
+    /// Counted in the live census; a profile consumer was configured.
+    census: bool,
     data_size: usize,
     data_align: usize,
     data_offset: usize,
@@ -680,6 +682,7 @@ pub unsafe extern "C" fn hew_rc_new(
             transfer_key: 0,
             transfer_owner: None,
             dying: false,
+            census: crate::profiler::consumer_configured(),
             data_size: size,
             data_align,
             data_offset,
@@ -710,10 +713,9 @@ pub unsafe extern "C" fn hew_rc_new(
         unsafe { owner.register(header) };
     }
     #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-    {
-        // SAFETY: the caller retains the immutable label until final header free.
-        let label = unsafe { std::ffi::CStr::from_ptr(type_name) }.to_string_lossy();
-        crate::observe::record_rc_allocation(&label);
+    // SAFETY: the header was initialized above.
+    if unsafe { (*header).census } {
+        crate::observe::record_rc_allocation(type_name);
     }
     data_ptr
 }
@@ -1302,10 +1304,8 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
         let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
             .expect("layout was valid at construction");
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-        {
-            // SAFETY: the immutable label is retained through this final free.
-            let label = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }.to_string_lossy();
-            crate::observe::record_rc_free(&label);
+        if inner.census {
+            crate::observe::record_rc_free(inner.type_name);
         }
         // Keep immutable code metadata, including the type label, alive until
         // the final weak header disappears after payload cleanup.

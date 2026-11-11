@@ -927,17 +927,19 @@ fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Res
     // SAFETY: this exclusive loan owns the pipe's write handle and mode.
     if unsafe { SetNamedPipeHandleState(handle, &PIPE_NOWAIT, ptr::null(), ptr::null()) } == 0 {
         let error = std::io::Error::last_os_error();
-        return Err(if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) {
-            std::io::ErrorKind::WouldBlock.into()
-        } else {
-            error
-        });
+        return Err(
+            if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) {
+                std::io::ErrorKind::WouldBlock.into()
+            } else {
+                error
+            },
+        );
     }
     let mut attempt = data.len();
     let result = loop {
         match file.write(&data[..attempt]) {
             Ok(0) if attempt > 1 => attempt /= 2,
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) => {
                 if attempt > 1 {
                     attempt /= 2;
                 } else {

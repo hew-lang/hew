@@ -1,0 +1,10 @@
+[[case]]
+id = "signed-negation"
+intent = "Negation keeps its operand's width, including a width settled after the negation by later use, and a float negation takes the contextual float width."
+source = "../../examples/sandbox-graduation/signed_negation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "-100\n2147483647\n-10\n-300\n-1.5\n-0.75\n-7\n"
+exit = 0

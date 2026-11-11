@@ -114,7 +114,7 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
     HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
-    HEW_TRAP_USER_PANIC,
+    HEW_TRAP_STACK_OVERFLOW, HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::{
@@ -935,6 +935,9 @@ struct FunctionEmitter<'a, 'ctx> {
     value_callbacks: &'a key::CallbackTable<'ctx>,
     ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     frame: Option<coro::Frame<'ctx>>,
+    /// A loop chunk runs outside its coroutine frame but charges managed
+    /// storage to the same invocation, which the caller passes in.
+    chunk_invocation: Option<PointerValue<'ctx>>,
     task_scopes: BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
     debug: Option<(
         &'a debug::DebugEmitter<'ctx>,

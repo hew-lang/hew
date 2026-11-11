@@ -241,6 +241,22 @@ pub(super) fn trap_code(kind: TrapKind) -> i32 {
     }
 }
 
+/// The thread's stack limit, read by every function's entry check. It starts
+/// at the all-ones sentinel so each thread's first check asks the runtime.
+pub(super) fn stack_limit_slot<'ctx>(
+    module: &Module<'ctx>,
+    word: inkwell::types::IntType<'ctx>,
+) -> inkwell::values::GlobalValue<'ctx> {
+    const NAME: &str = "__hew_stack_limit";
+    module.get_global(NAME).unwrap_or_else(|| {
+        let slot = module.add_global(word, None, NAME);
+        slot.set_linkage(Linkage::Internal);
+        slot.set_thread_local(true);
+        slot.set_initializer(&word.const_all_ones());
+        slot
+    })
+}
+
 pub(super) fn external_unary_ptr<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,

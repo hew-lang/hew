@@ -1,3 +1,5 @@
+import std.restart;
+
 actor Worker {
     let value: i64 = 7;
     receive fn read() -> i64 {
@@ -11,6 +13,7 @@ actor Worker {
 supervisor App {
     strategy: one_for_one;
     intensity: 20 within 60s;
+    backoff: restart.exponential(initial: 100ms);
     child worker: Worker { value: 7 };
 }
 

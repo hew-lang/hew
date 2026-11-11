@@ -561,11 +561,12 @@ impl Checker {
         // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
         // uses are rejected here. Name the type so the user knows why.
         if Self::ty_is_substrate_handle(ty) {
+            // Name the handle with what inference has settled so far.
             err = err.with_suggestion(format!(
                 "`{}` is a substrate handle — consuming methods like `.close()`, \
                  `.send_half()`, and `.recv_half()` move the handle; \
                  use a single consuming call per binding",
-                ty.user_facing()
+                self.subst.resolve(ty).user_facing()
             ));
         } else if is_linear {
             err = err.with_suggestion(

@@ -22,7 +22,7 @@ struct DependencyKey {
     program: Program,
     next_default_span: usize,
     sources: Vec<(String, std::sync::Arc<str>, String)>,
-    registry: (Vec<PathBuf>, Option<PathBuf>),
+    registry: Vec<PathBuf>,
     lint_levels: Vec<LintLevel>,
 }
 
@@ -46,6 +46,8 @@ pub struct DependencyAnalysisCache {
     reused_roots: usize,
     bootstraps: usize,
     cache_hits: usize,
+    finalizations: usize,
+    reuse: FinalizationReuse,
 }
 
 impl DependencyAnalysisCache {
@@ -68,6 +70,41 @@ impl DependencyAnalysisCache {
         self.cache_hits
     }
 
+    /// Dependency-only finalizations recorded by this request-local cache.
+    #[must_use]
+    pub fn finalizations(&self) -> usize {
+        self.finalizations
+    }
+
+    /// Finalization passes roots extended from a checkpoint's memo.
+    #[must_use]
+    pub fn finalization_reuse(&self) -> FinalizationReuse {
+        self.reuse
+    }
+
+    /// Finalize the sealed dependencies once, on a fork, and keep the
+    /// products every root would otherwise recompute. A dependency set whose
+    /// own finalization reports an error keeps no memo: its roots finalize
+    /// everything, so they report exactly what a complete check reports.
+    fn record_finalization(
+        &mut self,
+        dependency_checker: &mut Checker,
+        program: &Program,
+        normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
+    ) {
+        let mut recorder = dependency_checker.fork_dependency_state();
+        recorder.finalization_memo = FinalizationMemo::Record(Box::default());
+        let output = recorder.finish_program(program, normalized_program);
+        if !output.errors.is_empty() {
+            return;
+        }
+        if let FinalizationMemo::Record(memo) = recorder.finalization_memo {
+            dependency_checker.finalization_memo =
+                FinalizationMemo::Reuse(std::sync::Arc::new(*memo), FinalizationReuse::default());
+            self.finalizations += 1;
+        }
+    }
+
     /// Check with the same configured, fresh checker the ordinary frontend
     /// would use. `sources` is its exact non-root diagnostic/lint source map,
     /// including raw comments; AST equality alone cannot key lint directives.
@@ -81,7 +118,7 @@ impl DependencyAnalysisCache {
         program: &Program,
         mut sources: Vec<(String, std::sync::Arc<str>, String)>,
     ) -> TypeCheckOutput {
-        if dependency_program(program).is_none() {
+        if dependency_program(program, checker.module_registry.std_roots()).is_none() {
             return checker.check_program(program);
         }
         let Some(registry) = checker.module_registry.dependency_analysis_context() else {
@@ -105,7 +142,8 @@ impl DependencyAnalysisCache {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        let Some(dependencies) = dependency_program(program) else {
+        let Some(dependencies) = dependency_program(program, checker.module_registry.std_roots())
+        else {
             return checker.check_program(source_program);
         };
         sources.sort();
@@ -150,6 +188,13 @@ impl DependencyAnalysisCache {
                 });
             dependency_checker.check_dependency_bodies(prepared);
             dependency_checker.check_embedded_builtin_impl_bodies(prepared);
+            if dependency_checker.errors.is_empty() {
+                self.record_finalization(
+                    &mut dependency_checker,
+                    &key.program,
+                    normalized_program.clone(),
+                );
+            }
             if self.seeds.len() == MAX_CHECKPOINTS {
                 self.seeds.remove(0);
             }
@@ -246,6 +291,9 @@ impl DependencyAnalysisCache {
         fork.current_module_idx = 0;
         fork.check_root_bodies(program);
         let output = fork.finish_program(source_program, normalized_program);
+        if let FinalizationMemo::Reuse(_, reused) = &fork.finalization_memo {
+            self.reuse.add(*reused);
+        }
         *checker = fork;
         self.reused_roots += 1;
         if seed_index.is_some() {
@@ -267,7 +315,7 @@ fn ordinary_function_or_import(item: &Item) -> bool {
     }
 }
 
-fn dependency_program(program: &Program) -> Option<Program> {
+fn dependency_program(program: &Program, std_roots: &[std::path::PathBuf]) -> Option<Program> {
     let graph = program.module_graph.as_ref()?;
     let root = graph.modules.get(&graph.root)?;
     // Directory roots and source-less/synthetic roots retain their existing
@@ -282,7 +330,8 @@ fn dependency_program(program: &Program) -> Option<Program> {
         return None;
     }
     let root_source = &root.source_paths[0];
-    if crate::module_registry::canonical_stdlib_module_for_source(root_source).is_some() {
+    if crate::module_registry::canonical_stdlib_module_for_source(root_source, std_roots).is_some()
+    {
         return None;
     }
     let root_physical = root_source
@@ -306,7 +355,11 @@ fn dependency_program(program: &Program) -> Option<Program> {
         let prelude_floor = automatic_prelude.contains(id)
             && !module.source_paths.is_empty()
             && module.source_paths.iter().all(|source| {
-                crate::module_registry::is_canonical_stdlib_module_source(source, &id.dotted())
+                crate::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    &id.dotted(),
+                    std_roots,
+                )
             });
         if (!prelude_floor
             && !module
@@ -680,5 +733,105 @@ fn type_has_infer(ty: &TypeExpr) -> bool {
         }
         TypeExpr::Pointer { pointee, .. } => type_has_infer(&pointee.0),
         TypeExpr::TraitObject(bounds) => bounds.iter().any(bound_has_infer),
+    }
+}
+
+/// Dependency-only finalization products, computed once per checkpoint.
+///
+/// A checkpoint root declares only ordinary functions and imports, and no
+/// dependency imports it (`dependency_program`), so a root cannot add a type,
+/// impl or trait, nor be reached from a dependency body. Each product below is
+/// therefore a fixed prefix of every forked root's finalization: the root
+/// extends it with its own facts instead of recomputing the dependencies.
+#[derive(Debug, Default)]
+pub(super) struct DependencyFinalization {
+    /// Types reached from dependency expressions, and every fact row that
+    /// requiring them computed.
+    pub(super) type_fact_visited: std::collections::BTreeSet<crate::type_facts::TypeInstanceKey>,
+    pub(super) type_fact_rows: std::collections::BTreeMap<
+        crate::type_facts::TypeInstanceKey,
+        crate::type_facts::TypeFacts,
+    >,
+    /// The solved suspension graph of every dependency body.
+    pub(super) effects: super::effects::EffectMemo,
+    /// The dependencies' generic requirement discharge.
+    pub(super) generics: super::types::GenericRequirementMemo,
+    /// Task escapes the dependencies settled, and the scope results they proved.
+    pub(super) task_escapes: usize,
+    pub(super) task_scope_results: std::collections::HashSet<super::SpanKey>,
+}
+
+/// Finalization passes a checkpoint root extended from the dependencies'
+/// memo instead of repeating them; summed across a batch's roots.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FinalizationReuse {
+    pub effects: usize,
+    pub type_facts: usize,
+    pub generic_requirements: usize,
+    pub task_lifetimes: usize,
+}
+
+impl FinalizationReuse {
+    fn add(&mut self, other: Self) {
+        self.effects += other.effects;
+        self.type_facts += other.type_facts;
+        self.generic_requirements += other.generic_requirements;
+        self.task_lifetimes += other.task_lifetimes;
+    }
+}
+
+/// How this checker's finalization relates to a dependency checkpoint.
+#[derive(Debug, Default)]
+pub(super) enum FinalizationMemo {
+    /// Finalize every fact; no checkpoint is involved.
+    #[default]
+    Off,
+    /// The dependency-only finalization fills this memo as it runs.
+    Record(Box<DependencyFinalization>),
+    /// A root forked from a checkpoint extends this sealed memo.
+    Reuse(std::sync::Arc<DependencyFinalization>, FinalizationReuse),
+}
+
+impl FinalizationMemo {
+    /// A forked checker shares a sealed memo; a recording is never inherited.
+    pub(super) fn fork(&self) -> Self {
+        match self {
+            Self::Reuse(memo, _) => {
+                Self::Reuse(std::sync::Arc::clone(memo), FinalizationReuse::default())
+            }
+            Self::Off | Self::Record(_) => Self::Off,
+        }
+    }
+
+    pub(super) fn shared(&self) -> Option<std::sync::Arc<DependencyFinalization>> {
+        match self {
+            Self::Reuse(memo, _) => Some(std::sync::Arc::clone(memo)),
+            Self::Off | Self::Record(_) => None,
+        }
+    }
+
+    pub(super) fn reuse(&self) -> Option<&DependencyFinalization> {
+        match self {
+            Self::Reuse(memo, _) => Some(memo),
+            Self::Off | Self::Record(_) => None,
+        }
+    }
+
+    /// Count a pass this root extended from the memo.
+    pub(super) fn reused(&mut self, pass: impl FnOnce(&mut FinalizationReuse)) {
+        if let Self::Reuse(_, reused) = self {
+            pass(reused);
+        }
+    }
+
+    pub(super) fn is_recording(&self) -> bool {
+        matches!(self, Self::Record(_))
+    }
+
+    pub(super) fn record(&mut self) -> Option<&mut DependencyFinalization> {
+        match self {
+            Self::Record(memo) => Some(memo),
+            Self::Off | Self::Reuse(..) => None,
+        }
     }
 }

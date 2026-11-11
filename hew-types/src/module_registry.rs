@@ -52,31 +52,22 @@ pub struct ModuleRegistry {
     cache: ModuleParseCache,
     configured: ProgramModuleState,
     active: ProgramModuleState,
-    /// Ordered search paths for module resolution.
+    /// Ordered standard-library roots for module resolution, as the
+    /// compilation was given them. They also decide which module sources are
+    /// the canonical std; see [`Self::std_roots`].
     search_paths: Vec<PathBuf>,
-    /// Compiler-owned root that may confer stdlib-only authority.
-    ///
-    /// This is resolved exclusively from the running compiler's installation
-    /// or development-binary layout. It is deliberately independent of
-    /// `search_paths`, which may contain project-, cwd-, or environment-owned
-    /// roots.
-    compiler_stdlib_root: Option<PathBuf>,
 }
 
 /// One module in the registry's active program closure.
 ///
 /// The view borrows the parser-owned declarations retained by the registry;
-/// consumers must not reconstruct or clone a separate source program. Compiler
-/// ownership is derived from the selected source's canonical path, never from
-/// the module's spelling.
+/// consumers must not reconstruct or clone a separate source program.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedModule<'a> {
     /// Canonical nominal identity selected for the active source.
     pub module_id: &'a ModulePath,
     /// Parsed declarations and extracted module metadata.
     pub info: &'a ModuleInfo,
-    /// Whether the source belongs to this compiler's stdlib distribution.
-    pub compiler_owned: bool,
 }
 
 /// Parse a canonical dotted module identity at the registry boundary.
@@ -247,6 +238,15 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
         }
     }
     compiler_stdlib_root().into_iter().collect()
+}
+
+/// `HEW_STD` when it names an existing directory not called `std`. Its parent
+/// is still the std root, so `std.*` resolves from a sibling `std/` that
+/// usually does not exist; a missing-std diagnostic names this as the cause.
+#[must_use]
+pub fn misnamed_hew_std() -> Option<PathBuf> {
+    let std_dir = PathBuf::from(std::env::var_os("HEW_STD")?);
+    (std_dir.is_dir() && std_dir.file_name().is_none_or(|name| name != "std")).then_some(std_dir)
 }
 
 /// What a source file's module membership is measured from (spec 3.5.1).
@@ -512,25 +512,30 @@ fn stdlib_comparable_path(path: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-/// Return the canonical stdlib owner for an exact shipped source file.
+/// Return the canonical stdlib owner for an exact shipped source file below
+/// one of `std_roots`, the standard-library roots the compilation was given.
 ///
 /// A peer of a std directory module has the directory module as its owner
 /// (D461); see [`module_membership`].
 #[must_use]
-pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<ModulePath> {
+pub fn canonical_stdlib_module_for_source(
+    source_file: &std::path::Path,
+    std_roots: &[PathBuf],
+) -> Option<ModulePath> {
     let input = stdlib_comparable_path(source_file)?;
-    let roots = stdlib_search_paths()
+    let roots = std_roots
         .iter()
         .filter_map(|root| stdlib_comparable_path(root))
         .collect::<Vec<_>>();
     let anchor = std_anchor_for(&input, &roots)?;
     let membership = module_membership(&anchor, &input, &filesystem_dir_listing);
-    is_canonical_stdlib_module_source(&input, &membership.module.dotted())
+    is_canonical_stdlib_module_source(&input, &membership.module.dotted(), std_roots)
         .then_some(membership.module)
 }
 
 /// Whether `source_file` is the canonical source selected for `dotted_module`
-/// by Hew's stdlib search-path authority.
+/// below one of `std_roots`, the standard-library roots the compilation was
+/// given.
 ///
 /// This compares canonical paths, not filenames or generic arity. It is used
 /// when a shipped stdlib file is compiled directly as a root unit but its
@@ -539,8 +544,9 @@ pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Opti
 pub fn is_canonical_stdlib_module_source(
     source_file: &std::path::Path,
     dotted_module: &str,
+    std_roots: &[PathBuf],
 ) -> bool {
-    canonical_stdlib_module_source_in_roots(source_file, dotted_module, &stdlib_search_paths())
+    canonical_stdlib_module_source_in_roots(source_file, dotted_module, std_roots)
 }
 
 /// Does this path spell the shipped source of `dotted_module`?
@@ -612,6 +618,7 @@ fn canonical_stdlib_module_source_in_roots(
 pub fn canonical_source_module_identity(
     requested: &ModulePath,
     source_paths: &[PathBuf],
+    std_roots: &[PathBuf],
 ) -> ModulePath {
     // Directory-module peers are alternate physical spellings of the same
     // shipped module.  Resolve their owner from the trusted source path so a
@@ -619,7 +626,7 @@ pub fn canonical_source_module_identity(
     // owner beside the assembled `std.net.http.codec` module.
     source_paths
         .iter()
-        .find_map(|source| canonical_stdlib_module_for_source(source))
+        .find_map(|source| canonical_stdlib_module_for_source(source, std_roots))
         .unwrap_or_else(|| requested.clone())
 }
 
@@ -636,72 +643,6 @@ pub enum ModuleError {
         column: usize,
         message: String,
     },
-}
-
-/// Failure to activate a module from the running compiler's own distribution.
-#[derive(Debug)]
-pub enum CompilerModuleError {
-    /// No installed or development stdlib root belongs to this compiler.
-    AuthorityUnavailable {
-        /// Requested dotted module identity.
-        module_path: String,
-    },
-    /// The program already resolved this nominal identity to another source.
-    ConflictingActiveModule {
-        /// Requested dotted module identity.
-        module_path: String,
-        /// Source already active for the identity, when recorded.
-        loaded_source: Option<PathBuf>,
-    },
-    /// The trusted root resolved through a symlink or alias to an outside source.
-    SourceOutsideAuthority {
-        /// Requested dotted module identity.
-        module_path: String,
-        /// Outside source selected by the loader, when recorded.
-        source_path: Option<PathBuf>,
-    },
-    /// The compiler-owned source was missing or malformed.
-    Module(ModuleError),
-}
-
-impl std::fmt::Display for CompilerModuleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AuthorityUnavailable { module_path } => write!(
-                f,
-                "compiler-owned standard library is unavailable while loading `{module_path}`"
-            ),
-            Self::ConflictingActiveModule {
-                module_path,
-                loaded_source,
-            } => write!(
-                f,
-                "module `{module_path}` is already active from a non-compiler source{}",
-                loaded_source
-                    .as_ref()
-                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
-            ),
-            Self::SourceOutsideAuthority {
-                module_path,
-                source_path,
-            } => write!(
-                f,
-                "compiler module `{module_path}` resolved outside its owned standard library{}",
-                source_path
-                    .as_ref()
-                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
-            ),
-            Self::Module(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for CompilerModuleError {}
-
-impl From<ModuleError> for CompilerModuleError {
-    fn from(error: ModuleError) -> Self {
-        Self::Module(error)
-    }
 }
 
 impl std::fmt::Display for ModuleError {
@@ -739,7 +680,7 @@ impl std::fmt::Display for ModuleError {
 impl ModuleRegistry {
     /// A batch may seed only a fresh, unconfigured registry. A prior program's
     /// path-only parse cache is not authority for a new immutable source set.
-    pub(crate) fn dependency_analysis_context(&self) -> Option<(Vec<PathBuf>, Option<PathBuf>)> {
+    pub(crate) fn dependency_analysis_context(&self) -> Option<Vec<PathBuf>> {
         let empty = |state: &ProgramModuleState| {
             state.modules.is_empty()
                 && state.handle_types.is_empty()
@@ -747,7 +688,7 @@ impl ModuleRegistry {
                 && state.drop_funcs.is_empty()
         };
         (self.cache.modules.is_empty() && empty(&self.configured) && empty(&self.active))
-            .then(|| (self.search_paths.clone(), self.compiler_stdlib_root.clone()))
+            .then(|| self.search_paths.clone())
     }
     fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
         info.source_items.iter().any(|(item, _)| match item {
@@ -778,18 +719,28 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            return Some(canonical_source_module_identity(&module_id, &source_paths).dotted());
+            return Some(
+                canonical_source_module_identity(&module_id, &source_paths, &self.search_paths)
+                    .dotted(),
+            );
         }
         self.search_paths.iter().find_map(|search_path| {
-            let info =
-                load_module_with_inputs(&loader_path, search_path, self.input_provider.as_deref())
-                    .ok()
-                    .flatten()?;
+            let info = load_module_with_inputs(
+                &loader_path,
+                search_path,
+                &self.search_paths,
+                self.input_provider.as_deref(),
+            )
+            .ok()
+            .flatten()?;
             if !Self::module_info_declares_nominal(&info, leaf) {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            Some(canonical_source_module_identity(&module_id, &source_paths).dotted())
+            Some(
+                canonical_source_module_identity(&module_id, &source_paths, &self.search_paths)
+                    .dotted(),
+            )
         })
     }
 
@@ -891,7 +842,6 @@ impl ModuleRegistry {
             configured: ProgramModuleState::default(),
             active: ProgramModuleState::default(),
             search_paths,
-            compiler_stdlib_root: compiler_stdlib_root(),
         }
     }
 
@@ -909,7 +859,6 @@ impl ModuleRegistry {
             configured,
             active: _,
             search_paths,
-            compiler_stdlib_root,
         } = self;
         let active = configured.clone();
         Self {
@@ -918,7 +867,6 @@ impl ModuleRegistry {
             configured,
             active,
             search_paths,
-            compiler_stdlib_root,
         }
     }
 
@@ -926,31 +874,18 @@ impl ModuleRegistry {
         !self.search_paths.is_empty()
     }
 
-    /// Whether `source_file` is the exact source for `dotted_module` below the
-    /// running compiler's own stdlib root.
-    ///
-    /// Module search paths are intentionally excluded: projects, cwd, `HEWPATH`,
-    /// and `HEW_STD` may affect resolution but cannot confer compiler authority.
-    /// A host with no filesystem has no compiler-owned root; there the
-    /// sources compiled into the host are the authority, named by their
-    /// shipped spelling. A missing root on a host with a filesystem returns
-    /// `false`.
-    pub(crate) fn source_has_stdlib_authority(
-        &self,
-        source_file: &std::path::Path,
-        dotted_module: &str,
-    ) -> bool {
-        canonical_stdlib_module_source_in_roots(
-            source_file,
-            dotted_module,
-            self.compiler_stdlib_root.as_slice(),
-        )
+    /// The standard-library roots this compilation was given: the one
+    /// authority for which module sources are the canonical std. Each root
+    /// holds a `std/` directory.
+    #[must_use]
+    pub fn std_roots(&self) -> &[PathBuf] {
+        &self.search_paths
     }
 
     fn module_info_has_stdlib_authority(&self, id: &ModulePath, info: &ModuleInfo) -> bool {
-        info.source_path
-            .as_deref()
-            .is_some_and(|source_path| self.source_has_stdlib_authority(source_path, &id.dotted()))
+        info.source_path.as_deref().is_some_and(|source_path| {
+            is_canonical_stdlib_module_source(source_path, &id.dotted(), &self.search_paths)
+        })
     }
 
     /// Iterate the modules active for this checked program in canonical identity
@@ -966,101 +901,7 @@ impl ModuleRegistry {
         self.active
             .modules
             .iter()
-            .map(|(module_id, info)| LoadedModule {
-                module_id,
-                info,
-                compiler_owned: self.module_info_has_stdlib_authority(module_id, info),
-            })
-    }
-
-    /// Activate a module from the running compiler's exact stdlib distribution.
-    ///
-    /// This bypasses ordinary project and environment search paths. A compatible
-    /// compiler-owned active or cached entry is reused; an active same-identity
-    /// module from another source is rejected rather than silently replacing
-    /// checker-visible state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CompilerModuleError::AuthorityUnavailable`] when the running
-    /// compiler has no owned stdlib layout, a wrapped [`ModuleError`] when the
-    /// exact source cannot be loaded, or a provenance error when the selected or
-    /// already-active source is outside compiler authority.
-    pub fn load_compiler_stdlib_module(
-        &mut self,
-        module_path: &str,
-    ) -> Result<(), CompilerModuleError> {
-        let id = module_id_from_identity(module_path);
-        let loader_path = id.join("::");
-
-        if let Some(info) = self.active.modules.get(&id) {
-            if !self.module_info_has_stdlib_authority(&id, info) {
-                return Err(CompilerModuleError::ConflictingActiveModule {
-                    module_path: module_path.to_string(),
-                    loaded_source: info.source_path.clone(),
-                });
-            }
-            return Ok(());
-        }
-
-        let compiler_root = self.compiler_stdlib_root.clone().ok_or_else(|| {
-            CompilerModuleError::AuthorityUnavailable {
-                module_path: module_path.to_string(),
-            }
-        })?;
-        let Some(source) = crate::stdlib_loader::resolve_hew_path_with_inputs(
-            &loader_path,
-            &compiler_root,
-            self.input_provider.as_deref(),
-        ) else {
-            return Err(ModuleError::NotFound {
-                module_path: module_path.to_string(),
-                searched: vec![compiler_root],
-            }
-            .into());
-        };
-        let cache_key = parse_cache_key(&source);
-        let cached = self.cache.modules.get(&cache_key).cloned();
-        let info = if let Some(info) = cached {
-            info
-        } else {
-            let Some(info) = load_module_with_inputs(
-                &loader_path,
-                &compiler_root,
-                self.input_provider.as_deref(),
-            )?
-            else {
-                return Err(ModuleError::NotFound {
-                    module_path: module_path.to_string(),
-                    searched: vec![compiler_root],
-                }
-                .into());
-            };
-            Arc::new(info)
-        };
-
-        let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-        let canonical_id = canonical_source_module_identity(&id, &source_paths);
-        if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
-            return Err(CompilerModuleError::SourceOutsideAuthority {
-                module_path: module_path.to_string(),
-                source_path: info.source_path.clone(),
-            });
-        }
-
-        if let Some(active) = self.active.modules.get(&canonical_id) {
-            if !self.module_info_has_stdlib_authority(&canonical_id, active) {
-                return Err(CompilerModuleError::ConflictingActiveModule {
-                    module_path: canonical_id.dotted(),
-                    loaded_source: active.source_path.clone(),
-                });
-            }
-            return Ok(());
-        }
-
-        self.cache.modules.insert(cache_key, info.clone());
-        self.activate_module(&canonical_id, info);
-        Ok(())
+            .map(|(module_id, info)| LoadedModule { module_id, info })
     }
 
     /// Load a module by its full path (e.g. `std::encoding::json`).
@@ -1116,6 +957,7 @@ impl ModuleRegistry {
                 let Some(info) = load_module_with_inputs(
                     &loader_path,
                     search_path,
+                    &search_paths,
                     self.input_provider.as_deref(),
                 )?
                 else {
@@ -1126,7 +968,7 @@ impl ModuleRegistry {
                 info
             };
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            let canonical_id = canonical_source_module_identity(&id, &source_paths);
+            let canonical_id = canonical_source_module_identity(&id, &source_paths, &search_paths);
             return Ok(self.activate_module(&canonical_id, info));
         }
 
@@ -1603,31 +1445,112 @@ mod tests {
         assert_eq!(loose.module, ModulePath::new(["greeting"]));
     }
 
+    /// The std roots of the checkout this crate builds from, given
+    /// explicitly as a compilation would give them.
+    fn checkout_std_roots() -> Vec<PathBuf> {
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-types lives below the repository root")
+            .to_path_buf()]
+    }
+
+    /// Canonical std provenance is judged against the std roots the
+    /// compilation was given, never a process-wide lookup: a copied std is
+    /// canonical under its own root, and the checkout's std is not canonical
+    /// under a root that does not hold it.
+    #[test]
+    fn canonical_stdlib_provenance_follows_the_given_roots() {
+        let copy = TestDir::new("module-registry-given-std-root");
+        let copied = copy.root.join("std/string.hew");
+        fs::create_dir_all(copied.parent().expect("copy has a parent")).expect("create std");
+        fs::copy(checkout_std_roots()[0].join("std/string.hew"), &copied).expect("copy std source");
+        let given = vec![copy.root.clone()];
+
+        assert!(is_canonical_stdlib_module_source(
+            &copied,
+            "std.string",
+            &given
+        ));
+        assert_eq!(
+            canonical_stdlib_module_for_source(&copied, &given).map(|module| module.dotted()),
+            Some("std.string".to_string())
+        );
+        let checkout = checkout_std_roots()[0].join("std/string.hew");
+        assert!(!is_canonical_stdlib_module_source(
+            &checkout,
+            "std.string",
+            &given
+        ));
+        assert_eq!(canonical_stdlib_module_for_source(&checkout, &given), None);
+        assert!(!is_canonical_stdlib_module_source(
+            &copied,
+            "std.string",
+            &checkout_std_roots()
+        ));
+    }
+
+    /// The std roots are the only std authority: a std copied outside the
+    /// toolchain grants its encoding values their builtin identity, and the
+    /// toolchain's own std grants nothing to a registry not given it.
+    #[test]
+    fn std_authority_is_the_given_roots_and_nothing_else() {
+        use crate::{BuiltinType, Ty};
+        let copy = TestDir::new("module-registry-std-authority");
+        let json = copy.root.join("std/encoding/json/json.hew");
+        fs::create_dir_all(json.parent().expect("json has a parent")).expect("create std");
+        fs::copy(
+            checkout_std_roots()[0].join("std/encoding/json/json.hew"),
+            &json,
+        )
+        .expect("copy std source");
+        let value = Ty::unresolved_for_test("json.Value", vec![]);
+        let builtin = Ty::Named {
+            args: vec![],
+            head: crate::TypeHead::Builtin(BuiltinType::JsonValue),
+        };
+
+        let mut given = ModuleRegistry::new(vec![copy.root.clone()]);
+        given.load("std.encoding.json").expect("load the given std");
+        assert_eq!(
+            given.canonicalize_registry_signature_ty(&value, "std.encoding.json"),
+            builtin
+        );
+
+        let checkout = checkout_std_roots()[0].join("std/encoding/json/json.hew");
+        let other = TestDir::new("module-registry-other-std-root");
+        assert!(!is_canonical_stdlib_module_source(
+            &checkout,
+            "std.encoding.json",
+            std::slice::from_ref(&other.root)
+        ));
+    }
+
     #[test]
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
-        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        let roots = checkout_std_roots();
+        let stdlib = roots[0].join("std");
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("string.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("string.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.string".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/server.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/server.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.server".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/client.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/client.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.client".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/codec/request.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/codec/request.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.codec".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.io.scanner".to_string())
         );
@@ -1635,18 +1558,21 @@ mod tests {
 
     #[test]
     fn canonical_source_owner_follows_directory_peer_layout() {
-        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        let roots = checkout_std_roots();
+        let stdlib = roots[0].join("std");
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec", "request"]),
-                &[stdlib.join("net/http/codec/request.hew")]
+                &[stdlib.join("net/http/codec/request.hew")],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec"])
         );
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec"]),
-                &[stdlib.join("net/http/codec/codec.hew")]
+                &[stdlib.join("net/http/codec/codec.hew")],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec"])
         );
@@ -1654,7 +1580,8 @@ mod tests {
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec", "request"]),
-                &[user_lookalike]
+                &[user_lookalike],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec", "request"]),
             "only a shipped source names a directory module; a user source keeps its own owner"
@@ -1663,13 +1590,17 @@ mod tests {
 
     #[test]
     fn canonical_stdlib_owner_rejects_a_user_lookalike() {
+        let roots = checkout_std_roots();
         let user_dir = TestDir::new("module-registry-user-stdlib-lookalike");
         let user_source = user_dir.root.join("std/string.hew");
         fs::create_dir_all(user_source.parent().expect("lookalike has a parent"))
             .expect("create lookalike directory");
         fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
 
-        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+        assert_eq!(
+            canonical_stdlib_module_for_source(&user_source, &roots),
+            None
+        );
     }
 
     #[test]
@@ -1715,6 +1646,7 @@ mod tests {
 
     #[test]
     fn a_user_file_spelling_a_shipped_module_path_is_still_refused() {
+        let roots = checkout_std_roots();
         // On a host with a filesystem the compiled-in arm is never reached: an
         // absent file reports `NotFound`, and a user file that spells the same
         // module path canonicalizes to somewhere no search root owns.
@@ -1730,58 +1662,20 @@ mod tests {
         .expect("write lookalike source");
 
         assert!(
-            !is_canonical_stdlib_module_source(&user_source, "std.math"),
+            !is_canonical_stdlib_module_source(&user_source, "std.math", &roots),
             "a user file must not acquire the shipped module's provenance"
         );
-        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+        assert_eq!(
+            canonical_stdlib_module_for_source(&user_source, &roots),
+            None
+        );
 
         // The same spelling, with nothing behind it, stays refused too.
         assert!(!is_canonical_stdlib_module_source(
             &user_dir.root.join("std/math/absent.hew"),
-            "std.math"
+            "std.math",
+            &roots,
         ));
-    }
-
-    #[test]
-    fn net_legacy_request_resolves_source_before_consulting_canonical_cache() {
-        let mut reg = registry();
-        reg.load("std.net")
-            .expect("prime the canonical shipped net owner");
-        let shipped = reg
-            .get("std.net")
-            .and_then(|info| info.source_path.clone())
-            .expect("canonical cache entry has a source path");
-
-        let user_dir = TestDir::new("module-registry-user-net-lookalike");
-        let user_net_dir = user_dir.root.join("std/net");
-        fs::create_dir_all(&user_net_dir).expect("create user net module directory");
-        let user_source = user_net_dir.join("net.hew");
-        fs::write(
-            &user_source,
-            "pub type Handle {\n    marker: i64;\n}\n\npub type Endpoint {\n    marker: i64;\n}\n",
-        )
-        .expect("write user net lookalike");
-
-        // Model a new importer resolution context while preserving the cache.
-        // The legacy request must resolve this source before deciding whether
-        // its repeated basename denotes the canonical shipped owner.
-        reg.search_paths = vec![user_dir.root.clone()];
-        let loaded = reg
-            .load("std.net.net")
-            .expect("load the user lookalike through the legacy spelling");
-        assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
-        assert_eq!(
-            reg.get("std.net.net")
-                .and_then(|info| info.source_path.as_deref()),
-            Some(user_source.as_path()),
-            "the user source keeps the nested nominal owner"
-        );
-        assert_eq!(
-            reg.get("std.net")
-                .and_then(|info| info.source_path.as_deref()),
-            Some(shipped.as_path()),
-            "resolving a lookalike must not replace the proven shipped owner"
-        );
     }
 
     fn test_root() -> PathBuf {
@@ -2738,7 +2632,7 @@ mod tests {
     #[test]
     fn encoding_registry_signatures_acquire_only_loaded_shipped_identity() {
         use crate::{BuiltinType, Ty};
-        let mut registry = ModuleRegistry::new(vec![]);
+        let mut registry = registry();
         for (format, kind) in [
             ("json", BuiltinType::JsonValue),
             ("yaml", BuiltinType::YamlValue),
@@ -2750,7 +2644,7 @@ mod tests {
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 input
             );
-            registry.load_compiler_stdlib_module(&owner).unwrap();
+            registry.load(&owner).unwrap();
             let expected = Ty::option(Ty::Named {
                 args: vec![],
                 head: crate::TypeHead::Builtin(kind),
@@ -2770,135 +2664,6 @@ mod tests {
                 foreign
             );
         }
-    }
-
-    #[test]
-    fn encoding_registry_signature_rejects_a_user_source_at_the_same_module_path() {
-        let project = TestHewTree::new("encoding-value-lookalike");
-        fs::create_dir_all(project.root().join("std/encoding")).unwrap();
-        project.write_std_module("encoding/json", "#[resource] #[opaque] pub type Value {}");
-        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
-        registry.load("std.encoding.json").unwrap();
-        assert_eq!(
-            registry.canonicalize_registry_signature_ty(
-                &crate::Ty::unresolved_for_test("json.Value", vec![]),
-                "std.encoding.json"
-            ),
-            crate::Ty::unresolved_for_test("std.encoding.json.Value", vec![])
-        );
-    }
-
-    #[test]
-    fn compiler_module_activation_uses_exact_owned_source_and_reuses_membership() {
-        let compiler = TestHewTree::new("compiler-module-exact-source");
-        let compiler_source =
-            compiler.write_std_module("option", "pub fn authority() -> i64 { 1 }\n");
-        let lookalike = TestHewTree::new("compiler-module-lookalike-search-path");
-        lookalike.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
-
-        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
-        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
-
-        registry
-            .load_compiler_stdlib_module("std.option")
-            .expect("load exact compiler-owned option module");
-        let loaded = registry
-            .get("std.option")
-            .expect("compiler-owned option module is active");
-        // Both sides go through `canonicalize`: an out-of-tree `target/`
-        // symlink otherwise spells the same file two ways.
-        assert_eq!(
-            loaded
-                .source_path
-                .as_deref()
-                .and_then(|path| path.canonicalize().ok()),
-            compiler_source.canonicalize().ok()
-        );
-
-        registry
-            .load_compiler_stdlib_module("std.option")
-            .expect("reuse exact compiler-owned option module");
-        let active = registry.loaded_modules().collect::<Vec<_>>();
-        assert_eq!(
-            active.len(),
-            1,
-            "reuse must not duplicate active membership"
-        );
-        assert_eq!(active[0].module_id.dotted(), "std.option");
-        assert!(active[0].compiler_owned);
-        assert_eq!(
-            active[0]
-                .info
-                .source_path
-                .as_deref()
-                .and_then(|path| path.canonicalize().ok()),
-            compiler_source.canonicalize().ok()
-        );
-    }
-
-    #[test]
-    fn compiler_module_activation_rejects_an_active_lookalike() {
-        let compiler = TestHewTree::new("compiler-module-conflict-owned");
-        compiler.write_std_module("result", "pub fn authority() -> i64 { 1 }\n");
-        let lookalike = TestHewTree::new("compiler-module-conflict-lookalike");
-        let lookalike_source =
-            lookalike.write_std_module("result", "pub fn authority() -> i64 { 2 }\n");
-
-        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
-        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
-        registry
-            .load("std.result")
-            .expect("activate ordinary lookalike module");
-
-        let error = registry
-            .load_compiler_stdlib_module("std.result")
-            .expect_err("an active lookalike must conflict with compiler authority");
-        assert!(matches!(
-            error,
-            CompilerModuleError::ConflictingActiveModule { ref module_path, ref loaded_source }
-                if module_path == "std.result"
-                    && loaded_source.as_deref() == Some(lookalike_source.as_path())
-        ));
-        let active = registry.loaded_modules().collect::<Vec<_>>();
-        assert_eq!(active.len(), 1);
-        assert!(!active[0].compiler_owned);
-        assert_eq!(
-            active[0].info.source_path.as_deref(),
-            Some(lookalike_source.as_path()),
-            "a failed authority load must not replace active program state"
-        );
-    }
-
-    #[test]
-    fn compiler_module_activation_fails_closed_without_owned_root() {
-        let project = TestHewTree::new("compiler-module-no-authority");
-        project.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
-        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
-        registry.compiler_stdlib_root = None;
-
-        let error = registry
-            .load_compiler_stdlib_module("std.option")
-            .expect_err("missing compiler authority must fail closed");
-        assert!(matches!(
-            error,
-            CompilerModuleError::AuthorityUnavailable { ref module_path }
-                if module_path == "std.option"
-        ));
-        assert!(registry.loaded_modules().next().is_none());
-    }
-
-    #[test]
-    fn missing_compiler_stdlib_root_confers_no_authority() {
-        let project = TestHewTree::new("missing-compiler-authority");
-        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
-        registry.compiler_stdlib_root = None;
-        assert!(
-            !registry.source_has_stdlib_authority(
-                &project.root().join("std/builtins.hew"),
-                "std.builtins"
-            ),
-            "project search paths cannot replace unavailable compiler authority"
-        );
     }
 
     /// `HEW_STD` selects the standard-library root: its parent is the one

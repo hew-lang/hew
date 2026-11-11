@@ -892,6 +892,13 @@ fn remove_path(path: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "only Unix syncs the parent directory"
+    )
+)]
 fn sync_parent_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {

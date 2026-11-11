@@ -3441,31 +3441,21 @@ mod supervisor_escalation_tests {
 
             hew_actor_trap(restarted_once, 1);
 
-            let pending_deadline = Instant::now() + Duration::from_secs(5);
+            // Without a declared backoff the second restart is immediate, so
+            // the wait may observe the crashed incarnation or the replacement.
+            let second_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let current = hew_supervisor_get_child(sup, 0);
-                if current.is_null() {
+                let current = hew_supervisor_get_child_wait(sup, 0, 10_000);
+                assert!(!current.is_null(), "get_child_wait lost the restarted role");
+                if (*current).id != second_id {
                     break;
                 }
-                assert_eq!(
-                    (*current).id,
-                    second_id,
-                    "second crash should enter a null slot before delayed restart publishes"
-                );
                 assert!(
-                    Instant::now() < pending_deadline,
-                    "second crash never entered a waitable restart gap"
+                    Instant::now() < second_deadline,
+                    "get_child_wait never published the second replacement"
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
-
-            let restarted_twice = hew_supervisor_get_child_wait(sup, 0, 10_000);
-            assert!(!restarted_twice.is_null());
-            assert_ne!(
-                (*restarted_twice).id,
-                second_id,
-                "get_child_wait should publish the restarted child without test_wait_for_restart setup"
-            );
 
             hew_supervisor_stop(sup);
         }

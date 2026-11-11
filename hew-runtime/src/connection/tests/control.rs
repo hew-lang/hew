@@ -29,6 +29,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+        inbound_admissions: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
         gossip_out: Arc::new(AtomicU64::new(0)),
@@ -466,7 +467,18 @@ fn registry_names_require_the_exact_authenticated_origin_session_and_publication
             .connections
             .access(|connections| connections.push(replacement));
         assert!(matches!(
-            reserve_identity_claim(&*mgr, old_session.node_id, 3, 2, None, 12, token, None),
+            reserve_identity_claim(
+                &*mgr,
+                old_session.node_id,
+                3,
+                2,
+                None,
+                12,
+                token,
+                None,
+                TEST_ADMISSION,
+                Commit::Initiator(0)
+            ),
             ClaimReservation::Reserved { .. }
         ));
         assert!(publish_identity_claim(
@@ -508,8 +520,13 @@ fn registry_names_require_the_exact_authenticated_origin_session_and_publication
 /// A peer that declared this session dead dropped its registered names. The
 /// refutation readmits the same session over the same connection, so the
 /// refuting node must announce its names again or they stay missing for as
-/// long as that connection lives.
+/// long as that connection lives. The refutation goes out first: a peer that
+/// admitted this node only to refute drops anything else until it readmits.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture follows a suspicion, a burial and a stale repeat in order"
+)]
 fn refuting_a_death_reannounces_local_names() {
     let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
     let ops = Box::new(crate::transport::HewTransportOps {
@@ -592,10 +609,18 @@ fn refuting_a_death_reannounces_local_names() {
         let buried = swim_ack(crate::cluster::MEMBER_DEAD, 5);
         handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &buried);
         let sent = sent_controls(&mut peer_channel);
-        assert_eq!(sent.len(), 1, "one re-announcement per local name");
-        assert_eq!(sent[0].0, 10);
-        assert_eq!(sent[0].1.ctrl_kind, CTRL_REGISTRY_GOSSIP);
-        let payload = decode_registry_gossip_payload(&sent[0].1.payload).expect("payload");
+        assert_eq!(
+            sent.len(),
+            2,
+            "the refutation, then one re-announcement per local name"
+        );
+        assert!(sent.iter().all(|(conn, _)| *conn == 10));
+        assert_eq!(sent[0].1.ctrl_kind, CTRL_SWIM);
+        let refutation = decode_swim_payload(&sent[0].1.payload).expect("SWIM payload");
+        assert_eq!(refutation.msg_type, crate::cluster::SWIM_MSG_PING);
+        assert_eq!(refutation.incarnation, 6, "refuted past the burial at 5");
+        assert_eq!(sent[1].1.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+        let payload = decode_registry_gossip_payload(&sent[1].1.payload).expect("payload");
         assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
         assert_eq!(payload.name, "relay");
         assert_eq!(payload.location, local_name);

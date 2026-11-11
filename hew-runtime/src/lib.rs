@@ -507,6 +507,11 @@ pub mod profiler {
     }
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
+    /// No profile consumer exists without the profiler feature.
+    #[must_use]
+    pub fn consumer_configured() -> bool {
+        false
+    }
     /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
     /// No-op: profiler feature is disabled.
@@ -514,8 +519,9 @@ pub mod profiler {
 }
 
 // Global allocator — only on native targets. On WASM, the default Rust
-// allocator is used (via wasi-libc's malloc).
-#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+// allocator is used (via wasi-libc's malloc). Fuzz targets install their own
+// counting allocator.
+#[cfg(all(not(target_arch = "wasm32"), not(test), not(feature = "fuzzing")))]
 #[global_allocator]
 static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::ProfilingAllocator;
 
@@ -668,6 +674,7 @@ pub mod shutdown;
 /// `os.shutdown_signal()` subscribers.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown_signal;
+pub mod stack_limit;
 mod test_report;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.
@@ -733,6 +740,10 @@ pub mod transport_checked;
 // gate enforces this and excludes wasm32 per HEW-DIST-SPEC §15.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
+// libFuzzer entry points for hew-runtime/fuzz; never in a release runtime.
+#[cfg(all(not(target_arch = "wasm32"), feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 /// The suspending queue behind an in-memory pipe. Ungated: a parked producer
 /// or consumer is resumed through [`resume`], so the native scheduler and the

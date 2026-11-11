@@ -908,6 +908,24 @@ impl QuicMeshTransport {
         guard.as_ref().map(Arc::clone)
     }
 
+    /// Close every stored connection without releasing its slot, so each
+    /// thread blocked on one of its streams wakes with an error while the
+    /// owner still closes the handle. Each slot's lock orders this sweep
+    /// against [`Self::store_conn`]; a connection stored afterwards belongs to
+    /// an admission that next observes the manager's shutdown flag.
+    fn cancel_all(&self) {
+        for slot in &self.conns {
+            let guard = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(conn) = guard.as_ref() {
+                conn.peer
+                    .conn
+                    .close(VarInt::from_u32(0), b"quic-mesh node stopping");
+            }
+        }
+    }
+
     fn remove_conn(&self, id: c_int) {
         let Ok(idx) = usize::try_from(id) else { return };
         if let Some(slot) = self.conns.get(idx) {
@@ -1473,6 +1491,15 @@ static QUIC_MESH_OPS: HewTransportOps = HewTransportOps {
     close_conn: Some(quic_mesh_close_conn),
     destroy: Some(quic_mesh_destroy),
 };
+
+/// The `quic_mesh` arm of [`crate::transport::hew_transport_cancel_io`].
+pub(crate) fn cancel_io(transport: &HewTransport) {
+    if std::ptr::eq(transport.ops, &raw const QUIC_MESH_OPS) {
+        // SAFETY: the ops check guarantees the impl pointer is a
+        // QuicMeshTransport, and the caller checked it non-null.
+        unsafe { &*transport.r#impl.cast::<QuicMeshTransport>() }.cancel_all();
+    }
+}
 
 /// Check whether a transport is the native `quic_mesh` transport.
 ///
@@ -2675,6 +2702,91 @@ mod tests {
         let mesh = QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls).expect("listen failed");
         let addr = mesh.local_addr().expect("local_addr");
         assert_ne!(addr.port(), 0, "expected ephemeral port");
+    }
+
+    /// A peer that opened the control stream and then went silent leaves a
+    /// reader blocked with no deadline. Node stop's sweep must wake it while
+    /// the connection's slot stays owned until its owner closes it.
+    #[test]
+    fn transport_cancel_wakes_blocked_reader_and_keeps_its_slot() {
+        let (tls_a, spki_a) = MeshTls::self_signed(vec!["cancel-a".into()]).expect("tls a");
+        let (tls_b, spki_b) = MeshTls::self_signed(vec!["cancel-b".into()]).expect("tls b");
+        // SAFETY: each constructor returns an owned transport destroyed below.
+        let (a, b) = unsafe { (hew_transport_quic_mesh_new(), hew_transport_quic_mesh_new()) };
+        assert!(!a.is_null() && !b.is_null());
+        // SAFETY: both transports are live and not yet listening.
+        unsafe {
+            assert_eq!(
+                hew_transport_quic_mesh_set_tls_override(a, tls_a.with_peer_spki(spki_b)),
+                0
+            );
+            assert_eq!(
+                hew_transport_quic_mesh_set_tls_override(b, tls_b.with_peer_spki(spki_a)),
+                0
+            );
+        }
+        let any = std::ffi::CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: the transports and C strings are live for every call below.
+        let (a_conn, b_conn) = unsafe {
+            let (ta, tb) = (&*a, &*b);
+            let (oa, ob) = (&*ta.ops, &*tb.ops);
+            assert_eq!(oa.listen.unwrap()(ta.r#impl, any.as_ptr()), 0);
+            assert_eq!(ob.listen.unwrap()(tb.r#impl, any.as_ptr()), 0);
+            let port = hew_transport_quic_mesh_bound_port(a).expect("bound port");
+            let target = std::ffi::CString::new(format!("127.0.0.1:{port}")).unwrap();
+            let b_conn = ob.connect.unwrap()(tb.r#impl, target.as_ptr());
+            assert_ne!(b_conn, HEW_CONN_INVALID);
+            let a_conn = oa.accept.unwrap()(ta.r#impl, 10_000);
+            assert_ne!(a_conn, HEW_CONN_INVALID);
+            // One frame opens the control stream; the reader consumes it.
+            assert_eq!(
+                ob.send.unwrap()(tb.r#impl, b_conn, b"x".as_ptr().cast(), 1),
+                1
+            );
+            let mut first = [0u8; 8];
+            assert_eq!(
+                oa.recv.unwrap()(ta.r#impl, a_conn, first.as_mut_ptr().cast(), first.len()),
+                1
+            );
+            (a_conn, b_conn)
+        };
+
+        let a_addr = a as usize;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let a = a_addr as *mut HewTransport;
+            let mut bytes = [0u8; 8];
+            // SAFETY: the transport outlives this joined reader.
+            let n = unsafe {
+                ((*(*a).ops).recv.unwrap())((*a).r#impl, a_conn, bytes.as_mut_ptr().cast(), 8)
+            };
+            done_tx.send(n).unwrap();
+        });
+        // B stays silent and connected, so only the sweep can end the read
+        // before the idle timeout.
+        // SAFETY: `a` is live.
+        unsafe { crate::transport::hew_transport_cancel_io(a) };
+        let woken = done_rx.recv_timeout(Duration::from_secs(20));
+        assert!(
+            matches!(woken, Ok(n) if n < 0),
+            "sweep must wake the reader: {woken:?}"
+        );
+        reader.join().unwrap();
+
+        // SAFETY: `a` is live; the ops check passed when it was created.
+        let qmt = unsafe { &*(*a).r#impl.cast::<QuicMeshTransport>() };
+        assert!(
+            qmt.get_conn(a_conn).is_some(),
+            "the owner still holds its slot"
+        );
+        // SAFETY: each owner closes its own handle, then destroys its transport.
+        unsafe {
+            ((*(*a).ops).close_conn.unwrap())((*a).r#impl, a_conn);
+            ((*(*b).ops).close_conn.unwrap())((*b).r#impl, b_conn);
+            assert!(qmt.get_conn(a_conn).is_none());
+            hew_transport_quic_mesh_free(a);
+            hew_transport_quic_mesh_free(b);
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -195,11 +195,30 @@ pub enum PeerAuthz {
 pub enum ClaimState {
     /// An admission is in flight for this `NodeId`; a concurrent admission waits.
     Reserved,
+    /// The peer reconnected at the session this node buried. Its connection
+    /// carries SWIM alone, so the peer can learn of its burial and refute it;
+    /// no route, membership, name or service is published for it. A
+    /// refutation readmits the member and publishes the claim; otherwise the
+    /// connection closes at `expires_ms` (manager clock).
+    Refuting {
+        /// When the connection closes if the peer has not refuted.
+        expires_ms: u64,
+    },
     /// The connection is established and owns this `NodeId`'s routes/tokens.
     Published,
     /// The last live connection retired; the durable session remains as a replay
     /// fence for later admissions.
     Retired,
+}
+
+impl ClaimState {
+    /// Whether the claim holds a live connection to its peer: a published
+    /// claim, or a buried peer's claim awaiting its refutation, whose
+    /// connection carries SWIM alone.
+    #[must_use]
+    pub fn holds_connection(self) -> bool {
+        matches!(self, Self::Published | Self::Refuting { .. })
+    }
 }
 
 /// The live owner of a `NodeId` on one connection manager.
@@ -218,6 +237,43 @@ pub struct LiveClaim {
     pub publication_token: u64,
     /// Reserved (mid-admission) vs Published (established).
     pub state: ClaimState,
+    /// Which end opened the connection; decides crossing dials.
+    pub origin: ConnectionOrigin,
+    /// The manager's admission order when this claim published; zero until it
+    /// does. Admissions that began at or before it overlapped this one.
+    pub published_at: u64,
+    /// The order the responder committed this connection in, under the
+    /// responder-commit step; zero when the pair did not negotiate it.
+    pub commit_order: u64,
+    /// While `Reserved`, the published connection this admission is replacing,
+    /// as `(conn_id, publication_token)`: it carries the peer's traffic until
+    /// the reservation publishes or aborts.
+    pub superseding: Option<(c_int, u64)>,
+}
+
+impl LiveClaim {
+    /// The connection the peer's traffic takes under this claim, as
+    /// `(conn_id, publication_token)`: the published one, or the one a
+    /// reservation is replacing.
+    #[must_use]
+    pub fn carrier(&self) -> Option<(c_int, u64)> {
+        match self.state {
+            ClaimState::Published => Some((self.conn_id, self.publication_token)),
+            ClaimState::Reserved => self.superseding,
+            ClaimState::Refuting { .. } | ClaimState::Retired => None,
+        }
+    }
+}
+
+/// Which end opened a claimed connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionOrigin {
+    /// This node dialled the peer.
+    Dialled,
+    /// The peer dialled this node.
+    Accepted,
+    /// A relayed circuit: neither end dialled the other directly.
+    Relayed,
 }
 
 /// A node's stable Noise static keypair (TCP transport identity).

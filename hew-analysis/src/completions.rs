@@ -106,11 +106,12 @@ pub fn complete(
 
     // Deduplicate by label, preferring items with detail and/or documentation
     // (richer completions). Sort so that items with detail come first so that
-    // `retain`'s first-seen rule retains the richest entry.
+    // `retain`'s first-seen rule retains the richest entry; types and
+    // signatures come from hash tables, so the label settles the rest.
     items.sort_by(|a, b| {
         let a_rich = a.detail.is_some() || a.documentation.is_some();
         let b_rich = b.detail.is_some() || b.documentation.is_some();
-        b_rich.cmp(&a_rich)
+        b_rich.cmp(&a_rich).then_with(|| a.label.cmp(&b.label))
     });
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
@@ -260,6 +261,8 @@ fn try_dot_completions(
     for (method_name, sig) in collect_method_sigs_for_receiver(tc, receiver_ty) {
         items.push(fn_sig_completion(&method_name, &sig));
     }
+    // Fields and methods come from hash tables; list them by label.
+    items.sort_by(|a, b| a.label.cmp(&b.label));
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
@@ -332,6 +335,8 @@ fn module_member_completions(
     if items.is_empty() {
         return None;
     }
+    // Members come from hash tables; list them by label.
+    items.sort_by(|a, b| a.label.cmp(&b.label));
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
@@ -1920,6 +1925,30 @@ impl Box {
             labels.iter().any(|l| l == "outer"),
             "outer local must be visible inside tail-promoted if else-branch; got: {labels:?}",
         );
+    }
+
+    #[test]
+    fn record_field_dot_completions_are_listed_by_label() {
+        // Fields live in a hash table; the response must not follow its order.
+        let fields: Vec<String> = (0..12)
+            .map(|index| format!("field_{index:02}: i64;"))
+            .collect();
+        let inits: Vec<String> = (0..12)
+            .map(|index| format!("field_{index:02}: 0"))
+            .collect();
+        let source = format!(
+            "type Wide {{ {} }}\nfn main() {{\n    let wide = Wide {{ {} }};\n    let _ = wide./*cursor*/field_00;\n}}\n",
+            fields.join(" "),
+            inits.join(", ")
+        );
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<String> = items_at_cursor(&source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .filter(|label| label.starts_with("field_"))
+            .collect();
+        let expected: Vec<String> = (0..12).map(|index| format!("field_{index:02}")).collect();
+        assert_eq!(labels, expected);
     }
 
     #[test]

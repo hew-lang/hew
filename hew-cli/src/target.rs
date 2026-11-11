@@ -128,6 +128,7 @@ pub struct NativeLinkPlan {
     /// Where a `-g` link leaves debug info: the step after the link (a
     /// `dsymutil` pass, a `--split-debug` copy) and the PDB flags follow it.
     pub debug_layout: DebugInfoLayout,
+    pub main_stack_flags: &'static [&'static str],
 
     /// How the C runtime's call to `main` reaches the image's C entry.
     pub entry: EntryAlias,
@@ -241,6 +242,7 @@ impl TargetSpec {
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::DarwinDsym,
                 entry: EntryAlias::DarwinEntry,
+                main_stack_flags: &["-Wl,-stack_size,0x1000000"],
             },
             TargetOs::Linux => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -252,6 +254,7 @@ impl TargetSpec {
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::ElfDwarf,
                 entry: EntryAlias::Defsym,
+                main_stack_flags: &[],
             },
             TargetOs::FreeBsd => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -265,6 +268,7 @@ impl TargetSpec {
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::ElfDwarf,
                 entry: EntryAlias::Defsym,
+                main_stack_flags: &[],
             },
             TargetOs::Windows => NativeLinkPlan {
                 // The Windows linker (lld-link) does not accept ELF-style -Wl
@@ -305,6 +309,7 @@ impl TargetSpec {
                 } else {
                     EntryAlias::Defsym
                 },
+                main_stack_flags: &["-Wl,/STACK:16777216"],
             },
             TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
@@ -316,6 +321,7 @@ impl TargetSpec {
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::Unsupported,
                 entry: EntryAlias::None,
+                main_stack_flags: &[],
             },
         }
     }

@@ -219,7 +219,11 @@ impl Checker {
         source_paths: &[std::path::PathBuf],
     ) {
         if source_paths.iter().any(|source| {
-            crate::module_registry::is_canonical_stdlib_module_source(source, module_name)
+            crate::module_registry::is_canonical_stdlib_module_source(
+                source,
+                module_name,
+                self.module_registry.std_roots(),
+            )
         }) {
             self.canonical_std_module_sources
                 .insert(module_name.to_string());
@@ -227,23 +231,15 @@ impl Checker {
     }
 
     /// The isolated-checker prelude is compiled from the shipped lifecycle
-    /// sources. Preserve its intentionally import-free bare spellings, but
-    /// make that trust explicit with the same canonical-source proof used for
-    /// ordinary imports.
+    /// sources. Preserve its intentionally import-free bare spellings, and
+    /// make that trust explicit: the text is compiled into the checker, so no
+    /// path or std root can supply it.
     pub(super) fn record_canonical_lifecycle_prelude_authority(&mut self, module_name: &str) {
         let owner = match module_name {
             "std.failure" => "std.failure",
             "std.link_monitor" => "std.link_monitor",
             _ => return,
         };
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-types crate has a workspace parent")
-            .join("std")
-            .join(format!("{}.hew", owner.rsplit('.').next().unwrap_or(owner)));
-        if !crate::module_registry::is_canonical_stdlib_module_source(&source, module_name) {
-            return;
-        }
         let lifecycle_names: &[&str] = match owner {
             "std.failure" => &[
                 "CrashInfo",
@@ -554,16 +550,19 @@ impl Checker {
             .unwrap_or_default();
         let importer_source = self.current_item_source.clone();
         let importer_file = self.current_module_idx;
-        // Only the compiler's own stdlib source may complete a partial
-        // registration with its types: a user-backed `std.x` lookalike
-        // never gains declarations this way.
-        let compiler_owned = self
+        // Only the canonical std source below the run's std roots may
+        // complete a partial registration with its types: a user-backed
+        // `std.x` lookalike never gains declarations this way.
+        let canonical_std = self
             .module_registry
             .get(module_full_path)
             .and_then(|info| info.source_path.as_deref())
             .is_some_and(|source| {
-                self.module_registry
-                    .source_has_stdlib_authority(source, module_full_path)
+                crate::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    module_full_path,
+                    self.module_registry.std_roots(),
+                )
             });
         if self.defs.module_has_source_declarations(identity_module) {
             let mut files: Vec<crate::ModuleId> = item_sources
@@ -582,7 +581,7 @@ impl Checker {
                 // exact occurrences; minting an existing block is idempotent.
                 // A type the earlier partial registration skipped is minted
                 // now, once.
-                let unminted_type = compiler_owned
+                let unminted_type = canonical_std
                     && matches!(item, Item::TypeDecl(declaration)
                     if self
                         .scopes
@@ -839,7 +838,7 @@ impl Checker {
                     // callables. Importing those declarations must retain the
                     // endpoint registered by the compiler, not turn their
                     // documentation bodies into executable implementations.
-                    if compiler_owned && module_full_path == "std.builtins" {
+                    if canonical_std && module_full_path == "std.builtins" {
                         if let Some(target) = self
                             .builtin_call_targets
                             .get(fd.name.name.as_str())
@@ -1016,7 +1015,7 @@ impl Checker {
                                 );
                                 if method.name.name.as_str() == "expect"
                                     && id.trait_bound.is_none()
-                                    && (compiler_owned
+                                    && (canonical_std
                                         || matches!(import_spec, StdlibBarePublication::Prelude))
                                 {
                                     let item = match builtin {

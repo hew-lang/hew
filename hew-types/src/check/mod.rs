@@ -40,7 +40,7 @@ mod default_arguments;
 mod dependency_analysis;
 mod diagnostics;
 mod macro_templates;
-pub use dependency_analysis::DependencyAnalysisCache;
+pub use dependency_analysis::{DependencyAnalysisCache, FinalizationReuse};
 pub mod dispatch;
 pub mod dispatch_table;
 pub use dyn_layout::{DynReceiver, DynSlot, SlotEffect, TraitObjectLayout};
@@ -101,9 +101,10 @@ mod visibility;
 pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredHashMapAdmission,
-    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission,
-    ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs, TraitInfo, TraitProofKind,
+    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredNegateCheck,
+    DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo,
+    PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs,
+    TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -667,7 +668,7 @@ impl Checker {
     /// stated as `E_LIMIT_CLASS_RECURSION` rather than left as an absence, once
     /// per declaration.
     fn build_type_facts(
-        &self,
+        &mut self,
         resolved: &HashMap<SpanKey, ResolvedTy>,
     ) -> (
         TypeFactContext,
@@ -675,18 +676,44 @@ impl Checker {
         Vec<TypeError>,
     ) {
         let fact_context = self.type_fact_context();
-        let mut service = TypeFactService::new(fact_context, BTreeMap::new());
         // Visited is tracked separately from the table: a type §1.1 refuses
         // gets no row, and keying the walk on the table alone would revisit it
-        // for ever through a recursive declaration.
-        let mut visited: std::collections::BTreeSet<TypeInstanceKey> =
-            std::collections::BTreeSet::new();
+        // for ever through a recursive declaration. A checkpoint root starts
+        // from the dependencies' closed walk: their types and every component
+        // already have their rows, and a root declares no type to change them.
+        // A receiver the root's generic discharge proved can change the row of
+        // a type the dependencies already reached; such a root walks them all.
+        let memo_rows = self
+            .finalization_memo
+            .reuse()
+            .filter(|memo| {
+                let settled: usize = memo
+                    .generics
+                    .checked_receivers
+                    .iter()
+                    .map(|(_, receivers)| receivers.len())
+                    .sum();
+                let checked: usize = self
+                    .impl_method_binders
+                    .values()
+                    .map(|binders| binders.checked_receivers.len())
+                    .sum();
+                settled == checked
+            })
+            .map(|memo| (memo.type_fact_visited.clone(), memo.type_fact_rows.clone()));
+        if memo_rows.is_some() {
+            self.finalization_memo
+                .reused(|reused| reused.type_facts += 1);
+        }
+        let (mut visited, rows) = memo_rows.unwrap_or_default();
+        let mut service = TypeFactService::new(fact_context, rows);
         // Each pending type carries the span of the accepted expression it came
         // from, so a refusal names a place in the user's program rather than
         // the start of the file. A component inherits its container's span.
         let mut refusals: BTreeMap<String, TypeError> = BTreeMap::new();
         let mut pending: Vec<(ResolvedTy, Span)> = resolved
             .iter()
+            .filter(|(_, ty)| !visited.contains(*ty))
             .map(|(key, ty)| (ty.clone(), key.start..key.end))
             .collect();
         pending.sort_by(|left, right| {
@@ -746,6 +773,10 @@ impl Checker {
             );
         }
         let (fact_context, facts) = service.into_parts();
+        if let Some(memo) = self.finalization_memo.record() {
+            memo.type_fact_visited = visited;
+            memo.type_fact_rows.clone_from(&facts);
+        }
         let fact_context = fact_context.with_method_trait_applications(
             self.impl_method_binders
                 .iter()
@@ -1053,6 +1084,7 @@ impl Checker {
             let canonical = crate::module_registry::canonical_source_module_identity(
                 mod_id,
                 &module.source_paths,
+                self.module_registry.std_roots(),
             );
             let minted = self
                 .defs
@@ -1077,6 +1109,7 @@ impl Checker {
             let canonical = crate::module_registry::canonical_source_module_identity(
                 mod_id,
                 &module.source_paths,
+                self.module_registry.std_roots(),
             )
             .dotted();
             for source in module.source_paths.iter().skip(1) {
@@ -2846,7 +2879,11 @@ impl Checker {
             self.defs
                 .module_source(module)
                 .is_some_and(|source| {
-                    crate::module_registry::is_canonical_stdlib_module_source(source, owner)
+                    crate::module_registry::is_canonical_stdlib_module_source(
+                        source,
+                        owner,
+                        self.module_registry.std_roots(),
+                    )
                 })
                 .then_some(builtin)
         })
@@ -2962,6 +2999,7 @@ impl Checker {
                             crate::module_registry::is_canonical_stdlib_module_source(
                                 source,
                                 "std.builtins",
+                                self.module_registry.std_roots(),
                             )
                         })
                     })
@@ -3055,6 +3093,7 @@ impl Checker {
             extern_method_signatures: self.extern_method_signatures.clone(),
             registration_origin_module: self.registration_origin_module.clone(),
             canonical_std_module_sources: self.canonical_std_module_sources.clone(),
+            canonical_std_graph_modules: self.canonical_std_graph_modules.clone(),
             module_source_paths: self.module_source_paths.clone(),
             module_item_sources: self.module_item_sources.clone(),
             current_item_source: self.current_item_source.clone(),
@@ -3166,6 +3205,7 @@ impl Checker {
             fn_sig_inference_holes: self.fn_sig_inference_holes.clone(),
             deferred_inference_holes: self.deferred_inference_holes.clone(),
             deferred_cast_checks: self.deferred_cast_checks.clone(),
+            deferred_negate_checks: self.deferred_negate_checks.clone(),
             deferred_is_checks: self.deferred_is_checks.clone(),
             deferred_monomorphic_sites: self.deferred_monomorphic_sites.clone(),
             fn_def_spans: self.fn_def_spans.clone(),
@@ -3300,6 +3340,7 @@ impl Checker {
             checking_embedded_builtins: self.checking_embedded_builtins.clone(),
             selected_builtin_program: self.selected_builtin_program.clone(),
             has_checked_program: self.has_checked_program.clone(),
+            finalization_memo: self.finalization_memo.fork(),
             wasm_warning_spans: self.wasm_warning_spans.clone(),
             wasm_reject_spans: self.wasm_reject_spans.clone(),
             const_values: self.const_values.clone(),
@@ -3365,6 +3406,7 @@ impl Checker {
         // spelling is not authority: only the source selected by the stdlib
         // search-path resolver may receive Stream/Sink runtime identity.
         self.canonical_std_module_sources.clear();
+        self.canonical_std_graph_modules.clear();
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
         self.module_item_sources.clear();
@@ -3394,9 +3436,11 @@ impl Checker {
                     crate::module_registry::is_canonical_stdlib_module_source(
                         source,
                         &module_full_path,
+                        self.module_registry.std_roots(),
                     )
                 }) {
                     self.canonical_std_module_sources.insert(module_full_path);
+                    self.canonical_std_graph_modules.insert(module_id.clone());
                 }
                 // A shipped stdlib file can be checked directly as the graph
                 // root (`hew check std/string.hew`). Its root module has no
@@ -3404,8 +3448,11 @@ impl Checker {
                 // source path. A user root cannot obtain this authority.
                 if directly_checked_stdlib {
                     for owner in module.source_paths.iter().filter_map(|source| {
-                        crate::module_registry::canonical_stdlib_module_for_source(source)
-                            .map(|owner| owner.dotted())
+                        crate::module_registry::canonical_stdlib_module_for_source(
+                            source,
+                            self.module_registry.std_roots(),
+                        )
+                        .map(|owner| owner.dotted())
                     }) {
                         self.canonical_std_module_sources.insert(owner.clone());
                         self.canonical_std_root_sources.insert(owner);
@@ -4166,7 +4213,7 @@ impl Checker {
         };
         // Machine purity follows each resource's release into its `close`.
         let resource_closes: HashMap<crate::NominalId, crate::DefId> =
-            if normalized_program.is_some() {
+            if normalized_program.is_some() && self.finalization_memo.reuse().is_none() {
                 self.registry
                     .resource_type_ids()
                     .iter()
@@ -4228,6 +4275,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             file_span_indices: std::sync::Arc::clone(&self.file_span_indices),
             selected_builtin_program: self.selected_builtin_program.clone(),
+            canonical_std_modules: self.canonical_std_graph_modules.clone(),
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
                 .input_provider
@@ -4412,7 +4460,9 @@ impl Checker {
                 .push(TypeError::strong_rc_cycle(span, &cycle.join(" -> ")));
         }
         output.cycle_capable_actors = cycle_capable;
-        if output.errors.is_empty() {
+        // A checkpoint root declares no machine, and its dependencies' machines
+        // were proved pure when the checkpoint was finalized.
+        if output.errors.is_empty() && self.finalization_memo.reuse().is_none() {
             output
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));

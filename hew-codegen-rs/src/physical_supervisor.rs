@@ -64,10 +64,16 @@ fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ctx.i64_type().into(),
             ctx.i32_type().into(),
             ptr.into(),
+            ctx.i64_type().into(),
+            ctx.i64_type().into(),
         ],
         false,
     )
 }
+
+/// `HewNativeChildSpec` field holding the child's initial restart delay; the
+/// maximum follows it.
+const CHILD_BACKOFF_FIELD: u32 = 7;
 
 /// The config allocation's LLVM shape, in declaration order.
 fn config_type<'ctx>(
@@ -182,6 +188,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         )
                         .into(),
                     dispatch.into(),
+                    self.ctx.i64_type().const_zero().into(),
+                    self.ctx.i64_type().const_zero().into(),
                 ]),
             );
         }
@@ -501,10 +509,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .children
             .iter()
             .any(|child| child.pool_count.is_some());
+        let backoff_children: Vec<usize> = supervisor.backoff_children().collect();
         if sources.len()
-            != supervisor.config.len()
-                + 2 * usize::from(supervisor.backoff.is_some())
-                + usize::from(is_pool)
+            != supervisor.config.len() + 2 * backoff_children.len() + usize::from(is_pool)
         {
             return Err(CodegenError::FailClosed(
                 "supervisor spawn does not transfer its exact config".into(),
@@ -516,23 +523,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             self.ctx.i64_type().const_zero()
         };
-        let (backoff_initial, backoff_maximum) = if supervisor.backoff.is_some() {
-            (
-                self.load(
-                    sources[supervisor.config.len()],
-                    "supervisor.backoff.initial",
-                )?,
-                self.load(
-                    sources[supervisor.config.len() + 1],
-                    "supervisor.backoff.maximum",
-                )?,
-            )
-        } else {
-            (
-                self.ctx.i64_type().const_zero().into(),
-                self.ctx.i64_type().const_zero().into(),
-            )
-        };
+        let backoffs = &sources[supervisor.config.len()..][..2 * backoff_children.len()];
         let sources = &sources[..supervisor.config.len()];
         let child_count = u32::try_from(supervisor.children.len())
             .map_err(|_| CodegenError::FailClosed("supervisor child count exceeds u32".into()))?;
@@ -572,12 +563,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("supervisor lacks its declared child table".into())
             })?
             .as_pointer_value();
-        let children = if supervisor.children.iter().any(|child| {
-            matches!(
-                child.stop_deadline,
-                hew_mir::physical::SemStopDeadline::Config(_)
-            )
-        }) {
+        let children = if !backoff_children.is_empty()
+            || supervisor.children.iter().any(|child| {
+                matches!(
+                    child.stop_deadline,
+                    hew_mir::physical::SemStopDeadline::Config(_)
+                )
+            }) {
             let entry_ty = native_child_spec_type(self.ctx);
             let array_ty = entry_ty.array_type(child_count);
             let local = self
@@ -591,25 +583,45 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_store(local, defaults)
                 .llvm_ctx("copy child descriptor defaults")?;
+            let entry = |slot: usize| {
+                // SAFETY: the slot is derived from the verified child table.
+                unsafe {
+                    self.builder.build_in_bounds_gep(
+                        array_ty,
+                        local,
+                        &[
+                            self.ctx.i32_type().const_zero(),
+                            self.ctx.i32_type().const_int(slot as u64, false),
+                        ],
+                        "supervisor.child.descriptor",
+                    )
+                }
+                .llvm_ctx("address the configured child")
+            };
+            for (slot, pair) in backoff_children.iter().zip(backoffs.chunks_exact(2)) {
+                let entry = entry(*slot)?;
+                for (offset, source) in (0u32..).zip(pair) {
+                    let field = self
+                        .builder
+                        .build_struct_gep(
+                            entry_ty,
+                            entry,
+                            CHILD_BACKOFF_FIELD + offset,
+                            "supervisor.child.backoff",
+                        )
+                        .llvm_ctx("address the child restart delay")?;
+                    self.builder
+                        .build_store(field, self.load(*source, "supervisor.child.backoff.value")?)
+                        .llvm_ctx("set the child restart delay")?;
+                }
+            }
             for (slot, child) in supervisor.children.iter().enumerate() {
                 if let hew_mir::physical::SemStopDeadline::Config(index) = child.stop_deadline {
                     let source = sources.get(index).ok_or_else(|| {
                         CodegenError::FailClosed("stop deadline lost its config parameter".into())
                     })?;
                     let deadline = self.load(*source, "supervisor.stop.deadline")?;
-                    // SAFETY: the slot is derived from the verified child table.
-                    let entry = unsafe {
-                        self.builder.build_in_bounds_gep(
-                            array_ty,
-                            local,
-                            &[
-                                self.ctx.i32_type().const_zero(),
-                                self.ctx.i32_type().const_int(slot as u64, false),
-                            ],
-                            "supervisor.child.descriptor",
-                        )
-                    }
-                    .llvm_ctx("address the configured child")?;
+                    let entry = entry(slot)?;
                     let field = self
                         .builder
                         .build_struct_gep(entry_ty, entry, 4, "supervisor.child.stop_ns")
@@ -635,9 +647,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     word.into(),
-                    self.ctx.i32_type().into(),
-                    self.ctx.i64_type().into(),
-                    self.ctx.i64_type().into(),
                     self.ctx.i64_type().into(),
                     ptr.into(),
                     ptr.into(),
@@ -680,12 +689,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     drop.into(),
                     children.into(),
                     word.const_int(u64::from(child_count), false).into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(u64::from(supervisor.backoff.is_some()), false)
-                        .into(),
-                    backoff_initial.into(),
-                    backoff_maximum.into(),
                     pool_count.into(),
                     waker.into(),
                     self.llvm
@@ -973,7 +976,7 @@ mod abi_tests {
     use hew_runtime::supervisor::HewNativeChildSpec;
     use std::mem::{align_of, offset_of, size_of};
 
-    fn fields() -> [(usize, usize); 7] {
+    fn fields() -> [(usize, usize); 9] {
         [
             (
                 offset_of!(HewNativeChildSpec, restart_policy),
@@ -1002,6 +1005,14 @@ mod abi_tests {
             (
                 offset_of!(HewNativeChildSpec, dispatch),
                 field_size(|spec: &HewNativeChildSpec| &spec.dispatch),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, backoff_initial_ns),
+                field_size(|spec: &HewNativeChildSpec| &spec.backoff_initial_ns),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, backoff_maximum_ns),
+                field_size(|spec: &HewNativeChildSpec| &spec.backoff_maximum_ns),
             ),
         ]
     }

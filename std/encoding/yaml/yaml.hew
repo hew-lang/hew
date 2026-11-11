@@ -114,8 +114,7 @@ trait ValueMethods {
     fn push(var self, child: Value) -> Result<(), AccessError>;
 }
 
-fn require_kind(value: Value, expected: Kind) -> Result<(), AccessError> {
-    let actual = value.type_of();
+fn require_kind(actual: Kind, expected: Kind) -> Result<(), AccessError> {
     if actual == expected { .Ok(()) } else { .Err(AccessError.WrongKind(expected, actual)) }
 }
 
@@ -146,13 +145,13 @@ impl ValueMethods for Value {
         if !reason.is_empty() { .Err(EncodeError.Invalid(reason)) } else { .Ok(text) }
     }
     fn get_bool(self) -> bool fails AccessError {
-        require_kind(self, Kind.Bool)?;
+        require_kind(self.type_of(), Kind.Bool)?;
         unsafe {
             hew_yaml_get_bool(self) == 1
         }
     }
     fn get_int(self) -> i64 fails AccessError {
-        require_kind(self, Kind.Integer)?;
+        require_kind(self.type_of(), Kind.Integer)?;
         if unsafe {
             hew_yaml_int_status(self)
         } == 1 {
@@ -164,7 +163,7 @@ impl ValueMethods for Value {
         }
     }
     fn get_u64(self) -> u64 fails AccessError {
-        require_kind(self, Kind.Integer)?;
+        require_kind(self.type_of(), Kind.Integer)?;
         if unsafe {
             hew_yaml_int_status(self)
         } == 1 {
@@ -179,19 +178,19 @@ impl ValueMethods for Value {
         }
     }
     fn get_float(self) -> f64 fails AccessError {
-        require_kind(self, Kind.Float)?;
+        require_kind(self.type_of(), Kind.Float)?;
         unsafe {
             hew_yaml_get_float(self)
         }
     }
     fn get_string(self) -> string fails AccessError {
-        require_kind(self, Kind.String)?;
+        require_kind(self.type_of(), Kind.String)?;
         unsafe {
             hew_yaml_get_string(self)
         }
     }
     fn get_field(self, key: string) -> Option<Value> fails AccessError {
-        require_kind(self, Kind.Mapping)?;
+        require_kind(self.type_of(), Kind.Mapping)?;
         let child = unsafe {
             hew_yaml_get_field(self, key)
         };
@@ -204,7 +203,7 @@ impl ValueMethods for Value {
         }
     }
     fn mapping_keys(self) -> Vec<string> fails AccessError {
-        require_kind(self, Kind.Mapping)?;
+        require_kind(self.type_of(), Kind.Mapping)?;
         let keys = unsafe {
             hew_yaml_object_keys(self)
         };
@@ -220,18 +219,19 @@ impl ValueMethods for Value {
         strings
     }
     fn array_len(self) -> i64 fails AccessError {
-        require_kind(self, Kind.Sequence)?;
+        require_kind(self.type_of(), Kind.Sequence)?;
         unsafe {
             hew_yaml_array_len(self) as i64
         }
     }
     fn array_get(self, index: i64) -> Option<Value> fails AccessError {
-        require_kind(self, Kind.Sequence)?;
+        require_kind(self.type_of(), Kind.Sequence)?;
         if index < 0 || index > 2147483647 {
             return error AccessError.InvalidIndex(index);
         }
+        let runtime_index = index as i32;
         let child = unsafe {
-            hew_yaml_array_get(self, index as i32)
+            hew_yaml_array_get(self, runtime_index)
         };
         if unsafe {
             hew_yaml_type(child)
@@ -242,7 +242,7 @@ impl ValueMethods for Value {
         }
     }
     fn set(var self, key: string, child: Value) fails AccessError {
-        require_kind(self, Kind.Mapping)?;
+        require_kind(self.type_of(), Kind.Mapping)?;
         // Assignment acquires an independent value; insertion transfers that owner.
         let owned_child = child;
         unsafe {
@@ -250,7 +250,7 @@ impl ValueMethods for Value {
         };
     }
     fn push(var self, child: Value) fails AccessError {
-        require_kind(self, Kind.Sequence)?;
+        require_kind(self.type_of(), Kind.Sequence)?;
         let owned_child = child;
         unsafe {
             hew_yaml_array_push(self, owned_child)

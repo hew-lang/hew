@@ -5,13 +5,15 @@
 //! function for a person. The mangled symbol stays the linkage name.
 //!
 //! The spelling is the dotted declaration path the source would use to name
-//! the function, with concrete type arguments for a generic instance:
+//! the function, with concrete type arguments for a generic instance. An impl
+//! method is named through its receiver type, so methods of one trait on
+//! `i64`, `string` and a free function of the same name stay distinct:
 //!
 //! | body | display name |
 //! |---|---|
 //! | free function | `fact`, `util.triple` |
-//! | method, actor handler | `Dog.name`, `Counter.add` |
-//! | generic instance | `unbox<i64>`, `std.builtins.Vec.into_iter<i64>` |
+//! | method, actor handler | `Dog.name`, `i64.describe`, `Counter.add` |
+//! | generic instance | `unbox<i64>`, `Vec.into_iter<i64>` |
 //! | closure | `make_counter.closure#1` (ordinal within its enclosing body) |
 //! | process entry | `main` |
 //!
@@ -110,7 +112,21 @@ fn name_of(
             artificial: true,
         };
     }
-    let declared = || defs.dotted_declaration_path(callable.declaration);
+    // An impl method is spelled through the receiver HIR lowered it for: the
+    // declaration table gives a builtin or primitive receiver's method no
+    // owner, and its bare leaf would collide with every same-named function.
+    let receiver = module
+        .debug
+        .item_receiver(callable.function)
+        .and_then(|receiver| receiver.impl_receiver_instance(defs));
+    let declared = || match &receiver {
+        Some(receiver) => format!(
+            "{}.{}",
+            defs.dotted_declaration_path(receiver.nominal.declaration()),
+            defs.name(callable.declaration)
+        ),
+        None => defs.dotted_declaration_path(callable.declaration),
+    };
     let source = |text: String| DisplayName {
         text,
         artificial: false,
@@ -177,7 +193,7 @@ mod tests {
 
     use super::*;
 
-    fn names(source: &str) -> Vec<(String, bool)> {
+    fn module(source: &str) -> SemModule {
         let parsed = hew_parser::parse(source);
         assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -189,8 +205,11 @@ mod tests {
         assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
         let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
         assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
-        let module = hew_sir::lower_module(&hir.module, &facts).module;
-        let mut names: Vec<_> = display_names(&module)
+        hew_sir::lower_module(&hir.module, &facts).module
+    }
+
+    fn names(source: &str) -> Vec<(String, bool)> {
+        let mut names: Vec<_> = display_names(&module(source))
             .into_values()
             .map(|name| (name.text, name.artificial))
             .collect();
@@ -276,6 +295,66 @@ fn main() {
                 "missing {expected} in {names:?}"
             );
         }
+    }
+
+    /// Every non-artificial display name, one per callable, unsorted and
+    /// with duplicates kept.
+    fn raw_source_names(source: &str) -> Vec<String> {
+        display_names(&module(source))
+            .into_values()
+            .filter(|name| !name.artificial)
+            .map(|name| name.text)
+            .collect()
+    }
+
+    fn assert_unique(names: &[String]) {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in names {
+            assert!(seen.insert(name), "{name} names two bodies in {names:?}");
+        }
+    }
+
+    #[test]
+    fn methods_on_primitive_receivers_name_their_receiver() {
+        let names = raw_source_names(
+            "trait Describe { fn describe(self) -> i64; }
+impl Describe for i64 { fn describe(self) -> i64 { self + 1 } }
+impl Describe for string { fn describe(self) -> i64 { self.len() } }
+fn describe(x: i64) -> i64 { x * 100 }
+fn main() {
+    let a: i64 = 4;
+    println(a.describe() + \"abc\".describe() + describe(1));
+}",
+        );
+        for expected in ["i64.describe", "string.describe", "describe"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing {expected} in {names:?}"
+            );
+        }
+        assert_unique(&names);
+    }
+
+    #[test]
+    fn builtin_collection_methods_name_their_collection() {
+        let names = raw_source_names(
+            "fn main() {
+    let xs: Vec<i64> = [1, 2, 3];
+    var t = 0;
+    for x in xs { t = t + x; }
+    var s: HashSet<i64> = HashSet.new();
+    s.insert(4);
+    for e in s { t = t + e; }
+    println(t);
+}",
+        );
+        for expected in ["Vec.into_iter<i64>", "HashSet.into_iter<i64>"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing {expected} in {names:?}"
+            );
+        }
+        assert_unique(&names);
     }
 
     #[test]

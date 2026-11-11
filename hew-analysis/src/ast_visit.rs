@@ -349,6 +349,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
                     }
+                    if let Some(backoff) = &child.backoff {
+                        self.walk_expr(&backoff.0, &backoff.1, Some(body_info));
+                    }
                 }
                 self.pop_scope();
                 self.visitor
@@ -426,6 +429,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 for child in &supervisor.children {
                     for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
+                    }
+                    if let Some(backoff) = &child.backoff {
+                        self.walk_expr(&backoff.0, &backoff.1, Some(body_info));
                     }
                 }
                 self.pop_scope();

@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::envelope::{self, ControlFrame, NodeSessionIdentity};
 use crate::node_identity::NodeId;
 use crate::node_protocol_generated as wire;
-use crate::peer_binding::ClaimState;
+use crate::peer_binding::{ClaimState, ConnectionOrigin};
 use crate::util::MutexExt;
 use crate::{set_last_error, transport::with_connection_attempt_deadline};
 
-use super::reconnect::{collect_finished_reconnect_workers, next_publication_token};
+use super::identity_claim::{local_dials_first, AdmissionStart};
+use super::reconnect::{next_publication_token, track_worker};
 use super::send::claim_send;
 use super::{HewConnMgr, ReconnectOwner, SendConnMgr};
 
@@ -257,10 +258,11 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
     let manager_ref = unsafe { &*manager };
     let previous = predecessor(manager_ref, expected);
     let conn_id = circuit.conn_id;
+    let admission = AdmissionStart::now(manager_ref, ConnectionOrigin::Relayed);
     with_connection_attempt_deadline(|| {
         let initiator = manager_ref
             .local_identity
-            .is_some_and(|identity| identity.to_bytes() < expected.node_id.to_bytes());
+            .is_some_and(|identity| local_dials_first(identity, expected.node_id));
         let Some(io) = transport::connection(manager, circuit, initiator) else {
             return;
         };
@@ -273,29 +275,10 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
                 io,
                 Some(expected),
                 previous.as_ref(),
-                &mut None,
+                admission,
             )
         };
     });
-}
-
-fn track_worker(manager: &HewConnMgr, work: impl FnOnce() + Send + 'static) -> bool {
-    collect_finished_reconnect_workers(manager);
-    match std::thread::Builder::new()
-        .name("hew-relay-admission".into())
-        .spawn(work)
-    {
-        Ok(worker) => {
-            manager
-                .reconnect_workers
-                .access(|workers| workers.push(worker));
-            true
-        }
-        Err(error) => {
-            set_last_error(format!("relay admission worker: {error}"));
-            false
-        }
-    }
 }
 
 pub(super) fn observe_hint(
@@ -365,7 +348,7 @@ pub(super) fn observe_hint(
         close_circuit(manager_ref, &displaced, None);
     }
     let send = SendConnMgr(manager);
-    if !track_worker(manager_ref, move || {
+    if !track_worker(manager_ref, "hew-relay-admission", move || {
         hint_worker(&send, carrier, expected, local, generation);
     }) {
         let mut state = manager_ref.relay.state.lock_or_recover();
@@ -546,7 +529,7 @@ fn handle_open(
         };
         let work_circuit = Arc::clone(&circuit);
         let send = SendConnMgr(manager);
-        if !track_worker(manager_ref, move || {
+        if !track_worker(manager_ref, "hew-relay-admission", move || {
             admitted_worker(&send, work_circuit, origin);
         }) {
             close_circuit(manager_ref, &circuit, None);

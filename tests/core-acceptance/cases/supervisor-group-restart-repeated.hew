@@ -1,0 +1,54 @@
+import std.restart;
+
+actor Worker {
+    let value: i64 = 7;
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn fail() {
+        panic("group strategy");
+    }
+}
+
+supervisor All {
+    strategy: one_for_all;
+    intensity: 50 within 5s;
+    child first: Worker;
+    child second: Worker;
+    child third: Worker;
+}
+
+supervisor Rest {
+    strategy: rest_for_one;
+    intensity: 50 within 5s;
+    backoff: restart.exponential(initial: 100ms, maximum: 1s);
+    child first: Worker;
+    child second: Worker;
+    child third: Worker;
+}
+
+fn crash(role: Worker) -> i64 {
+    let started = instant.now();
+    let _ = role.fail();
+    restarted(role);
+    assert(role.read().expect("replacement serves") == 7);
+    started.elapsed().millis()
+}
+
+fn main() {
+    // Each crash lands while a sibling of the previous group restart may still
+    // be starting; every crash is recovered and none is lost.
+    let all = spawn All;
+    for role in [all.first, all.second, all.third, all.first, all.second, all.second] {
+        assert(crash(role) == 0);
+    }
+    stop(all);
+    stopped(all);
+    let rest = spawn Rest;
+    for (role, expected) in [(rest.second, 100), (rest.first, 100), (rest.third, 100), (rest.first, 200)] {
+        assert(crash(role) == expected);
+    }
+    stop(rest);
+    stopped(rest);
+    println("repeated group restarts recovered");
+}

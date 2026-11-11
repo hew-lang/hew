@@ -174,8 +174,19 @@ unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString 
         std::process::abort();
     }
     // SAFETY: the caller supplies valid UTF-8 readable for its complete length.
-    let text = unsafe { str::from_utf8_unchecked(slice::from_raw_parts(source, len)) };
-    let scalar_len = text.chars().count();
+    let bytes = unsafe { slice::from_raw_parts(source, len) };
+    // SAFETY: the same bytes are valid UTF-8.
+    let scalar_len = unsafe { str::from_utf8_unchecked(bytes) }.chars().count();
+    // SAFETY: one valid UTF-8 piece with its exact scalar count.
+    unsafe { string_alloc_pieces(&[bytes], scalar_len) }
+}
+
+// Allocate one exact-capacity string holding `pieces` in order.
+unsafe fn string_alloc_pieces(pieces: &[&[u8]], scalar_len: usize) -> *mut HewString {
+    let len = pieces
+        .iter()
+        .try_fold(0usize, |total, piece| total.checked_add(piece.len()))
+        .unwrap_or_else(|| std::process::abort());
     let indexed = scalar_len != len;
     let total = allocation_size(len, indexed);
     // SAFETY: the checked allocation size contains the header, bytes and index.
@@ -192,12 +203,37 @@ unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString 
             scalar_len,
             rc: AtomicU32::new(1),
         });
-        core::ptr::copy_nonoverlapping(source, data(allocation.cast()).cast_mut(), len);
+        let mut cursor = data(allocation.cast()).cast_mut();
+        for piece in pieces {
+            core::ptr::copy_nonoverlapping(piece.as_ptr(), cursor, piece.len());
+            cursor = cursor.add(piece.len());
+        }
         if indexed {
             write_index(allocation.cast(), 0, 0);
         }
     }
     allocation.cast()
+}
+
+/// Allocate one managed string holding `left` followed by `right`, in a
+/// single exact-capacity allocation. Two empty inputs produce the null empty.
+///
+/// # Safety
+/// Both handles are null or live managed strings.
+#[must_use]
+pub unsafe fn string_concat(left: *const HewString, right: *const HewString) -> *mut HewString {
+    // SAFETY: the caller retains both live handles through this copy.
+    let (bytes, scalars) = unsafe {
+        (
+            [string_as_bytes(left), string_as_bytes(right)],
+            string_scalar_len(left).checked_add(string_scalar_len(right)),
+        )
+    };
+    if bytes[0].is_empty() && bytes[1].is_empty() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: both pieces are valid UTF-8 with their recorded scalar counts.
+    unsafe { string_alloc_pieces(&bytes, scalars.unwrap_or_else(|| std::process::abort())) }
 }
 
 /// Copy UTF-8 into a non-null managed string, including the empty string.

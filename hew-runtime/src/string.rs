@@ -253,14 +253,7 @@ pub unsafe extern "C" fn hew_string_concat(
     b: *const HewString,
 ) -> *mut HewString {
     // SAFETY: both arguments satisfy the managed-handle contract.
-    let (a, b) = unsafe { (string_as_str(a), string_as_str(b)) };
-    let Some(capacity) = a.len().checked_add(b.len()) else {
-        std::process::abort();
-    };
-    let mut joined = String::with_capacity(capacity);
-    joined.push_str(a);
-    joined.push_str(b);
-    string_from_str(&joined)
+    unsafe { hew_cabi::string::string_concat(a, b) }
 }
 
 /// Find the first occurrence of `substr` in `s`. Returns its codepoint offset or -1.

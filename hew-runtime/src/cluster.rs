@@ -110,6 +110,49 @@ pub struct ClusterMember {
     /// Monotonic timestamp (ms) of this node's oldest direct probe of the
     /// member that has not been answered. Any frame from the member answers it.
     pub probe_sent_ms: Option<u64>,
+    /// Retirement sweep time (ms) at which this member was first seen in its
+    /// current DEAD or LEFT state; see [`HewCluster::retire_buried`]. Cleared
+    /// by every state change.
+    pub buried_since_ms: Option<u64>,
+}
+
+impl ClusterMember {
+    fn new(node_id: u16, state: i32, incarnation: u64) -> Self {
+        Self {
+            node_id,
+            state,
+            incarnation,
+            addr: [0; 128],
+            // Start at the current monotonic time so the first tick does not
+            // immediately suspect a brand-new member.
+            // SAFETY: hew_now_ms has no preconditions.
+            last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+            probe_sent_ms: None,
+            buried_since_ms: None,
+        }
+    }
+
+    /// Change state, restarting any burial clock: a member buried again after
+    /// a readmission is retained for a full window from its new burial.
+    fn set_state(&mut self, state: i32) {
+        if self.state != state {
+            self.state = state;
+            self.buried_since_ms = None;
+        }
+    }
+
+    fn is_buried(&self) -> bool {
+        matches!(self.state, MEMBER_DEAD | MEMBER_LEFT)
+    }
+}
+
+/// A buried member the retirement sweep removed from the membership table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetiredMember {
+    /// Receiver-local route slot the member occupied.
+    pub(crate) route_slot: u16,
+    /// Durable session the member was buried in.
+    pub(crate) session: Option<u32>,
 }
 
 /// A membership event for gossip dissemination.
@@ -440,9 +483,6 @@ pub struct HewCluster {
     /// connection reader thread (on receiving SUSPECT-about-self) while the
     /// SWIM driver thread reads it to stamp outbound PING/ACK frames.
     local_incarnation: AtomicU64,
-    /// Local incarnation at which this node last answered a claim that it is
-    /// DEAD; see [`Self::claim_burial_answer`].
-    burial_answered_incarnation: AtomicU64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
     /// Membership event callback binding.
@@ -789,7 +829,6 @@ impl HewCluster {
             requested_probes: Mutex::new(Vec::new()),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: AtomicU64::new(1),
-            burial_answered_incarnation: AtomicU64::new(0),
             callback: None,
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
             registry_callback: None,
@@ -853,7 +892,7 @@ impl HewCluster {
                 || (incarnation == existing.incarnation && state > existing.state)
             {
                 let old_state = existing.state;
-                existing.state = state;
+                existing.set_state(state);
                 existing.incarnation = incarnation;
                 if state == MEMBER_ALIVE {
                     // A newer ALIVE refutes the suspicion an unanswered probe
@@ -879,17 +918,7 @@ impl HewCluster {
             return None;
         }
 
-        let mut member = ClusterMember {
-            node_id,
-            state,
-            incarnation,
-            addr: [0u8; 128],
-            // Initialise to the current monotonic time so the first tick does
-            // not immediately mark a brand-new member as suspect.
-            // SAFETY: hew_now_ms has no preconditions.
-            last_seen_ms: unsafe { crate::clock::hew_now_ms() },
-            probe_sent_ms: None,
-        };
+        let mut member = ClusterMember::new(node_id, state, incarnation);
         let len = addr.len().min(127);
         member.addr[..len].copy_from_slice(&addr[..len]);
         members.push(member);
@@ -1495,7 +1524,7 @@ impl HewCluster {
                     if let Some(index) = member_index {
                         let member = &mut members[index];
                         let old_state = member.state;
-                        member.state = MEMBER_ALIVE;
+                        member.set_state(MEMBER_ALIVE);
                         member.incarnation = 1;
                         self.refresh_member_liveness(member);
                         should_drain = self.queue_member_transition(MemberTransition {
@@ -1509,17 +1538,7 @@ impl HewCluster {
                             publication: PublicationTransition::Plain,
                         });
                     } else {
-                        let mut member = ClusterMember {
-                            node_id,
-                            state: MEMBER_ALIVE,
-                            incarnation: 1,
-                            addr: [0; 128],
-                            // SAFETY: hew_now_ms has no preconditions.
-                            last_seen_ms: unsafe { crate::clock::hew_now_ms() },
-                            probe_sent_ms: None,
-                        };
-                        member.addr[0] = 0;
-                        members.push(member);
+                        members.push(ClusterMember::new(node_id, MEMBER_ALIVE, 1));
                         should_drain = self.queue_member_transition(MemberTransition {
                             node_id,
                             state: MEMBER_ALIVE,
@@ -1608,18 +1627,10 @@ impl HewCluster {
     pub(crate) fn seed_member_for_test(&self, node_id: u16, state: i32, incarnation: u64) {
         let mut members = self.members.lock_or_recover();
         if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
-            existing.state = state;
+            existing.set_state(state);
             existing.incarnation = incarnation;
         } else {
-            members.push(ClusterMember {
-                node_id,
-                state,
-                incarnation,
-                addr: [0u8; 128],
-                // SAFETY: hew_now_ms has no preconditions.
-                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
-                probe_sent_ms: None,
-            });
+            members.push(ClusterMember::new(node_id, state, incarnation));
         }
     }
 
@@ -1896,7 +1907,7 @@ impl HewCluster {
         member.last_seen_ms = now;
         member.probe_sent_ms = None;
         if was_suspect {
-            member.state = MEMBER_ALIVE;
+            member.set_state(MEMBER_ALIVE);
         }
         let mut detectors = self.detectors.lock_or_recover();
         let detector = detectors
@@ -2421,6 +2432,13 @@ impl HewCluster {
         u64::from(self.config.protocol_period_ms.max(1))
     }
 
+    /// Configured time a suspected member has to refute before it is buried,
+    /// in milliseconds.
+    #[must_use]
+    pub(crate) fn suspect_timeout_ms(&self) -> u64 {
+        u64::from(self.config.suspect_timeout_ms)
+    }
+
     /// Configured number of indirect-ping relays (K in SWIM).
     #[must_use]
     pub fn indirect_ping_count(&self) -> usize {
@@ -2498,10 +2516,6 @@ impl HewCluster {
     /// affected peer. Entries about the local node are ignored here — local
     /// state is authoritative and self-refutation is handled separately by
     /// [`Self::refute_if_suspected`].
-    #[expect(
-        clippy::too_many_lines,
-        reason = "fold gossip and retire predecessor authority in one lock transaction"
-    )]
     pub fn apply_swim_gossip(&self, entries: &[(u16, u32, i32, u64)]) {
         let local = self.config.local_node_id;
         for &(node_id, session, state, incarnation) in entries {
@@ -2569,19 +2583,11 @@ impl HewCluster {
                         if let Some(member) =
                             members.iter_mut().find(|member| member.node_id == node_id)
                         {
-                            member.state = state;
+                            member.set_state(state);
                             member.incarnation = incarnation;
                             self.refresh_member_liveness(member);
                         } else {
-                            members.push(ClusterMember {
-                                node_id,
-                                state,
-                                incarnation,
-                                addr: [0; 128],
-                                // SAFETY: hew_now_ms has no preconditions.
-                                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
-                                probe_sent_ms: None,
-                            });
+                            members.push(ClusterMember::new(node_id, state, incarnation));
                         }
                         should_drain = self.queue_member_transition(MemberTransition {
                             node_id,
@@ -2666,30 +2672,108 @@ impl HewCluster {
 }
 
 impl HewCluster {
-    /// Whether `entries` tell this node it was declared DEAD and it has not
-    /// yet answered a burial at its current incarnation.
+    /// Remove buried members whose retention has ended, and return them.
     ///
-    /// A peer that buried this node dropped its names, and a same-session
-    /// readmission repeats no admission flush, so the caller re-announces
-    /// them. The claim may sit below the local incarnation when this node
-    /// already refuted a suspicion the burying peer never heard; the names are
-    /// still gone there. Answering once per local incarnation bounds the cost:
-    /// every frame from a burying peer carries the obituary until it readmits
-    /// this node.
-    pub(crate) fn claim_burial_answer(&self, entries: &[(u16, u32, i32, u64)]) -> bool {
+    /// A member is retained from the first sweep that sees it DEAD or LEFT:
+    /// a LEFT member for [`LEFT_RETENTION_SUSPECT_TIMEOUTS`] suspect timeouts,
+    /// a DEAD one for [`DEAD_RETENTION_SUSPECT_TIMEOUTS`]. Beyond
+    /// [`MAX_BURIED_MEMBERS`] buried entries the oldest are retired early. A
+    /// member with a current route publication is never retired: its
+    /// connection still carries obituaries and can readmit it.
+    ///
+    /// Retirement removes every per-slot fact this cluster keeps, so the slot
+    /// can be assigned to another identity, and wakes observers once. It emits
+    /// no gossip and no membership callback: the departure was already
+    /// reported when the member was buried. Consumers outside the cluster
+    /// observe the member's absence (see `connection::retire_departed_peers`).
+    pub(crate) fn retire_buried(&self, now_ms: u64) -> Vec<RetiredMember> {
+        let suspect_timeout_ms = u64::from(self.config.suspect_timeout_ms);
+        let left_window = suspect_timeout_ms.saturating_mul(LEFT_RETENTION_SUSPECT_TIMEOUTS);
+        let dead_window = suspect_timeout_ms.saturating_mul(DEAD_RETENTION_SUSPECT_TIMEOUTS);
         let local = self.config.local_node_id;
-        if !entries
-            .iter()
-            .any(|&(node_id, _, state, _)| node_id == local && state == MEMBER_DEAD)
-        {
-            return false;
+        let retired = {
+            let mut sessions = self.sessions.lock_or_recover();
+            let mut tokens = self.connection_tokens.lock_or_recover();
+            let mut members = self.members.lock_or_recover();
+            let mut buried = Vec::new();
+            for member in members.iter_mut() {
+                if member.node_id != local && member.is_buried() {
+                    let since = *member.buried_since_ms.get_or_insert(now_ms);
+                    buried.push((since, member.node_id, member.state));
+                }
+            }
+            // A transition still queued or delivering may carry this burial's
+            // own effects; retiring under it would demote that delivery to a
+            // superseded settlement. Wait for the next sweep.
+            let pending = self.pending_member_transitions.lock_or_recover();
+            if pending.draining || !pending.queue.is_empty() {
+                return Vec::new();
+            }
+            drop(pending);
+            buried.sort_unstable();
+            let mut retained = buried.len();
+            let mut retired = Vec::new();
+            for (since, node_id, state) in buried {
+                if tokens.current.contains_key(&node_id) {
+                    continue;
+                }
+                let window = if state == MEMBER_LEFT {
+                    left_window
+                } else {
+                    dead_window
+                };
+                if retained <= MAX_BURIED_MEMBERS && now_ms.saturating_sub(since) < window {
+                    continue;
+                }
+                retained -= 1;
+                tokens.visible.remove(&node_id);
+                tokens.announced.remove(&node_id);
+                tokens.pending_emissions.remove(&node_id);
+                retired.push(RetiredMember {
+                    route_slot: node_id,
+                    session: sessions.remove(&node_id),
+                });
+            }
+            members.retain(|member| !retired.iter().any(|gone| gone.route_slot == member.node_id));
+            retired
+        };
+        if retired.is_empty() {
+            return retired;
         }
-        let current = self.local_incarnation();
-        self.burial_answered_incarnation
-            .fetch_max(current, Ordering::SeqCst)
-            < current
+        let gone = |node_id: u16| retired.iter().any(|member| member.route_slot == node_id);
+        self.detectors
+            .lock_or_recover()
+            .retain(|node_id, _| !gone(*node_id));
+        self.events
+            .lock_or_recover()
+            .retain(|event| !gone(event.node_id));
+        for probes in [&self.relayed_probes, &self.requested_probes] {
+            probes
+                .lock_or_recover()
+                .retain(|probe| !gone(probe.target) && !gone(probe.peer));
+        }
+        for member in &retired {
+            crate::hew_node::retire_member_quarantine(member.route_slot, member.session);
+        }
+        let observer = self.observer.lock_or_recover().upgrade();
+        if let Some(observer) = observer {
+            observer.notify();
+        }
+        retired
     }
 }
+
+/// Suspect timeouts a gracefully LEFT member stays in the membership table:
+/// long enough for its departure to be gossiped before the entry goes.
+const LEFT_RETENTION_SUSPECT_TIMEOUTS: u64 = 1;
+/// Suspect timeouts a DEAD member stays in the membership table (30 s at the
+/// default timeout). Within this window an equal-session reconnect is admitted
+/// only to refute the burial over SWIM, or the member returns with a higher
+/// session; after it, the member is forgotten and rejoins as new.
+const DEAD_RETENTION_SUSPECT_TIMEOUTS: u64 = 10;
+/// Buried members retained at once. Matches the gossip window: a burial older
+/// than the 64 most recent events is no longer being disseminated.
+const MAX_BURIED_MEMBERS: usize = MAX_GOSSIP_EVENTS;
 
 // ── C ABI ──────────────────────────────────────────────────────────────
 
@@ -3143,7 +3227,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             let state = members[index].state;
             let old_incarnation = members[index].incarnation;
             if session_is_new {
-                members[index].state = MEMBER_ALIVE;
+                members[index].set_state(MEMBER_ALIVE);
                 members[index].incarnation = 1;
                 cluster.refresh_member_liveness(&mut members[index]);
                 should_drain = cluster.queue_member_transition(
@@ -3205,15 +3289,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             }
             true
         } else {
-            members.push(ClusterMember {
-                node_id,
-                state: MEMBER_ALIVE,
-                incarnation: 1,
-                addr: [0; 128],
-                // SAFETY: hew_now_ms has no preconditions.
-                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
-                probe_sent_ms: None,
-            });
+            members.push(ClusterMember::new(node_id, MEMBER_ALIVE, 1));
             should_drain = cluster.queue_member_transition(
                 MemberTransition {
                     node_id,
@@ -3398,6 +3474,8 @@ mod tests {
 
     #[path = "detector_mesh.rs"]
     mod detector_mesh;
+    #[path = "retention.rs"]
+    mod retention;
     #[path = "terminal_session_queue.rs"]
     mod terminal_session_queue;
     use crate::node_identity::NodeId;
@@ -3433,14 +3511,8 @@ mod tests {
         // SAFETY: hew_now_ms has no preconditions.
         let before_snapshot_ms = unsafe { crate::clock::hew_now_ms() };
         let fixture_last_seen_ms = before_snapshot_ms.saturating_sub(25);
-        let mut member = ClusterMember {
-            node_id: 7,
-            state: MEMBER_ALIVE,
-            incarnation: 42,
-            addr: [0; 128],
-            last_seen_ms: fixture_last_seen_ms,
-            probe_sent_ms: None,
-        };
+        let mut member = ClusterMember::new(7, MEMBER_ALIVE, 42);
+        member.last_seen_ms = fixture_last_seen_ms;
         let addr = b"node\"\\\\name\n:9000";
         member.addr[..addr.len()].copy_from_slice(addr);
         cluster.members.lock_or_recover().push(member);
@@ -5511,28 +5583,6 @@ mod tests {
         cluster.receive_swim_at(SWIM_MSG_ACK, 3, 9, 5, 1_200);
         assert_eq!(cluster.member_state(5), MEMBER_DEAD);
         assert_eq!(cluster.member_incarnation(5), Some(5));
-    }
-
-    #[test]
-    fn burial_is_answered_once_per_local_incarnation() {
-        let cluster = HewCluster::new(make_config(1));
-        let suspected = [(1, 1, MEMBER_SUSPECT, 1)];
-        assert!(!cluster.claim_burial_answer(&suspected));
-        cluster.refute_if_suspected(&suspected);
-        assert_eq!(cluster.local_incarnation(), 2);
-
-        // A burial below the refuted incarnation still cost this node its
-        // names at the burying peer.
-        let stale = [(1, 1, MEMBER_DEAD, 1)];
-        assert_eq!(cluster.refute_if_suspected(&stale), None);
-        assert!(cluster.claim_burial_answer(&stale));
-        assert!(!cluster.claim_burial_answer(&stale), "answered already");
-
-        let current = [(1, 1, MEMBER_DEAD, 2)];
-        assert_eq!(cluster.refute_if_suspected(&current), Some(3));
-        assert!(cluster.claim_burial_answer(&current));
-        assert!(!cluster.claim_burial_answer(&current));
-        assert!(!cluster.claim_burial_answer(&[(2, 1, MEMBER_DEAD, 9)]));
     }
 
     /// A relay's ACK naming a member is accepted only as the answer to a

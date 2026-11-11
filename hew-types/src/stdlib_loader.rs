@@ -106,12 +106,13 @@ pub(crate) fn load_module_checked(
     module_path: &str,
     root: &Path,
 ) -> Result<Option<ModuleInfo>, ModuleError> {
-    load_module_with_inputs(module_path, root, None)
+    load_module_with_inputs(module_path, root, &[root.to_path_buf()], None)
 }
 
 pub(crate) fn load_module_with_inputs(
     module_path: &str,
     root: &Path,
+    std_roots: &[std::path::PathBuf],
     inputs: Option<&dyn crate::compile_time::InputProvider>,
 ) -> Result<Option<ModuleInfo>, ModuleError> {
     let Some(hew_path) = resolve_hew_path_with_inputs(module_path, root, inputs) else {
@@ -142,9 +143,10 @@ pub(crate) fn load_module_with_inputs(
     // authority: a directory-module peer (`std.net.http.codec`)
     // is owned by its package (`std.net.http.codec`), so it extracts as `codec.T`,
     // not `codec.T`, or the projection has nothing to join.
-    let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
-        .and_then(|owner| owner.segments.last().map(ToString::to_string))
-        .unwrap_or_else(|| module_short_name(module_path));
+    let module_short =
+        crate::module_registry::canonical_stdlib_module_for_source(&hew_path, std_roots)
+            .and_then(|owner| owner.segments.last().map(ToString::to_string))
+            .unwrap_or_else(|| module_short_name(module_path));
     let mut info = extract_module_info(&result.program, &module_short);
     info.source_path = Some(hew_path);
     info.source_items = result.program.items;

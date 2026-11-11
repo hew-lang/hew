@@ -20,7 +20,11 @@ impl MachineInput {
             "    state Active { value: i64; }\n"
         };
         let active_ctor = if self.padded {
-            format!("Active {{ tag_byte: {}, value: {} }}", self.active_value % 4, self.active_value)
+            format!(
+                "Active {{ tag_byte: {}, value: {} }}",
+                self.active_value % 4,
+                self.active_value
+            )
         } else {
             format!("Active {{ value: {} }}", self.active_value)
         };

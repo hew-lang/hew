@@ -23,6 +23,63 @@ fn assert_faithful(source: &str) {
 }
 
 #[test]
+fn raw_macro_line_endings_stay_verbatim() {
+    for source in [
+        "p!(\r)",
+        "p!(\r\r\n)",
+        "p!(/* keep\r\r\nthis */)",
+        "fn main() { let s = r\"keep\r\r\nthis\"; }",
+        "p!(\r)\r\n",
+        "p!(/* keep\rthis */\r)",
+        "p!(\r\n/// doc\r\n1)",
+        "p!(r\"keep\rthis\"\r)",
+        "fn main() { let s = stringify!(p!(\r)); }",
+        "fn main() { let s = stringify!(m.stringify!(\r)); }",
+        "macro p { (\r$x:expr) => expr {\r$x } }",
+        "macro after { (\r$x:expr) => expr {\r$x } }",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn raw_macro_line_endings_are_program_content() {
+    for (source, changed) in [
+        ("p!(\r1)", "p!(\n2)\n"),
+        ("p!(\r1)", "p!(\n1)\n"),
+        ("p!(\r\r\n1)", "p!(\n1)\n"),
+        (
+            "fn main() { let s = r\"keep\r\r\nthis\"; }",
+            "fn main() { let s = r\"keep\nthis\"; }",
+        ),
+        ("p!(r\"keep\rthis\"\r)", "p!(r\"keep\nthis\"\n)\n"),
+        ("p!(/* keep\rthis */\r)", "p!(/* keep\nthis */\n)\n"),
+        ("p!(\r/* before */1)", "p!(\n1/* before */)\n"),
+    ] {
+        assert!(check(source, changed).is_err(), "{source:?} -> {changed:?}");
+    }
+}
+
+#[test]
+fn doc_comment_carriage_returns_round_trip() {
+    for source in [
+        "//!\r",
+        "//! text\r\n",
+        "//! text\r\r\n",
+        "/// text\r\nfn main() {}\r\n",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn explicit_discards_keep_their_spelling() {
+    assert_faithful("fn main() {\n    let s = \"hello\";\n    _ = s;\n    let _ = s;\n}\n");
+    assert_faithful("fn main() { let values = gen { _ = 1; yield 2; }; }\n");
+    assert_faithful("fn main() { _ /* discard */ = 1; let /* binding */ _ = 2; }\n");
+}
+
+#[test]
 fn issue_repro_keeps_comment_in_main_and_hook_before_handler() {
     assert_faithful(
         "actor W {\n    var n: i64;\n    #[on(start)]\n    fn started() {\n        println(\"s\");\n    }\n    receive fn boom() {\n        panic(\"x\");\n    }\n}\n\nfn main() {\n    let w = spawn W { n: 1 };\n    // note about the next line\n    let _ = w.boom();\n}\n",
@@ -716,6 +773,33 @@ fn crlf_source_formats_to_crlf() {
 }
 
 #[test]
+fn layout_newlines_determine_style_around_verbatim_content() {
+    for (source, expected) in [
+        ("\r\np!(\n)", "p!(\n)\r\n"),
+        ("\np!(\r\n)", "p!(\r\n)\n"),
+        ("p!(\r\n)", "p!(\r\n)\n"),
+        ("p!(\n)\r\n", "p!(\n)\r\n"),
+        ("m.stringify!(\n)\r\n", "m.stringify!(\n)\r\n"),
+        (
+            "\r\np!(>>=X\np!(>>=Xz X)z X)",
+            "p!(>>=X\np!(>>=Xz X)z X)\r\n",
+        ),
+    ] {
+        assert_faithful(source);
+        assert_eq!(format_source(source, &parse(source).program), expected);
+    }
+
+    for source in [
+        "const S: string = r\"first\nsecond\";\r\n",
+        "const S: string = r\"first\r\nsecond\";\n",
+        "\r\nmacro p { () => expr {\n1 } }",
+        "\nmacro p { () => expr {\r\n1 } }",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
 fn mixed_line_endings_in_output_are_rejected() {
     let source = "fn main() {\r\n    let a = 1;\r\n}\r\n";
     let mixed = "fn main() {\r\n    let a = 1;\n}\r\n";
@@ -723,6 +807,30 @@ fn mixed_line_endings_in_output_are_rejected() {
         check(source, mixed),
         Err(FidelityError::LineEnding { .. })
     ));
+}
+
+#[test]
+fn a_carriage_return_inside_a_comment_is_content() {
+    assert_faithful("// one\rtwo\nfn main() {\n    // three\r four\n}\n");
+    assert_faithful("// one\rtwo\r\nfn main() {\r\n    // three\r four\r\n}\r\n");
+}
+
+#[test]
+fn block_comment_delimiters_do_not_overlap() {
+    for source in ["/*/\r*/", "/*/\r\n*/", "/* /*/\r*/ */", "/* //\r */"] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn repeated_carriage_returns_before_comment_newlines_reach_a_fixed_point() {
+    for source in [
+        "/*first\n*//**//*second\r\r\n*/",
+        "\n/*keep\rthis\r\r\nline*/",
+        "\r\n/*keep\rthis\r\r\nline*/",
+    ] {
+        assert_faithful(source);
+    }
 }
 
 #[test]
@@ -894,4 +1002,49 @@ fn main() {
 }
 ",
     );
+}
+
+#[test]
+fn grouping_parentheses_around_a_pattern_stay() {
+    assert_faithful(
+        "fn main() {\n    let r: Option<i64> = .None;\n    let x = match r {\n        (.Some((v))) => v,\n        (.None) => 0,\n    };\n    println(x);\n}\n",
+    );
+}
+
+#[test]
+fn an_empty_machine_section_stays() {
+    assert_faithful(
+        "machine M {\n    events {}\n    emits {}\n    state Done;\n\n    on Tick: Done => Done;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_block_arm_continued_by_a_postfix_takes_no_comma() {
+    assert_faithful(
+        "type P {\n    n: i64;\n}\n\nfn main() {\n    let x: Option<i64> = .None;\n    let y = match x {\n        .Some(v) => {\n            P { n: v }\n        }.n\n        other => 0,\n    };\n    println(y);\n}\n",
+    );
+}
+
+#[test]
+fn a_state_named_like_a_section_is_not_a_section() {
+    assert_faithful(
+        "machine Gate {\n    events {\n        Go;\n    }\n\n    state Idle;\n    state emits;\n\n    on Go: Idle => emits;\n    on Go: emits => Idle;\n}\n\nfn main() {}\n",
+    );
+    assert_faithful(
+        "machine Gate {\n    state events;\n    state Idle;\n\n    events {\n        Go;\n    }\n\n    on Go: Idle => events;\n    on Go: events => Idle;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_lone_carriage_return_outside_a_comment_is_rejected() {
+    for source in [
+        "fn main() {\n    let x = 1;\n}\n",
+        "fn main() {\r\n    let x = 1;\r\n}\r\n",
+    ] {
+        let stray = source.replacen("1;", "1;\r", 1);
+        assert!(
+            matches!(check(source, &stray), Err(FidelityError::LineEnding { .. })),
+            "{stray:?}"
+        );
+    }
 }

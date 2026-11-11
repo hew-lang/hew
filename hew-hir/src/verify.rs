@@ -5,7 +5,7 @@ use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
-    HirStmtKind, HirVarSelfMethodTarget,
+    HirStmtKind, HirSupervisorDecl, HirVarSelfMethodTarget,
 };
 use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
@@ -65,6 +65,8 @@ pub struct HirSourceFacts {
     pub scopes: HashMap<ScopeId, HirScopeExtent>,
     /// The file span index each item with a body was lowered from.
     pub item_files: HashMap<crate::ids::ItemId, u32>,
+    /// The `Self` type of each impl method body.
+    pub item_receivers: HashMap<crate::ids::ItemId, hew_types::ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,7 @@ pub fn analyze_hir(module: &HirModule) -> HirAnalysis<'_> {
             sites: verifier.site_spans,
             scopes: verifier.scope_extents,
             item_files: module.item_files.clone(),
+            item_receivers: module.item_receivers.clone(),
         },
         site_parents: verifier.site_parents,
     }
@@ -179,6 +182,45 @@ impl Verifier {
             self.binding(param.id, param.span.clone());
         }
         self.block(&func.body);
+    }
+
+    /// Supervisor declarations contribute their node, owner binding and every
+    /// configuration expression.
+    fn supervisor(&mut self, sup: &HirSupervisorDecl) {
+        self.node(sup.node, sup.span.clone());
+        self.binding(sup.owner.id, sup.owner.span.clone());
+        if let Some(backoff) = &sup.backoff {
+            self.expr(backoff);
+        }
+        if let Some(interceptor) = &sup.interceptor {
+            self.node(interceptor.node, interceptor.span.clone());
+            for parameter in &interceptor.params {
+                self.binding(parameter.id, parameter.span.clone());
+            }
+            self.block(&interceptor.body);
+        }
+        // Register each child's declaration site and every
+        // init-arg/pool-count expression's real site. Without
+        // this, MIR diagnostics that carry a supervisor child's
+        // site (a missing required field, an unknown field name)
+        // key into the analysis source map with an ID the table
+        // never claims — silently rendering with no location, or
+        // worse, numerically colliding with an unrelated site
+        // that IS registered and rendering a wrong caret.
+        for child in &sup.children {
+            self.site(child.site, child.span.clone());
+            for (_, arg) in &child.init_args {
+                self.expr(arg);
+            }
+            for expr in child
+                .pool_count
+                .iter()
+                .chain(child.stop.iter())
+                .chain(child.backoff.iter())
+            {
+                self.expr(expr);
+            }
+        }
     }
 
     fn module(&mut self, module: &HirModule) {
@@ -243,40 +285,7 @@ impl Verifier {
                         self.block(&hook.body);
                     }
                 }
-                HirItem::Supervisor(sup) => {
-                    // Supervisor declarations contribute only their HirNodeId
-                    // uniqueness in S-A; children-list resolution and
-                    // wired_to validation are S-B's job.
-                    self.node(sup.node, sup.span.clone());
-                    self.binding(sup.owner.id, sup.owner.span.clone());
-                    if let Some(backoff) = &sup.backoff {
-                        self.expr(backoff);
-                    }
-                    if let Some(interceptor) = &sup.interceptor {
-                        self.node(interceptor.node, interceptor.span.clone());
-                        for parameter in &interceptor.params {
-                            self.binding(parameter.id, parameter.span.clone());
-                        }
-                        self.block(&interceptor.body);
-                    }
-                    // Register each child's declaration site and every
-                    // init-arg/pool-count expression's real site. Without
-                    // this, MIR diagnostics that carry a supervisor child's
-                    // site (a missing required field, an unknown field name)
-                    // key into the analysis source map with an ID the table
-                    // never claims — silently rendering with no location, or
-                    // worse, numerically colliding with an unrelated site
-                    // that IS registered and rendering a wrong caret.
-                    for child in &sup.children {
-                        self.site(child.site, child.span.clone());
-                        for (_, arg) in &child.init_args {
-                            self.expr(arg);
-                        }
-                        for expr in child.pool_count.iter().chain(child.stop.iter()) {
-                            self.expr(expr);
-                        }
-                    }
-                }
+                HirItem::Supervisor(sup) => self.supervisor(sup),
                 HirItem::Impl(block) => {
                     // V0b: impl-block metadata only contributes its own
                     // HirNodeId. The per-method bodies are emitted as
@@ -1406,6 +1415,7 @@ mod tests {
             items,
             diagnostic_source_modules: HashMap::new(),
             item_files: HashMap::new(),
+            item_receivers: HashMap::new(),
             root_item_ids: HashSet::default(),
             trait_object_layouts: Arc::default(),
             structural_witnesses: Vec::new(),

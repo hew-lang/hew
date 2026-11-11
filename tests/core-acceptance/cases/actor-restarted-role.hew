@@ -1,3 +1,5 @@
+import std.restart;
+
 actor Worker {
     receive fn fail() {
         panic("restart me");
@@ -10,6 +12,7 @@ actor Worker {
 supervisor App {
     strategy: one_for_one;
     intensity: 3 within 60s;
+    backoff: restart.exponential(initial: 100ms);
     child worker: Worker;
 }
 

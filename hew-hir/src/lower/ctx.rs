@@ -10,6 +10,13 @@ impl<'checked> LowerCtx<'checked> {
         id
     }
 
+    /// Record the impl receiver `id`'s body is a method of.
+    pub(super) fn note_item_receiver(&mut self, id: crate::ids::ItemId) {
+        if let Some(receiver) = &self.current_impl_self_ty {
+            self.item_receivers.insert(id, receiver.clone());
+        }
+    }
+
     /// Record that `id`'s body indexes the file currently being lowered.
     pub(super) fn note_item_file(&mut self, id: crate::ids::ItemId) {
         self.item_files.insert(id, self.current_module_idx);
@@ -202,6 +209,7 @@ impl<'checked> LowerCtx<'checked> {
             checked_type_defs: tc_output.type_defs_by_path(),
             current_module_idx: 0,
             item_files: HashMap::new(),
+            item_receivers: HashMap::new(),
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
             lowering_injected_items: false,

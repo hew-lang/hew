@@ -1,0 +1,112 @@
+// A direct variant stores its fields inline, so constructing one charges
+// nothing: a fallible chain that returns Ok runs in an actor already at its
+// limit, and an Err that moves its string through three frames is charged once.
+// An indirect variant still boxes its payload and refuses at the limit.
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+fn leaf(value: i64, reason: string) -> i64 fails string {
+    if value < 0 {
+        return error reason;
+    }
+    value % 251
+}
+
+fn middle(value: i64, reason: string) -> i64 fails string {
+    let inner = leaf(value, reason)?;
+    inner + 1
+}
+
+fn outer(value: i64, reason: string) -> i64 fails string {
+    let inner = middle(value, reason)?;
+    inner + 1
+}
+
+fn labelled(text: string) -> Option<string> {
+    if !text.is_empty() {
+        .Some(text)
+    } else {
+        .None
+    }
+}
+
+// State: one string slot of 8 bytes plus a 32-byte payload. Each reply adds
+// eight bytes while the actor owns it.
+#[max_heap(48)]
+actor Full {
+    var text: string;
+
+    receive fn succeed() -> i64 {
+        var total = 0;
+        for r in 0..8 {
+            total += match outer(r, "") {
+                .Ok(value) => value,
+                .Err(_) => -1000,
+            };
+        }
+        total
+    }
+
+    receive fn tree() -> i64 {
+        match Tree.Leaf(5) {
+            .Leaf(value) => value,
+            .Node(_, _) => 0,
+        }
+    }
+}
+
+// The reason literal adds its four payload bytes once, wherever it moves.
+#[max_heap(44)]
+actor Failing {
+    var text: string;
+
+    receive fn fail() {
+        let reason = "deep";
+        match outer(-1, reason) {
+            .Ok(_) => println(-1),
+            .Err(message) => match labelled(message) {
+                .Some(kept) => println(kept.len()),
+                .None => println(-2),
+            }
+        }
+    }
+}
+
+#[max_heap(43)]
+actor Short {
+    var text: string;
+
+    receive fn fail() {
+        let reason = "deep";
+        match outer(-1, reason) {
+            .Ok(_) => println(-1),
+            .Err(message) => println(message.len()),
+        }
+    }
+}
+
+fn main() -> i64 {
+    let payload = "0123456789abcdef0123456789abcdef";
+    let full = spawn Full { text: payload };
+    println(full.succeed().expect("direct variants charge nothing"));
+    match full.tree() {
+        .Err(.Trapped) => println("indirect limit"),
+        _ => return 2,
+    }
+    stopped(full);
+
+    let failing = spawn Failing { text: payload };
+    failing.fail().expect("moved error charged once");
+    stop(failing);
+    stopped(failing);
+
+    let short = spawn Short { text: payload };
+    match short.fail() {
+        .Err(.Trapped) => println("literal limit"),
+        _ => return 3,
+    }
+    stopped(short);
+    0
+}

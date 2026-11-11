@@ -200,7 +200,13 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             }
             (owner.value_owner.clone(), owner.binding.clone())
         };
-        if operation.transfer.is_none() {
+        let inert = operation.transfer.is_none()
+            && crate::owned_value_budget::transfer::is_inert(
+                operation.owner.as_ref(),
+                destination.as_ref(),
+                operation.payload.layout,
+            );
+        if operation.transfer.is_none() && !inert {
             let mut transfer = ValueTransfer::begin(
                 operation.owner.clone(),
                 destination.clone(),
@@ -211,7 +217,12 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             transfer.set_waker(wake);
             operation.transfer = Some(transfer);
         }
-        match operation.transfer.as_mut().unwrap().poll_prepare() {
+        // An inert transfer has no graph to prepare or commit.
+        match operation
+            .transfer
+            .as_mut()
+            .map_or(Ok(true), |transfer| transfer.poll_prepare())
+        {
             Ok(false) => return CoroStatus::Pending as i32,
             Err(_) => {
                 operation.transfer = None;
@@ -224,12 +235,9 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             }
             Ok(true) => {}
         }
-        operation
-            .transfer
-            .take()
-            .unwrap()
-            .commit()
-            .unwrap_or_else(|_| std::process::abort());
+        if let Some(transfer) = operation.transfer.take() {
+            transfer.commit().unwrap_or_else(|_| std::process::abort());
+        }
         operation.owner = destination;
         let wake = {
             let mut owner = (*channel).native.lock_or_recover();

@@ -251,6 +251,15 @@ fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
     assert_private_helper_closure(false);
 }
 
+/// A registry whose std root is this checkout, for graphs that name the
+/// checkout's shipped std sources.
+fn checkout_std_registry() -> ModuleRegistry {
+    ModuleRegistry::new(vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-hir lives below the repository root")
+        .to_path_buf()])
+}
+
 #[test]
 fn builtin_private_helpers_follow_function_values_and_transitive_uses() {
     assert_private_helper_closure(true);
@@ -302,7 +311,7 @@ fn assert_private_helper_closure(builtin: bool) {
     }
     graph.topo_order = vec![imported_id, root_id];
     root.program.module_graph = Some(graph);
-    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program);
+    let output = Checker::new(checkout_std_registry()).check_program(&root.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let lowered = lower_program(&root.program, &output, &ResolutionCtx, TargetArch::host());
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
@@ -2647,7 +2656,9 @@ fn lower_canonical_encoding_fixture(
         .unwrap();
     graph.topo_order = order;
     program.module_graph = Some(graph);
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    // The graph names the checkout's shipped sources: the checkout is the std
+    // root this check is given.
+    let mut checker = Checker::new(checkout_std_registry());
     let tco = checker.check_program(&program);
     assert!(tco.errors.is_empty(), "{:?}", tco.errors);
     let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());

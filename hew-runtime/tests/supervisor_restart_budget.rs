@@ -1,11 +1,9 @@
 //! Supervisor restart budget tests.
 //!
 //! Verifies that restart budget accounting is correct under concurrent
-//! crashes, including when timer threads are involved (delayed restarts).
-//! These tests exercise the fix for the data race where timer threads
-//! previously called `restart_with_budget_and_strategy` directly — now
-//! they post `HewSysMsg::DelayedRestart` to the supervisor's mailbox so
-//! all budget mutations happen on the single-threaded actor dispatch.
+//! crashes. Every budget mutation happens on the supervisor's single-threaded
+//! actor dispatch; delayed restarts under a declared `backoff` are covered by
+//! the `supervisor-restart-backoff*` core-acceptance cases.
 //!
 //! The supervisor handle is owned by `TestSupervisor` so its Drop runs
 //! the canonical stop teardown. The supervisor's FFI surface (add child
@@ -241,87 +239,10 @@ fn budget_exhaustion_stops_supervisor() {
     hew_deterministic_reset();
 }
 
-/// Delayed restarts (via timer thread → mailbox) are actually processed:
-/// the supervisor receives the `HewSysMsg::DelayedRestart` message and
-/// restarts the child on its own actor thread.
-///
-/// We force the delayed path by crashing a child twice in rapid succession.
-/// The first crash sets `restart_delay_ms`; the second crash applies backoff
-/// and enters the timer thread path.
+/// Without a declared `backoff`, repeated crashes of several children restart
+/// in line every time and the budget counts each restart once.
 #[test]
-fn delayed_restart_processed_via_mailbox() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_scheduler();
-    hew_deterministic_reset();
-    DISPATCH_COUNT.store(0, Ordering::SeqCst);
-
-    // Large budget so we don't exhaust it.
-    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 20, 60);
-    // SAFETY: live supervisor used for child-management FFI.
-    unsafe {
-        let name = cstr("delayed-worker");
-        let mut state: i32 = 0;
-        let spec = HewChildSpec {
-            name: name.as_ptr(),
-            init_state: (&raw mut state).cast(),
-            init_state_size: std::mem::size_of::<i32>(),
-            dispatch: Some(counting_dispatch),
-            restart_policy: RESTART_PERMANENT,
-            mailbox_capacity: -1,
-            overflow: OVERFLOW_DROP_NEW,
-            coalesce_match_fn: None,
-            coalesce_fallback: OVERFLOW_DROP_NEW,
-            message_drop_fn: None,
-            sys_dispatch: None,
-            arena_cap_bytes: 0,
-            cycle_capable: 0,
-            lifecycle_fn: None,
-            init_fn: None,
-            config: std::ptr::null_mut(),
-            config_size: 0,
-        };
-        assert_eq!(
-            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
-            0
-        );
-        assert_eq!(sup.start(), 0);
-
-        // First crash — sets the initial restart delay (100ms) but
-        // restarts immediately.
-        let (child1, _) = wait_for_child(sup.as_ptr(), 0);
-        crash_child(child1);
-        let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
-        assert!(count >= 1, "first restart should complete");
-
-        // Second crash — backoff is applied, timer thread is spawned.
-        // The restart goes through the HewSysMsg::DelayedRestart path.
-        let (child2, _) = wait_for_child(sup.as_ptr(), 0);
-        crash_child(child2);
-
-        // Allow generous timeout for the delayed restart (backoff delay
-        // is 200ms, but give plenty of room for CI).
-        let count = test_wait_for_restart(sup.as_ptr(), 2, 5000);
-        assert!(
-            count >= 2,
-            "delayed restart should complete (count={count})"
-        );
-
-        // Child should be alive again.
-        let (child3, _) = wait_for_child(sup.as_ptr(), 0);
-        assert!(!child3.is_null(), "child should be restarted after delay");
-
-        // Supervisor should still be running.
-        assert!(sup.is_running(), "supervisor should still be running");
-    }
-    hew_deterministic_reset();
-}
-
-/// Multiple children crashing with restart backoff: all delayed restarts
-/// are routed through the mailbox and budget is consistent.
-#[test]
-fn multiple_delayed_restarts_budget_consistent() {
+fn repeated_restarts_without_backoff_budget_consistent() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -371,7 +292,7 @@ fn multiple_delayed_restarts_budget_consistent() {
         let count = test_wait_for_restart(sup.as_ptr(), 3, 5000);
         assert!(count >= 3, "round 1: expected 3 restarts, got {count}");
 
-        // Round 2: crash all 3 again — each enters the delayed restart path.
+        // Round 2: crash all 3 again — still immediate; no implicit delay.
         for i in 0..3 {
             let (child, _) = wait_for_child(sup.as_ptr(), i);
             crash_child(child);

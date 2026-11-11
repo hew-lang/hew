@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +139,8 @@ pub enum ManifestError {
     InvalidNative(String),
     /// A generation step has invalid or conflicting paths.
     InvalidGenerate(String),
+    /// `[package] main` names a file outside the package directory.
+    InvalidMain(String),
     /// The manifest is a virtual workspace root, not a package.
     WorkspaceRoot,
     /// The manifest declares both `[package]` and `[workspace]`.
@@ -160,6 +162,11 @@ impl fmt::Display for ManifestError {
             ),
             Self::InvalidNative(msg) => write!(f, "E_INVALID_NATIVE: {msg}"),
             Self::InvalidGenerate(msg) => write!(f, "E_INVALID_GENERATE: {msg}"),
+            Self::InvalidMain(main) => write!(
+                f,
+                "E_INVALID_MAIN: [package] main = \"{main}\" must name a file inside the package, \
+                 as a `/`-separated path relative to hew.toml"
+            ),
             Self::WorkspaceRoot => f.write_str(
                 "this hew.toml is a workspace root, not a package; run in a member or use \
                  `--workspace`",
@@ -181,6 +188,7 @@ impl std::error::Error for ManifestError {
             Self::UnsupportedEdition { .. }
             | Self::InvalidNative(_)
             | Self::InvalidGenerate(_)
+            | Self::InvalidMain(_)
             | Self::WorkspaceRoot
             | Self::PackageAndWorkspace => None,
         }
@@ -480,7 +488,24 @@ pub(crate) fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestErr
         native.validate().map_err(ManifestError::InvalidNative)?;
     }
     crate::generate::step_order(&manifest.generate).map_err(ManifestError::InvalidGenerate)?;
+    if let Some(main) = &manifest.package.main {
+        if !is_package_file(main) {
+            return Err(ManifestError::InvalidMain(main.clone()));
+        }
+    }
     Ok(manifest)
+}
+
+/// Whether `path` names a file below the package directory: `/`-separated
+/// plain segments, with no root, drive, parent step or backslash on any host.
+fn is_package_file(path: &str) -> bool {
+    !path.contains(['\\', ':'])
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+        && Path::new(path)
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)))
 }
 
 /// Write a default `hew.toml` for a new project named `name` to `path`.
@@ -679,6 +704,32 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f
+    }
+
+    #[test]
+    fn main_must_name_a_file_inside_the_package() {
+        let manifest = |main: &str| {
+            parse_manifest_text(&format!(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nmain = {main:?}\n"
+            ))
+        };
+        for inside in ["app.hew", "./src/app.hew", "src/bin/app.hew"] {
+            assert_eq!(manifest(inside).unwrap().package.main_source(), inside);
+        }
+        for outside in [
+            "../outside/app.hew",
+            "src/../../app.hew",
+            "/etc/hostname",
+            "C:/app.hew",
+            "src\\app.hew",
+            "",
+            ".",
+        ] {
+            assert!(
+                matches!(manifest(outside), Err(ManifestError::InvalidMain(ref main)) if main == outside),
+                "{outside:?} was accepted"
+            );
+        }
     }
 
     #[test]

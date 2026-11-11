@@ -334,11 +334,8 @@ fn hover_field_access_at_offset(
     }
     let receiver_end = crate::definition::find_field_receiver_end(source, field_span.start)?;
     let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
-    let receiver_type_name = receiver_ty.type_name()?;
-    let type_def = type_output.type_defs.iter().find_map(|(id, type_def)| {
-        Ty::names_match_qualified(type_output.defs.path(id.declaration()), receiver_type_name)
-            .then_some(type_def)
-    })?;
+    let declaration = receiver_ty.head()?.declaration(&type_output.defs)?;
+    let type_def = type_output.type_defs.get(&declaration)?;
     let field_ty = type_def.fields.get(&field_name)?;
     Some(field_hover_result(
         &field_name,
@@ -2606,6 +2603,23 @@ mod tests {
             &signature.label[parameter.label_start as usize..parameter.label_end as usize],
             "consume value: string"
         );
+    }
+
+    #[test]
+    fn hover_resolves_a_call_in_a_child_backoff_clause() {
+        let source = concat!(
+            "type Policy { initial: duration; }\n",
+            "fn quick() -> Policy { Policy { initial: 0ns } }\n",
+            "actor Worker {}\n",
+            "supervisor Team {\n",
+            "    child worker: Worker restart: permanent backoff: quick();\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.rfind("quick").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).expect("hover on the policy call");
+        assert!(result.contents.contains("Policy"), "{}", result.contents);
     }
 
     #[test]

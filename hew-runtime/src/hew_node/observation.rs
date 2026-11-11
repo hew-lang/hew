@@ -22,9 +22,17 @@ struct Observers {
 #[derive(Debug, Default)]
 pub(crate) struct NodeObservation {
     observers: Mutex<Observers>,
+    /// Readiness notifications issued, for membership tests.
+    #[cfg(test)]
+    notified: std::sync::atomic::AtomicUsize,
 }
 
 impl NodeObservation {
+    #[cfg(test)]
+    pub(crate) fn notified_for_test(&self) -> usize {
+        self.notified.load(Ordering::Acquire)
+    }
+
     fn subscribe(self: &Arc<Self>) -> Result<Arc<Subscription>, i64> {
         let mut observers = self.observers.lock_or_recover();
         if observers.closed {
@@ -48,6 +56,8 @@ impl NodeObservation {
 
     /// Readiness coalesces. Wake consumers only after dropping the hub lock.
     pub(crate) fn notify(&self) {
+        #[cfg(test)]
+        self.notified.fetch_add(1, Ordering::AcqRel);
         let subscribers = {
             let mut observers = self.observers.lock_or_recover();
             observers

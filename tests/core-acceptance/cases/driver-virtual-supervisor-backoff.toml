@@ -1,6 +1,6 @@
 [[case]]
 id = "driver-virtual-supervisor-backoff"
-intent = "Repeated supervised crashes advance the deterministic driver's virtual clock through a restart delay beyond the wheel's short-term buckets while fresh children remain available."
+intent = "Repeated supervised crashes under a declared backoff with the default 30-second maximum advance the deterministic driver's virtual clock through delays beyond the wheel's short-term buckets while fresh children remain available."
 source = "cases/driver-virtual-supervisor-backoff.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 10

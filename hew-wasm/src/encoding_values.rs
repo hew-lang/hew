@@ -531,6 +531,27 @@ mod tests {
     }
 
     #[test]
+    fn numbers_beyond_f64_are_refused_on_every_text_format() {
+        let big_integer = format!("[{}]", "9".repeat(400));
+        for (format, text) in [
+            ("Json", "[1e400]"),
+            ("Json", "[-1e400]"),
+            ("Json", big_integer.as_str()),
+            ("Toml", "a = [1e400]"),
+        ] {
+            let parsed = execute(&json!({"format": format, "operation": "parse", "text": text}));
+            let refused = parsed.as_ref().is_err_and(|error| !error.is_empty())
+                || parsed
+                    .as_ref()
+                    .is_ok_and(|reply| reply["error"].is_string());
+            assert!(refused, "{format} accepted {text}: {parsed:?}");
+        }
+        let tiny =
+            execute(&json!({"format": "Json", "operation": "parse", "text": "[1e-400]"})).unwrap();
+        assert!(tiny["error"].is_null(), "{tiny}");
+    }
+
+    #[test]
     fn retained_array_mutation_matches_actual_native_growth() {
         let mut native: Json = serde_json::from_str("[1,2,3]").unwrap();
         let mut bridged =

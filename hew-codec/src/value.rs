@@ -243,7 +243,10 @@ impl<'de> Visitor<'de> for ValueSeed {
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
         let inner = self.enter()?;
-        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+        // The size hint is the length the input declares, not what it holds:
+        // reserving from it lets a few header bytes per nesting level claim
+        // megabytes. Growth stays proportional to the elements actually read.
+        let mut items = Vec::new();
         while let Some(item) = seq.next_element_seed(inner)? {
             items.push(item);
         }
@@ -252,7 +255,7 @@ impl<'de> Visitor<'de> for ValueSeed {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let inner = self.enter()?;
-        let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0).min(4096));
+        let mut entries = Vec::new();
         while let Some(key) = map.next_key_seed(inner)? {
             let value = map.next_value_seed(inner)?;
             entries.push((key, value));

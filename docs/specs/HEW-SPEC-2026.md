@@ -834,6 +834,75 @@ This actor owns an eight-byte state slot and a 32-byte vector backing after the
 four pushes. Its eight-byte reply fits the remaining budget. A fifth push would
 require a 64-byte vector backing and fault before publishing that growth.
 
+**Stack exhaustion (normative).** A call that finds its thread's stack
+exhausted fails with the trap `StackOverflow` before the callee runs any of
+its body. It is an ordinary trap, not a hardware fault:
+
+- the callee's parameters and every caller's live values follow their usual
+  cleanup, `defer` included, as the failure unwinds;
+- in an actor it is a crash: the actor's supervisor rules on it (§5), and
+  crash hooks, links and monitors observe it with the crash kind
+  `CrashKind.StackOverflow`;
+- in `main`, or anywhere no supervisor recovers it, it is an unrecovered fault:
+  the process writes `hew: failure: StackOverflow (215)` and exits 1 (§5.8).
+
+It is never a signal, an abort or memory corruption, on any engine. Other
+actors, and the process, continue. Frames that are not calls of Hew functions,
+and so are not checked, are described in §5.7.
+
+The depth at which a stack is exhausted is a resource limit, like
+`#[max_heap]`. It depends on the engine, the optimization level and the size
+of each frame; optimization can remove a frame altogether, as when a call in
+tail position becomes a loop. Every engine guarantees a floor: **10,000 nested
+calls of an ordinary function** succeed in `main`, in an actor handler and in
+a task, at every optimization level. An ordinary function here has up to eight
+scalar parameters and locals, may build and pass strings and collections, and
+holds no large fixed-size aggregate; the floor is measured with
+
+```hew
+fn walk(n: i64, label: string, values: Vec<i64>) -> i64 {
+    if n == 0 {
+        return values.len();
+    }
+    let a = n * 3;
+    let b = a + 7;
+    let c = b % 11;
+    let d = if c > 5 { c - 5 } else { c + 5 };
+    let e = f"{label}";
+    let f = e.len() + d;
+    let g = a - b + c * d;
+    let below = walk(n - 1, label, values);
+    below + f + g - g
+}
+```
+
+called as `walk(10000, "x", [1, 2, 3])`. A recursion deeper than the floor
+either completes or fails with `StackOverflow`. The floor counts calls, not
+bytes, so it does not depend on how an engine lays out a frame; a function with
+more live values or temporaries uses more stack per call and reaches the limit
+sooner.
+
+Each engine enforces the same rule at the same point, the entry of a Hew
+function:
+
+- **Native.** Each function that calls another compares its frame address
+  with its thread's stack limit, which lies 256 KiB above the lowest usable
+  address of the stack. A function that calls nothing cannot recurse; its
+  frame, like the failing call's cleanup and the failure report, uses the
+  space reserved below the limit. Every thread that runs Hew code has a
+  16 MiB stack: scheduler workers are created with it, Linux and FreeBSD let
+  the main thread grow to it by raising the process's soft stack limit (a lower
+  hard limit caps it), and macOS and Windows executables link it in. Lowering
+  the limit, for example with `ulimit -Hs`, lowers the depth available.
+- **WASI.** The same functions perform the same check against the module's
+  1 MiB linear-memory stack, where every checked frame occupies at least 16
+  bytes so that recursion always reaches the limit. `hew run` lets the engine
+  use up to 48 MiB of native stack, so the module's own check fails first.
+- **Sandbox VM.** A call more than 20,000 frames below its task's root fails.
+
+Code in foreign functions is not checked. Exhausting the stack inside an
+`extern` call remains a hardware fault (§5.7).
+
 > **Error propagation:** `Result<T, E>` and `Option<T>` are first-class values. `?` on a `Result` leaves through the enclosing callable's failure edge; `?` on an `Option` propagates absence only into an enclosing `Option` return (§2.2.1). Neither converts absence into an error or discards an error as absence.
 
 ### 2.2.1 Error Propagation
@@ -6461,8 +6530,10 @@ fn main() {
   within the rolling `<duration>` window. The window is a duration literal
   (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
 - `backoff: <expression>`: an optional `std.restart.Backoff`, usually
-  `restart.exponential(initial: 100ms, maximum: 5s)`. The expression runs once
-  during supervisor construction and can use its configuration parameters.
+  `restart.exponential(initial: 100ms, maximum: 5s)`; `maximum` defaults to
+  `30s`. The expression runs once during supervisor construction and can use
+  its configuration parameters. Without `backoff`, a crashed child restarts
+  immediately. A child's own `backoff:` clause replaces it for that child.
 
 **Child specifications:**
 
@@ -6478,6 +6549,11 @@ fn main() {
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
+  - `backoff: <expression>` (optional) — this child's `std.restart.Backoff`,
+    replacing the supervisor's `backoff` for this child alone; refused on a
+    `restart: temporary` child, which never restarts;
+    `restart.immediate()` restarts it without delay under a supervisor that
+    declares one. A child without the clause inherits the supervisor's policy.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
     `5s`). `stop: 0s` terminates immediately. A child still running when the
     deadline passes is terminated and its `#[on(stop)]` hook does not run.
@@ -6543,16 +6619,35 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 An optional `backoff` delays crash recovery per stable child role, including
 nested supervisors and individual pool members. Its first delay is `initial`;
-later failures double it up to `maximum`. Both values are durations, `initial`
-must be positive, and `maximum` must be at least `initial`. Invalid policies
-fail supervisor construction before any child starts.
+later failures double it up to `maximum` and never decrease, so a `maximum`
+below `initial` holds the delay at `initial`. `restart.exponential` defaults
+`maximum` to 30 seconds; both durations must be positive.
+`restart.immediate()` sets both to zero and selects no delay. Any other
+`Backoff` value built directly must have a positive `initial` and a `maximum`
+of at least `initial`. A child whose effective policy holds an invalid value
+fails supervisor construction before any child starts.
+
+A child's `backoff:` clause replaces the supervisor's policy for that child; a
+child without one inherits it. The supervisor's expression runs first, then
+each child's in declaration order, each once per construction. Every member of
+a pool carries its declaration's policy. Under `one_for_all` and
+`rest_for_one`, the crashing child's policy delays the group restart. A
+group restart that replaces a role whose own delayed restart is still pending
+recovers that role's fault and cancels the pending restart, so the group is
+restarted and the budget charged once. A
+`temporary` child never restarts, so a `backoff:` clause on it is a compile
+error; a `transient` child's applies to its restarts after `Terminated` or
+`Crashed`. A child inheriting the supervisor's policy is unaffected by its
+restart kind.
 
 After a replacement runs without failure for the supervisor's existing restart
 window, its next crash uses `initial` again. That healthy interval begins when
 the replacement is published; time spent waiting or constructing it does not
-count. This reset does not change the restart intensity budget. Stopping a
-supervisor cancels pending delays and waits for their cleanup. Omitting
-`backoff` retains the established restart behaviour.
+count. Each role resets on its own window. Delays never change the restart
+intensity budget, which stays one per supervisor and counts each restart when
+it is applied. Stopping a supervisor cancels pending delays and waits for their
+cleanup. A child with no effective `backoff` restarts immediately; the
+intensity budget alone bounds its crash loop.
 
 Circuit-breaker configuration remains outside the source restart contract;
 runtime support alone does not imply a source API.
@@ -6681,6 +6776,14 @@ record is written, so the operating system's crash artefacts (cores, crash
 reports, dumps) are still produced. A fault in a thread's stack guard is
 reported as the failure kind `StackOverflow`.
 
+Stack exhaustion in Hew code is not a hardware fault: every function that calls
+another checks its frame on entry and fails with the ordinary trap
+`StackOverflow` (§2.2), which crashes only the actor that recursed. Only frames
+the check does not cover can still reach a thread's stack guard: foreign code,
+the runtime itself (such as a wake relayed through deeply nested generators),
+and the generated drop and copy glue that walks a deeply nested recursive value.
+Such a fault is reported as `StackOverflow` and remains process-fatal.
+
 A `panic()` outside an actor unwinds the same way. The generated entry runs
 beneath a runtime-owned catch boundary, so the same LLVM cleanup pads discharge
 the same drop obligations - `#[resource]` closes included - before the process
@@ -6799,6 +6902,13 @@ work, listeners and periodic handlers; *drain* lets accepted actor turns,
 including the peer calls they make, finish within a bounded window (5s);
 *terminate* stops supervisors bottom-up and joins the workers. Returning from
 `main` drains without closing root admission, since the root has finished.
+
+The drain window is measured on the runtime clock. Under the deterministic
+driver that is virtual time: a drain poll with nothing ready and no timer due
+advances the clock by its poll interval, and a pending timer moves it to that
+timer's deadline. A drain whose remaining work waits on a timer due after the
+window therefore ends as a failed shutdown at once, rather than running the
+timer; on the threaded scheduler the same drain fails when the window elapses.
 
 Once quiesce closes root admission, the destination actor is still alive, so a
 refused call never reports `Dead`. A bare or `.Wait` completion call reports
@@ -7858,6 +7968,20 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 - Each worker has a local run queue of ready actors
 - Idle workers steal from busy workers' queues
 - Actors are scheduled as units (process messages until yield/await)
+- A worker that runs out of work, and a thread blocked on a reply outside the
+  pool, spins briefly before it parks. The spin adapts per thread: a spin that
+  finds work lengthens the next one, and a wasted spin shortens it to nothing,
+  with a periodic retry.
+  Spinning is off on a single hardware thread or when the workers outnumber
+  the hardware threads, and it stops when the runtime shuts down. A parked
+  worker uses no CPU until work arrives.
+
+**Environment:**
+
+- `HEW_WORKERS` sets the worker count (default: available hardware threads).
+- `HEW_SPIN` sets the maximum spin iterations before a park (default 512, at
+  most 16384);
+  `0` or `off` parks at once.
 
 **Fairness and suspension:**
 

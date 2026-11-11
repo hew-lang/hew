@@ -45,6 +45,8 @@ pub struct SemDebugFacts {
     pub sites: BTreeMap<SiteId, SemSourceSite>,
     /// The file each item with a body was lowered from.
     pub item_files: BTreeMap<ItemId, u32>,
+    /// The `Self` type of each impl method body.
+    pub item_receivers: BTreeMap<ItemId, hew_types::ResolvedTy>,
 }
 
 impl SemDebugFacts {
@@ -55,6 +57,7 @@ impl SemDebugFacts {
             sites: sources,
             scopes: extents,
             item_files,
+            item_receivers,
         } = analysis.into_source_facts();
         let mut scopes: Vec<SemDebugScope> = extents
             .iter()
@@ -96,6 +99,7 @@ impl SemDebugFacts {
             scopes,
             sites,
             item_files: item_files.into_iter().collect(),
+            item_receivers: item_receivers.into_iter().collect(),
         }
     }
 
@@ -118,6 +122,12 @@ impl SemDebugFacts {
         self.site(provenance)
             .filter(|site| site.file == ROOT_FILE)
             .map(|site| site.offset)
+    }
+
+    /// The impl receiver a method body belongs to.
+    #[must_use]
+    pub fn item_receiver(&self, item: ItemId) -> Option<&hew_types::ResolvedTy> {
+        self.item_receivers.get(&item)
     }
 
     /// The file a function body indexes.

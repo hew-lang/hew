@@ -1316,7 +1316,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let child = frame
                 .as_ref()
                 .expect("borrowed adapter owns a frame")
-                .init_child(self.ctx, &self.llvm, &builder)?;
+                .init_child(self.ctx, &builder)?;
             arguments.push(child.into());
             let child_frame =
                 suspend::call_value(&builder, self.ramps[&body.id], &arguments, "invoke.frame")?
@@ -1931,16 +1931,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("load exact invocation adapter")?
             .into_pointer_value();
         let (argument_slots, moved) = self.prepare_callable_arguments(args)?;
-        let code = acquire_callable_code(
-            self.ctx,
-            self.target_data,
-            self.llvm,
-            &self.builder,
-            descriptor,
-        )?;
-        if consuming {
+        // A borrowed receiver keeps its carrier, and the carrier's code root,
+        // live for the whole call. Only a consuming call gives the carrier to
+        // the callee, which may drop it before its own code finishes running.
+        let code = if consuming {
+            let code = acquire_callable_code(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                &self.builder,
+                descriptor,
+            )?;
             self.clear_owned(source)?;
-        }
+            Some(code)
+        } else {
+            None
+        };
         self.builder
             .build_store(self.active_fault, pointer.const_null())
             .llvm_ctx("clear invocation fault")?;
@@ -1991,7 +1997,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_store(self.active_status, status)
                 .llvm_ctx("retain invocation status")?;
-            release_code(self.ctx, self.llvm, &self.builder, code)?;
+            if let Some(code) = code {
+                release_code(self.ctx, self.llvm, &self.builder, code)?;
+            }
             return self.emit_call_outcome(status, result, normal, unwind);
         }
         let frame = self.frame.as_ref().ok_or_else(|| {
@@ -2034,7 +2042,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("finish synchronous invocation")?;
         self.builder.position_at_end(resumable);
-        let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
+        let child = frame.init_child(self.ctx, &self.builder)?;
         let child_frame = self
             .builder
             .build_indirect_call(
@@ -2077,7 +2085,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("retain invocation status")?;
-        release_code(self.ctx, self.llvm, &self.builder, code)?;
+        if let Some(code) = code {
+            release_code(self.ctx, self.llvm, &self.builder, code)?;
+        }
         self.emit_call_outcome(status, result, normal, unwind)
     }
 }

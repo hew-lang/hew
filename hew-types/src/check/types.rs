@@ -423,6 +423,10 @@ pub struct TypeCheckOutput {
     /// effect checking and HIR must share its exact declaration occurrences.
     /// Present after program preparation; absent only in unprepared fixtures.
     pub selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
+    /// Module-graph modules whose resolved source is the canonical std below
+    /// the std roots this compilation was given. Lowering consumes this
+    /// instead of judging source provenance itself.
+    pub canonical_std_modules: HashSet<hew_parser::module::ModulePath>,
     pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub inputs: Vec<crate::compile_time::CompilationInput>,
     pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -2508,6 +2512,53 @@ pub(super) struct GenericCallEdge {
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
+/// The dependency prefix of a checkpoint's generic requirement discharge.
+///
+/// A root records its requirements and instantiation sites after the
+/// dependencies' own, and no dependency calls a root function, so the root
+/// discharges only its own entries against the dependencies' generic demands
+/// and call edges.
+#[derive(Debug, Default)]
+pub(super) struct GenericRequirementMemo {
+    /// Dependency demands per owner and dependency instantiation sites, by
+    /// the place that recorded them. Finalization itself records demands
+    /// after a root's, so a root's entries are not a positional suffix.
+    pub(super) requirements: HashMap<Option<crate::DefId>, Vec<GenericRequirementSite>>,
+    pub(super) sites: HashSet<GenericInstantiationSiteKey>,
+    /// Dependency demands that stay generic, and the call edges reaching them.
+    pub(super) generic: HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
+    pub(super) edges: HashMap<crate::DefId, Vec<GenericCallEdge>>,
+    /// Receivers the dependency discharge proved for each close method.
+    pub(super) checked_receivers: Vec<(crate::DefId, HashSet<crate::ResolvedTy>)>,
+}
+
+/// Where a generic requirement was recorded, independent of its inferred type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GenericRequirementSite {
+    kind: GenericRequirementKind,
+    span: Span,
+    source_module: Option<String>,
+}
+
+impl GenericRequirementSite {
+    pub(super) fn of(requirement: &GenericRequirement) -> Self {
+        Self {
+            kind: requirement.kind.clone(),
+            span: requirement.span.clone(),
+            source_module: requirement.source_module.clone(),
+        }
+    }
+}
+
+/// A generic application's callee, enclosing declaration and span.
+pub(super) type GenericInstantiationSiteKey = (crate::DefId, Option<crate::DefId>, usize, usize);
+
+impl GenericFnInstantiationSite {
+    pub(super) fn key(&self) -> GenericInstantiationSiteKey {
+        (self.callee, self.caller, self.span.start, self.span.end)
+    }
+}
+
 /// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
@@ -3178,6 +3229,16 @@ pub(super) struct DeferredInferenceHole {
     pub(super) source_module: Option<String>,
 }
 
+/// A negation whose operand type was still an inference variable when the
+/// expression was checked; an unsigned resolution is refused after inference.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredNegateCheck {
+    pub(super) span: Span,
+    pub(super) operand: Ty,
+    /// Diagnostic routing token captured while the source item was active.
+    pub(super) source_module: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DeferredCastCheck {
     pub(super) span: Span,
@@ -3305,6 +3366,10 @@ pub struct Checker {
     /// stdlib search-path authority for this check. A `std.*` spelling alone
     /// is not trusted: user packages may use the same path.
     pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Graph modules whose resolved source is the canonical std below the
+    /// compilation's std roots; published to lowering as
+    /// [`TypeCheckOutput::canonical_std_modules`].
+    pub(super) canonical_std_graph_modules: HashSet<hew_parser::module::ModulePath>,
     /// Source files assembled into each module of this check's graph.
     ///
     /// A directory module owns its primary file plus every peer `.hew` file in
@@ -3576,6 +3641,7 @@ pub struct Checker {
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    pub(super) deferred_negate_checks: Vec<DeferredNegateCheck>,
     /// `is` obligations recorded while an operand type was still an
     /// inference variable, keyed by the `is` expression so a body checked more
     /// than once records one obligation.
@@ -3709,7 +3775,7 @@ pub struct Checker {
     pub(super) trait_super: HashMap<crate::DefId, Vec<TraitRef>>,
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
-    pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    pub(super) trait_impls: BTreeMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
     /// Ordinary trait obligations currently being proven, with applied arguments.
     pub(super) active_trait_proofs: Vec<(TraitProofKind, Ty, TraitRef)>,
     /// Abort remaining candidates after this root proof exhausts its budget.
@@ -4198,6 +4264,8 @@ pub struct Checker {
     /// Caller-seeded configuration remains available to the first program;
     /// every later program starts from structurally fresh program-owned state.
     pub(super) has_checked_program: bool,
+    /// Dependency-only finalization shared by roots forked from one checkpoint.
+    pub(super) finalization_memo: super::dependency_analysis::FinalizationMemo,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -4454,6 +4522,7 @@ impl Checker {
             extern_method_signatures: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
+            canonical_std_graph_modules: HashSet::new(),
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
             current_item_source: None,
@@ -4559,6 +4628,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
+            deferred_negate_checks: Vec::new(),
             deferred_is_checks: BTreeMap::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
@@ -4594,7 +4664,7 @@ impl Checker {
             checking_declaration: None,
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
-            trait_impls: HashMap::new(),
+            trait_impls: BTreeMap::new(),
             active_trait_proofs: Vec::new(),
             trait_proof_limit_reached: false,
             source_impl_declarations: HashMap::new(),
@@ -4695,6 +4765,7 @@ impl Checker {
             selected_builtin_program: None,
             must_use_types: HashSet::new(),
             has_checked_program: false,
+            finalization_memo: super::dependency_analysis::FinalizationMemo::default(),
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             const_values: HashMap::new(),

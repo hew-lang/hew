@@ -133,6 +133,44 @@ fn supervisor_stop_clause_carries_a_duration_expression() {
     ));
 }
 
+/// A child's `backoff:` clause is an ordinary expression beside `restart:` and
+/// `stop:`, in either order, and stays separate from the supervisor's own.
+#[test]
+fn supervisor_child_backoff_clause_parses_beside_restart() {
+    for clauses in [
+        "restart: permanent backoff: restart.immediate()",
+        "backoff: restart.immediate() restart: permanent",
+    ] {
+        let source = format!(
+            "supervisor Team {{\n    backoff: restart.exponential(initial: 100ms);\n    child worker: Worker {clauses};\n    child other: Worker;\n}}\n"
+        );
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{clauses}: {:?}", result.errors);
+        let Item::Supervisor(supervisor) = &result.program.items[0].0 else {
+            panic!("expected supervisor");
+        };
+        assert!(supervisor.backoff.is_some());
+        let child = &supervisor.children[0];
+        assert_eq!(child.restart, Some(RestartPolicy::Permanent));
+        assert!(child.backoff.is_some());
+        assert!(supervisor.children[1].backoff.is_none());
+    }
+}
+
+#[test]
+fn supervisor_child_backoff_clause_is_declared_once() {
+    let result = parse(
+        "supervisor Team { child worker: Worker backoff: restart.immediate() backoff: restart.immediate(); }",
+    );
+    assert!(
+        result.errors.iter().any(|error| error
+            .message
+            .contains("duplicate supervisor child `backoff:`")),
+        "{:?}",
+        result.errors
+    );
+}
+
 #[test]
 fn supervisor_child_accepts_only_the_stop_clause() {
     for old in ["shutdown: 50ms", "shutdown: brutal_kill"] {
@@ -6333,11 +6371,15 @@ fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
 
 #[test]
 fn legacy_path_separators_on_one_long_line_stay_linear() {
-    // Each `::` reports the line it sits on; the quoted context is bounded so
-    // a long line does not cost quadratic memory.
-    let source = format!("fn main() {{ {} }}", "::".repeat(20_000));
+    // Each separated `::` reports the line it sits on; the quoted context is
+    // bounded so a long line does not cost quadratic memory.
+    let source = format!("fn main() {{ x{} }}", "::x".repeat(20_000));
     let errors = parse(&source).errors;
     assert!(errors.len() >= 20_000, "{}", errors.len());
     let quoted: usize = errors.iter().map(|e| e.message.len()).sum();
     assert!(quoted < 20_000 * 600, "{quoted} bytes of messages");
+    // A run of adjacent separators is one report.
+    let source = format!("fn main() {{ {} }}", "::".repeat(20_000));
+    let errors = parse(&source).errors;
+    assert!(errors.len() <= 2, "{}", errors.len());
 }

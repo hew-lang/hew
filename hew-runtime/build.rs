@@ -2,6 +2,12 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(hew_fault_loom)");
     println!("cargo:rustc-check-cfg=cfg(kani)");
     println!("cargo:rustc-check-cfg=cfg(hew_protocol_host)");
+    println!("cargo:rustc-check-cfg=cfg(hew_sanitized)");
+    // Sanitizer builds must see every frame release reach the allocator, so
+    // the frame cache stays out of their way.
+    if std::env::var_os("CARGO_CFG_SANITIZE").is_some() {
+        println!("cargo:rustc-cfg=hew_sanitized");
+    }
     println!("cargo:rerun-if-env-changed=LLVM_SYS_221_PREFIX");
     println!("cargo:rerun-if-changed=src/coro_llvm.cpp");
     // The coroutine builtins lower the indirect calls with LLVM's calling

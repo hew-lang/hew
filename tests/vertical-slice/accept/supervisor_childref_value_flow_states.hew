@@ -6,10 +6,12 @@
 // Every cell performs an ask. Each shape also performs a tell, whose proof is
 // reaching the final sentinel without a process fault.
 //
-// A static-pool member is separately exhausted and exercised through a stale
-// value, the index accessor, and the Option-returning get accessor. The final
+// A temporary static-pool member is separately left dead and exercised through
+// a stale value, the index accessor, and the Option-returning get accessor. The final
 // root-supervisor budget failures intentionally make the process exit 1; the
 // harness asserts that clean failure class plus the sentinel line.
+import std.restart;
+
 actor Worker {
     let value: i64 = 7;
     receive fn work() -> i64 {
@@ -34,6 +36,8 @@ supervisor LivePool {
 supervisor RestartPool {
     strategy: one_for_one;
     intensity: 20 within 60s;
+    // A crash leaves the role restarting for the rest of the program.
+    backoff: restart.exponential(initial: 60s);
 
     child worker: Worker { value: 7 };
 }
@@ -56,7 +60,7 @@ supervisor StaticPool {
     strategy: simple_one_for_one;
     intensity: 2 within 60s;
 
-    pool workers: Worker { value: 7 } count: 1;
+    pool workers: Worker { value: 7 } count: 1 restart: temporary;
 }
 
 type Holder {
@@ -141,14 +145,10 @@ fn main() {
     let _ = live_holder.child.note();
     let _ = live_vec[0].note();
     let _ = live_capture().note();
-    // Build a long backoff, then enter the restarting state and sweep before
-    // the delayed restart can publish a new incarnation.
+    // Enter the restarting state and sweep before the delayed restart can
+    // publish a new incarnation.
     let restart_sup = spawn RestartPool;
     let restarting = restart_sup.worker;
-    ok = ok && crash_and_wait_for_restart(restarting);
-    ok = ok && crash_and_wait_for_restart(restarting);
-    ok = ok && crash_and_wait_for_restart(restarting);
-    ok = ok && crash_and_wait_for_restart(restarting);
     let _ = restarting.crash_me();
     ok = ok && wait_for_unavailable(restarting);
     let restarting_inline = match restart_sup.worker.work() {
@@ -235,8 +235,6 @@ fn main() {
     // is terminally dead. Cover a stale value, direct index, and get().
     let pool_sup = spawn StaticPool;
     let stale_pool_member = pool_sup.workers[0];
-    ok = ok && crash_and_wait_for_restart(stale_pool_member);
-    ok = ok && crash_and_wait_for_restart(stale_pool_member);
     let _ = stale_pool_member.crash_me();
     ok = ok && wait_for_unavailable(stale_pool_member);
     ok = ok && expect_unavailable(stale_pool_member);

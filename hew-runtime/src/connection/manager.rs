@@ -113,6 +113,7 @@ pub(crate) unsafe fn connmgr_new(
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+        inbound_admissions: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
         gossip_out: Arc::new(AtomicU64::new(0)),
@@ -228,6 +229,36 @@ pub(crate) unsafe fn hew_connmgr_mark_stopping(mgr: *mut HewConnMgr) {
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     mgr_ref.reconnect_shutdown.store(true, Ordering::Release);
+}
+
+/// Cancel every blocking transport operation of a stopping manager.
+///
+/// Node stop calls this after [`hew_connmgr_mark_stopping`] and before joining
+/// the threads that run admissions and probes, so a stalled peer cannot hold
+/// teardown: an inbound handshake read, a seed dial's admission or a send into
+/// a full socket buffer each fail promptly instead of waiting on the peer.
+/// Installed readers are marked stopped first so their wake-up is an expected
+/// stop, never a removal or a reconnect. An admission that stores its socket
+/// after the sweep next observes the shutdown flag and closes it; the
+/// transport's slot lock orders that store against the sweep. Slots stay
+/// allocated, so [`hew_connmgr_free`] still closes each one exactly once.
+///
+/// # Safety
+///
+/// `mgr` must be null or a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_cancel_io(mgr: *mut HewConnMgr) {
+    // SAFETY: caller guarantees `mgr` is null or valid for the call.
+    let Some(mgr) = (unsafe { mgr.as_ref() }) else {
+        return;
+    };
+    debug_assert!(mgr.reconnect_shutdown.load(Ordering::Acquire));
+    mgr.connections.access(|connections| {
+        for connection in connections.iter() {
+            connection.reader_stop.store(1, Ordering::Release);
+        }
+    });
+    // SAFETY: the manager's transport outlives the manager.
+    unsafe { crate::transport::hew_transport_cancel_io(mgr.transport) };
 }
 
 pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<Arc<AtomicBool>> {
@@ -374,6 +405,25 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         None
     };
 
+    apply_reconnect(
+        mgr,
+        |conn| conn.conn_id == conn_id,
+        target_owned,
+        max_retries,
+        u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
+    )
+}
+
+/// Set or clear reconnect on the one installed connection `selects` picks;
+/// `target_addr` is `None` to disable it. Returns 0, or -1 when no connection
+/// is selected.
+pub(super) fn apply_reconnect(
+    mgr: &HewConnMgr,
+    selects: impl Fn(&super::ConnectionActor) -> bool,
+    target_addr: Option<String>,
+    max_retries: c_int,
+    expected_node_id: Option<u16>,
+) -> c_int {
     let retries = if max_retries > 0 {
         normalize_max_retries(max_retries)
     } else {
@@ -381,26 +431,21 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     };
 
     mgr.connections.access(|conns| {
-        let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
-            set_last_error(format!(
-                "hew_connmgr_configure_reconnect: connection {conn_id} not found"
-            ));
+        let Some(conn) = conns.iter_mut().find(|c| selects(c)) else {
+            set_last_error("hew_connmgr_configure_reconnect: connection not found");
             return -1;
         };
-        if enabled == 0
-            || mgr.seed_targets.access(|seeds| {
-                seeds
-                    .iter()
-                    .any(|seed| Some(&seed.target_addr) == target_owned.as_ref())
-            })
-        {
+        let Some(target_addr) = target_addr.filter(|target| {
+            !mgr.seed_targets
+                .access(|seeds| seeds.iter().any(|seed| &seed.target_addr == target))
+        }) else {
             conn.reconnect = None;
             return 0;
-        }
+        };
         conn.reconnect = Some(ReconnectSettings {
-            target_addr: target_owned.clone().unwrap_or_default(),
+            target_addr,
             max_retries: retries,
-            expected_node_id: u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
+            expected_node_id,
         });
         0
     })

@@ -31,3 +31,11 @@ fn main() {
     root.close();
 }
 ```
+
+## Names and escapes
+
+Writing escapes `&`, `<`, `>` and quotes, and writes tab, newline and carriage
+return in attribute values and text as character references so they read back
+unchanged. Element and attribute names must follow the XML name rules; a name
+with a space, a leading digit or markup characters is refused instead of
+written.

@@ -212,23 +212,30 @@ impl Parser<'_> {
                 let mut parser =
                     Parser::with_contexts(text, range.start, Arc::clone(&self.contexts))
                         .with_fragments(self.fragments.within(range.clone()));
-                let mut tokens = Vec::new();
-                while !parser.at_end() {
-                    if let Some(fragment) = parser.peek_fragment() {
-                        let mut captured = Vec::new();
-                        while !parser.at_end() && parser.peek_span().start < fragment.span().end {
-                            captured.push(parser.parse_raw_token_tree_atom()?);
+                // Transfer diagnostics even when a nested token tree fails.
+                // Propagating `None` before this transfer silently drops the
+                // invocation and makes malformed source look parse-clean.
+                let tokens = (|| {
+                    let mut tokens = Vec::new();
+                    while !parser.at_end() {
+                        if let Some(fragment) = parser.peek_fragment() {
+                            let mut captured = Vec::new();
+                            while !parser.at_end() && parser.peek_span().start < fragment.span().end
+                            {
+                                captured.push(parser.parse_raw_token_tree_atom()?);
+                            }
+                            tokens.push(TokenTree::Fragment {
+                                syntax: Box::new(fragment),
+                                tokens: captured,
+                            });
+                        } else {
+                            tokens.push(parser.parse_raw_token_tree_atom()?);
                         }
-                        tokens.push(TokenTree::Fragment {
-                            syntax: Box::new(fragment),
-                            tokens: captured,
-                        });
-                    } else {
-                        tokens.push(parser.parse_raw_token_tree_atom()?);
                     }
-                }
+                    Some(tokens)
+                })();
                 self.errors.extend(parser.errors);
-                expressions.push((range, tokens));
+                expressions.push((range, tokens?));
             }
             return Some(TokenTree::Interpolated {
                 spelling: raw,

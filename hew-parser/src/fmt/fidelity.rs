@@ -145,12 +145,20 @@ impl std::fmt::Display for FidelityError {
 
 impl std::error::Error for FidelityError {}
 
-/// Whether `source` ends its lines with `\r\n`, judged by its first line.
+/// Whether layout uses `\r\n`, judged by the first line break outside
+/// literals and raw macro token trees. Their verbatim contents can use a
+/// different style and must not determine how surrounding layout is printed.
 #[must_use]
 pub fn uses_crlf(source: &str) -> bool {
-    source
-        .find('\n')
-        .is_some_and(|i| source[..i].ends_with('\r'))
+    let mut gap_start = 0;
+    for (start, end) in super::line_ending_spans(source) {
+        let gap = &source[gap_start..start];
+        if let Some(i) = gap.find('\n') {
+            return gap[..i].ends_with('\r');
+        }
+        gap_start = end;
+    }
+    false
 }
 
 /// Prove that `formatted` reprints `source` without changing its program,
@@ -204,26 +212,46 @@ pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
 }
 
 /// Every line break between tokens of `formatted` must be `\r\n` when `crlf`
-/// and `\n` otherwise. Breaks inside literals are the program's content.
+/// and `\n` otherwise. Breaks inside literals are the program's content, and
+/// so is a carriage return inside a comment that ends no line.
 fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> {
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(formatted)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((formatted.len(), formatted.len())));
-    for (start, end) in spans {
+    for (start, end) in super::line_ending_spans(formatted) {
         let gap = &formatted.as_bytes()[gap_start..start];
-        for (i, &b) in gap.iter().enumerate() {
+        let mut line_comment = false;
+        let mut block_comments = 0usize;
+        let mut i = 0;
+        while i < gap.len() {
+            // Delimiters consume both bytes, just as the lexer does. The
+            // `*/` overlapping the opener in `/*/` does not close it.
+            if !line_comment && gap[i..].starts_with(b"/*") {
+                block_comments += 1;
+                i += 2;
+                continue;
+            }
+            if block_comments > 0 && gap[i..].starts_with(b"*/") {
+                block_comments -= 1;
+                i += 2;
+                continue;
+            }
+            if block_comments == 0 && !line_comment && gap[i..].starts_with(b"//") {
+                line_comment = true;
+                i += 2;
+                continue;
+            }
+            let b = gap[i];
             let preceded_by_cr = i > 0 && gap[i - 1] == b'\r';
-            let wrong = match b {
-                b'\n' => crlf != preceded_by_cr,
-                b'\r' => !crlf || gap.get(i + 1) != Some(&b'\n'),
-                _ => false,
-            };
-            if wrong {
+            if b == b'\n' {
+                line_comment = false;
+            }
+            let in_comment = line_comment || block_comments > 0;
+            let lone_cr = b == b'\r' && gap.get(i + 1) != Some(&b'\n');
+            if (b == b'\n' && crlf != preceded_by_cr) || (lone_cr && !in_comment) {
                 return Err(FidelityError::LineEnding {
                     formatted_offset: gap_start + i,
                 });
             }
+            i += 1;
         }
         gap_start = end;
     }
@@ -272,7 +300,7 @@ fn trace(source: &str) -> Vec<(TraceItem, usize)> {
         token: None,
         punctuation: None,
         item: Some(TraceItem::Comment {
-            text: c.text.trim_end().replace("\r\n", "\n"),
+            text: super::normalize_layout_line_endings(c.text.trim_end(), false),
             trailing: super::is_trailing_comment(source, c.span.start),
             before: Vec::new(),
             after: Vec::new(),

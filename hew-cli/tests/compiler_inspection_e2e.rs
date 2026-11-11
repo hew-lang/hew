@@ -56,7 +56,12 @@ fn expanded_ast_does_not_require_imported_bodies_to_type_check() {
         let diagnostics: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
         assert!(
             diagnostics.as_array().unwrap().iter().any(|diagnostic| {
-                diagnostic["file"].as_str() == helper.to_str() && diagnostic["severity"] == "error"
+                diagnostic["file"]
+                    .as_str()
+                    .and_then(|file| Path::new(file).canonicalize().ok())
+                    .as_ref()
+                    == Some(&helper)
+                    && diagnostic["severity"] == "error"
             }),
             "{diagnostics}"
         );

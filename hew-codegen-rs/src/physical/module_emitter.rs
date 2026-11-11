@@ -541,10 +541,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 
     pub(super) fn code_owner(&self) -> PointerValue<'ctx> {
-        self.llvm.get_global("HewLiveCodeOwner").map_or_else(
-            || self.ctx.ptr_type(AddressSpace::default()).const_null(),
-            |owner| owner.as_pointer_value(),
-        )
+        code_owner_slot(self.ctx, &self.llvm)
     }
 
     pub(super) fn emit_value_descriptor(

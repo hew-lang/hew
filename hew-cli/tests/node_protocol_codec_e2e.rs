@@ -7,8 +7,8 @@ mod protocol;
 use hew_codec::Format;
 use protocol::{
     CleanupFault, ClusterEnrollment, ClusterMember, DownReason, MonitorDown, NodeHandshake,
-    RegistryGossip, RelayChunk, RelayClose, RelayOpen, ServiceOffer, SwimControl, SwimGossip,
-    WireLocation, WireSession,
+    RegistryGossip, RelayChunk, RelayClose, RelayOpen, ServiceOffer, ServiceRetract, SwimControl,
+    SwimGossip, WireLocation, WireSession,
 };
 
 fn offer() -> ServiceOffer {
@@ -113,6 +113,20 @@ fn relay_chunk() -> RelayChunk {
         body: b"relay bytes".to_vec(),
     }
 }
+#[test]
+fn service_retract_round_trips_in_both_formats() {
+    let retract = ServiceRetract {
+        grant_id: 7,
+        target: offer().target,
+    };
+    for format in [Format::Cbor, Format::Msgpack] {
+        assert_eq!(
+            ServiceRetract::decode(format, &retract.encode(format)).unwrap(),
+            retract
+        );
+    }
+}
+
 fn relay_close() -> RelayClose {
     RelayClose { circuit: 17 }
 }

@@ -125,7 +125,10 @@ pub(crate) unsafe fn connmgr_new(
         pending_registry_flush: PoisonSafe::new(HashMap::new()),
         pending_registry_flush_count: AtomicUsize::new(0),
     });
-    Box::into_raw(mgr)
+    let mgr = Box::into_raw(mgr);
+    // SAFETY: the manager was just allocated; free closes the exports first.
+    unsafe { (*mgr).service_exports.bind(mgr) };
+    mgr
 }
 
 /// Bind an outbound transport connection to an expected peer `NodeId`.

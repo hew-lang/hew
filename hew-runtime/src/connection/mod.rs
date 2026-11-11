@@ -114,6 +114,9 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // commit (`handshake::send_commit`); otherwise each end keeps the newer
 // same-session connection.
 const HEW_FEATURE_RESPONDER_COMMIT: u32 = 1 << 4;
+// Service offers are acknowledged per peer session and closed grants are
+// retracted with `CTRL_SERVICE_RETRACT`. Both ends must set this bit.
+const HEW_FEATURE_SUPPORTS_SERVICE_SESSIONS: u32 = 1 << 5;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:

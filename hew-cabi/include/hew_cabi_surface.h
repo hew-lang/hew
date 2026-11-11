@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1789u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1790u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1789] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1790] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -8761,6 +8761,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1789] = {
     {"hew_uuid_v7", "{\"native\": \"fn hew_uuid_v7() -> *mut HewString\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_variant_free_walk",
+     "{\"native\": \"fn hew_variant_free_walk( *mut c_void, unsafe extern "
+     "\\\"C\\\" fn(*mut c_void), *const hew_cabi::code::HewCodeLeaseSlot, )\", "
+     "\"wasm32-wasip1\": \"fn hew_variant_free_walk( *mut c_void, unsafe "
+     "extern \\\"C\\\" fn(*mut c_void), *const "
+     "hew_cabi::code::HewCodeLeaseSlot, )\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_vec_abort_oob",
      "{\"native\": \"fn hew_vec_abort_oob( i64, i64) -> !\", "
      "\"wasm32-wasip1\": \"fn hew_vec_abort_oob( i64, i64) -> !\"}",

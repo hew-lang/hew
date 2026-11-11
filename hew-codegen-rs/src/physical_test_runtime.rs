@@ -86,6 +86,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         release_walker::hew_release_driver_poll,
         release_walker::hew_release_driver_fault,
         release_walker::hew_release_driver_free,
+        release_walker::hew_variant_free_walk,
         hashmap::hew_hashmap_new_with_layout_checked,
         hashmap::hew_hashmap_keys_layout_checked,
         hashmap::hew_hashmap_values_layout_checked,

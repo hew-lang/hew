@@ -15,6 +15,13 @@ pub(super) fn disable_stack_check_for_jit(llvm: &Module<'_>) {
 
 /// Bind the actual runtime ABI shared by the physical JIT oracles.
 pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
+    // JIT oracles run the lowered module before object emission fills the
+    // native symbol table. Give its image-relative lookup an empty valid table.
+    static EMPTY_SYMTAB: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if let Some(table) = llvm.get_global(hew_debug_abi::SYMTAB_SYMBOL) {
+        let bytes = EMPTY_SYMTAB.get_or_init(|| hew_debug_abi::TableWriter::symtab(&[]).0);
+        engine.add_global_mapping(&table, bytes.as_ptr() as usize);
+    }
     macro_rules! bind {
         ($($module:ident :: $name:ident),* $(,)?) => {$({
             if let Some(function) = llvm.get_function(stringify!($name)) {

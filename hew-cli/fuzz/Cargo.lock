@@ -1553,6 +1553,7 @@ dependencies = [
  "inkwell",
  "llvm-sys",
  "serde_json",
+ "shlex",
 ]
 
 [[package]]

@@ -1,3 +1,6 @@
+#[path = "llvm_flags.rs"]
+mod llvm_flags;
+
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -5,6 +8,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=LLVM_SYS_221_PREFIX");
     println!("cargo:rerun-if-changed=src/physical_debug_shim.cpp");
+    println!("cargo:rerun-if-changed=llvm_flags.rs");
     let llvm_config = env::var_os("DEP_LLVM_22_CONFIG_PATH")
         .expect("llvm-sys must provide its selected LLVM configuration path");
     let llvm_config = Path::new(&llvm_config);
@@ -27,11 +31,15 @@ fn main() {
     // built with. A mismatch is a silent struct-layout corruption inside
     // LLVM, not a link error. `cc` compiles this into a static archive
     // the crate links, so the `hew` binary gains no dynamic LLVM dependency.
+    let include_dir = llvm_config_output(llvm_config, "--includedir");
+    let cxx_flags = llvm_config_output(llvm_config, "--cxxflags");
+    let flags = llvm_flags::cxx_flags(&cxx_flags, &include_dir)
+        .expect("cannot parse llvm-config C++ flags");
     cc::Build::new()
         .cpp(true)
         .file("src/physical_debug_shim.cpp")
-        .include(llvm_config_output(llvm_config, "--includedir"))
-        .flags(llvm_config_output(llvm_config, "--cxxflags").split_whitespace())
+        .include(include_dir)
+        .flags(flags)
         .flag_if_supported("-std=c++17")
         .flag_if_supported("/std:c++17")
         .warnings(false)

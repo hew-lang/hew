@@ -32,8 +32,10 @@ llvm-sys = "221"
 [build-dependencies]
 # Compiles the LLVM C++ debug shim into this crate's static archive.
 cc = "1"
+shlex = "2"
 
 [dev-dependencies]
+shlex = "2"
 # Read the DWARF the emitter writes, independent of LLVM.
 gimli = "0.33"
 object = "0.40"

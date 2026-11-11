@@ -193,3 +193,64 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
     assert!(stdout.contains("main at "), "{stdout}");
     assert!(stdout.contains("p.hew:8"), "{stdout}");
 }
+
+/// The compact table only describes physical frames; DWARF additionally
+/// expands an optimized physical frame into the source calls it inlined.
+#[test]
+fn optimized_debug_build_resolves_inlined_failure_frames() {
+    require_codegen();
+    let dir = tempdir();
+    let src = dir.path().join("inline.hew");
+    std::fs::write(&src, PANICS).expect("write source");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "inline");
+    let build = Command::new(hew_binary())
+        .args(["build", "--release", "-g"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("build optimized debug program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let log = dir.path().join("failure.ndjson");
+    let run = Command::new(&binary)
+        .env("HEW_BACKTRACE", "1")
+        .env("HEW_FAILURE_LOG", &log)
+        .output()
+        .expect("run optimized debug program");
+    assert!(!run.status.success());
+    let record: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(log)
+            .expect("failure log")
+            .lines()
+            .next()
+            .expect("record"),
+    )
+    .expect("parse failure record");
+    let frame = record["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .find(|frame| frame["hew_fn"] == "main")
+        .unwrap_or_else(|| panic!("main frame missing: {record}"));
+    let output = symbolize(
+        &binary,
+        &[
+            frame["pc"].as_str().expect("pc").to_owned(),
+            format!("--base={}", record["build"]["image_base"].as_str().unwrap()),
+            "--return-addresses".to_owned(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("level2 at "), "{stdout}");
+    assert!(stdout.contains("(inlined)"), "{stdout}");
+    assert!(stdout.contains("main at "), "{stdout}");
+}

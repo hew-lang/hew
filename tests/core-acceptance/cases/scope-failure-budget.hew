@@ -1,0 +1,28 @@
+#[max_heap(8192)]
+actor Worker {
+    receive fn check() -> i64 {
+        var recovered = 0;
+        for _ in 0..64 {
+            let matched = scope {
+                panic("boom");
+                false
+            } handle failure {
+                match failure {
+                    .Fault { message } => message == "boom",
+                    _ => false,
+                }
+            };
+            if matched {
+                recovered += 1;
+            }
+        }
+        recovered
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    assert(worker.check().expect("worker survived") == 64);
+    stop(worker);
+    stopped(worker);
+}

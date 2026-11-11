@@ -691,6 +691,7 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
 }
 
 /// Consume a logical fault into an owned diagnostic for scope recovery.
+/// If the current account cannot retain it, return the canonical empty string.
 ///
 /// # Safety
 /// `fault` must be a live, unique, non-null fault owner without borrowers.
@@ -699,7 +700,29 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
 pub unsafe extern "C" fn hew_fault_take_message(fault: *mut HewFault) -> *mut HewString {
     // SAFETY: the caller transfers the unique fault allocation.
     let fault = unsafe { Box::from_raw(fault) };
-    hew_cabi::string::string_from_str(&fault.recovery_message())
+    let text = fault.recovery_message();
+    if text.is_empty() {
+        return std::ptr::null_mut();
+    }
+    let reservation = if let Some(owner) = crate::owned_value_budget::current_owner() {
+        let Ok(reservation) = owner.reserve_new(text.len() as u64) else {
+            return std::ptr::null_mut();
+        };
+        Some(reservation)
+    } else {
+        None
+    };
+    let Some(message) = hew_cabi::string::string_try_from_str(&text) else {
+        return std::ptr::null_mut();
+    };
+    if let Some(reservation) = reservation {
+        reservation.commit(&[crate::owned_value_budget::ManagedStorage {
+            identity: message as usize,
+            // SAFETY: this function owns the freshly allocated string.
+            bytes: unsafe { hew_cabi::string::string_payload_capacity(message) } as u64,
+        }]);
+    }
+    message
 }
 
 /// Release one fault owner. Null is accepted for an empty fault output slot.
@@ -1377,6 +1400,37 @@ mod tests {
                 unsafe { hew_fault_drop(combined) };
             }
         }
+    }
+
+    #[test]
+    fn recovery_message_is_accounted_or_empty_on_budget_refusal() {
+        use crate::owned_value_budget::{with_value_owner, ValueOwner};
+
+        let owner = ValueOwner::new(Some(4));
+        with_value_owner(&Some(owner.clone()), || {
+            // SAFETY: each call consumes a fresh unique fault owner.
+            let accepted = unsafe { hew_fault_take_message(panic_fault("boom")) };
+            // SAFETY: the returned owner remains live during this borrow.
+            assert_eq!(unsafe { string_as_str(accepted) }, "boom");
+            assert_eq!(owner.live_bytes(), 4);
+            // The first owner fills the account; the next message degrades to
+            // the canonical empty string instead of raising a second fault.
+            // SAFETY: this consumes another fresh unique fault owner.
+            let refused = unsafe { hew_fault_take_message(panic_fault("more")) };
+            assert!(refused.is_null());
+            assert_eq!(owner.live_bytes(), 4);
+            // SAFETY: the returned string owns the committed account edge.
+            unsafe { crate::string::hew_string_drop_managed(accepted) };
+            assert_eq!(owner.live_bytes(), 0);
+            // SAFETY: the new fault is a unique owner and capacity is available again.
+            let retried = unsafe { hew_fault_take_message(panic_fault("éé")) };
+            // SAFETY: the returned owner remains live during this borrow.
+            assert_eq!(unsafe { string_as_str(retried) }, "éé");
+            assert_eq!(owner.live_bytes(), 4);
+            // SAFETY: the returned string owns the committed account edge.
+            unsafe { crate::string::hew_string_drop_managed(retried) };
+            assert_eq!(owner.live_bytes(), 0);
+        });
     }
 
     #[test]

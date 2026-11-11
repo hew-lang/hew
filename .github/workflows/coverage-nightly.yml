@@ -58,6 +58,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - uses: ./.github/actions/setup-ubuntu-dns
+
       - uses: ./.github/actions/setup-rust-build
         with:
           components: llvm-tools

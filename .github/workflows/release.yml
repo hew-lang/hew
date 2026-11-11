@@ -49,6 +49,13 @@ jobs:
           probe host-resolver cat /etc/resolv.conf
           probe host-resolved resolvectl status
           probe host-route ip route
+          probe host-github getent ahostsv4 github.com
+          probe host-registry getent ahostsv4 registry-1.docker.io
+          probe host-canonical getent ahostsv4 canonical.com
+          probe host-query-github resolvectl query github.com
+          probe host-query-ubuntu resolvectl query archive.ubuntu.com.
+          probe host-query-azure resolvectl query azure.archive.ubuntu.com.
+          probe host-nss cat /etc/nsswitch.conf
           probe host-azure getent ahostsv4 azure.archive.ubuntu.com
           probe host-archive getent ahostsv4 archive.ubuntu.com
           probe host-security getent ahostsv4 security.ubuntu.com
@@ -74,6 +81,7 @@ jobs:
           probe builder-network docker inspect --format '{{json .NetworkSettings}}' "$container"
           probe builder-command docker inspect --format '{{json .Config.Cmd}}' "$container"
           probe builder-resolver docker exec "$container" cat /etc/resolv.conf
+          probe builder-github docker exec "$container" getent hosts github.com
           probe builder-azure docker exec "$container" getent hosts azure.archive.ubuntu.com
           probe builder-archive docker exec "$container" getent hosts archive.ubuntu.com
           probe builder-security docker exec "$container" getent hosts security.ubuntu.com

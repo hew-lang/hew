@@ -83,7 +83,9 @@ fn run(
             CliEvalError::Message("cannot find wasmtime for WASI line processing".into())
         })?;
         let mut command = Command::new(runner);
-        command.arg("run").arg(binary);
+        command.arg("run");
+        crate::wasi_runner::reserve_engine_stack(&mut command);
+        command.arg(binary);
         command
     } else {
         Command::new(binary)

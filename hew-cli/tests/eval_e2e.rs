@@ -1485,15 +1485,21 @@ fn eval_wasm_inline_expression_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
-/// `hew eval --target wasm32-wasi -f <file>` evaluates a .hew file via WASM.
+/// Captured file evaluation preserves the same call-depth floor as `hew run`.
 #[test]
-fn eval_wasm_file_succeeds() {
+fn eval_wasm_file_preserves_stack_floor() {
     require_codegen();
     support::require_wasi_runner();
 
     let dir = support::tempdir();
     let path = dir.path().join("wasm_eval_file.hew");
-    std::fs::write(&path, "fn double(x: i64) -> i64 { x * 2 }\ndouble(21)\n").unwrap();
+    std::fs::write(
+        &path,
+        "fn depth(n: i64) -> i64 {\n\
+         if n == 0 { 0 } else { let below = depth(n - 1); below + 1 }\n\
+         }\ndepth(10000)\n",
+    )
+    .unwrap();
 
     let output = Command::new(hew_binary())
         .args(["eval", "--target", "wasm32-wasi", "-f"])
@@ -1507,7 +1513,7 @@ fn eval_wasm_file_succeeds() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "10000\n");
 }
 
 fn assert_wasm_eval_file_output(test_name: &str, source: &str, expected_stdout: &str) {

@@ -390,6 +390,9 @@ main() {
     printf '\n'
     printf "  %bHew was installed to %b%s%b\n\n" "${GREEN}" "${BOLD}" "$INSTALL_PREFIX" "${RESET}"
 
+    printf "  Native builds need a system C compiler and C development files.\n"
+    printf "  Prerequisites: https://github.com/hew-lang/hew/blob/main/installers/README.md#native-build-prerequisites\n\n"
+
     # Check if already on PATH
     bin_dir="${INSTALL_PREFIX}/bin"
     if echo "$PATH" | tr ':' '\n' | grep -qx "$bin_dir" 2>/dev/null; then

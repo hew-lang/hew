@@ -10,7 +10,8 @@ provides=('hew')
 conflicts=('hew' 'hew-git')
 # Rust binaries link only glibc; LLVM is statically linked into the hew binary.
 # glibc is in Arch's base but listed explicitly to document the requirement.
-depends=('glibc')
+# Native Hew builds invoke a C driver to link the runtime and system libraries.
+depends=('glibc' 'gcc')
 options=('!strip')  # binaries are pre-stripped
 
 source_x86_64=("https://github.com/hew-lang/hew/releases/download/v${pkgver}/hew-v${pkgver}-linux-x86_64.tar.gz")

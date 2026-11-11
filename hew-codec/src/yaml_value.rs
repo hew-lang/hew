@@ -36,30 +36,23 @@ const YAML_NODE_COST: usize = 16;
 /// every alias, so a few hundred aliases grow a few kilobytes into gigabytes.
 /// This pass walks the document as `serde_yaml` delivers it, aliases
 /// replayed, keeps nothing, and stops as soon as the walk exceeds the
-/// budget, before any tree is built. Errors other than the budget are left
-/// to the real parse.
+/// budget, before any tree is built. Any failed walk must stop the parse:
+/// replaying a recursive alias into a tree can retain large partial copies
+/// before the parser reaches the same nesting or repetition error again.
 ///
 /// # Errors
 ///
-/// Returns the expansion-limit diagnostic, at the position the walk stopped.
+/// Returns the expansion-limit or parser diagnostic at the position the walk
+/// stopped.
 pub fn check_alias_expansion(input: &str) -> Result<(), serde_yaml::Error> {
     let left = Cell::new(YAML_EXPANSION_BUDGET_UNITS);
-    let over = Cell::new(false);
-    let walk = Walk {
-        left: &left,
-        over: &over,
-    };
-    match walk.deserialize(serde_yaml::Deserializer::from_str(input)) {
-        Err(error) if over.get() => Err(error),
-        _ => Ok(()),
-    }
+    Walk { left: &left }.deserialize(serde_yaml::Deserializer::from_str(input))
 }
 
 /// A visitor that keeps nothing and charges every node it is shown.
 #[derive(Clone, Copy)]
 struct Walk<'b> {
     left: &'b Cell<usize>,
-    over: &'b Cell<bool>,
 }
 
 impl Walk<'_> {
@@ -69,7 +62,6 @@ impl Walk<'_> {
             self.left.set(left);
             Ok(())
         } else {
-            self.over.set(true);
             Err(E::custom(
                 "invalid YAML input: alias expansion limit exceeded",
             ))
@@ -101,6 +93,14 @@ impl<'de> Visitor<'de> for Walk<'_> {
     }
 
     fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
+        self.charge(0)
+    }
+
+    fn visit_i128<E: de::Error>(self, _: i128) -> Result<(), E> {
+        self.charge(0)
+    }
+
+    fn visit_u128<E: de::Error>(self, _: u128) -> Result<(), E> {
         self.charge(0)
     }
 
@@ -202,6 +202,65 @@ mod tests {
         }
         let value = parse(&doc).expect("modest reuse is within budget");
         assert_eq!(value["svc7"]["name"], serde_yaml::Value::from("svc7"));
+    }
+
+    #[test]
+    fn recursive_aliases_fail_the_walk() {
+        for doc in [
+            "&loop [*loop]",
+            "&loop {again: *loop}",
+            "&loop !Node {again: *loop}",
+        ] {
+            assert!(check_alias_expansion(doc).is_err(), "{doc:?}");
+            assert!(parse(doc).is_err(), "{doc:?}");
+        }
+    }
+
+    #[test]
+    fn parser_errors_fail_the_walk() {
+        for doc in ["[unfinished", "*missing", "---\nfirst\n---\nsecond\n"] {
+            assert!(check_alias_expansion(doc).is_err(), "{doc:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_and_tagged_aliases_still_parse() {
+        for doc in [
+            "[&scalar hello, *scalar]",
+            "[&scalar !Name hello, *scalar]",
+            "[&list !Items [1, null, true], *list]",
+            "[&map !Settings {retries: 3}, *map]",
+        ] {
+            assert_eq!(
+                parse(doc).expect("ordinary aliases remain supported"),
+                serde_yaml::from_str::<serde_yaml::Value>(doc).unwrap(),
+                "{doc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_integer_aliases_still_parse_in_the_wire_codec() {
+        for integer in [i128::MIN, i128::MAX] {
+            let doc = format!("[&wide {integer}, *wide]");
+            let value = crate::Source::new(crate::Format::Yaml, doc.as_bytes())
+                .expect("the wire codec supports wide integers")
+                .read_any()
+                .unwrap();
+            assert_eq!(
+                value,
+                crate::Value::Seq(vec![crate::Value::Int(integer); 2])
+            );
+        }
+        // The walk counts all scalar types, even ones a later reader rejects.
+        assert!(check_alias_expansion(&u128::MAX.to_string()).is_ok());
+    }
+
+    #[test]
+    fn wide_integers_do_not_bypass_expansion_accounting() {
+        let doc = format!("wide: {}\n{}", i128::MAX, nested_fan_out(400, 400));
+        let err = check_alias_expansion(&doc).expect_err("the entire document is checked");
+        assert!(err.to_string().contains("alias expansion limit"), "{err}");
     }
 
     #[test]

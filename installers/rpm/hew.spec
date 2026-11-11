@@ -23,7 +23,10 @@ Source1:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 %global debug_package %{nil}
 
 # LLVM, libstdc++, zlib, and zstd are statically linked into hew.
-# Rust binaries link only glibc.  Let RPM auto-detect the actual deps.
+# Rust binaries link only glibc. Let RPM auto-detect the binary dependencies.
+# Native Hew builds also need a C driver and the system C development files.
+Requires:       (gcc or clang)
+Requires:       glibc-devel
 # AutoProv: no — we don't export reusable shared-library provides.
 AutoProv:       no
 

@@ -740,10 +740,13 @@ impl Slot {
         }
     }
 
-    /// Snapshot only drained work, leaving root waits registered. Cancellation
-    /// withdraws each selected operation through `forget`, including passing
-    /// a cancelled standard-input reader's turn to the next reader.
-    fn waiters_holding_drain(&self) -> Vec<Arc<HewAsyncIo>> {
+    /// Snapshot drained work and listener waits. A process-root accept does not
+    /// hold the drain open, but it must still wake when listener admission
+    /// closes. Established root reads and writes remain registered.
+    /// Cancellation withdraws each selected operation through `forget`,
+    /// including passing a cancelled standard-input reader's turn to the next.
+    fn shutdown_waiters(&self) -> Vec<Arc<HewAsyncIo>> {
+        let listener = self.listener().is_some();
         let state = self.state.lock_or_recover();
         state
             .readers
@@ -751,7 +754,7 @@ impl Slot {
             .iter()
             .chain(state.reader.iter())
             .chain(state.writer.iter())
-            .filter(|operation| operation.holds_drain())
+            .filter(|operation| listener || operation.holds_drain())
             .cloned()
             .collect()
     }
@@ -1093,17 +1096,17 @@ pub(crate) fn cancel_all() -> usize {
     cancelled
 }
 
-/// Resolve drained waits parked when shutdown began, preserving process-root
-/// waits and existing child process pipes and exit watches. Capture must drain
-/// the child's output to EOF alongside its exit; cancelling either pipe would
-/// fault an admitted run.
+/// Resolve drained work and listener waits parked when shutdown began,
+/// preserving established process-root waits and existing child process pipes
+/// and exit watches. Capture must drain the child's output to EOF alongside
+/// its exit; cancelling either pipe would fault an admitted run.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
     let mut cancelled = 0;
     for slot in slots() {
         if slot.is_child_process() {
             continue;
         }
-        for operation in slot.waiters_holding_drain() {
+        for operation in slot.shutdown_waiters() {
             cancelled += usize::from(operation.cancel_and_wake());
         }
     }

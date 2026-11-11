@@ -2936,10 +2936,15 @@ unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_co
     }
     // The first request owns the diagnostic. Safepoints observe the existing
     // stop latch; only the activation owner touches its checked invocation.
-    if a.pending_external_trap_code
-        .compare_exchange(0, error_code, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    let claimed = a.native_completion.as_ref().map_or_else(
+        || {
+            a.pending_external_trap_code
+                .compare_exchange(0, error_code, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        },
+        |completion| completion.claim_external_trap(&a.pending_external_trap_code, error_code),
+    );
+    if !claimed {
         return true;
     }
     // SAFETY: the caller pins this actor and its mailbox. Publishing the cause

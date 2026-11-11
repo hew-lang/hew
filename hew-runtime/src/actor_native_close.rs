@@ -74,6 +74,23 @@ impl NativeActorCompletion {
         );
     }
 
+    /// Claim one external trap and retain its diagnostic before any waiter
+    /// can observe it. The same lock serializes competing requests with the
+    /// actor's checked-fault owner.
+    pub(crate) fn claim_external_trap(&self, pending: &AtomicI32, code: i32) -> bool {
+        let mut retained = self.fault.lock_or_recover();
+        if pending
+            .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        if code > 0 && retained.is_none() {
+            *retained = Some(crate::fault::HewFault::external(code));
+        }
+        true
+    }
+
     /// Retain the complete incarnation diagnostic for every close observer.
     pub(crate) fn record_fault(&self, fault: crate::fault::HewFault) -> i32 {
         let mut retained = self.fault.lock_or_recover();
@@ -500,6 +517,37 @@ pub unsafe extern "C" fn hew_actor_wait_free(wait: *mut HewNativeActorWait) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    #[test]
+    fn competing_external_traps_publish_one_shared_failure() {
+        let completion = Arc::new(NativeActorCompletion::default());
+        let pending = Arc::new(AtomicI32::new(0));
+        let ready = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = [200, 212]
+            .into_iter()
+            .map(|code| {
+                let completion = Arc::clone(&completion);
+                let pending = Arc::clone(&pending);
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    (code, completion.claim_external_trap(&pending, code))
+                })
+            })
+            .collect();
+        ready.wait();
+        let winners: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter_map(|(code, won)| won.then_some(code))
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let first = completion.fault_snapshot().expect("failure snapshot");
+        let second = completion.fault_snapshot().expect("same failure snapshot");
+        assert_eq!(first.code, winners[0]);
+        assert_eq!(pending.load(Ordering::Acquire), winners[0]);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
     struct State(Arc<AtomicUsize>);
     impl Drop for State {
         fn drop(&mut self) {

@@ -154,13 +154,32 @@ impl HewFault {
         Self::new_with_assertion(code, message, None)
     }
 
+    /// A failure raised by the runtime outside a Hew handler. It has no
+    /// originating Hew stack or source location to attribute to the actor.
+    pub(crate) fn external(code: i32) -> Self {
+        Self::build(code, None, None, false)
+    }
+
     fn new_with_assertion(
         code: i32,
         message: Option<Box<str>>,
         assertion: Option<AssertionOperands>,
     ) -> Self {
+        Self::build(code, message, assertion, true)
+    }
+
+    fn build(
+        code: i32,
+        message: Option<Box<str>>,
+        assertion: Option<AssertionOperands>,
+        capture: bool,
+    ) -> Self {
         let record = is_failure(code).then(|| {
-            let mut record = origin_record(code);
+            let mut record = if capture {
+                origin_record(code)
+            } else {
+                Box::new(FailureRecord::new(code))
+            };
             if let Some(message) = &message {
                 record.set_message(message);
             }

@@ -57,25 +57,32 @@ const INDEX_STRIDE: usize = 32;
 // Non-ASCII allocations keep a byte offset for every INDEX_STRIDE-th scalar
 // after the UTF-8 capacity. The table belongs to the same allocation and is
 // fully initialized before a handle can be shared.
-fn index_offset(capacity: usize) -> usize {
+fn try_index_offset(capacity: usize) -> Option<usize> {
     let align = core::mem::align_of::<usize>();
     core::mem::size_of::<HewStringHeader>()
-        .checked_add(capacity)
-        .and_then(|size| size.checked_add(align - 1))
-        .map_or_else(|| std::process::abort(), |size| size & !(align - 1))
+        .checked_add(capacity)?
+        .checked_add(align - 1)
+        .map(|size| size & !(align - 1))
+}
+
+fn index_offset(capacity: usize) -> usize {
+    try_index_offset(capacity).unwrap_or_else(|| std::process::abort())
+}
+
+fn try_allocation_size(capacity: usize, indexed: bool) -> Option<usize> {
+    let size = if indexed {
+        let table = capacity
+            .div_ceil(INDEX_STRIDE)
+            .checked_mul(core::mem::size_of::<usize>())?;
+        try_index_offset(capacity)?.checked_add(table)?
+    } else {
+        core::mem::size_of::<HewStringHeader>().checked_add(capacity)?
+    };
+    isize::try_from(size).ok().map(|_| size)
 }
 
 fn allocation_size(capacity: usize, indexed: bool) -> usize {
-    let size = if indexed {
-        capacity
-            .div_ceil(INDEX_STRIDE)
-            .checked_mul(core::mem::size_of::<usize>())
-            .and_then(|table| index_offset(capacity).checked_add(table))
-    } else {
-        core::mem::size_of::<HewStringHeader>().checked_add(capacity)
-    };
-    size.filter(|size| isize::try_from(*size).is_ok())
-        .unwrap_or_else(|| std::process::abort())
+    try_allocation_size(capacity, indexed).unwrap_or_else(|| std::process::abort())
 }
 
 unsafe fn index_table(value: *const HewString) -> *const usize {
@@ -275,22 +282,7 @@ pub fn string_try_from_str(value: &str) -> Option<*mut HewString> {
     let len = value.len();
     let scalar_len = value.chars().count();
     let indexed = scalar_len != len;
-    let header = core::mem::size_of::<HewStringHeader>();
-    let total = if indexed {
-        let align = core::mem::align_of::<usize>();
-        let table = len
-            .div_ceil(INDEX_STRIDE)
-            .checked_mul(core::mem::size_of::<usize>())?;
-        header
-            .checked_add(len)?
-            .checked_add(align - 1)?
-            .checked_div(align)?
-            .checked_mul(align)?
-            .checked_add(table)?
-    } else {
-        header.checked_add(len)?
-    };
-    isize::try_from(total).ok()?;
+    let total = try_allocation_size(len, indexed)?;
     let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
     if allocation.is_null() {
         return None;

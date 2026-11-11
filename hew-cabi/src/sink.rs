@@ -26,6 +26,8 @@ use std::sync::{Mutex, MutexGuard};
 // (see `map.rs`): the symbol lives in the runtime, hew-cabi only declares it.
 // hew-cabi's own unit tests have no hew-runtime to link against, so a
 // `#[cfg(test)]` stub at the bottom of this file defines these four symbols.
+// Keep the forwarders inline so consumers of unrelated ABI types do not
+// acquire runtime imports merely by linking the same archive member.
 
 extern "C" {
     #[link_name = "hew_stream_set_last_error"]
@@ -47,6 +49,7 @@ extern "C" {
     reason = "stable hew_cabi::sink API: callers (std/net/http) hand off an owned \
               error message; the forwarder serialises it across the C ABI"
 )]
+#[inline]
 pub fn set_last_error(msg: String) {
     let bytes = msg.as_bytes();
     // SAFETY: ptr/len describe `msg`'s valid UTF-8 bytes; the runtime copies them
@@ -63,6 +66,7 @@ pub fn set_last_error(msg: String) {
     reason = "stable hew_cabi::sink API: callers hand off an owned error message; \
               the forwarder serialises it across the C ABI"
 )]
+#[inline]
 pub fn set_last_error_with_errno(msg: String, errno: i32) {
     let bytes = msg.as_bytes();
     // SAFETY: ptr/len describe `msg`'s valid UTF-8 bytes; the runtime copies them
@@ -75,6 +79,7 @@ pub fn set_last_error_with_errno(msg: String, errno: i32) {
 /// The runtime clears the message and errno. Null represents no error or an
 /// empty message. Release the result with [`crate::string::string_release`].
 #[must_use]
+#[inline]
 pub fn hew_stream_last_error() -> *mut crate::string::HewString {
     // SAFETY: the runtime getter transfers a managed owner with no preconditions.
     unsafe { rt_last_error() }
@@ -86,6 +91,7 @@ pub fn hew_stream_last_error() -> *mut crate::string::HewString {
 /// `hew_stream_last_errno` C symbol — independent of [`hew_stream_last_error`],
 /// so callers may read errno without consuming the message, or vice-versa.
 #[must_use]
+#[inline]
 pub fn hew_stream_last_errno() -> i32 {
     // SAFETY: the runtime export reads and clears a thread-local i32.
     unsafe { rt_last_errno() }
@@ -97,6 +103,7 @@ pub fn hew_stream_last_errno() -> i32 {
 /// No error and an empty message both have the canonical null representation
 /// and return `None`.
 #[must_use]
+#[inline]
 pub fn take_last_error() -> Option<String> {
     let ptr = hew_stream_last_error();
     if ptr.is_null() {
@@ -115,6 +122,7 @@ pub fn take_last_error() -> Option<String> {
 /// Forwards to the runtime-owned `hew_stream_last_errno` C symbol and clears the
 /// stored errno. Independent of [`take_last_error`].
 #[must_use]
+#[inline]
 pub fn take_last_errno() -> i32 {
     hew_stream_last_errno()
 }
@@ -291,6 +299,7 @@ struct NonblockingSink<T> {
     offset: usize,
 }
 
+#[inline]
 fn try_write_error(error: &std::io::Error) -> TrySendResult {
     use std::io::ErrorKind;
     match error.kind() {

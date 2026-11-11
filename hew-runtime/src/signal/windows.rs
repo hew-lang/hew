@@ -3,7 +3,7 @@
 //!
 //! The handler never terminates the process itself. Returning
 //! `EXCEPTION_CONTINUE_SEARCH` leaves the exception unhandled, so Windows Error
-//! Reporting writes its LocalDumps and the process exits with the exception
+//! Reporting writes its `LocalDumps` and the process exits with the exception
 //! code (`0xC00000FD` for a stack overflow). `HEW_MINIDUMP=<dir>` additionally
 //! writes a minidump from a helper thread started at initialization.
 
@@ -104,6 +104,10 @@ fn is_overflow(code: i32, address: usize, bounds: StackBounds) -> bool {
 /// does not keep frame pointers, so the unwinder, not the frame chain, is the
 /// authority here.
 #[cfg(target_arch = "x86_64")]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Windows x64 context registers and pointers are both 64 bits"
+)]
 unsafe fn capture_frames(
     context: *const windows_sys::Win32::System::Diagnostics::Debug::CONTEXT,
     bounds: StackBounds,
@@ -132,7 +136,7 @@ unsafe fn capture_frames(
             let entry = RtlLookupFunctionEntry(ctx.Rip, &raw mut image_base, std::ptr::null_mut());
             if entry.is_null() {
                 // A leaf function: the return address is at the stack pointer.
-                if !bounds.contains(ctx.Rsp as usize) || ctx.Rsp % 8 != 0 {
+                if !bounds.contains(ctx.Rsp as usize) || !ctx.Rsp.is_multiple_of(8) {
                     return;
                 }
                 ctx.Rip = (ctx.Rsp as *const u64).read();
@@ -216,10 +220,17 @@ unsafe extern "system" fn fatal_exception_handler(info: *mut EXCEPTION_POINTERS)
 }
 
 mod minidump {
-    use super::*;
+    use super::{
+        AtomicBool, AtomicPtr, AtomicU32, CloseHandle, CreateEventW, CreateFileW,
+        GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
+        MiniDumpWithIndirectlyReferencedMemory, MiniDumpWithThreadInfo, MiniDumpWriteDump,
+        OnceLock, Ordering, SetEvent, WaitForSingleObject, CREATE_ALWAYS, EXCEPTION_POINTERS,
+        FILE_ATTRIBUTE_NORMAL, GENERIC_WRITE, HANDLE, INFINITE, INVALID_HANDLE_VALUE,
+        MINIDUMP_EXCEPTION_INFORMATION, MINIDUMP_WAIT_MS, WAIT_OBJECT_0,
+    };
 
     struct Config {
-        /// NUL-terminated wide path for CreateFileW.
+        /// NUL-terminated wide path for `CreateFileW`.
         wide_path: Vec<u16>,
         /// The same path for the stderr note.
         display: Vec<u8>,

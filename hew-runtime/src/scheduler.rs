@@ -1354,10 +1354,6 @@ const WORKER_STACK_BYTES: usize = crate::stack_limit::HEW_STACK_BYTES;
 /// equals the default, so behaviour is preserved; the value is the TLS path
 /// being live and tsan-clean.
 fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
-    // Production invariant: the default runtime pointer never changes after
-    // hew_sched_init, so a missing scheduler here is a hard logic error — keep
-    // the loud panic (the same contract as before this fix).
-    let sched = get_scheduler().expect("scheduler not initialized");
     // Bind this thread to its owning runtime for the loop's lifetime. The guard
     // restores the previous (null) CURRENT_RUNTIME on every exit edge — normal
     // return or panic unwinding out of the loop — preserving
@@ -1369,17 +1365,17 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // outlives this guard (held for the loop body) and every `rt_current()`
     // deref taken through it, satisfying `enter`'s lifetime obligation.
     let _rt_guard = unsafe { runtime::enter(&*rt.0) };
+    let sched = get_scheduler().expect("worker runtime has a scheduler");
     // Workers stop promptly when shutdown is published. Any pointers still in
     // their owner deque retain actor allocations, so release those references
     // when this loop exits (including unwinding).
     let _local_queue_ref_drain = LocalQueueRefDrain(local);
-    // In test builds, capture the raw default-runtime pointer this worker is
-    // bound to. The NoWorkerSchedulerForTest harness can swap the runtime out
-    // from under a late-starting worker; the per-iteration check below detects
-    // that swap and drains cleanly before any freed pointer is dereferenced.
+    // A late-starting worker must not join a replacement default runtime. The
+    // per-iteration test check detects replacement and exits before taking
+    // work from, or parking on, a transient test scheduler.
     // See NoWorkerSchedulerForTest::Drop for the matching spin-until-zero drain.
     #[cfg(test)]
-    let rt_raw: *mut RuntimeInner = runtime::default_runtime_ptr(Ordering::Relaxed);
+    let rt_raw: *mut RuntimeInner = rt.0.cast_mut();
     let mut rng = Xorshift64::new(crate::deterministic::effective_worker_seed(id as u64));
     crate::observe::set_current_worker_shard(id);
 
@@ -2683,6 +2679,40 @@ mod tests {
             actor.actor_state.load(Ordering::Acquire),
             HewActorState::Idle as i32
         );
+    }
+
+    #[test]
+    fn a_late_worker_observes_its_own_runtime_shutdown() {
+        let foreign = NoWorkerSchedulerForTest::install();
+        let foreign_scheduler = get_scheduler().expect("foreign scheduler installed");
+        let own_runtime = worker_less_runtime_box();
+        // SAFETY: this test owns the detached runtime until the worker joins.
+        unsafe {
+            (*own_runtime)
+                .scheduler
+                .shutdown
+                .store(true, Ordering::Release);
+        };
+        let rt = WorkerRuntimePtr(own_runtime);
+        let (finished, completion) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            // SAFETY: the new local deque starts empty and belongs to this worker.
+            let (local, _stealer) = unsafe { WorkDeque::new() };
+            worker_loop(0, rt, &local);
+            finished.send(()).expect("test receives worker completion");
+        });
+        let stopped = completion.recv_timeout(Duration::from_secs(10));
+        // Also release a regressed worker that followed the foreign scheduler,
+        // so a failed assertion cannot leave a worker or runtime behind.
+        foreign_scheduler.shutdown.store(true, Ordering::Release);
+        for parker in &foreign_scheduler.parkers {
+            parker.notify_all();
+        }
+        worker.join().expect("late worker exits");
+        // SAFETY: the detached runtime's only worker has joined.
+        unsafe { runtime::free_runtime_for_test(own_runtime) };
+        drop(foreign);
+        assert!(stopped.is_ok(), "the worker must follow its owning runtime");
     }
 
     /// #2830: a queue publication and wake in the worker's final-probe ->

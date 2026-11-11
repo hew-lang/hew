@@ -32,15 +32,30 @@ struct WakeRelay {
 impl WakeRelay {
     fn descriptor(this: &Arc<Self>) -> HewWaker {
         unsafe extern "C" fn wake(context: *mut c_void) {
-            // SAFETY: each descriptor owns an Arc reference to this relay.
-            let relay = unsafe { &*context.cast::<WakeRelay>() };
-            let target = {
-                let mut inner = relay.inner.lock_or_recover();
-                inner.0 = true;
-                inner.1.clone()
-            };
-            if let Some(target) = target {
-                target.wake();
+            // A nested generator often wakes another relay. Retain and walk
+            // those consumers rather than adding a native frame per generator.
+            let mut next: Option<OwnedWaker> = None;
+            loop {
+                let context = next
+                    .as_ref()
+                    .map_or(context, |target| target.descriptor().context);
+                // SAFETY: the caller's descriptor, or `next`, retains this relay.
+                let relay = unsafe { &*context.cast::<WakeRelay>() };
+                let target = {
+                    let mut inner = relay.inner.lock_or_recover();
+                    inner.0 = true;
+                    inner.1.clone()
+                };
+                let Some(target) = target else { return };
+                if std::ptr::fn_addr_eq(
+                    target.descriptor().wake,
+                    wake as unsafe extern "C" fn(*mut c_void),
+                ) {
+                    next = Some(target);
+                } else {
+                    target.wake();
+                    return;
+                }
             }
         }
         unsafe extern "C" fn retain(context: *mut c_void) {

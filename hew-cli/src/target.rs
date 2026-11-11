@@ -73,7 +73,7 @@ pub struct ExecutionTarget {
 }
 
 /// Platform-specific components of a native link plan, driven entirely by the
-/// *target* [`TargetOs`], not by the compile-time host `#[cfg]` world.
+/// *target* OS and ABI environment, not by the compile-time host `#[cfg]` world.
 ///
 /// Separating target intent from host availability makes the Darwin/Linux/
 /// Windows contracts explicit, independently unit-testable, and correct even
@@ -216,7 +216,7 @@ impl TargetSpec {
 
     /// Returns the target-driven native link plan for this target.
     ///
-    /// Every field is derived from `self.os` — not from the host `#[cfg]`
+    /// Every field is derived from this target's OS and ABI — not the host `#[cfg]`
     /// world — so the plan is deterministic and unit-testable regardless of
     /// which machine compiled hew.  See [`NativeLinkPlan`] for field
     /// semantics.
@@ -248,7 +248,14 @@ impl TargetSpec {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
                 build_id_flags: &["-Wl,--build-id"],
-                platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
+                // The GNU Rust runtime needs libgcc_s even when the C
+                // driver's compiler-rt configuration omits an unwinder.
+                // Musl targets retain their own driver-provided unwind policy.
+                platform_libs: if self.env.as_deref() == Some("gnu") {
+                    &["-lpthread", "-lm", "-ldl", "-lrt", "-lgcc_s"]
+                } else {
+                    &["-lpthread", "-lm", "-ldl", "-lrt"]
+                },
                 cxx_runtime_libs: &["-lstdc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
@@ -991,13 +998,19 @@ mod tests {
 
     #[test]
     fn linux_link_plan_platform_libs() {
-        let spec = TargetSpec::from_requested(Some("aarch64-unknown-linux-gnu")).expect("target");
-        let plan = spec.native_link_plan();
-        let libs: Vec<_> = plan.platform_libs.to_vec();
-        assert!(libs.contains(&"-lpthread"));
-        assert!(libs.contains(&"-lm"));
-        assert!(libs.contains(&"-ldl"));
-        assert!(libs.contains(&"-lrt"));
+        for arch in ["x86_64", "aarch64"] {
+            for env in ["gnu", "musl"] {
+                let triple = format!("{arch}-unknown-linux-{env}");
+                let spec = TargetSpec::from_requested(Some(&triple)).expect("target");
+                let plan = spec.native_link_plan();
+                let libs = plan.platform_libs;
+                assert!(libs.contains(&"-lpthread"));
+                assert!(libs.contains(&"-lm"));
+                assert!(libs.contains(&"-ldl"));
+                assert!(libs.contains(&"-lrt"));
+                assert_eq!(libs.contains(&"-lgcc_s"), env == "gnu", "{triple}");
+            }
+        }
     }
 
     #[test]

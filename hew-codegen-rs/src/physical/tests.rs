@@ -1454,6 +1454,7 @@ fn scalar_push_appends_inline_and_reaches_runtime_only_to_grow_or_detach() {
         let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
         let llvm = build_module(&ctx, verified.module(), "inline_scalar_push", &machine).unwrap();
         crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        super::test_runtime::disable_stack_check_for_jit(&llvm);
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();

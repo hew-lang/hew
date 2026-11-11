@@ -1,5 +1,4 @@
 # Unreleased
 
-The current qualification candidate is [v0.10.0-rc2](v0.10.0-rc2.md). Changes
-after its frozen candidate commit belong here. Platform and packaged toolchain
-qualification remain pending.
+The next development candidate is [v0.11.0-rc1](v0.11.0-rc1.md). Its
+preparation and platform and packaged-toolchain qualification remain pending.

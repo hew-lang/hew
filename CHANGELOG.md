@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc1] - 2026-11-11
+
+- Prepare first-class failure diagnostics and debugging for candidate
+  qualification; platform and packaged-toolchain results remain pending.
+- Retain owned crash kind, optional trap, message, source site and trace through
+  actor hooks and trapped local and remote calls, including budget-safe fallback.
+- Change `ActorError.Trapped` to carry `CrashInfo`; migrate matching arms and
+  construct the new optional diagnostic fields when constructing that record.
+- Launch or attach a debugger, publish failures before the common raise
+  breakpoint, resolve native symbols and inline locations, and package split
+  debug symbols.
+- Capture available browser sandbox frames and reject mixed version 12 and 13
+  distributed peers explicitly.
+
 ## [0.10.0-rc2] - 2026-11-11
 
 - Prepare the next qualification candidate; supported platform and packaged

@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "addr2line"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59317f77929f0e679d39364702289274de2f0f0b22cbf50b2b8cff2169a0b27a"
+dependencies = [
+ "gimli",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1088,6 +1097,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible-iterator"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
+
+[[package]]
 name = "fancy-regex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1359,6 +1374,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+dependencies = [
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1421,7 +1445,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1433,21 +1457,21 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-calendar"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "hew-cli"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "cc",
  "clap",
@@ -1468,6 +1492,7 @@ dependencies = [
  "hew-pkg",
  "hew-runtime",
  "hew-sir",
+ "hew-symbolize",
  "hew-types",
  "hew-wasm",
  "libc",
@@ -1500,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codec"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -1515,11 +1540,12 @@ dependencies = [
 
 [[package]]
 name = "hew-codegen-rs"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "cc",
  "hew-cabi",
  "hew-codec",
+ "hew-debug-abi",
  "hew-mir",
  "hew-parser",
  "hew-runtime",
@@ -1531,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-expand",
  "hew-hir",
@@ -1547,8 +1573,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-debug-abi"
+version = "0.11.0-rc1"
+
+[[package]]
 name = "hew-expand"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1556,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1565,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "logos",
  "serde",
@@ -1573,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "hew-live"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "clap",
  "hew-cabi",
@@ -1588,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "clap",
  "dashmap",
@@ -1609,16 +1639,18 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
+ "hew-debug-abi",
  "hew-parser",
  "hew-sir",
  "hew-types",
+ "md-5",
 ]
 
 [[package]]
 name = "hew-observe"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "clap",
  "crossterm",
@@ -1632,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe-protocol"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1640,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -1651,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "base64 0.22.1",
  "cargo-config2",
@@ -1676,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "bytes",
  "cap-std",
@@ -1689,6 +1721,7 @@ dependencies = [
  "glob",
  "hew-cabi",
  "hew-codec",
+ "hew-debug-abi",
  "hew-observe-protocol",
  "libc",
  "quinn",
@@ -1713,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-codec",
  "hew-hir",
@@ -1722,8 +1755,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-symbolize"
+version = "0.11.0-rc1"
+dependencies = [
+ "addr2line",
+ "crc32fast",
+ "gimli",
+ "hew-debug-abi",
+ "object 0.40.0",
+ "pdb",
+ "rustc-demangle",
+]
+
+[[package]]
 name = "hew-types"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "heck",
  "hew-codec",
@@ -1740,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.10.0-rc2"
+version = "0.11.0-rc1"
 dependencies = [
  "hew-analysis",
  "hew-calendar",
@@ -2420,6 +2466,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2747,6 +2803,17 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pdb"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82040a392923abe6279c00ab4aff62d5250d1c8555dc780e4b02783a7aa74863"
+dependencies = [
+ "fallible-iterator",
+ "scroll",
+ "uuid",
 ]
 
 [[package]]
@@ -3370,6 +3437,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3583,6 +3656,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scroll"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04c565b551bafbef4157586fa379538366e4385d42082f255bfd96e4fe8519da"
 
 [[package]]
 name = "security-framework"

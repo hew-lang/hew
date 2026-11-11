@@ -271,10 +271,21 @@ completion, and the receiver type — handle or mailbox view — decides whether
 the call waits or only submits. There is no actor-call operator or `send` keyword.
 
 If the receiving handler faults before replying, the ask resolves to
-`.Err(ActorError.Trapped)`. The receiving actor retains ownership of the
-fault and its supervision policy; the caller may handle the error and continue.
-Calling an actor does not join its lifetime to the caller's task scope. Caller
-cancellation still follows the caller's own cancellation and cleanup edges.
+`.Err(ActorError.Trapped(info))`. The crash hook and caller receive owned
+`CrashInfo` values describing the same originating failure. `kind` is the
+supervision class, `trap` is an optional known `TrapKind`, and `message` is the
+diagnostic text. `site` is an optional `SourceLocation`; `trace` is an optional
+vector of `StackFrame` values, each with a function name, optional source
+location and count of consecutive identical frames. `failure.backtrace(info)`
+returns the optional trace. Source and trace data are absent when unavailable.
+When a bounded actor cannot retain the complete diagnostic, it omits the trace
+first, then the site, and finally uses an empty message if necessary. The kind
+and known trap remain available.
+
+The receiving actor retains its supervision policy; the caller may handle the
+error and continue. Calling an actor does not join its lifetime to the caller's
+task scope. Caller cancellation still follows the caller's own cancellation and
+cleanup edges.
 
 **Request deadlines.** A completion call inherits the earliest active scope
 expiry and incoming request expiry, together with any explicit call timeout.
@@ -808,7 +819,7 @@ An operation that would exceed the budget faults the owning actor with
 Restart, escalation and `#[on(crash)]` observation follow ordinary supervision.
 Mailbox admission reserves the recipient's budget before transferring ownership;
 a budget refusal faults the recipient and a waiting caller receives the existing
-`ActorError.Trapped`. Ordinary mailbox rejection keeps its existing
+`ActorError.Trapped(info)`. Ordinary mailbox rejection keeps its existing
 `ActorError.Rejected` request-recovery contract (§2.1.1).
 
 ```hew

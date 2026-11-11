@@ -2030,7 +2030,12 @@ fn scenario_inbound_isolation(kv: KeyValue, kx: string) -> i64 {
             .Fault { message } => panic(message),
         }
     }) {
-        .Err(ActorError.Trapped(_)) => {}
+        .Err(ActorError.Trapped(info)) => {
+            assert(info.message == "crash requested by cross-node monitor scenario");
+            assert(match info.trap { .Some(.UserPanic) => true, _ => false });
+            assert(match info.site { .Some(site) => site.line > 0, .None => false });
+            assert(match info.trace { .Some(frames) => !frames.is_empty(), .None => false });
+        }
         _ => panic("remote handler fault lost its status"),
     }
     println("PASS inbound_isolation trapped");

@@ -452,6 +452,9 @@ impl SecureScenario {
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if scenario == "inbound_isolation" {
+            command.env("HEW_BACKTRACE", "1");
+        }
         for (key, value) in extra_env {
             command.env(key, value);
         }

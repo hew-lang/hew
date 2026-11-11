@@ -75,6 +75,12 @@ recorded address, `hew symbolize ./app 0xADDRESS` resolves the function and
 source position from the executable's symbols. Use `--base` with a runtime
 image base and `--return-addresses` for addresses from a backtrace.
 
+A failed actor call returns `ActorError.Trapped(info)`; a crash hook receives
+the same failure facts. Inspect `info.message`, `info.trap` and `info.site`,
+or call `failure.backtrace(info)` for the captured frames. A missing site or
+trace is represented by `None`. A bounded actor may also omit diagnostic detail
+when it cannot retain it within its budget.
+
 ## Type errors & type inference
 
 Common signs:

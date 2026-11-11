@@ -42,6 +42,13 @@ impl SendClaim {
     /// Finish a departure stream before node stop closes its connection.
     /// QUIC writes initially enter local buffers; stream completion waits for
     /// peer receipt and is cancelled by the node's bounded I/O shutdown.
+    #[cfg_attr(
+        not(feature = "quic"),
+        expect(
+            clippy::unused_self,
+            reason = "non-QUIC transports finish sends synchronously"
+        )
+    )]
     pub(crate) fn finish_departure(&self) {
         #[cfg(feature = "quic")]
         // SAFETY: this claim pins its transport through departure completion.

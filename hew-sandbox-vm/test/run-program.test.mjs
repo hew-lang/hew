@@ -1070,7 +1070,9 @@ fn inspect(info: CrashInfo) {
     assert(match info.trap { .Some(.StackOverflow) => true, _ => false, });
     let frames = info.trace.expect("stack trace");
     assert(frames[0].function.contains("descend"));
-    assert(frames[0].repeat > 1);
+    var repeated = false;
+    for frame in frames { if frame.repeat > 1 { repeated = true; } }
+    assert(repeated);
 }
 actor Walker {
     receive fn run() -> i64 { descend(0) }
@@ -1099,4 +1101,122 @@ fn main() {
   assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
   assert.equal(result.stdout, "stack recovered\n");
   assert.equal(result.exit_code, 0);
+});
+
+test("owned actor messages match native UTF-8 snapshot bounds", async () => {
+  const result = await runProgram(
+    `
+fn inspect(info: CrashInfo, expected: i64) {
+    assert(info.message.byte_len() == expected);
+    assert(info.message.ends_with(" [truncated]"));
+}
+actor Worker {
+    var expected: i64;
+    receive fn run(message: string) { panic(message); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction { inspect(info, expected); .GiveUp }
+}
+fn main() {
+    let ascii = spawn Worker { expected: 4096 };
+    match ascii.run("x".repeat(5000)) {
+        .Err(.Trapped(info)) => inspect(info, 4096),
+        _ => panic("expected ASCII panic"),
+    }
+    stopped(ascii);
+    let unicode = spawn Worker { expected: 4095 };
+    match unicode.run("界".repeat(2000)) {
+        .Err(.Trapped(info)) => inspect(info, 4095),
+        _ => panic("expected Unicode panic"),
+    }
+    stopped(unicode);
+    println("bounded messages retained");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "bounded messages retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("distinct recursive call sites remain distinct physical trace frames", async () => {
+  const result = await runProgram(
+    `
+fn alternate(n: i64) -> i64 {
+    if n % 2 == 0 { let below = alternate(n + 1); below - n }
+    else { let below = alternate(n + 1); below + n }
+}
+actor Walker { receive fn run() -> i64 { alternate(0) } }
+fn main() {
+    let walker = spawn Walker;
+    match walker.run() {
+        .Err(.Trapped(info)) => {
+            assert(match info.trap { .Some(.StackOverflow) => true, _ => false, });
+            let frames = info.trace.expect("origin trace");
+            assert(frames.len() > 1);
+            for frame in frames { assert(frame.repeat == 1); }
+            println("distinct call sites retained");
+        }
+        _ => panic("expected stack failure"),
+    }
+}
+`,
+    "",
+    undefined,
+    { stepBudget: 3_000_000 },
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "distinct call sites retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("a reply exceeding its actor caller budget retains HeapExceeded", async () => {
+  const result = await runProgram(
+    fs.readFileSync(
+      path.join(
+        repoRoot,
+        "tests/core-acceptance/cases/actor-owned-budget-reply.hew",
+      ),
+      "utf8",
+    ),
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "7\nreply limit\n7\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("bounded messages fit a caller budget before optional trace storage", async () => {
+  const result = await runProgram(
+    `
+fn explode() -> i64 { panic("x".repeat(5000)); }
+actor Worker { receive fn run() -> i64 { explode() } }
+#[max_heap(4200)]
+actor Watcher {
+    receive fn observe(worker: Worker) -> i64 {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.message.byte_len() == 4096);
+                assert(info.message.ends_with(" [truncated]"));
+                info.message.byte_len()
+            }
+            _ => panic("expected worker failure"),
+        }
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let watcher = spawn Watcher;
+    assert(watcher.observe(worker).expect("observer survives") == 4096);
+    stop(watcher); stopped(watcher);
+    println("bounded budget retained");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "bounded budget retained\n");
+  assert.equal(result.exit_code, 1);
 });

@@ -74,6 +74,10 @@ import { FrameScheduler } from "./scheduler.js";
 import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
 import {
+  FAILURE_TEXT_LIMIT,
+  FAILURE_TRUNCATED_SUFFIX,
+} from "./failure-limits.generated.js";
+import {
   ShimFault,
   CODEC_REGISTRATION,
   decodeUtf8Checked,
@@ -348,6 +352,7 @@ interface Activation {
   fn: FunctionV1;
   block: BlockV1;
   opIndex: number;
+  instruction?: OpV1 | TermV1;
   env: Map<number, Ref>;
   trivial: Set<number>;
   owned: Set<number>;
@@ -714,6 +719,7 @@ class ExecutorV1 {
         const op = act.block.ops[act.opIndex++]!;
         if (op.op !== "coverage.hit") this.commitStep();
         try {
+          act.instruction = op;
           this.execute(act, op);
         } catch (error) {
           if (error instanceof Halt) throw error;
@@ -726,6 +732,7 @@ class ExecutorV1 {
       if (!this.running) return;
       this.commitStep();
       try {
+        act.instruction = act.block.term;
         this.terminate(act, act.block.term);
       } catch (error) {
         if (error instanceof Halt) throw error;
@@ -1205,8 +1212,10 @@ class ExecutorV1 {
     actor.budget?.changed();
   }
 
-  private failActorBudget(actor: ActorInstance): void {
-    const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
+  private failActorBudget(
+    actor: ActorInstance,
+    fault: Fault = { kind: "trap", trap: "heap_exceeded" },
+  ): void {
     if (!actor.active) this.crashActor(actor, fault);
     else {
       // A suspended turn owns its frame until authored unwind and lexical
@@ -5231,14 +5240,32 @@ class ExecutorV1 {
     if (origin.frames !== undefined) return;
     origin.frames = [];
     let previous: number | undefined;
+    let previousInstruction: OpV1 | TermV1 | undefined;
+    let previousBlock: number | undefined;
+    let previousIndex: number | undefined;
     for (
       let frame: Activation | null = act, count = 0;
       frame && count < 48;
       frame = frame.caller ?? frame.traceCaller ?? null, count++
     ) {
-      if (previous === frame.fn.id) origin.frames.at(-1)!.repeat++;
+      if (new TextEncoder().encode(frame.fn.name).length > FAILURE_TEXT_LIMIT) {
+        previous = undefined;
+        previousInstruction = undefined;
+        continue;
+      }
+      if (
+        previous === frame.fn.id &&
+        frame.instruction !== undefined &&
+        previousInstruction === frame.instruction &&
+        previousBlock === frame.block.id &&
+        previousIndex === frame.opIndex
+      )
+        origin.frames.at(-1)!.repeat++;
       else origin.frames.push({ function: frame.fn.name, repeat: 1 });
       previous = frame.fn.id;
+      previousInstruction = frame.instruction;
+      previousBlock = frame.block.id;
+      previousIndex = frame.opIndex;
     }
   }
 
@@ -5364,9 +5391,11 @@ class ExecutorV1 {
     const value = record(type, [
       kind,
       option(trapType, trapValue),
-      stringValue(faultApplicationMessage(origin) ?? reason),
+      stringValue(
+        boundedFailureMessage(faultApplicationMessage(origin) ?? reason),
+      ),
       option(siteType),
-      option(traceType, origin.frames?.length ? frames : undefined),
+      option(traceType, origin.frames === undefined ? undefined : frames),
     ]);
     if (value.kind !== "record")
       throw new Error("crash payload is not a record");
@@ -5820,12 +5849,12 @@ class ExecutorV1 {
                 );
               } catch (failure) {
                 if (!(failure instanceof HeapExceeded)) throw failure;
+                const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
+                this.captureFault(act, fault);
                 task.actorError = "Trapped";
-                this.settleTask(task, UNIT, {
-                  kind: "trap",
-                  trap: "heap_exceeded",
-                });
-                this.failActorBudget(act.context.actor);
+                task.actorFault = fault;
+                this.settleTask(task, UNIT, fault);
+                this.failActorBudget(act.context.actor, fault);
                 return false;
               }
             }
@@ -7652,6 +7681,20 @@ class ExecutorV1 {
     );
     throw new Halt(status);
   }
+}
+
+/// Match the owned native snapshot's UTF-8 bound without changing raw fault
+/// reporting. A suffix counts inside the limit and never splits a character.
+function boundedFailureMessage(message: string): string {
+  const bytes = new TextEncoder().encode(message);
+  if (bytes.length <= FAILURE_TEXT_LIMIT) return message;
+  let end =
+    FAILURE_TEXT_LIMIT -
+    new TextEncoder().encode(FAILURE_TRUNCATED_SUFFIX).length;
+  while ((bytes[end]! & 0xc0) === 0x80) end--;
+  return (
+    new TextDecoder().decode(bytes.subarray(0, end)) + FAILURE_TRUNCATED_SUFFIX
+  );
 }
 
 function combineFaults(

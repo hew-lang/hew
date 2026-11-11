@@ -66,7 +66,9 @@ Consumers can offer explicit remote execution for native capabilities.
 Actor callers and crash hooks receive the same originating `CrashInfo`, with
 owned kind, trap, message, site and trace fields. The VM captures up to 48 real
 Hew activations before unwind and folds consecutive identical functions into
-`StackFrame.repeat`. Capture is always enabled; there is no VM trace-control
+`StackFrame.repeat`. Distinct instruction sites remain separate. Diagnostic
+messages are bounded to 4096 UTF-8 bytes, including an explicit ` [truncated]`
+suffix when needed; oversized function names are omitted. Capture is always enabled; there is no VM trace-control
 option. Frames describe the failing execution rather than its observer.
 
 Current bytecode carries function names and byte-offset spans, but no source

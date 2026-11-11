@@ -77,13 +77,9 @@ pub(super) fn source_file_key(uri: &Uri) -> Uri {
         .unwrap_or_else(|| uri.clone())
 }
 
-/// Compare editor URIs using the frontend's source-file identity rule.
+/// Compare editor URIs using canonical source keys, including unsaved files.
 pub(super) fn same_source_file(left: &Uri, right: &Uri) -> bool {
-    left == right
-        || left
-            .to_checked_file_path()
-            .zip(right.to_checked_file_path())
-            .is_some_and(|(left, right)| hew_compile::paths_name_same_file(&left, &right))
+    left == right || source_file_key(left) == source_file_key(right)
 }
 
 #[cfg(test)]

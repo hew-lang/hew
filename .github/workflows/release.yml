@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   dns:
-    name: BuildKit DNS (${{ matrix.arch }})
+    name: Hosted resolver (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -18,116 +18,53 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      UBUNTU_IMAGE: ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
-      BUILDER: hew-dns-${{ matrix.arch }}
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Set up the release BuildKit version
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-        with:
-          name: ${{ env.BUILDER }}
-          driver-opts: image=moby/buildkit:v0.34.2
-
-      - name: Compare resolver and build network boundaries
+      - name: Compare configured and independent resolver answers
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p diagnostics/context
+          mkdir -p diagnostics
           printf 'probe,exit_status\n' > diagnostics/status.csv
           probe() {
             local label="$1"
             shift
             local status=0
-            timeout 120 "$@" > "diagnostics/${label}.log" 2>&1 || status=$?
+            timeout 15 "$@" > "diagnostics/${label}.log" 2>&1 || status=$?
             printf '%s,%s\n' "$label" "$status" | tee -a diagnostics/status.csv
             cat "diagnostics/${label}.log"
           }
 
           probe host-resolver cat /etc/resolv.conf
+          probe configured-resolver cat /run/systemd/resolve/resolv.conf
           probe host-resolved resolvectl status
-          probe host-route ip route
-          probe host-github getent ahostsv4 github.com
-          probe host-registry getent ahostsv4 registry-1.docker.io
-          probe host-canonical getent ahostsv4 canonical.com
-          probe host-query-github resolvectl query github.com
-          probe host-query-ubuntu resolvectl query archive.ubuntu.com.
-          probe host-query-azure resolvectl query azure.archive.ubuntu.com.
           probe host-nss cat /etc/nsswitch.conf
-          probe host-azure getent ahostsv4 azure.archive.ubuntu.com
-          probe host-archive getent ahostsv4 archive.ubuntu.com
-          probe host-security getent ahostsv4 security.ubuntu.com
-          probe host-ports getent ahostsv4 ports.ubuntu.com
-          probe docker-version docker version
-          probe docker-bridge docker network inspect bridge
-          probe ubuntu-pull docker pull "$UBUNTU_IMAGE"
+          probe control-github getent ahostsv4 github.com
+          probe control-registry getent ahostsv4 registry-1.docker.io
+          probe control-resolved resolvectl query github.com
+          provider=$(awk '$1 == "nameserver" { print $2; exit }' /run/systemd/resolve/resolv.conf)
+          printf 'Configured provider: %s\n' "$provider"
 
-          cat > diagnostics/context/resolve.sh <<'PROBE'
-          #!/bin/sh
-          cat /etc/resolv.conf
           for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com ports.ubuntu.com; do
-            status=0
-            getent ahostsv4 "$host" || status=$?
-            printf 'getent %s exit=%s\n' "$host" "$status"
+            label="${host//./-}"
+            probe "host-${label}" getent ahostsv4 "$host"
+            probe "resolved-${label}" resolvectl query --type=A "${host}."
+            probe "provider-${label}" dig +tries=1 +time=3 "@$provider" "$host" A
+            probe "independent-${label}" dig +tries=1 +time=3 @1.1.1.1 "$host" A
+            probe "doh-${label}" curl --fail --silent --show-error \
+              --connect-timeout 3 --max-time 8 \
+              --resolve cloudflare-dns.com:443:1.1.1.1 \
+              --header 'accept: application/dns-json' \
+              "https://cloudflare-dns.com/dns-query?name=${host}&type=A"
           done
-          apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=0 -o Acquire::http::Timeout=20
-          PROBE
-          probe docker-default docker run --rm -i "$UBUNTU_IMAGE" sh < diagnostics/context/resolve.sh
-          probe docker-host docker run --rm -i --network host "$UBUNTU_IMAGE" sh < diagnostics/context/resolve.sh
-
-          container="buildx_buildkit_${BUILDER}0"
-          probe builder-network docker inspect --format '{{json .NetworkSettings}}' "$container"
-          probe builder-command docker inspect --format '{{json .Config.Cmd}}' "$container"
-          probe builder-resolver docker exec "$container" cat /etc/resolv.conf
-          probe builder-github docker exec "$container" getent hosts github.com
-          probe builder-azure docker exec "$container" getent hosts azure.archive.ubuntu.com
-          probe builder-archive docker exec "$container" getent hosts archive.ubuntu.com
-          probe builder-security docker exec "$container" getent hosts security.ubuntu.com
-          probe builder-ports docker exec "$container" getent hosts ports.ubuntu.com
-
-          cat > diagnostics/context/Dockerfile <<'DOCKERFILE'
-          # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
-          ARG BASE_IMAGE
-          FROM ${BASE_IMAGE}
-          COPY resolve.sh /probe-resolver.sh
-          RUN sh /probe-resolver.sh \
-              && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates
-          DOCKERFILE
-
-          probe buildkit-default docker buildx build --builder "$BUILDER" \
-            --no-cache --progress plain --build-arg "BASE_IMAGE=$UBUNTU_IMAGE" \
-            --load -t hew-dns-default diagnostics/context
-          probe buildkit-host docker buildx build --builder "$BUILDER" \
-            --no-cache --progress plain --build-arg "BASE_IMAGE=$UBUNTU_IMAGE" \
-            --network host --allow network.host \
-            --load -t hew-dns-host diagnostics/context
-          probe builder-log docker logs "$container"
-
-          host_builder="${BUILDER}-host"
-          probe host-builder-create docker buildx create --name "$host_builder" \
-            --driver docker-container --driver-opt image=moby/buildkit:v0.34.2 \
-            --driver-opt network=host \
-            --buildkitd-flags '--allow-insecure-entitlement network.host' --bootstrap
-          host_container="buildx_buildkit_${host_builder}0"
-          probe host-builder-network docker inspect --format '{{json .NetworkSettings}}' "$host_container"
-          probe host-builder-resolver docker exec "$host_container" cat /etc/resolv.conf
-          probe buildkit-container-host docker buildx build --builder "$host_builder" \
-            --no-cache --progress plain --build-arg "BASE_IMAGE=$UBUNTU_IMAGE" \
-            --network host --allow network.host \
-            --load -t hew-dns-container-host diagnostics/context
-          probe host-builder-log docker logs "$host_container"
           cat diagnostics/status.csv
 
-      - name: Retain every probe result
+      - name: Retain every resolver result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: buildkit-dns-${{ matrix.arch }}
+          name: hosted-resolver-${{ matrix.arch }}
           path: diagnostics/
           if-no-files-found: error
-
-      - name: Remove the diagnostic host-network builder
-        if: always()
-        run: docker buildx rm "${BUILDER}-host" || true

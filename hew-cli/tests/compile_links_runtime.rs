@@ -52,10 +52,10 @@ fn compile_to_native(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (emit_dir, std::path::PathBuf::from(binary_path))
 }
 
-/// A C driver may provide compiler builtins without an unwinder. The runtime
-/// archive still needs Rust's unwind ABI, so Hew must link it explicitly.
+/// A GNU C driver may provide compiler builtins without an unwinder. The GNU
+/// runtime archive still needs Rust's unwind ABI, so Hew links it explicitly.
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn native_link_supplies_the_runtime_unwinder() {
     use std::os::unix::fs::PermissionsExt;
 

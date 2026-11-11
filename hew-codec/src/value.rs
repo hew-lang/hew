@@ -51,7 +51,28 @@ impl Value {
         }
     }
 
-    /// A total order over values, used to find duplicate keys.
+    /// Normalize a comparison copy bottom-up, so sorting never recursively
+    /// sorts the same child maps again. The parsed document keeps input order.
+    fn normalize_key(&mut self) {
+        match self {
+            Self::Seq(items) => {
+                for item in items {
+                    item.normalize_key();
+                }
+            }
+            Self::Map(entries) => {
+                for (key, value) in entries.iter_mut() {
+                    key.normalize_key();
+                    value.normalize_key();
+                }
+                entries
+                    .sort_by(|(ak, av), (bk, bv)| ak.total_cmp(bk).then_with(|| av.total_cmp(bv)));
+            }
+            _ => {}
+        }
+    }
+
+    /// A total order over normalized values, used to find duplicate keys.
     pub(crate) fn total_cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Bool(a), Self::Bool(b)) => a.cmp(b),
@@ -98,12 +119,23 @@ fn cmp_iter<T>(
 
 /// The first key that occurs twice in `entries`, if any.
 pub(crate) fn duplicate_key(entries: &[(Value, Value)]) -> Option<&Value> {
-    let mut order: Vec<usize> = (0..entries.len()).collect();
-    order.sort_by(|&a, &b| entries[a].0.total_cmp(&entries[b].0));
+    if entries.len() < 2 {
+        return None;
+    }
+    let mut order: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, (key, _))| {
+            let mut normalized = key.clone();
+            normalized.normalize_key();
+            (index, normalized)
+        })
+        .collect();
+    order.sort_by(|(_, a), (_, b)| a.total_cmp(b));
     order
         .windows(2)
-        .find(|pair| entries[pair[0]].0.total_cmp(&entries[pair[1]].0) == Ordering::Equal)
-        .map(|pair| &entries[pair[0]].0)
+        .find(|pair| pair[0].1.total_cmp(&pair[1].1) == Ordering::Equal)
+        .map(|pair| &entries[pair[0].0].0)
 }
 
 impl serde::Serialize for Value {

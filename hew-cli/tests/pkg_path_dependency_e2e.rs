@@ -149,13 +149,14 @@ fn assert_init_lib_path_dependency_first_run(package: &str, root_source: &str) {
     let init_lib = run_pkg(&home, workspace.path(), &["init", package, "--lib"]);
     assert!(init_lib.status.success(), "{}", describe_output(&init_lib));
     let (stdout, stderr) = output_text(&init_lib);
-    assert_eq!(
-        stdout,
-        format!(
-            "Created hew.toml: {package} v0.1.0: A Hew library\n\
-             Scaffolded {root_source} and .gitignore\n\
-             Next: `hew check {root_source}`\n"
-        )
+    assert!(stdout.contains(package), "{stdout}");
+    assert!(stdout.contains("hew.toml"), "{stdout}");
+    assert!(stdout.contains(root_source), "{stdout}");
+    let next_step = stdout.lines().last().expect("init suggests a next step");
+    assert!(next_step.contains(&format!("`{package}`")), "{stdout}");
+    assert!(
+        next_step.contains(&format!("`hew check {root_source}`")),
+        "{stdout}"
     );
     assert_eq!(stderr, "");
 

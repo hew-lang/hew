@@ -1345,6 +1345,37 @@ fn a_process_root_wait_does_not_hold_the_drain() {
 }
 
 #[test]
+fn shutdown_cancels_a_parked_process_root_listener() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let handle = crate::reactor::register(crate::reactor::IoObject::TcpListener(listener));
+    let signal = Arc::new(ReadySignal::default());
+    // SAFETY: the listener and descriptor stay live until the operation is freed.
+    let operation = crate::coro_root::as_process_root_for_test(|| unsafe {
+        hew_async_tcp_accept(handle, &descriptor(&signal))
+    });
+    assert_eq!(
+        // SAFETY: this test owns the creator reference throughout the sweep.
+        unsafe { hew_async_io_status(operation) },
+        AsyncIoStatus::Pending as i32
+    );
+    assert!(crate::reactor::drain_is_idle());
+    crate::reactor::close_listener_admission();
+    let swept = crate::reactor::reactor_cancel_parked_waits_for_shutdown();
+    // SAFETY: release the operation after observing its terminal status.
+    let status = unsafe {
+        let status = hew_async_io_status(operation);
+        hew_async_io_free(operation);
+        status
+    };
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+    assert_eq!(status, AsyncIoStatus::Cancelled as i32);
+    assert_eq!(swept, 1);
+    assert_eq!(*signal.notifications.lock().unwrap(), 1);
+}
+
+#[test]
 fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();

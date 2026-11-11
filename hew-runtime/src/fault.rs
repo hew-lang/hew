@@ -636,7 +636,10 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
     // SAFETY: the caller retains a live immutable fault through this report.
     if let Some(fault) = unsafe { fault.as_ref() } {
-        if cancelled_by_shutdown(fault.code()) && fault.secondary.is_empty() {
+        if fault
+            .diagnostics()
+            .all(|diagnostic| cancelled_by_shutdown(diagnostic.code))
+        {
             return 0;
         }
         note_test_fault(fault);
@@ -765,6 +768,34 @@ fn write_unreported(fault: &HewFault, output: &mut impl Write) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn process_entry_distinguishes_shutdown_children_from_cleanup_failures() {
+        let _runtime = crate::runtime_test_guard();
+        let mut fault = HewFault::new(HEW_FAULT_CANCELLED, None);
+        fault.append(HewFault::new(HEW_FAULT_CANCELLED, None));
+        fault.append(HewFault::new(HEW_FAULT_CANCELLED, None));
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_DRAIN, Ordering::Release);
+        // SAFETY: each report borrows a live fault owned by this test.
+        assert_eq!(unsafe { hew_fault_report_entry(&raw const fault) }, 0);
+        assert!(fault.diagnostics().all(|d| !*d.reported.lock_or_recover()));
+        for code in [HEW_FAULT_DEADLINE, HEW_TRAP_USER_PANIC] {
+            let mut failed = fault.clone();
+            failed.append(HewFault::with_message(code, "cleanup failed".into()));
+            // SAFETY: the report borrows this live, immutable fault.
+            assert_eq!(unsafe { hew_fault_report_entry(&raw const failed) }, 1);
+            assert!(failed.diagnostics().all(|d| *d.reported.lock_or_recover()));
+        }
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_RUNNING, Ordering::Release);
+        let ordinary = HewFault::new(HEW_FAULT_CANCELLED, None);
+        // SAFETY: a cancellation outside shutdown retains its failure outcome.
+        assert_eq!(unsafe { hew_fault_report_entry(&raw const ordinary) }, 1);
+    }
 
     #[test]
     fn cloned_faults_report_once_without_losing_recovery_text() {

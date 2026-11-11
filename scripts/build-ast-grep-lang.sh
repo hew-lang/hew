@@ -47,7 +47,11 @@ if [[ "$BOOTSTRAP" == 1 ]] && {
         echo "error: cargo is required to install pinned tree-sitter-cli" >&2
         exit 1
     }
-    cargo install "$TREE_SITTER_CLI_CARGO_PACKAGE" \
+    # Some macOS strip versions misalign LINKEDIT in QuickJS proc macros.
+    # Keep compiler-loaded helpers unstripped; the installed tool still uses
+    # its normal release profile.
+    CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none \
+        cargo install "$TREE_SITTER_CLI_CARGO_PACKAGE" \
         --version "$TREE_SITTER_CLI_VERSION" --locked --root "$TREE_SITTER_ROOT"
 fi
 [[ -x "$TREE_SITTER" ]] || {

@@ -18,6 +18,45 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
+/// The driver and runtime DLL share a Cargo profile but own different debug
+/// identities. Each PE image must name a PDB that is available beside it.
+#[test]
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
+fn compiler_and_runtime_keep_distinct_pdb_sidecars() {
+    use object::Object;
+    use std::path::Path;
+
+    fn sidecar_identity(image: &Path, expected_name: &str) -> [u8; 16] {
+        let bytes = std::fs::read(image).expect("read PE image");
+        let object = object::File::parse(bytes.as_slice()).expect("parse PE image");
+        let info = object
+            .pdb_info()
+            .expect("read CodeView")
+            .expect("PE PDB identity");
+        let path = Path::new(std::str::from_utf8(info.path()).expect("PDB path is UTF-8"));
+        assert_eq!(
+            path.file_name().unwrap(),
+            expected_name,
+            "{}",
+            image.display()
+        );
+        let sidecar = image.with_file_name(expected_name);
+        assert!(
+            sidecar.metadata().expect("PDB sidecar must exist").len() > 0,
+            "{}",
+            sidecar.display()
+        );
+        info.guid()
+    }
+
+    require_codegen();
+    let compiler = hew_binary();
+    let runtime = compiler.with_file_name("hew.dll");
+    let compiler_pdb = sidecar_identity(&compiler, "hew.pdb");
+    let runtime_pdb = sidecar_identity(&runtime, "hew-runtime.pdb");
+    assert_ne!(compiler_pdb, runtime_pdb);
+}
+
 /// Compile `source` to a native binary and return its path (kept alive by the
 /// returned `TempDir`). Mirrors the `hew compile --emit-dir` + `native:` stdout
 /// parsing used by `compile_native_link_produces_runnable_binary`.

@@ -80,12 +80,26 @@ def sanitized_failure_symbols(args, root, output, env):
             "--release",
             "--opt-level",
             "0",
+            "--emit-llvm",
             root / "tests/packaged-sdk/debug-failure.hew",
             "-o",
             executable,
         ],
         env=env,
     )
+    ir = executable.with_suffix(".ll").read_text()
+    if "call void @__asan_report_" not in ir:
+        raise RuntimeError("generated Hew failure has no ASan access instrumentation")
+    # Sanitizer builds intentionally retain symbols for ASan reports; strip an
+    # independent executable here to require the compact Hew table instead.
+    run(["strip", "--strip-all", executable], env=env)
+    sections = run(["readelf", "--section-headers", "--wide", executable], env=env)
+    if (
+        b".debug_" in sections.stdout
+        or b".zdebug_" in sections.stdout
+        or b".symtab" in sections.stdout
+    ):
+        raise RuntimeError("sanitized failure executable was not stripped")
     result = subprocess.run(
         [executable],
         env=env | {"HEW_BACKTRACE": "1", "HEW_FAILURE_LOG": str(log)},

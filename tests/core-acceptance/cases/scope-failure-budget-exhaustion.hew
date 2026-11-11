@@ -1,0 +1,35 @@
+#[max_heap(256)]
+actor Worker {
+    receive fn check() -> i64 {
+        let recovered = {
+            let padding = "x".repeat(240);
+            var recovered = 0;
+            for _ in 0..64 {
+                let matched = scope {
+                    let values: Vec<i64> = [];
+                    let index = 0;
+                    let _ = values[index];
+                    false
+                } handle failure {
+                    match failure {
+                        .Fault { message } => message == "",
+                        _ => false,
+                    }
+                };
+                if matched {
+                    recovered += 1;
+                }
+            }
+            assert(padding.byte_len() == 240);
+            recovered
+        };
+        recovered
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    assert(worker.check().expect("worker survived") == 64);
+    stop(worker);
+    stopped(worker);
+}

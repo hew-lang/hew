@@ -66,6 +66,12 @@ class QualificationInputs(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, f"source_sha={source}\nplatforms=windows-x86_64\n")
 
+    def test_debugger_only_preserves_the_requested_candidate(self) -> None:
+        source = "b" * 40
+        result, output = self.resolve(source, "windows-debugger")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, f"source_sha={source}\nplatforms=windows-debugger\n")
+
     def test_invalid_source_has_no_executable_job_outputs(self) -> None:
         for source in [
             "main",
@@ -178,6 +184,13 @@ class CandidateGuards(unittest.TestCase):
             "windows-x86_64",
         ]:
             self.assertIn(value, summary)
+
+    def test_debugger_only_is_not_platform_qualification(self) -> None:
+        result = self.identity(PLATFORMS="windows-debugger")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        summary = (self.root / "summary").read_text()
+        self.assertIn(self.candidate, summary)
+        self.assertIn("not Windows platform or release qualification", summary)
 
     def test_identity_rejects_a_different_checkout(self) -> None:
         result = self.identity(SOURCE_SHA=self.base)

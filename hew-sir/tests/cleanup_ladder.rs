@@ -271,8 +271,8 @@ fn a_defer_reading_rewritten_places_keeps_one_shared_suffix() {
         .iter()
         .filter(|block| matches!(block.terminator, SemTerminator::EnterDefer { .. }))
         .count();
-    // One deferred body for the shared fault rung, one per ordinary exit:
-    // three `?` returns and the final value.
-    assert_eq!(defers, 5);
+    // One body for the shared fault rung, two per `?` (returning the owned
+    // error or failing to materialize it), and one for the final value.
+    assert_eq!(defers, 8);
     assert_eq!(resume_unwinds(track), 1);
 }

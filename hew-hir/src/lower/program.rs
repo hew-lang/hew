@@ -1512,15 +1512,32 @@ pub fn lower_program(
     // whether their executable methods are needed or have checked successfully.
     let actor_intercept_types = ctx.lower_actor_intercept_types();
     let mut prelude_declarations = Vec::new();
-    if let Some(builtins) = builtin_program {
-        for (source, span) in builtins.items.iter().filter_map(|(item, span)| {
+    // The checker registers the compiled-in failure declarations when no
+    // source graph supplies that module. Project the same source declarations
+    // into HIR so their nested payloads have the same concrete shapes as in a
+    // file-based compilation.
+    let embedded_failure = program
+        .module_graph
+        .as_ref()
+        .is_none_or(|graph| !graph.modules.keys().any(|id| id.dotted() == "std.failure"))
+        .then(|| hew_parser::parse(include_str!("../../../std/failure.hew")));
+    let prelude_sources = builtin_program
+        .into_iter()
+        .map(|program| ("std.builtins", program))
+        .chain(
+            embedded_failure
+                .as_ref()
+                .map(|parsed| ("std.failure", &parsed.program)),
+        );
+    for (owner, prelude) in prelude_sources {
+        for (source, span) in prelude.items.iter().filter_map(|(item, span)| {
             if let Item::TypeDecl(decl) = item {
                 Some((decl, span))
             } else {
                 None
             }
         }) {
-            let canonical_name = format!("std.builtins.{}", source.name);
+            let canonical_name = format!("{owner}.{}", source.name);
             let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
                 ctx.missing_checked_fact(
                     span.clone(),

@@ -112,6 +112,16 @@ fn replies_select_the_request_publication_during_connection_overlap() {
         connection::claim_send_by_identity(unsafe { &*server_manager }, client_identity, None)
             .unwrap()
             .publication_token;
+    // ACTIVE/Published precedes route exposure. Let the initial publication
+    // pass the route rendezvous before installing probes for its successor.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client_routes.route_count() == 0 || server_routes.route_count() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the initial connection must expose both routes"
+        );
+        thread::yield_now();
+    }
     let (client_entered, client_wait) = std::sync::mpsc::channel();
     let (client_release, client_resume) = std::sync::mpsc::channel();
     let (server_entered, server_wait) = std::sync::mpsc::channel();
@@ -145,6 +155,9 @@ fn replies_select_the_request_publication_during_connection_overlap() {
         let server_claim =
             connection::claim_send_by_identity(unsafe { &*server_manager }, client_identity, None)
                 .ok_or("server send claim")?;
+        if server_claim.publication_token == old_publication {
+            return Err("server successor publication");
+        }
         let shutdown = AtomicBool::new(false);
         let mut pending = Vec::new();
         for kind in 0..3 {
@@ -190,16 +203,21 @@ fn replies_select_the_request_publication_during_connection_overlap() {
             }
             pending.push(reply);
         }
-        let last = pending.last().unwrap();
-        let (last_outcome, _) = last
-            .cond
-            .wait_timeout_while(
-                last.outcome.lock().unwrap(),
-                Duration::from_secs(1),
-                |outcome| outcome.is_none(),
-            )
-            .unwrap();
-        drop(last_outcome);
+        // The contract is exact reply publication, not one-second delivery
+        // on a loaded sanitizer host. Retain each request until its observed
+        // outcome, with one bounded hang guard for the complete exchange.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        for reply in &pending {
+            let (outcome, _) = reply
+                .cond
+                .wait_timeout_while(
+                    reply.outcome.lock().unwrap(),
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                    |outcome| outcome.is_none(),
+                )
+                .unwrap();
+            drop(outcome);
+        }
         Ok(pending
             .into_iter()
             .map(|reply| {

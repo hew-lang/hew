@@ -33,6 +33,8 @@ use inkwell::values::{AsValueRef, FunctionValue, PointerValue};
 /// The source text a `-g` build attributes its metadata to.
 #[derive(Debug, Clone, Copy)]
 pub struct DebugSource<'a> {
+    /// The source path as it should appear in debug information, after any
+    /// caller-selected path remapping.
     pub path: &'a Path,
     pub text: &'a str,
 }
@@ -668,19 +670,13 @@ pub(super) fn optimizes(machine: &inkwell::targets::TargetMachine) -> bool {
     unsafe { hewLLVMTargetMachineOptimizes(machine.as_mut_ptr()) }
 }
 
-/// The absolute directory of `path`, or its directory as given when it cannot
-/// be made absolute (a remapped or trimmed virtual root).
+/// The source directory in the caller's presentation namespace.
 fn source_directory(path: &Path) -> String {
-    let parent = path
-        .parent()
+    path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    // Absolute, but not canonical: a debugger matches the path the person
-    // types, and resolving symlinks would turn macOS's `/var` into
-    // `/private/var`.
-    std::path::absolute(parent)
-        .map(|absolute| absolute.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| parent.to_string_lossy().into_owned())
+        .unwrap_or_else(|| Path::new("."))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The compile unit's file, carrying the MD5 of the text compiled. The shim

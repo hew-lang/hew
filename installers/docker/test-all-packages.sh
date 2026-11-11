@@ -206,8 +206,7 @@ if _should_test debian; then
         _run_test "debian-12" "debian:bookworm" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends gcc libc-dev 2>/dev/null | tail -3
-            dpkg -i /pkg/hew_*.deb 2>/dev/null || apt-get install -f -y -qq
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -222,8 +221,7 @@ if _should_test ubuntu; then
         _run_test "ubuntu-24.04" "ubuntu:24.04" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends gcc libc-dev 2>/dev/null | tail -3
-            dpkg -i /pkg/hew_*.deb 2>/dev/null || apt-get install -f -y -qq
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -235,14 +233,10 @@ fi
 # ── Ubuntu 22.04 (jammy) ─────────────────────────────────────────────────────
 if _should_test ubuntu22; then
     if [[ -f "${DEB_PKG}" ]]; then
-        # libz3-4 on 22.04 has a different package name (libz3-4 still works, but
-        # check availability first).
         _run_test "ubuntu-22.04" "ubuntu:22.04" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends gcc libc-dev 2>/dev/null | tail -3
-            dpkg --force-depends -i /pkg/hew_*.deb 2>/dev/null || true
-            apt-get install -f -y -qq
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -256,7 +250,6 @@ if _should_test rpm || _should_test fedora; then
     if [[ -n "${RPM_PKG}" ]] && [[ -f "${RPM_PKG}" ]]; then
         _run_test "fedora-41" "fedora:41" '
             set -e
-            dnf install -y -q gcc 2>/dev/null | tail -3
             dnf install -y -q /pkg/hew-*.rpm
             echo "--- hew run ---"
             hew run /pkg/test.hew
@@ -271,7 +264,7 @@ if _should_test arch; then
     if [[ -f "${ARCH_PKG}" ]]; then
         _run_test "arch" "archlinux:latest" '
             set -e
-            pacman -Sy --noconfirm gcc 2>/dev/null | tail -3
+            pacman -Sy --noconfirm
             pacman -U --noconfirm /pkg/hew-bin-*.pkg.tar.zst
             echo "--- hew run ---"
             hew run /pkg/test.hew

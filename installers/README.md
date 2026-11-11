@@ -19,6 +19,29 @@ Other `install.sh` flags: `--version <ver>` (pin an exact version),
 `--prefix <dir>` (installation directory), `--dry-run` (print what would be
 installed without installing it). `sh install.sh --help` lists all of them.
 
+## Native build prerequisites
+
+Hew includes LLVM and its runtime. Building or running a native Hew program also
+requires a system C compiler driver and C development files for the final link.
+The Linux `.deb`, `.rpm` and Arch packages install these dependencies through the
+package manager. When using the shell installer or extracting a tarball, install
+them first:
+
+| System          | Command                              |
+| --------------- | ------------------------------------ |
+| Debian / Ubuntu | `sudo apt-get install gcc libc6-dev` |
+| Fedora / RHEL   | `sudo dnf install gcc glibc-devel`   |
+| Arch Linux      | `sudo pacman -S gcc glibc`           |
+| macOS           | `xcode-select --install`             |
+
+On FreeBSD, the base system provides Clang and the C development files. On
+Windows, put LLVM 22.1.6 `clang.exe` and `lld-link.exe` on `PATH`, and install
+Visual Studio Build Tools with the Desktop development with C++ workload and
+Windows SDK. The linker discovers the MSVC and Windows SDK libraries; a developer
+shell is not required. Prebuilt SDK users do not need Rust or LLVM development
+headers and libraries. The shipped Linux archives target glibc;
+they do not run on an unmodified musl-based Alpine system.
+
 ## Quick Install (FreeBSD)
 
 Prebuilt tools require FreeBSD 15.1 or newer. FreeBSD base includes `fetch(1)`:

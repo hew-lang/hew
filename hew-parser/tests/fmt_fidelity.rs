@@ -372,6 +372,36 @@ fn literal_and_attribute_spellings_survive() {
 }
 
 #[test]
+fn file_import_string_spellings_survive() {
+    for source in [
+        r#"import r"helpers.hew";"#,
+        r#"import r"" as empty;"#,
+        r#"import r"modules\helpers.hew" as helpers;"#,
+        r#"import r"modules\" as modules;"#,
+        r#"import r"modules\n\u{41}.hew";"#,
+        r#"import r"modules/*literal*/file//name.hew";"#,
+        r#"import "modules/quoted\"name.hew" as helpers;"#,
+        r#"import "modules\\helpers.hew";"#,
+        "import r\"modules\r\nhelpers.hew\";\r\n",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn comments_around_file_import_strings_and_aliases_stay_anchored() {
+    for path in [r#"r"helpers.hew""#, r#""helpers.hew""#] {
+        assert_faithful(&format!(
+            "import /* path */ {path} /* alias */ as /* name */ helpers /* end */; // trailing\n\
+             import r\"other.hew\";\n",
+        ));
+        assert_faithful(&format!(
+            "import // path\n    {path} // alias\n    as // name\n    helpers // end\n    ;\n",
+        ));
+    }
+}
+
+#[test]
 fn bare_actor_field_and_bare_break_keep_their_spelling() {
     assert_faithful(
         "actor A {\n    let name: string;\n    receive fn go() {}\n}\n\nfn main() {\n    loop {\n        match 1 {\n            1 => break,\n            _ => continue,\n        }\n    }\n}\n",
@@ -796,6 +826,33 @@ fn layout_newlines_determine_style_around_verbatim_content() {
         "\nmacro p { () => expr {\r\n1 } }",
     ] {
         assert_faithful(source);
+    }
+}
+
+#[test]
+fn mixed_layout_line_endings_follow_the_first_layout_break() {
+    for (source, crlf) in [
+        ("// first\r\n// second\nfn main() {}\n", true),
+        ("// first\n// second\r\nfn main() {}\r\n", false),
+        ("//! first\r\n/// second\nfn main() {}\n", true),
+        ("//! first\n/// second\r\nfn main() {}\r\n", false),
+        ("/* first\r\nsecond\n*/\nfn main() {}\n", true),
+        ("/* first\nsecond\r\n*/\r\nfn main() {}\r\n", false),
+        ("/* outer\r\n/* inner\n*/ end */\nfn main() {}", true),
+        ("/* outer\n/* inner\r\n*/ end */\r\nfn main() {}", false),
+    ] {
+        assert_faithful(source);
+        let formatted = format_source(source, &parse(source).program);
+        assert_eq!(
+            hew_parser::fmt::fidelity::uses_crlf(&formatted),
+            crlf,
+            "wrong layout style for {source:?}"
+        );
+        if crlf {
+            assert!(!formatted.replace("\r\n", "").contains('\n'));
+        } else {
+            assert!(!formatted.contains('\r'));
+        }
     }
 }
 

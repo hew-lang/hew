@@ -3,6 +3,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use hew_codec::{Format, Source};
 
@@ -10,6 +11,8 @@ struct Counting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+// Both tests measure the same process-wide allocator counters.
+static MEASUREMENT: Mutex<()> = Mutex::new(());
 
 // SAFETY: every method forwards to `System` and only adjusts counters.
 unsafe impl GlobalAlloc for Counting {
@@ -38,7 +41,7 @@ fn parse_peak(format: Format, input: &[u8]) -> usize {
     let base = LIVE.load(Ordering::SeqCst);
     PEAK.store(base, Ordering::SeqCst);
     let parsed = Source::new(format, input);
-    let peak = PEAK.load(Ordering::SeqCst) - base;
+    let peak = PEAK.load(Ordering::SeqCst).saturating_sub(base);
     assert!(parsed.is_err(), "the truncated document is refused");
     peak
 }
@@ -56,6 +59,7 @@ fn nested(format: Format, levels: usize) -> Vec<u8> {
 
 #[test]
 fn nested_declared_lengths_do_not_reserve_heap() {
+    let _measurement = MEASUREMENT.lock().unwrap();
     for format in [Format::Cbor, Format::Msgpack] {
         let input = nested(format, 100);
         let peak = parse_peak(format, &input);
@@ -69,6 +73,7 @@ fn nested_declared_lengths_do_not_reserve_heap() {
 
 #[test]
 fn bare_declared_lengths_do_not_reserve_heap() {
+    let _measurement = MEASUREMENT.lock().unwrap();
     // 120 map headers each declaring 57,054 entries, then nothing; the same
     // for CBOR maps declaring 65,535 entries.
     let msgpack = vec![0xde; 360];

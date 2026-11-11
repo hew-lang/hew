@@ -355,10 +355,11 @@ impl Expr {
                 match op {
                     BinOp::Add => ty.checked(a + b)?,
                     BinOp::Sub => ty.checked(a - b)?,
-                    BinOp::Mul => ty.checked(a * b)?,
+                    BinOp::Mul => ty.checked(a.checked_mul(b).ok_or(OVERFLOW)?)?,
                     BinOp::WAdd => ty.wrap(a + b),
                     BinOp::WSub => ty.wrap(a - b),
-                    BinOp::WMul => ty.wrap(a * b),
+                    // Preserve the low bits even when a u64 product exceeds i128.
+                    BinOp::WMul => ty.wrap(a.wrapping_mul(b)),
                     BinOp::Div | BinOp::Rem => {
                         if b == 0 {
                             return Err(DIV_ZERO);
@@ -385,13 +386,16 @@ impl Expr {
                 match method {
                     Method::WrappingAdd => ty.wrap(a + b),
                     Method::WrappingSub => ty.wrap(a - b),
-                    Method::WrappingMul => ty.wrap(a * b),
+                    Method::WrappingMul => ty.wrap(a.wrapping_mul(b)),
                     Method::SaturatingAdd => clamp(a + b),
                     Method::SaturatingSub => clamp(a - b),
-                    Method::SaturatingMul => clamp(a * b),
+                    Method::SaturatingMul => clamp(a.saturating_mul(b)),
                     Method::CheckedAdd(fallback) => checked(a + b, *fallback),
                     Method::CheckedSub(fallback) => checked(a - b, *fallback),
-                    Method::CheckedMul(fallback) => checked(a * b, *fallback),
+                    Method::CheckedMul(fallback) => a
+                        .checked_mul(b)
+                        .and_then(|value| ty.checked(value).ok())
+                        .unwrap_or(*fallback),
                 }
             }
         })
@@ -1636,4 +1640,72 @@ fn failing_case(
             Ok("UserPanic")
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BinOp, Expr, IntTy, Method, OVERFLOW};
+
+    // Compare every multiplication form against Rust's fixed-width arithmetic,
+    // including products beyond the i128 representation used by the model.
+    macro_rules! multiplication_test {
+        ($name:ident, $rust_ty:ty, $hew_ty:ident, [$($extra:expr),*]) => {
+            #[test]
+            fn $name() {
+                let values: &[$rust_ty] = &[
+                    <$rust_ty>::MIN,
+                    <$rust_ty>::MIN + 1,
+                    <$rust_ty>::MAX,
+                    <$rust_ty>::MAX - 1,
+                    0, 1, 2, 3,
+                    $($extra),*
+                ];
+                let ty = IntTy::$hew_ty;
+                let fallback: $rust_ty = 7;
+                for &a in values {
+                    for &b in values {
+                        let operands = || {
+                            (Box::new(Expr::Lit(i128::from(a))),
+                             Box::new(Expr::Lit(i128::from(b))))
+                        };
+                        let checked = a.checked_mul(b);
+                        let (left, right) = operands();
+                        assert_eq!(
+                            Expr::Bin(BinOp::Mul, left, right).eval(ty, &[]),
+                            checked.map(i128::from).ok_or(OVERFLOW),
+                            "checked operator: {a} * {b}"
+                        );
+                        let (left, right) = operands();
+                        assert_eq!(
+                            Expr::Bin(BinOp::WMul, left, right).eval(ty, &[]),
+                            Ok(i128::from(a.wrapping_mul(b))),
+                            "wrapping operator: {a} * {b}"
+                        );
+                        for (method, expected, name) in [
+                            (Method::WrappingMul, a.wrapping_mul(b), "wrapping"),
+                            (Method::SaturatingMul, a.saturating_mul(b), "saturating"),
+                            (Method::CheckedMul(i128::from(fallback)),
+                             checked.unwrap_or(fallback), "checked"),
+                        ] {
+                            let (left, right) = operands();
+                            assert_eq!(
+                                Expr::Method(method, left, right).eval(ty, &[]),
+                                Ok(i128::from(expected)),
+                                "{name} method: {a} * {b}"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    multiplication_test!(multiply_i8, i8, I8, [-1, -2, -3]);
+    multiplication_test!(multiply_i16, i16, I16, [-1, -2, -3]);
+    multiplication_test!(multiply_i32, i32, I32, [-1, -2, -3]);
+    multiplication_test!(multiply_i64, i64, I64, [-1, -2, -3]);
+    multiplication_test!(multiply_u8, u8, U8, []);
+    multiplication_test!(multiply_u16, u16, U16, []);
+    multiplication_test!(multiply_u32, u32, U32, []);
+    multiplication_test!(multiply_u64, u64, U64, [1 << 32, 1 << 63]);
 }

@@ -23,6 +23,12 @@ See the [release notes](https://github.com/hew-lang/hew/releases) for the
 SDK you install and its matching language specification. Changes on `main`
 after the latest release are [unreleased](docs/releases/UNRELEASED.md).
 
+Native builds also need a system C compiler driver and C development files.
+Linux distribution packages install these dependencies. For the shell installer
+or tarballs, install your platform's [native build prerequisites](installers/README.md#native-build-prerequisites)
+before running the examples below. The prebuilt SDK does not require a Rust or
+LLVM development installation.
+
 ## Quick Start
 
 ```bash

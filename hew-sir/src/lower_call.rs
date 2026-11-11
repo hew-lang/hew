@@ -169,9 +169,12 @@ impl Builder<'_, '_> {
         Ok(Some(value))
     }
 
-    /// These expressions cannot consume a prior argument's owner or branch to
-    /// cleanup while a call-local loan is open. Other evaluation requires a
-    /// snapshot of copyable arguments or a protected loan of affine arguments.
+    /// These expressions cannot write or consume a prior argument's place, so
+    /// an earlier argument may be read in place while they run. Arithmetic,
+    /// numeric casts and builtin indexed reads may fault; that exits the call
+    /// before entry, with the owner and its loan still available for cleanup.
+    /// Blocks, calls and mutating methods retain ordinary snapshot or loan
+    /// protection because they can replace a prior argument's owner.
     pub(super) fn stable_argument_read(expr: &HirExpr) -> bool {
         hew_parser::stack::ensure_sufficient_stack(|| Self::stable_argument_read_inner(expr))
     }
@@ -182,6 +185,16 @@ impl Builder<'_, '_> {
             HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::stable_argument_read(tuple),
             HirExprKind::SubsumedValue { source, .. } => Self::stable_argument_read(source),
+            HirExprKind::Binary { left, right, .. } => {
+                Self::stable_argument_read(left) && Self::stable_argument_read(right)
+            }
+            HirExprKind::Unary { operand, .. } => Self::stable_argument_read(operand),
+            HirExprKind::NumericCast { value, .. }
+            | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. } => Self::stable_argument_read(value),
+            HirExprKind::Index { container, index } => {
+                Self::stable_argument_read(container) && Self::stable_argument_read(index)
+            }
             _ => false,
         }
     }

@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-read-computed-argument-fault"
+intent = "A computed argument that faults while a field receiver is read in place unwinds without running the lookup and releases every owner exactly once."
+source = "cases/collection-read-computed-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "TEMPORARY\n1\nTEMPORARY\n"
+exit = 1

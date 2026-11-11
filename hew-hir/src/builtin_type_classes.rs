@@ -64,6 +64,8 @@ pub struct BuiltinTypeField {
 pub enum BuiltinTypeShape {
     Opaque,
     Struct(&'static [BuiltinTypeField]),
+    /// A source-owned record: its declaration, not this catalog, owns fields.
+    SourceStruct,
     Enum(&'static [&'static str]),
 }
 
@@ -91,17 +93,6 @@ impl BuiltinTypeRegistration {
         self.roles.contains(&role)
     }
 }
-
-const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[
-    BuiltinTypeField {
-        name: "code",
-        ty: BuiltinFieldTy::I64,
-    },
-    BuiltinTypeField {
-        name: "message",
-        ty: BuiltinFieldTy::String,
-    },
-];
 
 /// `CrashNotification { actor_id: u64, kind: CrashKind }` is rebuilt by the
 /// synthetic `#[on(exit)]` prologue from the runtime's two-field mailbox ABI.
@@ -207,7 +198,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
     registration!(ActorFn, BuiltinTypeShape::Opaque),
-    registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
+    registration!(CrashInfo, BuiltinTypeShape::SourceStruct),
     registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
     registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
 ];
@@ -410,24 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn crash_info_shape_is_registered_with_message_field() {
+    fn crash_info_shape_uses_source_fields() {
         let registration = crash_info_type_registration();
         assert_eq!(registration.name(), "CrashInfo");
         assert_eq!(registration.marker, ResourceMarker::None);
         assert!(registration.has_role(BuiltinRegistrationRole::CrashInfoPayload));
-        assert_eq!(
-            registration.shape,
-            BuiltinTypeShape::Struct(&[
-                BuiltinTypeField {
-                    name: "code",
-                    ty: BuiltinFieldTy::I64,
-                },
-                BuiltinTypeField {
-                    name: "message",
-                    ty: BuiltinFieldTy::String,
-                },
-            ])
-        );
+        assert_eq!(registration.shape, BuiltinTypeShape::SourceStruct);
     }
 
     #[test]

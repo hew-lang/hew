@@ -9,8 +9,8 @@ use crate::failure_record::{FailureRecord, MAX_FRAMES};
 use std::ffi::c_void;
 use std::ffi::{c_char, CStr};
 
-const TEXT_LIMIT: usize = 4096;
-const TRUNCATED: &str = " [truncated]";
+const TEXT_LIMIT: usize = crate::failure_kinds::FAILURE_TEXT_LIMIT;
+const TRUNCATED: &str = crate::failure_kinds::FAILURE_TRUNCATED_SUFFIX;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,6 +289,7 @@ fn named_frame(snapshot: &FailureSnapshot, index: u32) -> Option<&Frame> {
 /// `value` is null or a live borrowed failure snapshot.
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_kind(value: *const c_void) -> i32 {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     let code = unsafe { snapshot(value) }.map_or(0, |snapshot| snapshot.code);
     crate::internal::types::ExitReason::from_error_code(code).to_crash_kind() as i32
 }
@@ -298,6 +299,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_kind(value: *const c_void) -> i32 
 /// `value` is null or a live borrowed failure snapshot.
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_trap(value: *const c_void) -> i32 {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     unsafe { snapshot(value) }
         .and_then(|snapshot| crate::failure_kinds::trap_kind_tag(snapshot.code))
         .and_then(|tag| i32::try_from(tag).ok())
@@ -311,6 +313,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_trap(value: *const c_void) -> i32 
 pub unsafe extern "C" fn hew_failure_snapshot_message(
     value: *const c_void,
 ) -> *mut hew_cabi::string::HewString {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     let message = unsafe { snapshot(value) }
         .and_then(|snapshot| snapshot.message.as_deref())
         .unwrap_or("");
@@ -322,6 +325,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_message(
 /// `value` is null or a live borrowed failure snapshot.
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_has_site(value: *const c_void) -> bool {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     unsafe { snapshot(value) }.is_some_and(|snapshot| snapshot.site.is_some())
 }
 
@@ -332,6 +336,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_has_site(value: *const c_void) -> 
 pub unsafe extern "C" fn hew_failure_snapshot_site_file(
     value: *const c_void,
 ) -> *mut hew_cabi::string::HewString {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     let file = unsafe { snapshot(value) }
         .and_then(|snapshot| snapshot.site.as_ref())
         .map_or("", |site| site.file.as_str());
@@ -344,6 +349,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_site_file(
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_site_line(value: *const c_void) -> i64 {
     i64::from(
+        // SAFETY: the caller retains the null or live snapshot throughout this borrow.
         unsafe { snapshot(value) }
             .and_then(|snapshot| snapshot.site.as_ref())
             .map_or(0, |site| site.line),
@@ -356,6 +362,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_site_line(value: *const c_void) ->
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_site_column(value: *const c_void) -> i64 {
     i64::from(
+        // SAFETY: the caller retains the null or live snapshot throughout this borrow.
         unsafe { snapshot(value) }
             .and_then(|snapshot| snapshot.site.as_ref())
             .map_or(0, |site| site.column),
@@ -367,6 +374,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_site_column(value: *const c_void) 
 /// `value` is null or a live borrowed failure snapshot.
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_frame_count(value: *const c_void) -> i32 {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     unsafe { snapshot(value) }
         .and_then(|snapshot| snapshot.frames.as_ref())
         .map_or(-1, |frames| {
@@ -388,6 +396,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_frame_function(
     value: *const c_void,
     index: u32,
 ) -> *mut hew_cabi::string::HewString {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     let function = unsafe { snapshot(value) }
         .and_then(|snapshot| named_frame(snapshot, index))
         .and_then(|frame| frame.function.as_deref())
@@ -403,6 +412,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_frame_has_site(
     value: *const c_void,
     index: u32,
 ) -> bool {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     unsafe { snapshot(value) }
         .and_then(|snapshot| named_frame(snapshot, index))
         .is_some_and(|frame| frame.site.is_some())
@@ -416,6 +426,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_frame_file(
     value: *const c_void,
     index: u32,
 ) -> *mut hew_cabi::string::HewString {
+    // SAFETY: the caller retains the null or live snapshot throughout this borrow.
     let file = unsafe { snapshot(value) }
         .and_then(|snapshot| named_frame(snapshot, index))
         .and_then(|frame| frame.site.as_ref())
@@ -429,6 +440,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_frame_file(
 #[no_mangle]
 pub unsafe extern "C" fn hew_failure_snapshot_frame_line(value: *const c_void, index: u32) -> i64 {
     i64::from(
+        // SAFETY: the caller retains the null or live snapshot throughout this borrow.
         unsafe { snapshot(value) }
             .and_then(|snapshot| named_frame(snapshot, index))
             .and_then(|frame| frame.site.as_ref())
@@ -445,6 +457,7 @@ pub unsafe extern "C" fn hew_failure_snapshot_frame_repeat(
     index: u32,
 ) -> i64 {
     i64::from(
+        // SAFETY: the caller retains the null or live snapshot throughout this borrow.
         unsafe { snapshot(value) }
             .and_then(|snapshot| named_frame(snapshot, index))
             .map_or(0, |frame| frame.repeat),

@@ -3,6 +3,11 @@
 
 use std::ffi::CStr;
 
+/// Maximum UTF-8 bytes retained for failure messages and source text.
+pub const FAILURE_TEXT_LIMIT: usize = 4096;
+/// Suffix included inside the maximum when a message is truncated.
+pub const FAILURE_TRUNCATED_SUFFIX: &str = " [truncated]";
+
 /// An actor's per-dispatch arena cap was exceeded.
 pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
 /// Checked integer arithmetic overflowed.

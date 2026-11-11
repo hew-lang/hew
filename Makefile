@@ -1872,6 +1872,10 @@ cabi-surface:
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
+LINT_GATES += failure-kinds-check
+failure-kinds-check:
+	$(PYTHON) scripts/gen-failure-kinds.py --check
+
 LINT_GATES += cabi-surface-check
 cabi-surface-check:
 	cargo run -p xtask -- runtime-declarations --check

@@ -165,7 +165,9 @@ fn catalogue_builtins_lower_through_their_runtime_families() {
     let lowered = lower_source(
         r#"
         fn main() {
-            let flag = true;
+            // Exercise the catalogued conversion directly; interpolation
+            // specializes primitive rendering into checked append instead.
+            let flag = to_string(true);
             let joined = ("a" + "b");
             let empty: bytes = bytes.new();
             println(f"{joined} {flag} {empty.len()}");

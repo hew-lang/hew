@@ -1635,6 +1635,34 @@ mod tests {
     }
 
     #[test]
+    fn literal_append_lends_exact_utf8_bytes() {
+        for (literal, len, expected) in [
+            ("é✓tail", 0, "left:"),
+            ("é✓tail", 2, "left:é"),
+            ("é✓tail", 5, "left:é✓"),
+            ("\u{feff}é", 3, "left:\u{feff}"),
+            ("é\0tail", 3, "left:é\0"),
+        ] {
+            let receiver = string_from_str("left:");
+            let mut status = -1;
+            let data = if len == 0 {
+                core::ptr::null()
+            } else {
+                literal.as_ptr()
+            };
+            // SAFETY: the receiver transfers one live owner; each prefix is
+            // valid UTF-8 and status remains writable throughout the call.
+            let result =
+                unsafe { hew_string_append_literal_checked(receiver, data, len, &raw mut status) };
+            assert_eq!(status, 0);
+            // SAFETY: a successful append returns the fixture's owner.
+            assert_eq!(unsafe { string_as_str(result) }, expected);
+            // SAFETY: the returned owner has not otherwise been released.
+            unsafe { string_release(result) };
+        }
+    }
+
+    #[test]
     fn to_bytes_owned_output_survives_source_release() {
         let mut source = std::ptr::null_mut();
         let mut output = std::mem::MaybeUninit::<crate::bytes::BytesTriple>::uninit();

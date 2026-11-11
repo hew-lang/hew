@@ -583,8 +583,32 @@ const UNIT_FAMILIES = {
   StringAppendU64: (_host, args) => appendRendered(args),
   StringAppendF64: (_host, args) => appendRendered(args),
   StringAppendBool: (_host, args) => appendRendered(args),
-  StringAppendLiteral: (_host, args) =>
-    indexed(args, 0).append(indexed(args, 1)),
+  StringAppendLiteral: (_host, args) => {
+    const receiver = indexed(args, 0);
+    const count = arg(args, 2);
+    if (count.kind !== "i64")
+      throw new TypeError("literal byte length must be an integer");
+    const length = Number(count.value);
+    if (!Number.isSafeInteger(length) || length < 0 || length > 0xffffffff)
+      throw new RangeError("literal byte length is outside u32");
+    if (length === 0) return receiver;
+    const literal = indexed(args, 1);
+    if (length > literal.byteLength)
+      throw new RangeError("literal byte length exceeds its storage");
+    if (length === literal.byteLength) return receiver.append(literal);
+    // The ABI lends exactly this UTF-8 prefix. Malformed untrusted packages
+    // must not silently append a different value or replace a split scalar.
+    const text = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: true,
+    }).decode(literal.encoded().subarray(0, length));
+    const prefix = stringValue(text);
+    try {
+      return receiver.append(prefix);
+    } finally {
+      prefix.release();
+    }
+  },
   StringClear: (_host, args) => {
     indexed(args, 0).release();
     return str("");

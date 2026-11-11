@@ -52,7 +52,6 @@ toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify = "8"
-dirs.workspace = true
 wasmparser = "0.259.0"
 object = "0.40"
 proptest = { version = "1", default-features = false, features = ["std"] }

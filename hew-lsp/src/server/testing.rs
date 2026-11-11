@@ -33,14 +33,18 @@ pub(super) fn failure_from_event(
     let uri = open_document_uri(&Url::from_checked_file_path(path)?, documents);
     let source = source_for_path(path, documents)?;
     let lines = compute_line_offsets(&source);
-    let offset = site_offset(event, path, &lines).or_else(|| {
+    let offset = site_offset(event, path, &source, &lines).or_else(|| {
         let parsed = hew_parser::parse(&source);
         hew_analysis::test_discovery::discover_tests(&parsed.program)
             .into_iter()
             .find(|test| test.name == name)
             .map(|test| test.span.start)
     })?;
-    let range = offset_range_to_lsp(&source, &lines, offset, offset.saturating_add(1));
+    let end = source[offset..]
+        .chars()
+        .next()
+        .map_or(offset, |character| offset + character.len_utf8());
+    let range = offset_range_to_lsp(&source, &lines, offset, end);
     let mut message = event
         .get("message")
         .and_then(Value::as_str)
@@ -79,8 +83,8 @@ pub(super) fn failure_from_event(
 
 /// The byte offset in `path` of the failure site the runtime reported, when
 /// the site lies in that file. The site table records a project-relative
-/// path, a one-based line and a one-based byte column.
-fn site_offset(event: &Value, path: &Path, lines: &[usize]) -> Option<usize> {
+/// path, a one-based line and a one-based Unicode scalar column.
+fn site_offset(event: &Value, path: &Path, source: &str, lines: &[usize]) -> Option<usize> {
     let site = event.pointer("/report/site")?;
     let file = site.get("file")?.as_str()?;
     if !path.ends_with(file) {
@@ -88,5 +92,28 @@ fn site_offset(event: &Value, path: &Path, lines: &[usize]) -> Option<usize> {
     }
     let line = usize::try_from(site.get("line")?.as_u64()?).ok()?;
     let col = usize::try_from(site.get("col")?.as_u64()?).ok()?;
-    Some(lines.get(line.checked_sub(1)?)? + col.checked_sub(1)?)
+    let start = *lines.get(line.checked_sub(1)?)?;
+    let text = source.get(start..)?.split('\n').next()?;
+    let column = col.checked_sub(1)?;
+    let byte = text
+        .char_indices()
+        .nth(column)
+        .map(|(byte, _)| byte)
+        .or_else(|| (text.chars().count() == column).then_some(text.len()))?;
+    Some(start + byte)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_site_columns_count_unicode_scalars() {
+        let source = "first\n  é 🦊 panic()\n";
+        let lines = compute_line_offsets(source);
+        let event =
+            serde_json::json!({"report": {"site": {"file": "sample.hew", "line": 2, "col": 7}}});
+        let offset = site_offset(&event, Path::new("sample.hew"), source, &lines).unwrap();
+        assert!(source[offset..].starts_with("panic"));
+    }
 }

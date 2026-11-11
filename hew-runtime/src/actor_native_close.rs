@@ -82,7 +82,13 @@ impl NativeActorCompletion {
         } else {
             *retained = Some(fault);
         }
-        super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
+        let fault = retained.as_ref().expect("retained terminal fault");
+        let code = super::report_checked_failure(fault);
+        // The actor's code root is still retained here, before a waiter or
+        // terminal cleanup can outlive its source tables.
+        // SAFETY: this completion retains the actor's code root.
+        let _ = unsafe { fault.snapshot() };
+        code
     }
 
     pub(crate) fn fault_message(&self) -> Option<String> {

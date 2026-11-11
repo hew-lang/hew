@@ -78,10 +78,45 @@ fn table(start: *const u8, kind: TableKind) -> Option<Table<'static>> {
     // zeroed MSVC stand-in is exactly one header long.
     let header = unsafe { &*start.cast::<[u8; TableHeader::SIZE]>() };
     let size = Table::declared_size(header).ok()?;
-    // SAFETY: the compiler emitted `size` bytes at the symbol, as its header
-    // says; the image's read-only data lives for the process.
+    // SAFETY: callers supply compiler-emitted tables whose image remains live
+    // for the lookup, and whose allocation contains the declared size.
     let bytes = unsafe { std::slice::from_raw_parts(start, size) };
     Table::parse(bytes, kind).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_debug_abi::{FileRecord, SiteEntry, TableWriter};
+    use std::ffi::CStr;
+
+    #[test]
+    fn site_ids_resolve_in_the_originating_image() {
+        let files_a = TableWriter::files(&[FileRecord {
+            name: "first.hew",
+            line_starts: &[0],
+            md5: [0; 16],
+        }]);
+        let files_b = TableWriter::files(&[FileRecord {
+            name: "second.hew",
+            line_starts: &[0, 10],
+            md5: [0; 16],
+        }]);
+        let sites = TableWriter::sites(&[SiteEntry {
+            file_id: 0,
+            byte_offset: 12,
+            column: 3,
+        }]);
+        // SAFETY: both complete table allocations live through these reads.
+        let a = unsafe { resolve_site_in(files_a.as_ptr(), sites.as_ptr(), 0) }.unwrap();
+        // SAFETY: as above, with a different originating image.
+        let b = unsafe { resolve_site_in(files_b.as_ptr(), sites.as_ptr(), 0) }.unwrap();
+        // SAFETY: the source pointers borrow the still-live table allocations.
+        assert_eq!(unsafe { CStr::from_ptr(a.file) }.to_bytes(), b"first.hew");
+        // SAFETY: as above.
+        assert_eq!(unsafe { CStr::from_ptr(b.file) }.to_bytes(), b"second.hew");
+        assert_eq!((a.line, b.line, b.col), (1, 2, 3));
+    }
 }
 
 /// Whether the compiler emitted debug information for this image.
@@ -95,10 +130,14 @@ pub fn has_debug_info() -> bool {
 /// The NUL-terminated name and the line and column of `byte_offset` in file
 /// `file_id`.
 fn locate(file_id: u32, byte_offset: Option<u32>) -> Option<SourcePosition> {
+    locate_in(image::file_table(), file_id, byte_offset)
+}
+
+fn locate_in(files: *const u8, file_id: u32, byte_offset: Option<u32>) -> Option<SourcePosition> {
     if file_id == NO_FILE {
         return None;
     }
-    let file = table(image::file_table(), TableKind::File)?
+    let file = table(files, TableKind::File)?
         .file(file_id as usize)
         .ok()??;
     let (line, col) = match byte_offset {
@@ -117,10 +156,22 @@ fn locate(file_id: u32, byte_offset: Option<u32>) -> Option<SourcePosition> {
 /// Resolve the site id codegen attached to a fault.
 #[must_use]
 pub fn resolve_site(site: u32) -> Option<SourcePosition> {
-    let entry = table(image::site_table(), TableKind::Site)?
-        .site(site as usize)
-        .ok()??;
-    let mut position = locate(entry.file_id, Some(entry.byte_offset))?;
+    // SAFETY: executable tables remain live for the process lifetime.
+    unsafe { resolve_site_in(image::file_table(), image::site_table(), site) }
+}
+
+/// Resolve a site against its originating image's tables.
+///
+/// # Safety
+/// Each non-null pointer must point to a complete compiler-emitted table and
+/// its image must remain loaded while the returned source pointer is used.
+pub unsafe fn resolve_site_in(
+    files: *const u8,
+    sites: *const u8,
+    site: u32,
+) -> Option<SourcePosition> {
+    let entry = table(sites, TableKind::Site)?.site(site as usize).ok()??;
+    let mut position = locate_in(files, entry.file_id, Some(entry.byte_offset))?;
     position.col = entry.column;
     Some(position)
 }

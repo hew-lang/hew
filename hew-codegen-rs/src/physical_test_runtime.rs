@@ -225,6 +225,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         fault::hew_fault_report,
         fault::hew_fault_report_entry,
         fault::hew_fault_set_site,
+        fault::hew_fault_set_site_in_image,
         fault::hew_fault_trap,
         exit_status::hew_process_exit_byte,
     );

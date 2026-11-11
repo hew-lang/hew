@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1769u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1770u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1769] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1770] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -2974,6 +2974,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1769] = {
     {"hew_fault_set_site",
      "{\"native\": \"fn hew_fault_set_site( *mut HewFault, u32)\", "
      "\"wasm32-wasip1\": \"fn hew_fault_set_site( *mut HewFault, u32)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fault_set_site_in_image",
+     "{\"native\": \"fn hew_fault_set_site_in_image( *mut HewFault, u32, "
+     "*const u8, *const u8, )\", \"wasm32-wasip1\": \"fn "
+     "hew_fault_set_site_in_image( *mut HewFault, u32, *const u8, *const u8, "
+     ")\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_take_message",

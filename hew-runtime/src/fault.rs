@@ -57,6 +57,10 @@ struct FaultDiagnostic {
     /// The failure as described at its origin; absent for the completion
     /// markers (cancellation, deadline, refusal) that are not failures.
     record: Option<Mutex<Box<FailureRecord>>>,
+    /// NUL-terminated source name owned for as long as the record can be read.
+    site_file: OnceLock<Option<std::ffi::CString>>,
+    /// Owned source facts copied while the failing code image remains live.
+    snapshot: OnceLock<Option<Arc<crate::failure_snapshot::FailureSnapshot>>>,
     /// The record has gone through [`hew_fault_raise`].
     raised: AtomicBool,
     reported: Mutex<bool>,
@@ -142,6 +146,8 @@ impl HewFault {
                 message,
                 assertion,
                 record,
+                site_file: OnceLock::new(),
+                snapshot: OnceLock::new(),
                 raised: AtomicBool::new(false),
                 reported: Mutex::new(false),
             }),
@@ -151,6 +157,31 @@ impl HewFault {
 
     pub(crate) fn with_message(code: i32, message: String) -> Self {
         Self::new(code, Some(message.into_boxed_str()))
+    }
+
+    /// Copy the failure's source facts before its originating image can unload.
+    /// Clones of this fault share the same immutable snapshot.
+    ///
+    /// # Safety
+    /// The caller retains the code image containing the failure record's
+    /// source and symbol tables until this call returns.
+    pub(crate) unsafe fn snapshot(&self) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
+        self.primary
+            .snapshot
+            .get_or_init(|| {
+                let record = self.primary.record.as_ref()?.lock_or_recover();
+                let message = self
+                    .primary
+                    .message
+                    .as_deref()
+                    .unwrap_or_else(|| fault_reason(self.code()));
+                // SAFETY: the caller retains the source and symbol tables until
+                // this first snapshot has finished copying their text.
+                Some(Arc::new(unsafe {
+                    crate::failure_snapshot::capture(&record, message)
+                }))
+            })
+            .clone()
     }
 
     /// Snapshot terminal cleanup diagnostics for the authenticated observation wire.
@@ -639,6 +670,33 @@ pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
 /// `fault` must be a live uniquely owned fault without concurrent readers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
+    // SAFETY: the executable's source tables remain loaded for the process.
+    unsafe { set_site(fault, offset, crate::symtab_abi::resolve_site(offset)) };
+}
+
+/// Attach a site using the tables of the image that raised the fault.
+///
+/// # Safety
+/// `fault` is a live unique owner. The table pointers are complete compiler
+/// tables, and their image remains loaded for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_set_site_in_image(
+    fault: *mut HewFault,
+    offset: u32,
+    files: *const u8,
+    sites: *const u8,
+) {
+    // SAFETY: the caller retains the originating image and its tables.
+    let position = unsafe { crate::symtab_abi::resolve_site_in(files, sites, offset) };
+    // SAFETY: the caller supplies the unique live fault.
+    unsafe { set_site(fault, offset, position) };
+}
+
+unsafe fn set_site(
+    fault: *mut HewFault,
+    offset: u32,
+    position: Option<crate::symtab_abi::SourcePosition>,
+) {
     // SAFETY: the caller retains a unique live owner for this operation.
     let Some(fault) = (unsafe { fault.as_ref() }) else {
         return;
@@ -646,14 +704,34 @@ pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
     if let Some(record) = &fault.primary.record {
         let mut record = record.lock_or_recover();
         record.site.offset = offset;
-        if let Some(position) = crate::symtab_abi::resolve_site(offset) {
-            record.site.file = position.file;
+        if let Some(position) = position {
+            let owned = fault.primary.site_file.get_or_init(|| {
+                if position.file.is_null() {
+                    return None;
+                }
+                // SAFETY: the caller retains the source image through this call.
+                let bytes = unsafe { std::ffi::CStr::from_ptr(position.file) }.to_bytes_with_nul();
+                if bytes.len() > 4096 {
+                    return None;
+                }
+                let mut copy = Vec::new();
+                copy.try_reserve_exact(bytes.len()).ok()?;
+                copy.extend_from_slice(bytes);
+                // SAFETY: the source C string contains exactly one trailing NUL.
+                Some(unsafe { std::ffi::CString::from_vec_with_nul_unchecked(copy) })
+            });
+            record.site.file = owned
+                .as_ref()
+                .map_or(std::ptr::null(), |name| name.as_ptr());
             record.site.module_id = position.module_id;
             record.site.line = position.line;
             record.site.col = position.col;
         }
     }
     fault.primary.raise();
+    // Capture at the origin while every participating image is still live.
+    // SAFETY: generated code is executing in the image which supplied the site.
+    let _ = unsafe { fault.snapshot() };
 }
 
 // ── The raise point ──────────────────────────────────────────────────────
@@ -870,7 +948,7 @@ fn write_record(record: &FailureRecord, message: Option<&str>, secondary: bool, 
 thread_local! {
     /// The failure an actor crash on this thread is about to record: the
     /// record and whether it already reached stderr.
-    static CRASH_CAUSE: std::cell::RefCell<Option<(Box<FailureRecord>, bool)>> =
+    static CRASH_CAUSE: std::cell::RefCell<Option<(Box<FailureRecord>, bool, Option<HewFault>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -883,16 +961,16 @@ pub(crate) fn raise_trap(code: i32) {
     crate::failure_record::name_frames(&mut named);
     // SAFETY: the record is live for the call.
     unsafe { raise_record(&raw const *named) };
-    CRASH_CAUSE.with(|cause| *cause.borrow_mut() = Some((named, false)));
+    CRASH_CAUSE.with(|cause| *cause.borrow_mut() = Some((named, false, None)));
 }
 
 /// The failure behind an actor crash of `code` on this thread, and whether it
 /// was already printed. `None` when the crash had no raised failure.
-pub(crate) fn take_crash_cause(code: i32) -> Option<(FailureRecord, bool)> {
+pub(crate) fn take_crash_cause(code: i32) -> Option<(FailureRecord, bool, Option<HewFault>)> {
     CRASH_CAUSE
         .with(|cause| cause.borrow_mut().take())
-        .filter(|(record, _)| record.code == code)
-        .map(|(record, printed)| (*record, printed))
+        .filter(|(record, _, _)| record.code == code)
+        .map(|(record, printed, owner)| (*record, printed, owner))
 }
 
 /// Report each diagnostic to stderr once across all observers. Return 0 on
@@ -916,7 +994,8 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
         // The actor crash that follows records this failure without
         // printing it a second time.
         let record = Box::new(fault.primary.report_record());
-        CRASH_CAUSE.with(|cause| *cause.borrow_mut() = Some((record, !failed)));
+        CRASH_CAUSE
+            .with(|cause| *cause.borrow_mut() = Some((record, !failed, Some(fault.clone()))));
     }
     i32::from(failed)
 }
@@ -996,14 +1075,14 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
-    let record = if let Some((record, _)) = take_crash_cause(code) {
-        record
+    let (record, _owner) = if let Some((record, _, owner)) = take_crash_cause(code) {
+        (record, owner)
     } else {
         let mut record = origin_record(code);
         crate::failure_record::name_frames(&mut record);
         // SAFETY: the record is live for the call.
         unsafe { raise_record(&raw const *record) };
-        *record
+        (*record, None)
     };
     crate::test_report::note_terminal_failure(&record, None, None);
     print_record(&record, None);
@@ -1082,6 +1161,28 @@ fn write_unreported(fault: &HewFault, output: &mut impl Write) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloned_faults_share_owned_source_details() {
+        let path = std::ffi::CString::new("module.hew").unwrap();
+        let fault = HewFault::with_message(212, "problem".into());
+        {
+            let mut record = fault.primary.record.as_ref().unwrap().lock_or_recover();
+            record.site.file = path.as_ptr();
+            record.site.line = 7;
+            record.site.col = 3;
+        }
+        let clone = fault.clone();
+        // SAFETY: the source text remains live through these calls.
+        let first = unsafe { fault.snapshot() }.unwrap();
+        let second = unsafe { clone.snapshot() }.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        drop(path);
+        drop(fault);
+        drop(clone);
+        assert_eq!(first.site.as_ref().unwrap().file, "module.hew");
+        assert_eq!(first.message.as_deref(), Some("problem"));
+    }
 
     #[test]
     fn cloned_faults_report_once_without_losing_recovery_text() {

@@ -934,11 +934,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("load fault for source site")?;
         let attach = get_or_declare_external(
             self.llvm,
-            "hew_fault_set_site",
+            "hew_fault_set_site_in_image",
             self.ctx.void_type().fn_type(
                 &[
                     self.ctx.ptr_type(AddressSpace::default()).into(),
                     self.ctx.i32_type().into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
                 ],
                 false,
             ),
@@ -949,6 +951,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &[
                     fault.into(),
                     self.ctx.i32_type().const_int(u64::from(site), false).into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::FILE_TABLE_SYMBOL)
+                        .expect("source tables emitted before functions")
+                        .as_pointer_value()
+                        .into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::SITE_TABLE_SYMBOL)
+                        .expect("source tables emitted before functions")
+                        .as_pointer_value()
+                        .into(),
                 ],
                 "fault.site",
             )

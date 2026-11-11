@@ -59,6 +59,9 @@ pub(super) fn build_module_with_host<'ctx>(
         let owner = emitter.llvm.add_global(pointer, None, "HewLiveCodeOwner");
         owner.set_initializer(&pointer.const_null());
     }
+    // Fault sites must refer to this module's tables, including for embedded
+    // modules whose tables are private to their image.
+    symtab::emit_source_tables(&emitter.llvm, physical, debug_source.is_some());
     emitter.declare_functions()?;
     emitter.emit_managed_descriptors()?;
     emitter.emit_regex_lifecycle()?;
@@ -85,7 +88,6 @@ pub(super) fn build_module_with_host<'ctx>(
             symtab::tag_callable(*body, callable.id);
         }
     }
-    symtab::emit_source_tables(&emitter.llvm, physical, debug_source.is_some());
     if let Some(export) = host {
         host::emit(&emitter, export)?;
     }

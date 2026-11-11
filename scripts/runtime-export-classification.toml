@@ -1894,6 +1894,7 @@ non-declarable = [
   "hew_fault_report",
   "hew_fault_report_entry",
   "hew_fault_set_site",
+  "hew_fault_set_site_in_image",
   "hew_fault_trap",
   # The release-fault bracket: generated code arms a sink around a release the
   # runtime performs for it, so a failing `close` reaches that frame's fault
@@ -7171,6 +7172,13 @@ discharge-depth = "none"
 symbol = "hew_fault_set_site"
 result = "none"
 params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_fault_set_site_in_image"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

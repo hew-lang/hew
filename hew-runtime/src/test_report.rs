@@ -16,8 +16,8 @@ struct FaultEvidence {
     code: i32,
     message: Option<String>,
     assertion: Option<crate::fault::AssertionOperands>,
-    /// Source file, one-based line and one-based byte column.
-    site: Option<(&'static str, u32, u32)>,
+    /// Source file, one-based line and one-based Unicode scalar column.
+    site: Option<(String, u32, u32)>,
 }
 
 static BENCHMARKS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
@@ -69,7 +69,7 @@ pub(crate) fn note_terminal_failure(
             assertion: assertion.cloned(),
             site: record
                 .site_file()
-                .map(|file| (file, record.site.line, record.site.col)),
+                .map(|file| (file.to_owned(), record.site.line, record.site.col)),
         });
     }
 }
@@ -97,7 +97,7 @@ pub(crate) fn finish(status: i32) {
         "fault_code": fault.as_ref().map(|fault| fault.code),
         "message": fault.as_ref().and_then(|fault| fault.message.as_deref()),
         "assertion": fault.as_ref().and_then(|fault| fault.assertion.as_ref()),
-        "site": fault.as_ref().and_then(|fault| fault.site).map(|(file, line, col)| {
+        "site": fault.as_ref().and_then(|fault| fault.site.as_ref()).map(|(file, line, col)| {
             serde_json::json!({ "file": file, "line": line, "col": col })
         }),
         "schedule": driver.map(|(schedule, _, _, _)| schedule),

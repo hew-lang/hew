@@ -325,7 +325,7 @@ pub struct TestSite {
     file: String,
     /// One-based line.
     line: u32,
-    /// One-based byte column.
+    /// One-based Unicode scalar column.
     col: u32,
 }
 

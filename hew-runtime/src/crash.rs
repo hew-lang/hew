@@ -85,7 +85,33 @@ impl CrashStats {
 // ── Crash ring ──────────────────────────────────────────────────────────
 
 /// The most recent crashes, oldest first.
-static RECENT_CRASHES: PoisonSafe<VecDeque<FailureRecord>> = PoisonSafe::new(VecDeque::new());
+static RECENT_CRASHES: PoisonSafe<VecDeque<StoredCrash>> = PoisonSafe::new(VecDeque::new());
+
+/// A crash-ring entry with its own source identity.
+#[derive(Clone, Debug)]
+pub struct StoredCrash {
+    record: FailureRecord,
+    // Shared allocations keep the pointers in every cloned record valid.
+    _site_file: Option<std::sync::Arc<std::ffi::CString>>,
+    _frame_names: [Option<std::sync::Arc<std::ffi::CString>>; crate::failure_record::MAX_FRAMES],
+    _frame_files: [Option<std::sync::Arc<std::ffi::CString>>; crate::failure_record::MAX_FRAMES],
+}
+
+impl std::ops::Deref for StoredCrash {
+    type Target = FailureRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.record
+    }
+}
+
+impl StoredCrash {
+    /// The source file retained by this crash entry, if available.
+    #[must_use]
+    pub fn site_file(&self) -> Option<&str> {
+        self.record.site_file()
+    }
+}
 
 /// Maximum number of crashes to keep in the ring.
 const MAX_CRASH_LOG_SIZE: usize = 64;
@@ -94,12 +120,44 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// supervisor gave up on.
 static UNRECOVERED_CRASHES: AtomicU64 = AtomicU64::new(0);
 
-fn push_crash_to(log: &PoisonSafe<VecDeque<FailureRecord>>, record: &FailureRecord) {
+fn push_crash_to(log: &PoisonSafe<VecDeque<StoredCrash>>, record: &FailureRecord) {
+    fn owned_text(source: *const std::ffi::c_char) -> Option<std::sync::Arc<std::ffi::CString>> {
+        if source.is_null() {
+            return None;
+        }
+        // SAFETY: the caller retains the failure and its source image while
+        // the crash entry is made.
+        let source = unsafe { std::ffi::CStr::from_ptr(source) };
+        if source.to_bytes_with_nul().len() > 4096 {
+            return None;
+        }
+        Some(std::sync::Arc::new(source.to_owned()))
+    }
+    let site_file = owned_text(record.site.file);
+    let mut copy = *record;
+    copy.site.file = site_file.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    let mut names = std::array::from_fn(|_| None);
+    let mut files = std::array::from_fn(|_| None);
+    for (index, frame) in record.frames().iter().enumerate() {
+        names[index] = owned_text(frame.hew_fn);
+        files[index] = owned_text(frame.file);
+        copy.frames[index].hew_fn = names[index]
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr());
+        copy.frames[index].file = files[index]
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr());
+    }
     log.access(|crashes| {
         while crashes.len() >= MAX_CRASH_LOG_SIZE {
             crashes.pop_front();
         }
-        crashes.push_back(*record);
+        crashes.push_back(StoredCrash {
+            record: copy,
+            _site_file: site_file,
+            _frame_names: names,
+            _frame_files: files,
+        });
     });
 }
 
@@ -201,13 +259,13 @@ pub(crate) fn record_logical_crash(
     dispatch_ptr: usize,
     link_target: Option<crate::monitor::HewNotificationTarget>,
 ) {
-    let (mut record, printed) = crate::fault::take_crash_cause(code).unwrap_or_else(|| {
+    let (mut record, printed, _owner) = crate::fault::take_crash_cause(code).unwrap_or_else(|| {
         let mut record = FailureRecord::new(code);
         let _ = crate::monotonic::monotonic_ns();
         record.wall_time_ns = crate::failure_record::wall_time_ns();
         record.build = crate::failure_record::build_info();
         crate::failure_record::publish_last_fault(&record);
-        (record, false)
+        (record, false, None)
     });
     // The scheduler's identity of the failed turn is authoritative; the
     // origin may have run outside the turn's bookkeeping (a resumed frame).
@@ -280,14 +338,14 @@ pub(crate) fn report_unrecovered_exit() {
 
 /// The most recent crash, if any.
 #[must_use]
-pub fn last_crash() -> Option<FailureRecord> {
-    RECENT_CRASHES.access(|crashes| crashes.back().copied())
+pub fn last_crash() -> Option<StoredCrash> {
+    RECENT_CRASHES.access(|crashes| crashes.back().cloned())
 }
 
 /// Every crash in the ring, oldest first.
 #[must_use]
-pub fn recent_crashes() -> Vec<FailureRecord> {
-    RECENT_CRASHES.access(|crashes| crashes.iter().copied().collect())
+pub fn recent_crashes() -> Vec<StoredCrash> {
+    RECENT_CRASHES.access(|crashes| crashes.iter().cloned().collect())
 }
 
 // ── C ABI functions ─────────────────────────────────────────────────────
@@ -380,7 +438,7 @@ pub unsafe extern "C" fn hew_crash_log_count() -> i32 {
     crash_count_of(&RECENT_CRASHES)
 }
 
-fn crash_count_of(log: &PoisonSafe<VecDeque<FailureRecord>>) -> i32 {
+fn crash_count_of(log: &PoisonSafe<VecDeque<StoredCrash>>) -> i32 {
     log.access(|crashes| i32::try_from(crashes.len()).expect("the ring holds 64 entries"))
 }
 
@@ -517,10 +575,33 @@ mod tests {
         });
     }
 
+    #[test]
+    fn ring_retains_source_after_the_failure_owner_is_dropped() {
+        let log = PoisonSafe::new(VecDeque::new());
+        let source = std::ffi::CString::new("retired.hew").unwrap();
+        let mut record = crash(1, 212);
+        record.site.file = source.as_ptr();
+        record.site.line = 4;
+        record.push_frame(123);
+        record.frames[0].hew_fn = source.as_ptr();
+        push_crash_to(&log, &record);
+        drop(source);
+        log.access(|crashes| {
+            let crash = crashes.back().unwrap();
+            assert_eq!(crash.site_file(), Some("retired.hew"));
+            assert_eq!(crash.site.line, 4);
+            // SAFETY: the crash entry owns its copied frame name.
+            assert_eq!(
+                unsafe { std::ffi::CStr::from_ptr(crash.frames[0].hew_fn) }.to_bytes(),
+                b"retired.hew"
+            );
+        });
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn ring_records_survive_poison() {
-        let log: PoisonSafe<VecDeque<FailureRecord>> = PoisonSafe::new(VecDeque::new());
+        let log: PoisonSafe<VecDeque<StoredCrash>> = PoisonSafe::new(VecDeque::new());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             log.access(|_| panic!("intentional poison"));
         }));

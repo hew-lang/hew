@@ -288,8 +288,8 @@ impl FailureRecord {
 
     /// The source file of the site, if the binary's tables named one.
     #[must_use]
-    pub fn site_file(&self) -> Option<&'static str> {
-        // SAFETY: a non-null site file points into the static file table.
+    pub fn site_file(&self) -> Option<&str> {
+        // SAFETY: the record's owner retains its source text for this borrow.
         unsafe { static_str(self.site.file) }
     }
 
@@ -395,11 +395,11 @@ pub fn kind_cstr(code: i32) -> &'static CStr {
     }
 }
 
-/// Read static NUL-terminated text.
+/// Read NUL-terminated text.
 ///
 /// # Safety
-/// `text` is null or points at NUL-terminated data that lives forever.
-unsafe fn static_str(text: *const c_char) -> Option<&'static str> {
+/// `text` is null or points at NUL-terminated data live for the returned borrow.
+unsafe fn static_str<'a>(text: *const c_char) -> Option<&'a str> {
     if text.is_null() {
         return None;
     }
@@ -745,13 +745,66 @@ fn runtime_frames(out: &mut Cursor<'_>, count: u64) {
 
 // ── The last failure ─────────────────────────────────────────────────────
 
+// Keep the public record at offset zero while retaining its image-owned text
+// after a dynamically loaded image goes away. Overlong names are unavailable
+// rather than truncated into a misleading source identity.
+const LAST_FAULT_TEXT_CAPACITY: usize = 1024;
+
+#[repr(C)]
+struct LastFaultStorage {
+    record: FailureRecord,
+    site_file: [u8; LAST_FAULT_TEXT_CAPACITY],
+    frame_names: [[u8; LAST_FAULT_TEXT_CAPACITY]; MAX_FRAMES],
+    frame_files: [[u8; LAST_FAULT_TEXT_CAPACITY]; MAX_FRAMES],
+}
+
+impl LastFaultStorage {
+    const EMPTY: Self = Self {
+        record: FailureRecord::EMPTY,
+        site_file: [0; LAST_FAULT_TEXT_CAPACITY],
+        frame_names: [[0; LAST_FAULT_TEXT_CAPACITY]; MAX_FRAMES],
+        frame_files: [[0; LAST_FAULT_TEXT_CAPACITY]; MAX_FRAMES],
+    };
+
+    /// Copy a live C string into fixed storage without allocation or locks.
+    unsafe fn copy_text(source: *const c_char, dest: &mut [u8]) -> *const c_char {
+        if source.is_null() {
+            return std::ptr::null();
+        }
+        for (index, byte) in dest.iter_mut().enumerate() {
+            // SAFETY: the publisher retains the source image during this copy;
+            // stop at its terminator or the bounded destination length.
+            let next = unsafe { source.add(index).read() } as u8;
+            *byte = next;
+            if next == 0 {
+                return dest.as_ptr().cast();
+            }
+        }
+        std::ptr::null()
+    }
+
+    unsafe fn update(&mut self, source: &FailureRecord) {
+        self.record = *source;
+        // SAFETY: the caller retains all source image strings for this update.
+        self.record.site.file = unsafe { Self::copy_text(source.site.file, &mut self.site_file) };
+        for (index, frame) in source.frames().iter().enumerate() {
+            // SAFETY: as above; each destination is owned by this storage.
+            self.record.frames[index].hew_fn =
+                unsafe { Self::copy_text(frame.hew_fn, &mut self.frame_names[index]) };
+            // SAFETY: as above.
+            self.record.frames[index].file =
+                unsafe { Self::copy_text(frame.file, &mut self.frame_files[index]) };
+        }
+    }
+}
+
 /// Storage for the most recent failure, at a fixed symbol.
 #[repr(transparent)]
 #[allow(
     missing_debug_implementations,
     reason = "a debugger reads it; Rust code reads it through last_fault"
 )]
-pub struct LastFault(std::cell::UnsafeCell<FailureRecord>);
+pub struct LastFault(std::cell::UnsafeCell<LastFaultStorage>);
 
 // SAFETY: writers serialize on `LAST_FAULT_WRITER`; readers are debuggers and
 // [`last_fault`], which copies under the same flag.
@@ -761,7 +814,7 @@ unsafe impl Sync for LastFault {}
 /// live process or a core without running code; `code == 0` means none.
 #[no_mangle]
 pub static hew_last_fault_record: LastFault =
-    LastFault(std::cell::UnsafeCell::new(FailureRecord::EMPTY));
+    LastFault(std::cell::UnsafeCell::new(LastFaultStorage::EMPTY));
 
 static LAST_FAULT_WRITER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static LAST_FAULT_PRESENT: std::sync::atomic::AtomicBool =
@@ -776,13 +829,15 @@ pub fn publish_last_fault(record: &FailureRecord) {
     {
         return;
     }
-    // SAFETY: the writer flag gives this thread exclusive access.
-    unsafe { *hew_last_fault_record.0.get() = *record };
+    // SAFETY: the writer flag gives exclusive access, and the caller retains
+    // the originating image for the duration of publication.
+    unsafe { (*hew_last_fault_record.0.get()).update(record) };
     LAST_FAULT_PRESENT.store(record.code != 0, Ordering::Release);
     LAST_FAULT_WRITER.store(false, Ordering::Release);
 }
 
-/// A copy of the last failure, if one was raised.
+/// A copy of the last failure, if one was raised. Image-derived text pointers
+/// are omitted because another publication may replace their storage.
 #[must_use]
 pub fn last_fault() -> Option<FailureRecord> {
     while LAST_FAULT_WRITER
@@ -792,7 +847,12 @@ pub fn last_fault() -> Option<FailureRecord> {
         std::hint::spin_loop();
     }
     // SAFETY: the writer flag excludes concurrent writes during the copy.
-    let record = unsafe { *hew_last_fault_record.0.get() };
+    let mut record = unsafe { (*hew_last_fault_record.0.get()).record };
+    record.site.file = std::ptr::null();
+    for frame in &mut record.frames {
+        frame.hew_fn = std::ptr::null();
+        frame.file = std::ptr::null();
+    }
     LAST_FAULT_WRITER.store(false, Ordering::Release);
     (record.code != 0).then_some(record)
 }
@@ -805,7 +865,11 @@ pub fn last_fault() -> Option<FailureRecord> {
 #[must_use]
 pub fn last_fault_ptr() -> *const FailureRecord {
     if LAST_FAULT_PRESENT.load(Ordering::Acquire) && !LAST_FAULT_WRITER.load(Ordering::Acquire) {
-        hew_last_fault_record.0.get().cast_const()
+        hew_last_fault_record
+            .0
+            .get()
+            .cast::<FailureRecord>()
+            .cast_const()
     } else {
         std::ptr::null()
     }
@@ -1531,6 +1595,30 @@ mod tests {
         }
         assert_eq!(image::gnu_build_id(&notes), Some(&[1u8, 2, 3, 4, 5][..]));
         assert_eq!(image::gnu_build_id(&notes[..20]), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn debugger_storage_copies_image_owned_names() {
+        let path = std::ffi::CString::new("loaded.hew").unwrap();
+        let function = std::ffi::CString::new("loaded.handler").unwrap();
+        let mut record = FailureRecord::new(212);
+        record.site.file = path.as_ptr();
+        record.site.line = 9;
+        record.push_frame(42);
+        record.frames[0].hew_fn = function.as_ptr();
+        record.frames[0].file = path.as_ptr();
+        let mut storage = Box::new(LastFaultStorage::EMPTY);
+        // SAFETY: the two strings remain live through publication.
+        unsafe { storage.update(&record) };
+        drop(path);
+        drop(function);
+        assert_eq!(storage.record.site_file(), Some("loaded.hew"));
+        // SAFETY: storage owns the copied name for this read.
+        assert_eq!(
+            unsafe { static_str(storage.record.frames[0].hew_fn) },
+            Some("loaded.handler")
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

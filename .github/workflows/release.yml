@@ -1029,7 +1029,8 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "15.1"
-          mem: 8192
+          # Leave headroom for the full-LTO driver and guest kernel/file cache.
+          mem: 12288
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
@@ -1065,7 +1066,17 @@ jobs:
             # ── Rust builds (release) ──────────────────────────────────────
             # The split debug asset is keyed by the GNU build-id.
             export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS=-Clink-arg=-Wl,--build-id
-            cargo build -p hew-cli --release
+            if /usr/bin/time -l cargo build -p hew-cli --release; then
+              :
+            else
+              build_status=$?
+              # Retain guest evidence even when a killed compiler prevents copyback.
+              sysctl hw.physmem hw.realmem hw.ncpu vm.swap_total || true
+              swapinfo -h || true
+              vmstat -s || true
+              dmesg -a || true
+              exit "$build_status"
+            fi
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a

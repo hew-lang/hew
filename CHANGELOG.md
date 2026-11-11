@@ -11,8 +11,8 @@
 - Change `ActorError.Trapped` to carry `CrashInfo`; migrate matching arms and
   construct the new optional diagnostic fields when constructing that record.
 - Launch or attach a debugger, publish failures before the common raise
-  breakpoint, resolve native symbols and inline locations, and package split
-  debug symbols.
+  breakpoint, resolve native symbols and DWARF inline locations, and package
+  split debug symbols.
 - Capture available browser sandbox frames and reject mixed version 12 and 13
   distributed peers explicitly.
 

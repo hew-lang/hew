@@ -249,6 +249,8 @@ pub(crate) struct Slot {
     handle: c_int,
     object: IoObject,
     state: Mutex<SlotState>,
+    #[cfg(test)]
+    readiness_dispatch: Mutex<()>,
     /// The poll buffers the kernel writes while an AFD poll is in flight.
     /// Touched only under `state` while no poll is in flight, or by the
     /// reactor after it dequeued the completion.
@@ -659,6 +661,8 @@ impl Slot {
     /// Hand a readiness report to the waiters it can unblock and re-arm for
     /// any waiter it cannot. Runs on the reactor thread.
     fn fire(self: &Arc<Self>, events: c_int) {
+        #[cfg(test)]
+        let _dispatch = self.readiness_dispatch.lock_or_recover();
         let (ready, turn) = {
             let mut state = self.state.lock_or_recover();
             #[cfg(windows)]
@@ -698,6 +702,12 @@ impl Slot {
         for operation in &ready {
             waiter_removed(operation);
         }
+    }
+
+    /// Keep this slot's waits parked while a test exercises a shutdown sweep.
+    #[cfg(test)]
+    pub(crate) fn pause_readiness_for_test(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.readiness_dispatch.lock_or_recover()
     }
 
     /// Mark the slot closed and complete its waiters with `ECANCELED`. The OS
@@ -814,6 +824,8 @@ fn new_slot(handle: c_int, object: IoObject) -> Slot {
         handle,
         object,
         state: Mutex::new(SlotState::default()),
+        #[cfg(test)]
+        readiness_dispatch: Mutex::new(()),
         #[cfg(windows)]
         afd,
     }

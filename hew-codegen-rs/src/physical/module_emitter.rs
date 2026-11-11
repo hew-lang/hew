@@ -1081,7 +1081,7 @@ mod verify_tests {
             DIFlags::ZERO,
             0,
         );
-        builder.insert_declare_at_end(slot, Some(variable), None, location, entry);
+        super::super::debug::insert_declare(builder, slot, variable, location, entry);
         ir.set_current_debug_location(location);
         ir.build_return(None).unwrap();
     }

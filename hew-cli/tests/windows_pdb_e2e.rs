@@ -7,16 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use support::{hew_binary, require_codegen, run_bounded_command, tempdir};
 
-const SOURCE: &str = "\
-fn level2(x: i64) -> i64 {\n\
-    let y = x * 3;\n\
-    if y == 12 { panic(\"too big\"); }\n\
-    y\n\
-}\n\
-fn main() -> i64 {\n\
-    println(level2(4));\n\
-    0\n\
-}\n";
+const SOURCE: &str = include_str!("../../tests/packaged-sdk/debug-failure.hew");
 
 fn build(dir: &Path) -> PathBuf {
     require_codegen();

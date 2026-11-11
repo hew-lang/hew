@@ -1321,6 +1321,11 @@ fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
     let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let slot = crate::reactor::lookup(handle).unwrap();
+    // Pending also includes a delivered readiness wake. Keep both operations
+    // parked until the sweep: a writable report may otherwise remove the writer
+    // between its status check and the parked-only cancellation snapshot.
+    let parked = slot.pause_readiness_for_test();
     let root_signal = Arc::new(ReadySignal::default());
     // SAFETY: the connection and descriptor stay live until the read is freed.
     let read = crate::coro_root::as_process_root_for_test(|| unsafe {
@@ -1350,6 +1355,7 @@ fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
         crate::bytes::hew_bytes_drop(bytes.ptr);
         statuses
     };
+    drop(parked);
     let received = if root_status == AsyncIoStatus::Pending as i32 {
         peer.write_all(b"late").unwrap();
         // SAFETY: the root read is retained until its successful take frees it.

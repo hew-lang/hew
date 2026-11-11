@@ -477,27 +477,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         location: DILocation<'ctx>,
         block: inkwell::basic_block::BasicBlock<'ctx>,
     ) {
-        let expression = self.builder.create_expression(vec![]);
-        // WHY a raw call: on LLVM 19+ `LLVMDIBuilderInsertDeclareAtEnd` returns
-        // a `DbgRecord`, and inkwell 0.9's safe wrapper casts that to an
-        // `InstructionValue` whose `is_instruction()` assertion then panics even
-        // though the record was inserted. The record API inkwell itself wraps
-        // for this LLVM version is the correct one to call.
-        use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
-        use inkwell::values::AsValueRef;
-        // SAFETY: every pointer comes from a live inkwell wrapper bound to this
-        // module's context; the call inserts a record and returns a handle we
-        // discard.
-        unsafe {
-            LLVMDIBuilderInsertDeclareRecordAtEnd(
-                self.builder.as_mut_ptr(),
-                slot.as_value_ref(),
-                variable.as_mut_ptr(),
-                expression.as_mut_ptr(),
-                location.as_mut_ptr(),
-                block.as_mut_ptr(),
-            );
-        }
+        insert_declare(&self.builder, slot, variable, location, block);
     }
 
     /// Say that `id` holds its value from here: its location is the slot's
@@ -668,6 +648,32 @@ pub(super) fn optimizes(machine: &inkwell::targets::TargetMachine) -> bool {
     }
     // SAFETY: the machine is live for the call, which only reads its level.
     unsafe { hewLLVMTargetMachineOptimizes(machine.as_mut_ptr()) }
+}
+
+/// Insert a local's debug record without treating it as an LLVM instruction.
+pub(super) fn insert_declare<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    slot: PointerValue<'ctx>,
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    block: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    let expression = builder.create_expression(vec![]);
+    // LLVM 19+ returns a DbgRecord, but inkwell 0.9 casts it to an
+    // InstructionValue and can panic. The record API returns the right type.
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
+    // SAFETY: all handles belong to this live context, and the returned
+    // record is owned by the block.
+    unsafe {
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
+            builder.as_mut_ptr(),
+            slot.as_value_ref(),
+            variable.as_mut_ptr(),
+            expression.as_mut_ptr(),
+            location.as_mut_ptr(),
+            block.as_mut_ptr(),
+        );
+    }
 }
 
 /// The source directory in the caller's presentation namespace.

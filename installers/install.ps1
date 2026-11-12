@@ -304,7 +304,9 @@ function Stage-ReleaseToolchain {
     if (-not (Test-Path -LiteralPath $libSource)) {
         throw "Release archive is missing required lib directory."
     }
-    Copy-Item -Path (Join-Path $libSource "*") -Destination $StageLib -Recurse -Force
+    foreach ($item in Get-ChildItem -LiteralPath $libSource -Force) {
+        Copy-Item -LiteralPath $item.FullName -Destination $StageLib -Recurse -Force -ErrorAction Stop
+    }
 }
 
 function Install-ReleasePayload {
@@ -314,7 +316,7 @@ function Install-ReleasePayload {
         [scriptblock]$CopyPath = {
             param($Source, $Destination, $Recurse)
             if ($Recurse) {
-                Copy-Item -Path $Source -Destination $Destination -Recurse -Force -ErrorAction Stop
+                Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force -ErrorAction Stop
             }
             else {
                 Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
@@ -326,7 +328,9 @@ function Install-ReleasePayload {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
         $source = Join-Path $InnerDir $directory
         if (Test-Path -LiteralPath $source) {
-            & $CopyPath (Join-Path $source "*") (Join-Path $InstallDir $directory) $true
+            foreach ($item in Get-ChildItem -LiteralPath $source -Force) {
+                & $CopyPath $item.FullName (Join-Path $InstallDir $directory) $true
+            }
         }
     }
 

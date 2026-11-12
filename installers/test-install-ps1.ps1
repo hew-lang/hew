@@ -60,8 +60,9 @@ function New-ToolchainTree {
 }
 
 function New-TransactionFixture {
-    param([switch]$Fresh, [switch]$MissingCompiler)
-    $root = Join-Path ([System.IO.Path]::GetTempPath()) "hew-installer-test-$([System.Guid]::NewGuid().ToString('N'))"
+    param([switch]$Fresh, [switch]$MissingCompiler, [switch]$Bracketed)
+    $label = if ($Bracketed) { '[fixture]' } else { 'fixture' }
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) "hew-installer-test-${label}-$([System.Guid]::NewGuid().ToString('N'))"
     $install = Join-Path $root "install"
     $source = Join-Path $root "source"
     $stage = Join-Path $root "stage"
@@ -223,6 +224,16 @@ try {
     Assert-Version $fresh.VersionFile "0.2.0" "fresh install version"
 }
 finally { Remove-Item -LiteralPath $fresh.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+# Brackets in a user-selected prefix and temporary source are literal path characters.
+$bracketed = New-TransactionFixture -Fresh -Bracketed
+try {
+    Invoke-TestInstall -Fixture $bracketed -Version "0.2.0"
+    Assert-HashesEqual (Get-ToolchainHashes -Root $bracketed.Source) $bracketed.Install "bracketed path inventory"
+    Assert-Payload $bracketed.Install "new" "bracketed path payload"
+    Assert-Version $bracketed.VersionFile "0.2.0" "bracketed path version"
+}
+finally { Remove-Item -LiteralPath $bracketed.Root -Recurse -Force -ErrorAction SilentlyContinue }
 
 # Upgrade replaces the complete pair and advances the marker.
 $upgrade = New-TransactionFixture

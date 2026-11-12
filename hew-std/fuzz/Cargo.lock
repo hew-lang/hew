@@ -890,21 +890,21 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hew-cabi"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-calendar"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "hew-codec"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -917,11 +917,11 @@ dependencies = [
 
 [[package]]
 name = "hew-debug-abi"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 
 [[package]]
 name = "hew-observe-protocol"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "serde",
  "serde_json",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "cap-std",
  "cc",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std"
-version = "0.11.0-rc2"
+version = "0.11.0-rc3"
 dependencies = [
  "argon2",
  "base64 0.22.1",

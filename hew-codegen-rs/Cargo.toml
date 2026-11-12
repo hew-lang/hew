@@ -14,6 +14,7 @@ categories = ["compilers"]
 serde_json.workspace = true
 hew-cabi = { path = "../hew-cabi" }
 hew-codec = { path = "../hew-codec" }
+hew-debug-abi = { path = "../hew-debug-abi" }
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
 hew-parser = { path = "../hew-parser" }
@@ -29,10 +30,15 @@ inkwell = { version = "0.9", default-features = false, features = [
 llvm-sys = "221"
 
 [build-dependencies]
-# Compiles the DIBuilder variant-part shim into this crate's static archive.
+# Compiles the LLVM C++ debug shim into this crate's static archive.
 cc = "1"
+shlex = "2"
 
 [dev-dependencies]
+shlex = "2"
+# Read the DWARF the emitter writes, independent of LLVM.
+gimli = "0.33"
+object = "0.40"
 hew-live = { path = "../hew-live" }
 hew-compile = { path = "../hew-compile" }
 hew-std = { path = "../hew-std" }
@@ -40,4 +46,3 @@ hew-hir = { path = "../hew-hir" }
 hew-sir = { path = "../hew-sir" }
 hew-types = { path = "../hew-types", features = ["test"] }
 tempfile.workspace = true
-object = "0.40"

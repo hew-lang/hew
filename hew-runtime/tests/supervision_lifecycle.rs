@@ -32,7 +32,7 @@ use hew_runtime::actor::{
     HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION,
     HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION,
 };
-use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
+use hew_runtime::crash::{hew_crash_log_count, last_crash};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::link::hew_actor_link;
 use hew_runtime::mailbox_header::HewSysMsg;
@@ -1050,15 +1050,16 @@ fn crash_report_has_metadata() {
 
     let actor = TestActor::spawn(counting_dispatch);
 
-    // SAFETY: actor is live; reading id and fault-injecting use runtime contract.
+    // SAFETY: the actor is live while this test holds it.
+    let actor_id = unsafe { (*actor.as_ptr()).id };
+    // SAFETY: actor is live; fault-injecting uses the runtime contract.
     unsafe {
-        let actor_id = (*actor.as_ptr()).id;
         hew_fault_inject_crash(actor_id, 1);
         hew_actor_send(actor.as_ptr(), 1, std::ptr::null_mut(), 0);
     }
 
     // Poll until the crash is recorded.
-    // SAFETY: hew_crash_log_count / hew_crash_log_last are total over runtime init.
+    // SAFETY: hew_crash_log_count is total over runtime init.
     let report = unsafe {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1071,13 +1072,15 @@ fn crash_report_has_metadata() {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        let _log_after = hew_crash_log_count();
-        hew_crash_log_last()
+        last_crash().expect("the ring holds the injected crash")
     };
-    assert_eq!(report.signal, -1, "injected crash should have signal=-1");
+    assert_eq!(
+        report.actor.id, actor_id,
+        "the injected crash names its actor"
+    );
     assert!(
-        report.timestamp_ns > 0,
-        "crash report should have a timestamp"
+        report.wall_time_ns > 0,
+        "crash record should have a timestamp"
     );
 
     hew_deterministic_reset();

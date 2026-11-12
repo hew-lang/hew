@@ -65,7 +65,7 @@ fn main() -> i64 {
     stop(exact);
     stopped(exact);
     let small = spawn Small;
-    match small.wrap() { .Err(.Trapped) => println("generator carrier limit"), _ => return 2, }
+    match small.wrap() { .Err(.Trapped(_)) => println("generator carrier limit"), _ => return 2, }
     stopped(small);
     0
 }

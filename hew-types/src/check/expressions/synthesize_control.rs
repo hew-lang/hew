@@ -739,73 +739,7 @@ impl Checker {
                 }
             }
 
-            // Range literal `lo..hi` or `lo..=hi` with a known expected
-            // `Range<T>` type — check the bounds directly against the element
-            // type so they are recorded with the right concrete integer width.
-            (
-                Expr::Binary {
-                    left,
-                    op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
-                    right,
-                },
-                Ty::Named {
-                    head: crate::TypeHead::Builtin(BuiltinType::Range),
-                    args,
-                    ..
-                },
-            ) if args.len() == 1 && !matches!(&args[0], Ty::Error | Ty::Var(_)) => {
-                let elem_ty = args[0].clone();
-                self.check_against(&left.0, &left.1, &elem_ty);
-                self.check_against(&right.0, &right.1, &elem_ty);
-                let range_ty = Ty::range(elem_ty);
-                self.record_type(span, &range_ty);
-                range_ty
-            }
-
-            (
-                Expr::Binary {
-                    left,
-                    op:
-                        op @ (BinaryOp::Add
-                        | BinaryOp::Subtract
-                        | BinaryOp::Multiply
-                        | BinaryOp::Divide
-                        | BinaryOp::Modulo
-                        | BinaryOp::WrappingAdd
-                        | BinaryOp::WrappingSub
-                        | BinaryOp::WrappingMul
-                        | BinaryOp::BitAnd
-                        | BinaryOp::BitOr
-                        | BinaryOp::BitXor
-                        | BinaryOp::Shl
-                        | BinaryOp::Shr),
-                    right,
-                },
-                ty,
-            ) if ty.is_integer() => {
-                let actual = self.check_binary_op(left, *op, right, span);
-                let actual_resolved = self.subst.resolve(&actual);
-                if actual_resolved.is_integer_literal() {
-                    for operand in [left, right] {
-                        let key = SpanKey::in_module(&operand.1, self.current_module_idx);
-                        let operand_ty = self.expr_types[&key].clone();
-                        self.record_concrete_integer_operand(expected, operand, &operand_ty);
-                    }
-                    self.record_type(span, expected);
-                    expected.clone()
-                } else if matches!(actual_resolved, Ty::Never | Ty::Error) {
-                    actual_resolved
-                } else {
-                    let n = self.errors.len();
-                    self.expect_type(expected, &actual, span);
-                    if self.errors.len() > n {
-                        Ty::Error
-                    } else {
-                        self.record_type(span, &actual);
-                        actual
-                    }
-                }
-            }
+            (Expr::Binary { first, steps }, _) => self.check_binary_against(first, steps, expected),
 
             (
                 Expr::Unary {
@@ -975,25 +909,6 @@ impl Checker {
                 expected.clone()
             }
 
-            // A join where `bytes` is expected checks both sides as `bytes`,
-            // so `[1] + [2]` is a buffer there too.
-            (
-                Expr::Binary {
-                    left,
-                    op: BinaryOp::Add,
-                    right,
-                },
-                Ty::Bytes,
-            ) => {
-                let left_ty = self.check_against(&left.0, &left.1, expected);
-                let right_ty = self.check_against(&right.0, &right.1, expected);
-                if matches!(left_ty, Ty::Error) || matches!(right_ty, Ty::Error) {
-                    return Ty::Error;
-                }
-                self.record_type(span, expected);
-                expected.clone()
-            }
-
             // Array literals checked against [T; N] require exact arity.
             (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
                 // A fixed-size array's length is part of its type, and a
@@ -1100,7 +1015,7 @@ impl Checker {
                 let count_value = crate::check::const_eval::eval_integer_const_expr_with_values(
                     count,
                     crate::check::const_eval::ConstIntegerTarget::machine_usize_compat(),
-                    |expr| self.constant_integer_value(expr),
+                    |expr| self.constant_integer_value(&expr.0),
                 );
                 match count_value.and_then(|value| {
                     u64::try_from(value)
@@ -1778,30 +1693,37 @@ impl Checker {
     /// The other operand is checked first to learn that it is `bytes`.
     fn bytes_join_with_list_literal(
         &mut self,
-        left: &Spanned<Expr>,
+        left: BinaryLeft<'_>,
         op: BinaryOp,
         right: &Spanned<Expr>,
     ) -> Option<(Ty, Ty)> {
         if !matches!(op, BinaryOp::Add) {
             return None;
         }
-        let (literal, other) = match (&left.0, &right.0) {
-            (Expr::Array(_), Expr::Array(_)) => return None,
-            (_, Expr::Array(_)) => (right, left),
-            (Expr::Array(_), _) => (left, right),
-            _ => return None,
-        };
-        let other_ty = self.synthesize(&other.0, &other.1);
+        let left_is_list = left
+            .operand()
+            .is_some_and(|left| matches!(left.0, Expr::Array(_)));
+        let right_is_list = matches!(right.0, Expr::Array(_));
+        if left_is_list == right_is_list {
+            return None;
+        }
+        if right_is_list {
+            let other_ty = self.synthesize_binary_left(left);
+            let literal_ty = if self.subst.resolve(&other_ty) == Ty::Bytes {
+                self.check_against(&right.0, &right.1, &Ty::Bytes)
+            } else {
+                self.synthesize(&right.0, &right.1)
+            };
+            return Some((other_ty, literal_ty));
+        }
+        let literal = left.operand()?;
+        let other_ty = self.synthesize(&right.0, &right.1);
         let literal_ty = if self.subst.resolve(&other_ty) == Ty::Bytes {
             self.check_against(&literal.0, &literal.1, &Ty::Bytes)
         } else {
             self.synthesize(&literal.0, &literal.1)
         };
-        Some(if std::ptr::eq(literal, right) {
-            (other_ty, literal_ty)
-        } else {
-            (literal_ty, other_ty)
-        })
+        Some((literal_ty, other_ty))
     }
 
     #[expect(
@@ -1810,18 +1732,22 @@ impl Checker {
     )]
     pub(in crate::check) fn check_binary_op(
         &mut self,
-        left: &Spanned<Expr>,
+        left: BinaryLeft<'_>,
         op: BinaryOp,
         right: &Spanned<Expr>,
         expr_span: &Span,
     ) -> Ty {
-        let left_is_coercible = self.is_coercible_numeric(&left.0);
+        let left_is_coercible = left
+            .operand()
+            .is_some_and(|left| self.is_coercible_numeric(&left.0));
         let right_is_coercible = self.is_coercible_numeric(&right.0);
 
         // When one side is a numeric literal (or literal-backed const) and the
         // other is a concrete numeric type, use check_against so the literal
         // adopts the non-literal's type instead of defaulting immediately.
-        let (left_ty, right_ty) = if left_is_coercible && !right_is_coercible {
+        let (left_ty, right_ty) = if let (true, false, Some(left)) =
+            (left_is_coercible, right_is_coercible, left.operand())
+        {
             let rt = self.synthesize(&right.0, &right.1);
             let rt_resolved = self.normalize_for_use(&rt);
             if rt_resolved.is_numeric() || self.is_numeric_parameter(&rt_resolved) {
@@ -1832,7 +1758,7 @@ impl Checker {
                 (lt, rt)
             }
         } else if right_is_coercible && !left_is_coercible {
-            let lt = self.synthesize(&left.0, &left.1);
+            let lt = self.synthesize_binary_left(left);
             let lt_resolved = self.normalize_for_use(&lt);
             if lt_resolved.is_numeric() || self.is_numeric_parameter(&lt_resolved) {
                 let rt = self.check_against(&right.0, &right.1, &lt_resolved);
@@ -1844,7 +1770,7 @@ impl Checker {
         } else if let Some(types) = self.bytes_join_with_list_literal(left, op, right) {
             types
         } else {
-            let lt = self.synthesize(&left.0, &left.1);
+            let lt = self.synthesize_binary_left(left);
             let expected = self.normalize_for_use(&lt);
             let rt = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && !expected.is_numeric()
             {
@@ -1867,10 +1793,12 @@ impl Checker {
             if let Some(common_ty) =
                 common_numeric_type(&left_resolved, &right_resolved, self.pointer_width())
             {
-                for (operand, source_ty) in [(left, &left_resolved), (right, &right_resolved)] {
+                for (operand, source_ty) in
+                    [(left.span(), &left_resolved), (&right.1, &right_resolved)]
+                {
                     if !source_ty.is_numeric_literal() && *source_ty != common_ty {
                         self.numeric_operand_coercions.insert(
-                            SpanKey::in_module(&operand.1, self.current_module_idx),
+                            SpanKey::in_module(operand, self.current_module_idx),
                             common_ty.clone(),
                         );
                     }
@@ -1893,7 +1821,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "`{op}` requires compatible integer types; found `{}` and `{}`",
                                 left_resolved.user_facing(),
@@ -1903,7 +1831,7 @@ impl Checker {
                         Ty::Error
                     }
                 } else if matches!(&left_resolved, Ty::Var(_)) && right_resolved.is_integer() {
-                    self.expect_type(&right_ty, &left_ty, &left.1);
+                    self.expect_type(&right_ty, &left_ty, left.span());
                     right_ty
                 } else if left_resolved.is_integer() && matches!(&right_resolved, Ty::Var(_))
                     || matches!((&left_resolved, &right_resolved), (Ty::Var(_), Ty::Var(_)))
@@ -1916,7 +1844,7 @@ impl Checker {
                 } else {
                     self.report_error(
                         TypeErrorKind::BinaryOperandTypes,
-                        &left.1,
+                        left.span(),
                         format!(
                             "`{op}` requires integer operands; found `{}` and `{}`",
                             left_resolved.user_facing(),
@@ -1942,7 +1870,7 @@ impl Checker {
                         op,
                         &left_resolved,
                         &right_resolved,
-                        &left.1,
+                        left.span(),
                     );
                 }
                 if left_resolved == right_resolved && self.is_numeric_parameter(&left_resolved) {
@@ -1959,7 +1887,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -1976,7 +1904,7 @@ impl Checker {
                     ) {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -1992,7 +1920,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` in arithmetic; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -2003,7 +1931,7 @@ impl Checker {
                     }
                 } else if matches!(&left_resolved, Ty::Var(_)) && right_resolved.is_numeric() {
                     // Type variable on left — constrain it to the right's numeric type
-                    self.expect_type(&right_ty, &left_ty, &left.1);
+                    self.expect_type(&right_ty, &left_ty, left.span());
                     right_ty
                 } else if left_resolved.is_numeric() && matches!(&right_resolved, Ty::Var(_)) {
                     // Type variable on right — constrain it to the left's numeric type
@@ -2026,7 +1954,7 @@ impl Checker {
                 } else {
                     self.report_error(
                         TypeErrorKind::BinaryOperandTypes,
-                        &left.1,
+                        left.span(),
                         format!(
                             "cannot apply `{op}` to `{}` and `{}`",
                             left_resolved.user_facing(),
@@ -2058,7 +1986,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "bitwise `{op}` requires compatible integer types; found `{}` and `{}`",
                                 left_resolved.user_facing(),
@@ -2068,7 +1996,7 @@ impl Checker {
                         Ty::Error
                     }
                 } else if matches!(&left_resolved, Ty::Var(_)) && right_resolved.is_integer() {
-                    self.expect_type(&right_ty, &left_ty, &left.1);
+                    self.expect_type(&right_ty, &left_ty, left.span());
                     right_ty
                 } else if (left_resolved.is_integer() && matches!(&right_resolved, Ty::Var(_)))
                     || matches!((&left_resolved, &right_resolved), (Ty::Var(_), Ty::Var(_)))
@@ -2078,7 +2006,7 @@ impl Checker {
                 } else {
                     self.report_error(
                         TypeErrorKind::BinaryOperandTypes,
-                        &left.1,
+                        left.span(),
                         format!(
                             "`{op}` requires two integers or two `bool`s, found `{}` and `{}`",
                             left_resolved.user_facing(),
@@ -2104,7 +2032,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -2120,7 +2048,7 @@ impl Checker {
                     ) {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -2134,7 +2062,7 @@ impl Checker {
                     {
                         self.report_error(
                             TypeErrorKind::BinaryOperandTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "cannot implicitly coerce `{}` and `{}` for comparison; use an explicit conversion",
                                 left_resolved.user_facing(),
@@ -2155,14 +2083,14 @@ impl Checker {
                             op,
                             &left_resolved,
                             &right_resolved,
-                            &left.1,
+                            left.span(),
                             &right.1,
                         );
                         self.reject_record_comparison(
                             op,
                             &left_resolved,
                             &right_resolved,
-                            &left.1,
+                            left.span(),
                             &right.1,
                             expr_span,
                         );
@@ -2171,7 +2099,7 @@ impl Checker {
                 Ty::Bool
             }
             BinaryOp::And | BinaryOp::Or => {
-                self.expect_type(&Ty::Bool, &left_ty, &left.1);
+                self.expect_type(&Ty::Bool, &left_ty, left.span());
                 self.expect_type(&Ty::Bool, &right_ty, &right.1);
                 Ty::Bool
             }
@@ -2210,6 +2138,9 @@ impl Checker {
                             // identifier bound's own binding var alongside the
                             // deferred span so `apply_deferred_range_bound_types`
                             // can promote it too once `var_tv` resolves.
+                            let left = left
+                                .operand()
+                                .expect("a range bound is never a binary chain prefix");
                             let left_binding_var =
                                 Self::coercible_identifier_binding_var(&self.env, &left.0);
                             let right_binding_var =
@@ -2282,7 +2213,7 @@ impl Checker {
                     } else {
                         self.report_error(
                             TypeErrorKind::RangeBoundTypes,
-                            &left.1,
+                            left.span(),
                             format!(
                                 "range bounds require compatible integer types; found `{}` and `{}`",
                                 left_resolved.user_facing(),
@@ -2315,6 +2246,9 @@ impl Checker {
         span: &Span,
         result: Ty,
     ) -> Ty {
+        if let Expr::Binary { first, steps } = expr {
+            return self.publish_binary_value(first, steps, result);
+        }
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .entry(key.clone())
@@ -2324,7 +2258,7 @@ impl Checker {
         self.record_task_producer(expr, span);
         self.record_aggregate_field_sources(expr, span);
         self.record_call_argument_sources(expr, span);
-        self.check_receiver_whole_at_expr(expr, span, &result);
+        self.check_receiver_whole_at_expr(expr, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expression_value_candidates.remove(&key);
         let candidates = self.callable_candidates_for_expr(expr, span);

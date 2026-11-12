@@ -417,7 +417,7 @@ crash_boom();
         "an unsupervised actor crash must fail the process: stderr: {stderr}"
     );
     assert!(
-        stderr.contains("hew: actor crash in Boom.detonate ("),
+        stderr.contains("hew:   in actor Boom#") && stderr.contains(" handler Boom.detonate"),
         "expected the dotted `Boom.detonate` handler label in the crash \
          diagnostic; stderr: {stderr}"
     );

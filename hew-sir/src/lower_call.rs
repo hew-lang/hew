@@ -185,8 +185,8 @@ impl Builder<'_, '_> {
             HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::stable_argument_read(tuple),
             HirExprKind::SubsumedValue { source, .. } => Self::stable_argument_read(source),
-            HirExprKind::Binary { left, right, .. } => {
-                Self::stable_argument_read(left) && Self::stable_argument_read(right)
+            HirExprKind::Binary { first, steps } => {
+                HirExprKind::binary_operands(first, steps).all(Self::stable_argument_read)
             }
             HirExprKind::Unary { operand, .. } => Self::stable_argument_read(operand),
             HirExprKind::NumericCast { value, .. }
@@ -2030,7 +2030,7 @@ impl Builder<'_, '_> {
             return Err("actor ingress target differs from its resolved declaration".into());
         }
         let actor = self.service.require_actor(&handler_ty)?;
-        let pointer_ty = crate::ActorIngressAdapter::pointer_type();
+        let pointer_ty = crate::static_address_type();
         let mut adapters = Vec::new();
         for (index, endpoint) in [&endpoints.data, &endpoints.close].into_iter().enumerate() {
             let adapter = crate::ActorIngressAdapter {
@@ -2104,7 +2104,7 @@ impl Builder<'_, '_> {
         clippy::too_many_lines,
         reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
     )]
-    fn lower_runtime_operation_with_temporaries(
+    pub(super) fn lower_runtime_operation_with_temporaries(
         &mut self,
         expr: &HirExpr,
         family: hew_types::RuntimeCallFamily,
@@ -2261,7 +2261,7 @@ impl Builder<'_, '_> {
             .cloned();
         for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
             if prelowered.iter().any(|(at, _)| *at == index)
-                && *source == crate::ActorIngressAdapter::pointer_type()
+                && *source == crate::static_address_type()
                 && source == target
             {
                 // An adapter address is synthesized at this foreign boundary;

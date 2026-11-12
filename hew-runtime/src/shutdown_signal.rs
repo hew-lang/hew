@@ -12,6 +12,13 @@
 //! handlers on their own thread, so delivery happens there directly. Windows
 //! ends the process once the handler returns from `CTRL_CLOSE_EVENT`, so a
 //! console close is delivered but the program cannot rely on acting on it.
+//!
+//! Hang diagnosis rides the same machinery. `SIGQUIT` (and `SIGINFO` where the
+//! platform has it, Ctrl-T on macOS and FreeBSD; Ctrl-Break on Windows) prints
+//! a snapshot of every live actor and what each worker is running, and the
+//! program carries on. A second termination signal while the runtime's
+//! graceful shutdown is draining ends the process at once, and a drain that
+//! times out prints the busy actors before the signal takes effect.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -31,6 +38,8 @@ static SUBSCRIBED: AtomicUsize = AtomicUsize::new(0);
 /// The actor runtime has started and owns the default reaction.
 static RUNTIME_HANDLES: AtomicBool = AtomicBool::new(false);
 static INSTALL: Once = Once::new();
+/// The termination signal that started the runtime's graceful shutdown, or 0.
+static SHUTDOWN_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Install the handlers and make the actor runtime the default reaction: a
 /// signal with no subscriber starts graceful shutdown. Called once the
@@ -47,13 +56,65 @@ pub fn install_runtime_handlers() -> Result<(), String> {
 }
 
 /// A signal with no subscriber to receive it.
-fn request_runtime_shutdown() -> bool {
+fn request_runtime_shutdown(signal: c_int) -> bool {
     if RUNTIME_HANDLES.load(Ordering::Acquire) {
+        let _ = SHUTDOWN_SIGNAL.compare_exchange(0, signal, Ordering::AcqRel, Ordering::Acquire);
         crate::shutdown::request_from_signal();
         true
     } else {
         false
     }
+}
+
+/// A signal-initiated graceful shutdown could not drain: name what is still
+/// running, then let the signal end the process as it would have without a
+/// runtime. A shutdown the program started itself returns to its caller.
+pub(crate) fn finish_timed_out_shutdown() {
+    let signal = SHUTDOWN_SIGNAL.load(Ordering::Acquire);
+    if signal == 0 {
+        return;
+    }
+    crate::output::flush();
+    platform_default(signal);
+    // The default action did not end the process (the signal is blocked on
+    // this thread, or Windows): report the conventional timeout status.
+    // JUSTIFIED: the requested termination cannot complete gracefully and a
+    // worker is stuck in a handler; the OS reclaims what it holds.
+    std::process::exit(124);
+}
+
+/// Write a snapshot of every live actor and each worker's current turn to
+/// stderr, for diagnosing a hang. `reason` heads the report.
+pub(crate) fn write_actor_snapshot(reason: &str) {
+    use std::fmt::Write as _;
+
+    let mut out = format!("hew: actor snapshot ({reason})\n");
+    for busy in crate::observe::busy_workers() {
+        let actor_type =
+            crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(busy.dispatch);
+        let handler =
+            crate::profiler::actor_registry::handler_name_by_ptr(busy.dispatch, busy.msg_type)
+                .unwrap_or_else(|| format!("message {}", busy.msg_type));
+        let worker = if busy.worker_id == 0 {
+            "main thread".to_owned()
+        } else {
+            format!("worker {}", busy.worker_id - 1)
+        };
+        let _ = writeln!(
+            out,
+            "hew:   {worker} running {actor_type}#{} handler {handler}",
+            busy.actor_id
+        );
+    }
+    #[cfg(feature = "profiler")]
+    for actor in crate::profiler::actor_registry::snapshot_all() {
+        let _ = writeln!(
+            out,
+            "hew:   {}#{} {}, mailbox {}, {} messages handled",
+            actor.actor_type, actor.id, actor.state, actor.mailbox_depth, actor.messages_processed
+        );
+    }
+    crate::output::write(crate::output::Stream::Err, out.as_bytes());
 }
 
 /// Withdraw signal admission before shutdown work is joined and swept.
@@ -62,7 +123,7 @@ pub(crate) fn disarm_runtime_handlers() {
 }
 
 fn unclaimed(signal: c_int) {
-    if !request_runtime_shutdown() {
+    if !request_runtime_shutdown(signal) {
         platform_default(signal);
     }
 }
@@ -168,6 +229,17 @@ mod unix {
     /// Serializes the dispatcher's one start.
     static DISPATCHER: Mutex<()> = Mutex::new(());
 
+    /// Pipe byte asking the dispatcher to deliver a termination request.
+    const WAKE_TERMINATE: u8 = 1;
+    /// Pipe byte asking the dispatcher to print an actor snapshot.
+    const WAKE_SNAPSHOT: u8 = 2;
+
+    /// Signals that ask for an actor snapshot.
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    const SNAPSHOT_SIGNALS: [c_int; 2] = [libc::SIGQUIT, libc::SIGINFO];
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    const SNAPSHOT_SIGNALS: [c_int; 1] = [libc::SIGQUIT];
+
     pub(super) unsafe fn install_handlers() {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction =
@@ -176,22 +248,42 @@ mod unix {
         libc::sigemptyset(&raw mut action.sa_mask);
         libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
         libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
+        for signal in SNAPSHOT_SIGNALS {
+            libc::sigaction(signal, &raw const action, std::ptr::null_mut());
+        }
+    }
+
+    fn wake(fd: c_int, byte: u8) {
+        let saved = errno::get();
+        // SAFETY: a nonblocking write of one byte from a live local. A full
+        // pipe already holds an undelivered request.
+        unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
+        errno::set(saved);
     }
 
     /// Only async-signal-safe work: atomics, `write`, `signal` and `raise`.
     extern "C" fn handler(signal: c_int, _info: *mut libc::siginfo_t, _ctx: *mut std::ffi::c_void) {
         let fd = WAKE_FD.load(Ordering::Acquire);
+        if SNAPSHOT_SIGNALS.contains(&signal) {
+            if fd >= 0 && super::RUNTIME_HANDLES.load(Ordering::Acquire) {
+                wake(fd, WAKE_SNAPSHOT);
+            } else if signal == libc::SIGQUIT {
+                super::platform_default(signal);
+            }
+            return;
+        }
+        if super::SHUTDOWN_SIGNAL.load(Ordering::Acquire) != 0 {
+            // The runtime is already draining for an earlier signal: a second
+            // one ends the process now.
+            super::platform_default(signal);
+            return;
+        }
         if fd >= 0
             && (super::SUBSCRIBED.load(Ordering::Acquire) > 0
                 || super::RUNTIME_HANDLES.load(Ordering::Acquire))
         {
             LAST_SIGNAL.store(signal, Ordering::Release);
-            let saved = errno::get();
-            let byte = 1u8;
-            // SAFETY: a nonblocking write of one byte from a live local. A
-            // full pipe already holds an undelivered request.
-            unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
-            errno::set(saved);
+            wake(fd, WAKE_TERMINATE);
             return;
         }
         super::platform_default(signal);
@@ -242,7 +334,13 @@ mod unix {
             // SAFETY: a blocking read into a live local buffer.
             let count = unsafe { libc::read(read_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
             if count > 0 {
-                super::deliver(LAST_SIGNAL.load(Ordering::Acquire));
+                let bytes = &buffer[..usize::try_from(count).unwrap_or(0)];
+                if bytes.contains(&WAKE_SNAPSHOT) {
+                    super::write_actor_snapshot("SIGQUIT");
+                }
+                if bytes.contains(&WAKE_TERMINATE) {
+                    super::deliver(LAST_SIGNAL.load(Ordering::Acquire));
+                }
             } else if count == 0
                 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
             {
@@ -292,22 +390,31 @@ mod windows {
 
     /// `CTRL_C_EVENT`, `CTRL_BREAK_EVENT` and `CTRL_CLOSE_EVENT`.
     const LAST_HANDLED_EVENT: u32 = 2;
+    const CTRL_BREAK_EVENT: u32 = 1;
 
     unsafe extern "system" fn handler(event: u32) -> i32 {
         if event > LAST_HANDLED_EVENT {
             return 0;
         }
         // The console thread is ordinary thread context.
+        if event == CTRL_BREAK_EVENT && super::RUNTIME_HANDLES.load(Ordering::Acquire) {
+            super::write_actor_snapshot("Ctrl-Break");
+            return 1;
+        }
         let signal = if event == 0 {
             libc::SIGINT
         } else {
             libc::SIGTERM
         };
+        if super::SHUTDOWN_SIGNAL.load(Ordering::Acquire) != 0 {
+            // A second request while the runtime drains: end now.
+            return 0;
+        }
         if super::SUBSCRIBED.load(Ordering::Acquire) > 0 {
             super::deliver(signal);
             return 1;
         }
-        if super::request_runtime_shutdown() {
+        if super::request_runtime_shutdown(signal) {
             return 1;
         }
         // Unhandled: the next handler, ultimately the default, ends the process.

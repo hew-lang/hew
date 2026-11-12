@@ -1,0 +1,7 @@
+// FAILURE: an expect fails inside the imported file fl.hew.
+import "fl.hew";
+
+fn main() {
+    println(fl.lookup("known"));
+    println(fl.lookup("other"));
+}

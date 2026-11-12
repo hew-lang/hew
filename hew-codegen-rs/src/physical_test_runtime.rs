@@ -15,6 +15,13 @@ pub(super) fn disable_stack_check_for_jit(llvm: &Module<'_>) {
 
 /// Bind the actual runtime ABI shared by the physical JIT oracles.
 pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
+    // JIT oracles run the lowered module before object emission fills the
+    // native symbol table. Give its image-relative lookup an empty valid table.
+    static EMPTY_SYMTAB: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if let Some(table) = llvm.get_global(hew_debug_abi::SYMTAB_SYMBOL) {
+        let bytes = EMPTY_SYMTAB.get_or_init(|| hew_debug_abi::TableWriter::symtab(&[]).0);
+        engine.add_global_mapping(&table, bytes.as_ptr() as usize);
+    }
     macro_rules! bind {
         ($($module:ident :: $name:ident),* $(,)?) => {$({
             if let Some(function) = llvm.get_function(stringify!($name)) {
@@ -80,6 +87,11 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         bytes::hew_bytes_drop_managed,
         string::hew_string_append_checked,
         string::hew_string_push_checked,
+        string::hew_string_append_i64_checked,
+        string::hew_string_append_u64_checked,
+        string::hew_string_append_f64_checked,
+        string::hew_string_append_bool_checked,
+        string::hew_string_append_literal_checked,
         string::hew_string_clear_managed,
         string::hew_string_drop_managed,
         release_walker::hew_release_driver_new,
@@ -226,6 +238,25 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         fault::hew_fault_report,
         fault::hew_fault_report_entry,
         fault::hew_fault_set_site,
+        fault::hew_fault_set_site_in_image,
+        actor_call_native::hew_actor_call_failure,
+        failure_snapshot::hew_failure_snapshot_kind,
+        failure_snapshot::hew_failure_snapshot_trap,
+        failure_snapshot::hew_failure_snapshot_message,
+        failure_snapshot::hew_failure_snapshot_has_site,
+        failure_snapshot::hew_failure_snapshot_site_file,
+        failure_snapshot::hew_failure_snapshot_site_line,
+        failure_snapshot::hew_failure_snapshot_site_column,
+        failure_snapshot::hew_failure_snapshot_frame_count,
+        failure_snapshot::hew_failure_snapshot_frame_function,
+        failure_snapshot::hew_failure_snapshot_frame_has_site,
+        failure_snapshot::hew_failure_snapshot_frame_file,
+        failure_snapshot::hew_failure_snapshot_frame_line,
+        failure_snapshot::hew_failure_snapshot_frame_repeat,
+        failure_snapshot::hew_failure_try_adopt,
+        failure_snapshot::hew_failure_drop_unaccounted,
+        failure_snapshot::hew_failure_free_unaccounted_trace,
+        vec::hew_vec_try_new_with_elem_layout_capacity,
         fault::hew_fault_trap,
         exit_status::hew_process_exit_byte,
     );

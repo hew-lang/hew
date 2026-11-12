@@ -1273,7 +1273,12 @@ unsafe fn admit_bound_native_request(
             // completion has no returned request and never faults the sender.
             hew_actor_trap(actor, crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
             if !reply.is_null() {
-                crate::reply_channel::hew_reply_channel_publish_crash_fallback(reply.cast());
+                crate::reply_channel::publish_crash_fallback_with_failure(
+                    reply.cast(),
+                    a.native_completion
+                        .as_ref()
+                        .and_then(|completion| completion.fault_snapshot()),
+                );
             }
             crate::mailbox::hew_msg_envelope_release(envelope);
         }

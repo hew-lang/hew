@@ -45,12 +45,12 @@ fn main() {
     let group = spawn Group;
     let role = group.worker;
     match role.before("owned request") {
-        .Err(.Trapped) => {}
+        .Err(.Trapped(_)) => {}
         _ => panic("before must trap"),
     }
     restarted(role);
     match role.after("owned reply") {
-        .Err(.Trapped) => {}
+        .Err(.Trapped(_)) => {}
         _ => panic("after must trap"),
     }
     restarted(role);

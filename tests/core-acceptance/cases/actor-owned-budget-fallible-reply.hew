@@ -38,7 +38,7 @@ fn main() -> i64 {
     stopped(enough);
     let small = spawn Small { worker: worker };
     match small.run() {
-        .Err(.Trapped) => println("declared reply limit"),
+        .Err(.Trapped(_)) => println("declared reply limit"),
         _ => return 2,
     }
     stopped(small);

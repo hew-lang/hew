@@ -234,6 +234,10 @@ impl<'m> Walker<'m> {
                         element: child(&element)?,
                     },
                     S::Aggregate { fields } => ManagedLayout::Aggregate {
+                        shape: self
+                            .module
+                            .aggregate_shape_for_type(ty)
+                            .map(|shape| shape.id.0),
                         fields: children(&fields)?,
                     },
                     S::Variant {

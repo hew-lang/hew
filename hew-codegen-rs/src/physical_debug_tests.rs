@@ -59,7 +59,8 @@ fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
 }
 
 /// A record payload behind a variant: the record's own members must stay named
-/// and the enum must select one case, not lay every payload over the same bytes.
+/// beside the enum's tag. The DWARF shape is covered by `tests/debuginfo_types.rs`.
+#[cfg(target_env = "msvc")]
 const ENUM: &str = "\
 type Payload {
     code: i64;
@@ -110,6 +111,7 @@ fn hew_codegen_emit(
             debug_source,
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .expect("emit physical object")
@@ -126,10 +128,6 @@ struct Die {
     tag: String,
     name: Option<String>,
     decl_line: Option<u32>,
-    /// Present on a `DW_TAG_variant_part`: the member it selects on.
-    discr: bool,
-    /// Present on a `DW_TAG_variant`: the tag value that selects it.
-    discr_value: Option<u64>,
 }
 
 #[cfg(not(target_env = "msvc"))]
@@ -162,8 +160,6 @@ fn dwarf_dies(object: &Path) -> Vec<Die> {
                     tag,
                     name: None,
                     decl_line: None,
-                    discr: false,
-                    discr_value: None,
                 });
             }
             continue;
@@ -174,13 +170,6 @@ fn dwarf_dies(object: &Path) -> Vec<Die> {
             die.name = value.strip_suffix("\")").map(ToOwned::to_owned);
         } else if let Some(value) = trimmed.strip_prefix("DW_AT_decl_line\t(") {
             die.decl_line = value.strip_suffix(')').and_then(|line| line.parse().ok());
-        } else if trimmed.starts_with("DW_AT_discr\t(") {
-            die.discr = true;
-        } else if let Some(value) = trimmed.strip_prefix("DW_AT_discr_value\t(") {
-            die.discr_value = value
-                .strip_suffix(')')
-                .and_then(|raw| raw.strip_prefix("0x"))
-                .and_then(|raw| u64::from_str_radix(raw, 16).ok());
         }
     }
     dies
@@ -266,69 +255,6 @@ fn a_build_without_debug_emits_no_debug_metadata() {
     );
 }
 
-/// An enum local must reach the debugger as a variant part: one discriminant to
-/// select on, one `DW_TAG_variant` per case carrying its tag value, and the
-/// payload record's own field names. Describing the `{ tag, payload }` carrier
-/// instead hands every variant's bytes over at once.
-#[test]
-#[cfg(not(target_env = "msvc"))]
-fn an_enum_emits_a_variant_part_selected_by_its_discriminant() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let artefacts = emit_source(dir.path(), "enum", ENUM, true);
-    let object = artefacts.native_obj_path.expect("native object");
-    let dies = dwarf_dies(&object);
-
-    let status = dies
-        .iter()
-        .position(|die| die.tag == "DW_TAG_structure_type" && die.name.as_deref() == Some("Status"))
-        .expect("the enum is described by its source name");
-    let part = &dies[status + 1];
-    assert_eq!(
-        part.tag, "DW_TAG_variant_part",
-        "the enum's only element is its variant part"
-    );
-    assert!(
-        part.discr,
-        "the variant part must name the member a consumer selects on"
-    );
-
-    let cases: Vec<&Die> = dies[status..]
-        .iter()
-        .take_while(|die| die.depth > dies[status].depth || std::ptr::eq(*die, &dies[status]))
-        .filter(|die| die.tag == "DW_TAG_variant")
-        .collect();
-    assert_eq!(cases.len(), 2, "both declared cases must be described");
-    assert_eq!(cases[0].discr_value, Some(0), "`Idle` is selected by tag 0");
-    assert_eq!(
-        cases[1].discr_value,
-        Some(1),
-        "`Packet` is selected by tag 1"
-    );
-
-    let named = |name: &str| dies.iter().any(|die| die.name.as_deref() == Some(name));
-    assert!(named("Idle") && named("Packet"), "each case is named");
-    assert!(
-        named("code"),
-        "the payload record keeps its source field name"
-    );
-}
-
-/// Negative control: a body with no enum emits no variant part, so the
-/// assertion above cannot pass on debug metadata every build happens to carry.
-#[test]
-#[cfg(not(target_env = "msvc"))]
-fn a_body_without_an_enum_emits_no_variant_part() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let artefacts = emit(dir.path(), true);
-    let object = artefacts.native_obj_path.expect("native object");
-    assert!(
-        dwarf_dies(&object)
-            .iter()
-            .all(|die| die.tag != "DW_TAG_variant_part"),
-        "a build with no enum local must not describe one"
-    );
-}
-
 /// The CodeView twins of the DIE assertions above.
 ///
 /// An MSVC-environment object carries `.debug$S` symbols and `.debug$T` types
@@ -378,8 +304,10 @@ mod codeview {
             .collect();
         let probe = records
             .iter()
-            .position(|record| record.contains("S_GPROC32_ID") && record.contains("__hew_fn_probe"))
-            .expect("the probe body is described by its symbol name");
+            .position(|record| record.contains("S_GPROC32_ID") && record.contains("`probe`"))
+            .unwrap_or_else(|| {
+                panic!("the probe body is described by its source name:\n{symbols}")
+            });
         let body: Vec<&&str> = records[probe..]
             .iter()
             .take_while(|record| !record.contains("S_GPROC32_ID") || records[probe] == **record)
@@ -425,13 +353,12 @@ mod codeview {
         );
     }
 
-    /// CodeView has no variant-part record, so the enum is described by the
-    /// carrier the emitter falls back to: a complete `LF_STRUCTURE` named for
-    /// the source type, sized to the whole enum, with its members in a field
-    /// list. Emitting the variant part here instead leaves `Status` with one
-    /// unnamed `LF_NESTTYPE` and no members at all.
+    /// The enum is the same tagged struct CodeView consumers read on every
+    /// platform: a complete `LF_STRUCTURE` named for the source type whose
+    /// field list holds `tag` (an `LF_ENUM` of the variant names) and
+    /// `payload` (an `LF_UNION` with one arm per variant).
     #[test]
-    fn an_enum_emits_a_complete_codeview_structure_for_its_carrier() {
+    fn an_enum_emits_a_complete_codeview_tagged_structure() {
         let dir = tempfile::tempdir().expect("temp dir");
         let artefacts = emit_source(dir.path(), "enum", ENUM, true);
         let object = artefacts.native_obj_path.expect("native object");
@@ -443,20 +370,14 @@ mod codeview {
             .split("\n0x")
             .map(|record| record.trim_end().to_owned())
             .collect();
-        let status: Vec<&String> = records
+        let complete = records
             .iter()
-            .filter(|record| record.contains("LF_STRUCTURE") && record.contains("`Status`"))
-            .collect();
-        assert!(
-            !status.is_empty(),
-            "the enum must be described by its source name:\n{types}"
-        );
-        let complete = status
-            .iter()
-            .find(|record| !record.contains("forward ref"))
-            .unwrap_or_else(|| {
-                panic!("the enum needs a complete record, not only a forward reference:\n{types}")
-            });
+            .find(|record| {
+                record.contains("LF_STRUCTURE")
+                    && record.contains("`Status`")
+                    && !record.contains("forward ref")
+            })
+            .unwrap_or_else(|| panic!("the enum needs a complete record:\n{types}"));
         assert!(
             complete.contains("sizeof 16"),
             "the enum record must be sized to the whole carrier:\n{complete}"
@@ -470,13 +391,23 @@ mod codeview {
             .iter()
             .find(|record| record.starts_with(field_list.trim_start_matches("0x")))
             .unwrap_or_else(|| panic!("field list {field_list} is in the dump:\n{types}"));
+        for member in ["`tag`", "`payload`"] {
+            assert!(
+                fields.contains("LF_MEMBER") && fields.contains(member),
+                "the carrier names its {member} member:\n{fields}"
+            );
+        }
         assert!(
-            fields.contains("LF_MEMBER"),
-            "the carrier's tag and payload must reach the field list:\n{fields}"
+            records
+                .iter()
+                .any(|record| record.contains("LF_ENUM") && record.contains("`Status.Tag`")),
+            "the tag is an enumeration of the variant names:\n{types}"
         );
         assert!(
-            !fields.contains("LF_NESTTYPE"),
-            "a variant part CodeView cannot resolve must not stand in for the members:\n{fields}"
+            records.iter().any(|record| record.contains("LF_UNION")
+                && record.contains("`Status.Payload`")
+                && !record.contains("forward ref")),
+            "the payload is a union of the variants:\n{types}"
         );
     }
 

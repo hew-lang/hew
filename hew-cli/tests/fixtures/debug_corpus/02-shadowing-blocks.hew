@@ -1,0 +1,19 @@
+// Shadowing and nested blocks with distinct locals per scope.
+fn main() {
+    let x = 11;
+    {
+        let x = x * 2;
+        println(x);
+        {
+            let y = x + 100;
+            println(y);
+        }
+    }
+    println(x);
+    var total = 0;
+    for i in 0..4 {
+        let sq = i * i;
+        total = total + sq;
+    }
+    println(total);
+}

@@ -563,7 +563,7 @@ fn signed_min_div_neg_one_traps_on_native_and_wasi() {
             name,
             "start\n",
             1,
-            "hew: failure: SignedMinDivNegOne (203)\n",
+            "hew: failure: SignedMinDivNegOne (203) at ",
         ));
     }
     for (name, stdout, exit, stderr) in cases {
@@ -602,7 +602,18 @@ fn signed_min_div_neg_one_traps_on_native_and_wasi() {
                 };
                 let output = support::run_bounded_command(run, format!("run {label}"));
                 assert_eq!(String::from_utf8_lossy(&output.stdout), stdout, "{label}");
-                assert_eq!(String::from_utf8_lossy(&output.stderr), stderr, "{label}");
+                let actual = String::from_utf8_lossy(&output.stderr);
+                if stderr.is_empty() {
+                    assert_eq!(actual, "", "{label}");
+                } else {
+                    // One fault line naming the trapping operation's site.
+                    assert!(
+                        actual.starts_with(stderr)
+                            && actual.contains(&format!("{name}.hew:"))
+                            && actual.lines().count() == 1,
+                        "{label}: {actual}"
+                    );
+                }
                 assert_eq!(output.status.code(), Some(exit), "{label}");
             }
         }
@@ -781,7 +792,7 @@ fn assert_native_wasi_cases(names: &[&str]) {
                         // language fault while excluding actor context labels.
                         let faults = |text: &str| {
                             text.lines()
-                                .filter(|line| !line.starts_with("hew: actor crash in "))
+                                .filter(|line| !line.starts_with("hew:   in actor "))
                                 .map(str::to_owned)
                                 .collect::<Vec<_>>()
                         };

@@ -275,9 +275,10 @@ impl TemplateNames<'_> {
                     self.pattern(pattern)?;
                 }
             }
-            Pattern::Or(left, right) => {
-                self.pattern(left)?;
-                self.pattern(right)?;
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.pattern(alternative)?;
+                }
             }
             Pattern::Regex { captures, .. } => {
                 for name in captures {
@@ -786,6 +787,11 @@ impl TemplateNames<'_> {
             Expr::GenBlock { body } | Expr::ForkBlock { body } => self.block(body)?,
             Expr::Block(block) | Expr::Scope { body: block } => self.block(block)?,
             Expr::UnsafeBlock(block) => self.block(block)?,
+            Expr::Binary { first, steps } => {
+                for operand in Expr::binary_operands_mut(first, steps) {
+                    self.expr(operand)?;
+                }
+            }
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
@@ -798,8 +804,7 @@ impl TemplateNames<'_> {
                 self.expr(object)?;
                 self.expr(index)?;
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Is {
+            Expr::Is {
                 lhs: left,
                 rhs: right,
             }

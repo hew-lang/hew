@@ -1,0 +1,10 @@
+[[case]]
+id = "fstring-append-order"
+intent = "Streaming interpolation preserves primitive rendering, generic/custom Display, evaluation order and aliased source strings."
+source = "cases/fstring-append-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "expression 1\ndisplay 1\nexpression 2\ndisplay 2\nexpression 3\ndisplay 3\ninterpolation passed\n"
+exit = 0

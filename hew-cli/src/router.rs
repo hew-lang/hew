@@ -27,10 +27,11 @@ pub(crate) trait CommandDispatcher {
     fn new_project(&mut self, args: &args::NewArgs);
     fn playground_verify(&mut self, args: &args::PlaygroundVerifyArgs);
     fn completions(&mut self, args: &args::CompletionsArgs);
-    fn version(&mut self);
+    fn version(&mut self, args: args::VersionArgs);
     fn env(&mut self);
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
+    fn symbolize(&mut self, args: &crate::symbolize::SymbolizeArgs);
     fn lsp(&mut self, args: &args::LspArgs);
     fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand);
 }
@@ -124,8 +125,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_completions(args);
     }
 
-    fn version(&mut self) {
-        crate::cmd_version();
+    fn version(&mut self, args: args::VersionArgs) {
+        crate::cmd_version(args);
     }
 
     fn env(&mut self) {
@@ -142,6 +143,16 @@ impl CommandDispatcher for MainCommandDispatcher {
 
     fn observe(&mut self, args: &args::ObserveArgs) {
         crate::cmd_observe(args);
+    }
+
+    fn symbolize(&mut self, args: &crate::symbolize::SymbolizeArgs) {
+        match crate::symbolize::run(args) {
+            Ok(text) => print!("{text}"),
+            Err(error) => {
+                eprintln!("hew symbolize: {error}");
+                std::process::exit(1);
+            }
+        }
     }
 
     fn lsp(&mut self, args: &args::LspArgs) {
@@ -211,9 +222,10 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
             ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
         },
         Some(Command::Completions(args)) => dispatcher.completions(args),
-        Some(Command::Version) => dispatcher.version(),
+        Some(Command::Version(args)) => dispatcher.version(*args),
         Some(Command::Env) => dispatcher.env(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
+        Some(Command::Symbolize(args)) => dispatcher.symbolize(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
         Some(Command::Pkg(cmd)) => dispatcher.pkg(cmd),
         None => dispatcher.help(),
@@ -224,7 +236,17 @@ fn try_parse_cli_with_compile_fallback<I>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let raw_args: Vec<OsString> = args.into_iter().collect();
+    let mut raw_args: Vec<OsString> = args.into_iter().collect();
+    // `hew --version --verbose` is `hew version --verbose`; clap answers a
+    // bare `--version` itself before it would see `--verbose`.
+    if raw_args.len() == 3
+        && raw_args[1..].contains(&OsString::from("--verbose"))
+        && (raw_args[1..].contains(&OsString::from("--version"))
+            || raw_args[1..].contains(&OsString::from("-V")))
+    {
+        raw_args.truncate(1);
+        raw_args.extend([OsString::from("version"), OsString::from("--verbose")]);
+    }
     match parse_from(raw_args.clone()) {
         Ok(cli) => Ok(cli),
         Err(error) => match compile_fallback_args(&raw_args) {
@@ -298,7 +320,42 @@ mod tests {
             try_parse_cli_with_compile_fallback(["hew", "version"].into_iter().map(OsString::from))
                 .expect("explicit subcommand should parse");
 
-        assert!(matches!(cli.command, Some(crate::args::Command::Version)));
+        assert!(matches!(
+            cli.command,
+            Some(crate::args::Command::Version(_))
+        ));
+    }
+
+    #[test]
+    fn version_flag_parses_as_the_version_command_with_its_verbosity() {
+        for (argv, verbose) in [
+            (&["hew", "version"][..], false),
+            (&["hew", "--version", "--verbose"][..], true),
+            (&["hew", "--verbose", "-V"][..], true),
+            (&["hew", "version", "--verbose"][..], true),
+        ] {
+            let cli = try_parse_cli_with_compile_fallback(argv.iter().map(OsString::from))
+                .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            match cli.command {
+                Some(crate::args::Command::Version(args)) => {
+                    assert_eq!(args.verbose, verbose, "{argv:?}");
+                }
+                other => panic!("{argv:?}: expected version, got {other:?}"),
+            }
+        }
+        assert!(
+            try_parse_cli_with_compile_fallback(
+                ["hew", "--verbose"].into_iter().map(OsString::from)
+            )
+            .is_err(),
+            "--verbose alone is not a command"
+        );
+        // Every subcommand still answers clap's own `--version`.
+        let error = try_parse_cli_with_compile_fallback(
+            ["hew", "lsp", "--version"].into_iter().map(OsString::from),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 
     #[test]
@@ -460,7 +517,9 @@ mod tests {
             release: false,
             trim_paths: false,
             no_trim_paths: false,
+            remap_path_prefix: Vec::new(),
             debug: false,
+            split_debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),
             emit_deps: None,
@@ -516,7 +575,7 @@ mod tests {
 
     #[test]
     fn dispatch_command_routes_zero_arg_subcommands_to_dispatcher() {
-        let command = crate::args::Command::Version;
+        let command = crate::args::Command::Version(crate::args::VersionArgs::default());
         let mut dispatcher = RecordingDispatcher::default();
 
         dispatch_command(Some(&command), &mut dispatcher);
@@ -634,7 +693,7 @@ mod tests {
             );
         }
 
-        fn version(&mut self) {
+        fn version(&mut self, _args: crate::args::VersionArgs) {
             self.calls.push("version".to_string());
         }
 
@@ -648,6 +707,10 @@ mod tests {
 
         fn observe(&mut self, _args: &crate::args::ObserveArgs) {
             self.calls.push("observe".to_string());
+        }
+
+        fn symbolize(&mut self, _args: &crate::symbolize::SymbolizeArgs) {
+            self.calls.push("symbolize".to_string());
         }
 
         fn lsp(&mut self, _args: &crate::args::LspArgs) {

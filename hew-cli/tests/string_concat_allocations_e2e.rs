@@ -2,8 +2,8 @@
 //!
 //! The program counts allocator events around two loops and prints the
 //! difference between them, so start-up and one-time growth cancel out. `+` on two live
-//! strings allocates exactly one block; an f-string allocates its rendered
-//! segments, its literal and one block per join, with no scratch copies.
+//! strings allocates exactly one block. Interpolation reuses a checked string
+//! accumulator instead of allocating every rendered segment and join.
 
 mod support;
 
@@ -42,11 +42,24 @@ fn formats(count: i64) -> u64 {
     after - before
 }
 
+fn formats_many(count: i64) -> u64 {
+    let before = unsafe { hew_memory_alloc_count() };
+    var total = 0;
+    for value in 0..count {
+        let text = f"{value}:{value+1}:{value+2}:{value+3}:{value+4}:{value+5}:{value+6}:{value+7}";
+        total += text.len();
+    }
+    let after = unsafe { hew_memory_alloc_count() };
+    if total < 0 { panic("unreachable"); }
+    after - before
+}
+
 fn main() {
     let left = "colour-" + "neighbour";
     let right = f"{left}-behaviour";
     println(f"{joins(left, right, 576) - joins(left, right, 64)}");
     println(f"{formats(576) - formats(64)}");
+    println(f"{formats_many(576) - formats_many(64)}");
 }
 "#;
 
@@ -73,12 +86,17 @@ fn string_joins_allocate_only_their_results() {
         .lines()
         .map(|line| line.trim().parse().expect("allocation count"))
         .collect();
-    assert_eq!(counts.len(), 2, "{stdout}");
+    assert_eq!(counts.len(), 3, "{stdout}");
     assert!(counts[0] <= 512, "512 joins allocated {} blocks", counts[0]);
-    // Two integer renderings, the `:` literal and two joins per format.
+    // First integer rendering plus at most one checked accumulator growth.
     assert!(
-        counts[1] <= 5 * 512,
+        counts[1] <= 2 * 512,
         "512 formats allocated {} blocks",
         counts[1]
+    );
+    assert!(
+        counts[2] <= 4 * 512,
+        "512 eight-part formats allocated {} blocks",
+        counts[2]
     );
 }

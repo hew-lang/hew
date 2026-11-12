@@ -1,6 +1,7 @@
 //! `var self` receiver return wrapping.
 
 use super::*;
+use crate::HirInterpolationSegment;
 
 impl LowerCtx<'_> {
     /// THE var-self receiver predicate: a method takes a `var self`
@@ -320,8 +321,12 @@ impl LowerCtx<'_> {
                     self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::Binary { left, right, .. }
-            | HirExprKind::IdentityCompare { left, right } => {
+            HirExprKind::Binary { first, steps } => {
+                for operand in HirExprKind::binary_operands_mut(first, steps) {
+                    self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
+                }
+            }
+            HirExprKind::IdentityCompare { left, right } => {
                 self.wrap_var_self_explicit_expr_returns(left, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(right, receiver, abi_return_ty);
             }
@@ -364,6 +369,14 @@ impl LowerCtx<'_> {
                 operand: object, ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
+            }
+            HirExprKind::Interpolation { segments } => {
+                for value in segments
+                    .iter_mut()
+                    .filter_map(HirInterpolationSegment::value_mut)
+                {
+                    self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
+                }
             }
             HirExprKind::Index { container, index }
             | HirExprKind::BorrowedIndex { container, index } => {

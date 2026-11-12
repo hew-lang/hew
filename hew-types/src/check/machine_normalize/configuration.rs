@@ -108,26 +108,14 @@ impl Builder {
     fn conjunction(&mut self, values: Vec<Spanned<Expr>>) -> Spanned<Expr> {
         values
             .into_iter()
-            .reduce(|left, right| {
-                self.expr(Expr::Binary {
-                    op: hew_parser::ast::BinaryOp::And,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            })
+            .reduce(|left, right| self.binary_expr(hew_parser::ast::BinaryOp::And, left, right))
             .unwrap_or_else(|| self.boolean(true))
     }
 
     pub(super) fn disjunction(&mut self, values: Vec<Spanned<Expr>>) -> Spanned<Expr> {
         values
             .into_iter()
-            .reduce(|left, right| {
-                self.expr(Expr::Binary {
-                    op: hew_parser::ast::BinaryOp::Or,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            })
+            .reduce(|left, right| self.binary_expr(hew_parser::ast::BinaryOp::Or, left, right))
             .unwrap_or_else(|| self.boolean(false))
     }
 
@@ -334,11 +322,7 @@ impl Builder {
         left: Spanned<Expr>,
         right: Spanned<Expr>,
     ) -> Spanned<Expr> {
-        self.expr(Expr::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        })
+        self.binary_expr(op, left, right)
     }
 
     fn result(&mut self, name: &str, value: Spanned<Expr>) -> Spanned<Expr> {

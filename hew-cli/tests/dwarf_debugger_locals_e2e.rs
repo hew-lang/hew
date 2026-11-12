@@ -366,10 +366,8 @@ fn require_debugger() -> &'static str {
 /// Which debugger actually ran, for a failure message.
 ///
 /// A rendering assertion that fails on one machine and passes on another is
-/// usually the debugger's version rather than the DWARF. lldb only learned to
-/// read `DW_TAG_variant_part` in lldb 18; before that it renders an enum as an
-/// empty struct, rustc's enums included. Naming the binary and its version in
-/// the panic turns that into a one-line diagnosis.
+/// usually the debugger's version rather than the DWARF. Naming the binary and
+/// its version in the panic turns that into a one-line diagnosis.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger_identity(debugger: &str) -> String {
     let first_line = |output: std::process::Output| {
@@ -685,6 +683,9 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             &format!("break {src}:7"),
             "-ex",
             "run",
+            // `n` is a formal parameter, which gdb lists under `info args`.
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             "-ex",
@@ -693,6 +694,8 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "disable 1",
             "-ex",
             "continue",
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             bin,
@@ -740,8 +743,13 @@ fn s_value_reads(section: &str) -> Vec<&str> {
     section
         .lines()
         .filter(|line| {
+            // lldb prefixes a read with the variable's type: `(string) s = ...`.
             let line = line.trim_start();
-            line.starts_with("s = ") || line.starts_with("(hew_string *) s = ")
+            let line = match line.strip_prefix('(') {
+                Some(typed) => typed.split_once(") ").map_or(line, |(_, rest)| rest),
+                None => line,
+            };
+            line.starts_with("s = ")
         })
         .collect()
 }
@@ -1216,9 +1224,11 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
     );
 }
 
+/// An enum is a tagged struct every debugger reads without a script: `tag`
+/// names the active variant and `payload` holds it, its record fields named.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 #[test]
-fn debugger_renders_only_active_enum_variant_payload() {
+fn debugger_renders_enum_tag_and_payload() {
     require_codegen();
     let dbg = require_debugger();
     let fixture = build_debug_fixture("enum-render", ENUM_SRC);
@@ -1234,16 +1244,10 @@ fn debugger_renders_only_active_enum_variant_payload() {
             "run",
             // lldb's default `target.max-children-depth` varies by release,
             // and without an explicit --depth the nested Payload record inside
-            // the active variant renders as an elided `{...}` instead of
+            // the variant renders as an elided `{...}` instead of
             // `(code = 7)`. Forcing a depth deep enough for this fixture's
-            // nesting (Status -> $variants$ -> $variant$N -> value -> field)
-            // makes the rendering version-stable.
-            //
-            // Depth is not the whole version story: lldb before 18 cannot read
-            // `DW_TAG_variant_part` at all and prints `(Status) status = {}`,
-            // rustc's own enums included. That is why the macOS CI job runs on
-            // an image whose lldb is new enough; `debugger_identity` names the
-            // binary in the panic when it is not.
+            // nesting (Status -> payload -> Packet -> _0 -> code) makes the
+            // rendering version-stable.
             "-o",
             "frame variable status --depth 10",
             "-o",
@@ -1259,14 +1263,6 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("break {src}:12"),
             "-ex",
             "run",
-            // gdb auto-detects the DWARF source language as Rust from the
-            // producer; in Rust mode `print` renders record fields as
-            // `Payload {code: 7}` instead of the C-style `code = 7` this
-            // assertion expects. Forcing C mode makes the rendering match
-            // the other gdb assertions in this suite (see `set language c`
-            // above).
-            "-ex",
-            "set language c",
             "-ex",
             "print status",
             bin,
@@ -1282,12 +1278,8 @@ fn debugger_renders_only_active_enum_variant_payload() {
     );
     let identity = debugger_identity(dbg);
     assert!(
-        text.contains("Packet") && text.contains("code = 7"),
-        "debugger must render the active Packet payload (ran {identity}):\n{text}"
-    );
-    assert!(
-        !text.contains("Idle =") && !text.contains("Idle {"),
-        "debugger must not render the inactive Idle variant (ran {identity}):\n{text}"
+        text.contains("tag = Packet") && text.contains("code = 7"),
+        "debugger must name the active variant and its payload (ran {identity}):\n{text}"
     );
 }
 
@@ -1361,5 +1353,176 @@ fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
     assert!(
         message.contains("wall-clock deadline") && message.contains("process tree was killed"),
         "timeout diagnostic must name the deadline and confirm cleanup: {message}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hew_debug_stops_at_the_failure_raise() {
+    require_codegen();
+    require_debugger();
+    let dir = workspace();
+    let src = dir.path().join("failure.hew");
+    std::fs::write(&src, "fn main() { panic(\"boom\"); }\n").expect("write source");
+    let mut command = Command::new(hew_binary());
+    command.arg("debug").arg(&src);
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
+        "hew debug stops at failure",
+        std::time::Duration::from_mins(5),
+        b"run\nquit\ny\n",
+    )
+    .expect("run hew debug under gdb");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Breakpoint 1,") && line.contains("hew_fault_raise")),
+        "debugger did not stop at the raise:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hew_debug_stops_at_an_admission_failure() {
+    require_codegen();
+    require_debugger();
+    let dir = workspace();
+    let src = dir.path().join("admission.hew");
+    std::fs::write(
+        &src,
+        include_str!("../../tests/core-acceptance/cases/actor-owned-budget-mailbox.hew"),
+    )
+    .expect("write source");
+    let mut command = Command::new(hew_binary());
+    command.arg("debug").arg(&src);
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
+        "hew debug stops at admission failure",
+        std::time::Duration::from_mins(5),
+        b"run\nquit\ny\n",
+    )
+    .expect("run hew debug under gdb");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Breakpoint 1,") && line.contains("hew_fault_raise")),
+        "debugger did not stop at the admission failure:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn debug_config_keeps_a_runnable_program_for_an_editor() {
+    require_codegen();
+    let dir = workspace();
+    let src = dir.path().join("config.hew");
+    std::fs::write(&src, "fn main() { println(42); }\n").expect("write source");
+    let mut command = Command::new(hew_binary());
+    command
+        .current_dir(dir.path())
+        .args(["debug", "--print-config"]);
+    command.arg(&src).args(["--", "argument"]);
+    let output = try_run_bounded_command(
+        command,
+        "build editor debug config",
+        std::time::Duration::from_mins(5),
+    )
+    .expect("run hew debug --print-config");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON configuration");
+    assert_eq!(config["type"], "cppdbg");
+    assert_eq!(config["args"][0], "argument");
+    let program = config["program"].as_str().expect("program path");
+    let run = Command::new(program)
+        .output()
+        .expect("launch retained executable");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(run.stdout, b"42\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hew_debug_attaches_and_stops_at_a_failure() {
+    use std::io::BufRead as _;
+    use std::process::Stdio;
+
+    require_codegen();
+    require_debugger();
+    let dir = workspace();
+    let source = dir.path().join("attach.c");
+    let binary = dir.path().join("attach-target");
+    std::fs::write(
+        &source,
+        r#"
+#include <sched.h>
+#include <stdio.h>
+#include <sys/prctl.h>
+volatile int proceed = 0;
+__attribute__((noinline)) void hew_fault_raise(void) { __asm__ volatile(""); }
+int main(void) {
+    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) != 0) return 2;
+    puts("ready"); fflush(stdout);
+    while (!proceed) sched_yield();
+    hew_fault_raise();
+    return 0;
+}
+"#,
+    )
+    .expect("write attach target");
+    let output = Command::new("cc")
+        .args(["-g", "-O0"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("compile attach target");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut target = Command::new(binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start attach target");
+    let mut ready = String::new();
+    let read =
+        std::io::BufReader::new(target.stdout.take().expect("target stdout")).read_line(&mut ready);
+    if read.is_err() || ready.trim() != "ready" {
+        let _ = target.kill();
+        let _ = target.wait();
+        panic!("attach target did not become ready: {read:?}, {ready:?}");
+    }
+    let mut command = Command::new(hew_binary());
+    command.args(["debug", "--attach", &target.id().to_string()]);
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
+        "hew debug attach",
+        std::time::Duration::from_mins(5),
+        b"set variable proceed = 1\ncontinue\nquit\ny\n",
+    );
+    let _ = target.kill();
+    let _ = target.wait();
+    let output = output.expect("run debugger attach");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Breakpoint 1,") && line.contains("hew_fault_raise")),
+        "debugger did not stop at the attached process's failure:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }

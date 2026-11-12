@@ -32,7 +32,7 @@ fn main() {
     let group = spawn Group;
     let worker = group.worker;
     match worker.work(BrokenTicket { text: "refused request cleanup failed" }) {
-        .Err(.Trapped) => {}
+        .Err(.Trapped(_)) => {}
         _ => panic("cleanup failure must trap instead of becoming Refused"),
     }
     restarted(worker);

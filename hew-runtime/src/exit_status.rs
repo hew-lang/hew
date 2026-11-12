@@ -283,7 +283,11 @@ pub(crate) const fn exit_code_rule(user_code: i64, faulted: bool) -> i64 {
 
 /// Apply [`exit_code_rule`] against the installed authority.
 pub(crate) fn final_exit_code(user_code: i64) -> i64 {
-    exit_code_rule(user_code, unrecovered_actor_fault())
+    let faulted = unrecovered_actor_fault();
+    if faulted && user_code == 0 {
+        crate::crash::report_unrecovered_exit();
+    }
+    exit_code_rule(user_code, faulted)
 }
 
 /// Truncate a final exit code to the portable process-exit byte range
@@ -351,7 +355,11 @@ pub fn reset_process_exit_status() {
 /// so the answer is `0`.
 #[no_mangle]
 pub extern "C" fn hew_runtime_exit_status() -> c_int {
-    c_int::from(unrecovered_actor_fault())
+    let faulted = unrecovered_actor_fault();
+    if faulted {
+        crate::crash::report_unrecovered_exit();
+    }
+    c_int::from(faulted)
 }
 
 #[cfg(test)]

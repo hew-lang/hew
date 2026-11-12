@@ -1,0 +1,10 @@
+// FAILURE: expect on None.
+fn lookup(n: i64) -> Option<i64> {
+    if n == 1 { .Some(100) } else { .None }
+}
+
+fn main() {
+    println(lookup(1).expect("one is present"));
+    let v = lookup(2).expect("two is present");
+    println(v);
+}

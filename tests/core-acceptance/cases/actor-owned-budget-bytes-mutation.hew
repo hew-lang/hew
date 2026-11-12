@@ -30,7 +30,7 @@ fn main() -> i64 {
     stopped(enough);
     let small = spawn Small { payload: b"0123456789abcdef0123456789abcdef" };
     match small.mutate() {
-        .Err(.Trapped) => println("bytes limit"),
+        .Err(.Trapped(_)) => println("bytes limit"),
         _ => return 2,
     }
     stopped(small);

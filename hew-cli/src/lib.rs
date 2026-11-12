@@ -59,6 +59,7 @@ mod run_temp;
 #[cfg(unix)]
 mod signal;
 mod source_paths;
+mod symbolize;
 mod target;
 mod test_runner;
 mod util;
@@ -462,7 +463,7 @@ fn emit_module_with_triple(
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
-    let display_source = source_path.map(hew_compile::display_source_path);
+    let display_source = source_path.map(compile::debug_source_path);
     hew_codegen_rs::emit_physical_object(
         pipeline,
         &hew_codegen_rs::PhysicalEmitOptions {
@@ -481,6 +482,14 @@ fn emit_module_with_triple(
             },
             link_freestanding_wasm,
             build_info: Some(hew_compile::VERSION),
+            debug_script_dir: debug
+                .then(|| find_debug_script("hew-gdb.py"))
+                .flatten()
+                .and_then(|script| {
+                    std::path::Path::new(&script)
+                        .parent()
+                        .map(Path::to_path_buf)
+                }),
         },
     )
     .map_err(|error| {
@@ -1118,12 +1127,7 @@ fn emit_obj_only(
 
 fn cmd_build(a: &args::BuildArgs) {
     diagnostic_json::set_output_format(a.format.into());
-    let _path_scope = source_paths::build_policy(
-        a.input.as_deref(),
-        a.common.project_dir.as_deref(),
-        a.trim_paths || (a.release && !a.no_trim_paths),
-    )
-    .enter();
+    let _path_scope = a.source_path_policy().enter();
     // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_build_run`
     // returns an exit code for EVERY path and never calls `process::exit`, so
     // the guard flushes accumulated JSON advisories on every path by construction.
@@ -1238,6 +1242,16 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
                 "   Built {}",
                 display_relative_to_cwd(&output_path).display()
             );
+            if a.debug && !target.is_wasm() {
+                match link::finish_debug_output(&output_path, &target, a.split_debug) {
+                    Ok(lines) => lines.iter().for_each(|line| eprintln!("   {line}")),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return 1;
+                    }
+                }
+                compile::print_debugger_source_map();
+            }
             write_deps(a.emit_deps.as_deref(), &output_path, &prerequisites)
         }
         Err(channel) => channel.exit_code(),
@@ -1817,6 +1831,11 @@ fn cmd_run_native(
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
+    // Interactive runs show Hew frames by default. An explicit setting,
+    // including `0`, remains authoritative.
+    if std::env::var_os("HEW_BACKTRACE").is_none() {
+        command.env("HEW_BACKTRACE", "1");
+    }
     match a.deterministic_env() {
         Some(config) => command.env("HEW_DETERMINISTIC", config),
         None => command.env_remove("HEW_DETERMINISTIC"),
@@ -2087,13 +2106,29 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
 }
 
 fn cmd_debug(a: &args::DebugArgs) {
+    if let Some(pid) = a.attach {
+        let (debugger, debugger_args) = resolve_debugger_attach(pid).unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
+        eprintln!("Attaching {debugger} to process {pid}...");
+        exit_after_debugger_run(&debugger, &debugger_args, None);
+    }
     // See the matching comment in `cmd_run`: best-effort second cleanup
     // authority for #3132, never fails the debug session.
     run_temp::sweep_on_startup();
-
-    let input = a.input.display().to_string();
+    let input = a
+        .input
+        .as_ref()
+        .expect("clap requires an input when not attaching")
+        .display()
+        .to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
+    if a.print_config {
+        print_debug_config(a, &input, &options, &target);
+        return;
+    }
     let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
     let (debugger, debugger_args) =
@@ -2107,7 +2142,74 @@ fn cmd_debug(a: &args::DebugArgs) {
         };
 
     eprintln!("Launching {debugger} with debug build of {input}...");
-    exit_after_debugger_run(&debugger, &debugger_args, artifact);
+    exit_after_debugger_run(&debugger, &debugger_args, Some(artifact));
+}
+
+/// Build a durable executable for an external editor and print its launch
+/// configuration. A lease-owned temporary executable would disappear as soon
+/// as this command exits, before the editor can start it.
+fn print_debug_config(
+    args: &args::DebugArgs,
+    input: &str,
+    options: &compile::CompileOptions,
+    target: &target::ExecutionTarget,
+) {
+    use std::hash::{Hash, Hasher};
+    let cwd = std::env::current_dir().unwrap_or_else(|error| {
+        eprintln!("Error: cannot find the current directory: {error}");
+        std::process::exit(1);
+    });
+    let directory = cwd.join("target").join("hew-debug");
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("Error: cannot create {}: {error}", directory.display());
+        std::process::exit(1);
+    }
+    let source_input = args.input.as_ref().expect("debug config requires an input");
+    let stem = source_input
+        .file_stem()
+        .unwrap_or_else(|| std::ffi::OsStr::new("hew"));
+    // Distinguish identically named files in different directories without
+    // placing an absolute source path below the output directory.
+    let source = if source_input.is_absolute() {
+        source_input.clone()
+    } else {
+        cwd.join(source_input)
+    };
+    let mut identity = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut identity);
+    let name = format!("{}-{:016x}", stem.to_string_lossy(), identity.finish());
+    let output = target.executable_path(&directory, &name);
+    let spec =
+        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        });
+    compile_build_binary(
+        Path::new(input),
+        &output,
+        &spec,
+        true,
+        hew_codegen_rs::OptLevel::O0,
+        false,
+        &args.link_libs,
+        options,
+    )
+    .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
+    let program = output.to_string_lossy();
+    let cwd = cwd.to_string_lossy();
+    let config = if cfg!(target_os = "windows") {
+        serde_json::json!({"name": "Debug Hew", "type": "cppvsdbg", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd})
+    } else if cfg!(target_os = "macos") {
+        serde_json::json!({"name": "Debug Hew", "type": "lldb", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd,
+            "preRunCommands": ["breakpoint set --name hew_fault_raise"]})
+    } else {
+        serde_json::json!({"name": "Debug Hew", "type": "cppdbg", "request": "launch",
+            "program": program, "args": args.program_args, "cwd": cwd, "MIMode": "gdb",
+            "setupCommands": [{"text": "-break-insert hew_fault_raise"}]})
+    };
+    println!("{config}");
 }
 
 fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
@@ -2124,11 +2226,26 @@ fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
     target
 }
 
+/// Quote one LLDB command argument, independently of the host shell.
+fn lldb_script_import(path: &str) -> String {
+    let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("command script import \"{escaped}\"")
+}
+
 fn resolve_debugger_invocation(
     program_path: &Path,
     program_args: &[String],
 ) -> Result<(String, Vec<String>), String> {
     let program = program_path.display().to_string();
+
+    #[cfg(windows)]
+    if std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join("cdb.exe").is_file())
+    }) {
+        let mut cdb_args = vec!["-c".to_string(), "bu hew_fault_raise".to_string(), program];
+        cdb_args.extend(program_args.iter().cloned());
+        return Ok(("cdb.exe".to_string(), cdb_args));
+    }
 
     if which_exists("gdb") {
         // Load the Hew GDB helper script if it exists
@@ -2138,6 +2255,9 @@ fn resolve_debugger_invocation(
             gdb_args.push("-x".to_string());
             gdb_args.push(script.clone());
         }
+        // Stop at the common raise point before a failure unwinds, so the
+        // debugger can inspect the failing frame and its record.
+        gdb_args.extend(["-ex".to_string(), "break hew_fault_raise".to_string()]);
         gdb_args.push("--args".to_string());
         gdb_args.push(program);
         gdb_args.extend(program_args.iter().cloned());
@@ -2147,21 +2267,69 @@ fn resolve_debugger_invocation(
         let mut lldb_args = Vec::new();
         if let Some(script) = &lldb_script {
             lldb_args.push("-o".to_string());
-            lldb_args.push(format!("command script import {script}"));
+            lldb_args.push(lldb_script_import(script));
         }
+        lldb_args.extend([
+            "-o".to_string(),
+            "breakpoint set --name hew_fault_raise".to_string(),
+        ]);
         lldb_args.push("--".to_string());
         lldb_args.push(program);
         lldb_args.extend(program_args.iter().cloned());
         Ok(("lldb".to_string(), lldb_args))
     } else {
-        Err("Error: no debugger found. Install gdb or lldb.".to_string())
+        Err("Error: no debugger found. Install gdb, lldb or cdb.".to_string())
+    }
+}
+
+fn resolve_debugger_attach(pid: u32) -> Result<(String, Vec<String>), String> {
+    #[cfg(windows)]
+    if std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join("cdb.exe").is_file())
+    }) {
+        return Ok((
+            "cdb.exe".to_string(),
+            vec![
+                "-p".to_string(),
+                pid.to_string(),
+                "-c".to_string(),
+                "bu hew_fault_raise".to_string(),
+            ],
+        ));
+    }
+    if which_exists("gdb") {
+        let mut args = Vec::new();
+        if let Some(script) = find_debug_script("hew-gdb.py") {
+            args.extend(["-x".to_string(), script]);
+        }
+        args.extend([
+            "-ex".to_string(),
+            format!("attach {pid}"),
+            "-ex".to_string(),
+            "break hew_fault_raise".to_string(),
+        ]);
+        Ok(("gdb".to_string(), args))
+    } else if which_exists("lldb") {
+        let mut args = Vec::new();
+        if let Some(script) = find_debug_script("hew_lldb.py") {
+            args.extend(["-o".to_string(), lldb_script_import(&script)]);
+        }
+        args.extend([
+            "-o".to_string(),
+            format!("process attach --pid {pid}"),
+            "-o".to_string(),
+            "breakpoint set --name hew_fault_raise".to_string(),
+        ]);
+        Ok(("lldb".to_string(), args))
+    } else {
+        Err("Error: no debugger found. Install gdb, lldb or cdb.".to_string())
     }
 }
 
 fn exit_after_debugger_run(
     debugger: &str,
     debugger_args: &[String],
-    artifact: CompiledTempExecutable,
+    artifact: Option<CompiledTempExecutable>,
 ) -> ! {
     let status = std::process::Command::new(debugger)
         .args(debugger_args)
@@ -2187,27 +2355,10 @@ fn which_exists(name: &str) -> bool {
 }
 
 fn find_debug_script(name: &str) -> Option<String> {
-    // Check next to the hew binary first, then the repo scripts/ dir
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(format!("../share/hew/{name}"));
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-            // Development layout
-            let candidate = dir.join(format!("../../scripts/debug/{name}"));
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-        }
-    }
-    None
+    link::debug_script_dir()
+        .map(|dir| dir.join(name))
+        .filter(|script| script.is_file())
+        .map(|script| script.display().to_string())
 }
 
 fn cmd_fmt(a: &args::FmtArgs) {
@@ -2945,8 +3096,19 @@ fn cmd_completions(a: &args::CompletionsArgs) {
     generate(shell, &mut cmd, "hew", &mut std::io::stdout());
 }
 
-fn cmd_version() {
+fn cmd_version(args: args::VersionArgs) {
     println!("hew {}", hew_compile::VERSION);
+    if args.verbose {
+        // The identity a symbol store or debugger matches the shipped
+        // `hew.debug`, `hew.dSYM` or `hew.pdb` against.
+        match std::env::current_exe()
+            .ok()
+            .and_then(|exe| link::binary_identity(&exe))
+        {
+            Some(identity) => println!("{identity}"),
+            None => println!("build identity unavailable"),
+        }
+    }
 }
 
 /// `hew env`: print the resolved package-manager environment, one

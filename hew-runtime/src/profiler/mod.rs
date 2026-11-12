@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use std::{os::unix::fs::PermissionsExt as _, path::PathBuf};
 
 use metrics::MetricsRing;
+pub(crate) use server::actors_json;
 pub use server::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHEMA_VERSION};
 pub use tokio::sync::oneshot;
 

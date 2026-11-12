@@ -24,7 +24,7 @@ fn main() -> i64 {
         .Err(_) => return 1,
     }
     match packet.detach_slice() {
-        .Err(.Trapped) => println("slice capacity"),
+        .Err(.Trapped(_)) => println("slice capacity"),
         _ => return 2,
     }
     stopped(packet);

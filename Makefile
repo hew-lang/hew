@@ -252,6 +252,11 @@ RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # staticlibs (`--link-lib` packages), so packaging must never ship the
 # `release` archive. See `[profile.release-lib]` in Cargo.toml.
 RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
+# Every release-lib build goes through one script: it adds frame pointers and
+# remaps the checkout and toolchain homes, then strips debug info from every
+# archive member except the runtime's line tables. Usage:
+#   $(RELEASE_LIB_BUILD) <archive> -- cargo build ... --profile release-lib
+RELEASE_LIB_BUILD = $(PYTHON) "$(MAKEFILE_ROOT)/scripts/release-lib.py" build --archive
 ifeq ($(OS),Windows_NT)
 DEBUG_HEW := $(DEBUG_DIR)/hew.exe
 RELEASE_HEW := $(RELEASE_DIR)/hew.exe
@@ -438,7 +443,7 @@ build: all
 # both the driver and its linkable archive. Keep a separate debug launcher for
 # compiler debugging without changing the stable build/bin/hew selection.
 hew: require-host-cargo-target ## Build: build the release-lib compiler and native archive
-	cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
+	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
@@ -535,7 +540,7 @@ live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched
 .PHONY: live-release-artifacts live-sdk-release
 live-release-artifacts: require-host-cargo-target ## Build: matched optimized experimental live execution tools
 	@test "$(HOST_TRIPLE)" = x86_64-unknown-linux-gnu || { echo 'The release live SDK is qualified only for Linux x86_64'; exit 1; }
-	cargo build -p hew-lib -p hew-cli -p hew-live --features hew-live/component --profile release-lib $(CARGO_TARGET_FLAG)
+	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib -p hew-cli -p hew-live --features hew-live/component --profile release-lib $(CARGO_TARGET_FLAG)
 
 LIVE_RELEASE_SDK_DEST ?= $(RELEASE_LIB_DIR)/live-sdk
 live-sdk-release: live-release-artifacts wasm-runtime-release ## Release: stage the optimized experimental Linux live SDK
@@ -646,13 +651,15 @@ libhew-debug: shared-host-debug
 libhew-cross-release-lib:
 ifeq ($(shell uname -s),Darwin)
 	@for triple in $(CROSS_NATIVE_LIB_TRIPLES); do \
-		cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$$triple" || exit $$?; \
+		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" -- \
+			cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$$triple" || exit $$?; \
 	done
 else ifeq ($(shell uname -s),Linux)
 	@if [ -z "$(LINUX_CROSS_AVAILABLE)" ]; then \
 		echo "Skipping $(LINUX_CROSS_LIB_TRIPLE) libhew.a: install its cross sysroot at $(LINUX_CROSS_SYSROOT) to include it"; \
 	else \
-		cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$(LINUX_CROSS_AVAILABLE)"; \
+		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$(LINUX_CROSS_AVAILABLE)/release-lib/libhew.a" -- \
+			cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$(LINUX_CROSS_AVAILABLE)"; \
 	fi
 else
 	@:
@@ -668,7 +675,9 @@ wasm-runtime-debug:
 	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features
 
 wasm-runtime-release:
-	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features --release
+	@# The release profile's line tables serve the native compiler; the
+	@# portable WASI archives have no debugger path and ship without them.
+	$(WASM_UNINSTRUMENTED_ENV) CARGO_PROFILE_RELEASE_DEBUG=0 cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features --release
 
 # Stage the platform-independent release libraries for packaging/CI transfer.
 # Make owns product membership; callers choose only the destination.
@@ -819,8 +828,13 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # a generic command from observed compiler output.
 baselines: node-protocol syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: version-locks-check node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
+
+# Check every tracked lock containing a local workspace package.
+.PHONY: version-locks-check
+version-locks-check:
+	$(PYTHON) scripts/version-locks.py --check
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
 # node_modules already matches package-lock.json (hash-stamped). Split out
@@ -1120,7 +1134,7 @@ release-cli: require-host-cargo-target
 
 release-host: require-host-cargo-target
 	cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
-	cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
+	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 
 # Plain native smoke needs no external Rust staticlib deduplication. Build its
 # compiler and archive together, reusing release dependencies rather than
@@ -1177,10 +1191,11 @@ build-docs-reference: ## Release: generate the versioned language and API refere
 		--output-dir "$(DOCS_OUTPUT_DIR)"
 
 PACKAGED_SDK_ARCHIVE ?=
+PACKAGED_SDK_DEBUG_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance
 PACKAGED_SDK_EXPERIMENTAL_LIVE ?= 0
 test-packaged-sdk: ## Release: execute SDK source/ABI contracts (PACKAGED_SDK_ARCHIVE=...)
-	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
+	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(PACKAGED_SDK_DEBUG_ARCHIVE),--debug-archive "$(PACKAGED_SDK_DEBUG_ARCHIVE)") $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
 
 # Prove the shipped archive can link a real Rust staticlib through the public
 # `hew build --link-lib` interface. Rust controls archive member names, so the
@@ -1863,6 +1878,10 @@ cabi-surface:
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
+LINT_GATES += failure-kinds-check
+failure-kinds-check:
+	$(PYTHON) scripts/gen-failure-kinds.py --check
+
 LINT_GATES += cabi-surface-check
 cabi-surface-check:
 	cargo run -p xtask -- runtime-declarations --check
@@ -1941,7 +1960,11 @@ install: require-host-cargo-target ## Develop: install the release toolchain und
 		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
 	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
-	install -m 644 scripts/debug/hew-gdb.py scripts/debug/hew_lldb.py "$(DESTDIR)$(PREFIX)/share/hew/"
+	@# Every debugger helper: gdb and lldb scripts, the init files and the natvis.
+	@for helper in scripts/debug/*; do \
+		[ -f "$$helper" ] || continue; \
+		install -m 644 "$$helper" "$(DESTDIR)$(PREFIX)/share/hew/"; \
+	done
 	install -m 644 hew-cabi/include/hew.h hew-cabi/include/hew_host.h "$(DESTDIR)$(PREFIX)/include/"
 	@set -e; for shell in bash zsh fish; do \
 		"$(RELEASE_DIR)/hew" completions "$$shell" \

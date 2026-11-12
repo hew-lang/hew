@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc1] - 2026-11-11
+
+- Add first-class failure diagnostics and native debugging support.
+- Retain owned crash kind, optional trap, message, source site and trace through
+  actor hooks and trapped local and remote calls, including budget-safe fallback.
+- Change `ActorError.Trapped` to carry `CrashInfo`; migrate matching arms and
+  construct the new optional diagnostic fields when constructing that record.
+- Launch or attach a debugger, publish failures before the common raise
+  breakpoint, resolve native symbols and DWARF inline locations, and package
+  split debug symbols.
+- Capture available browser sandbox frames and reject mixed version 12 and 13
+  distributed peers explicitly.
+- Reduce temporary allocations in native and browser string interpolation while
+  preserving evaluation order. Ordinary string growth can retain extra capacity
+  and change when a bounded actor reaches its heap limit.
+- Compile long flat binary expressions and pattern alternatives in the browser,
+  retaining left-to-right evaluation, overflow checks and failure cleanup.
+
 ## [0.10.0] - 2026-11-11
 
 - Combine the 0.10 candidate improvements in actor memory budgets, persistent

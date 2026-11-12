@@ -418,6 +418,7 @@ fn counter_module(
                 },
             }],
         }],
+        defs: hew_types::DefTable::fixture(),
         ..sir::SemModule::default()
     };
     module.functions = vec![

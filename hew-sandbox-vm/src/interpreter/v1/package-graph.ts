@@ -78,6 +78,16 @@ export function validatePackageGraph(pkg: PackageV1): void {
         managedType(row.value);
         break;
       case "aggregate":
+        if (row.shape != null) {
+          const shape = at(
+            pkg.aggregates,
+            row.shape,
+            "managed aggregate shape",
+          );
+          require(shape.fields.length ===
+            row.fields
+              .length, "managed aggregate fields differ from its shape");
+        }
         row.fields.forEach(managedType);
         break;
       case "variant":

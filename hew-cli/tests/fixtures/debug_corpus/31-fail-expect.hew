@@ -1,0 +1,14 @@
+// FAILURE: expect on an Err.
+fn load(key: string) -> Result<i64, string> {
+    if key == "known" {
+        .Ok(1)
+    } else {
+        .Err("unknown key")
+    }
+}
+
+fn main() {
+    println(load("known").expect("known loads"));
+    let v = load("other").expect("other must load");
+    println(v);
+}

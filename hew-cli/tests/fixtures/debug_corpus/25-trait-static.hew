@@ -1,0 +1,38 @@
+// Static trait dispatch with a generic bound.
+trait Area {
+    fn area(self) -> i64;
+}
+
+type Rect {
+    w: i64;
+    h: i64;
+}
+
+type Square {
+    side: i64;
+}
+
+impl Area for Rect {
+    fn area(self) -> i64 {
+        self.w * self.h
+    }
+}
+
+impl Area for Square {
+    fn area(self) -> i64 {
+        self.side * self.side
+    }
+}
+
+fn total<T: Area>(item: T, times: i64) -> i64 {
+    var acc = 0;
+    for _ in 0..times {
+        acc = acc + item.area();
+    }
+    acc
+}
+
+fn main() {
+    println(total(Rect { w: 2, h: 3 }, 4));
+    println(total(Square { side: 5 }, 2));
+}

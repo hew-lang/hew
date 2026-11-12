@@ -875,6 +875,11 @@ impl RuntimeCallFamily {
             | F::StringAppend
             | F::StringPush
             | F::StringClear
+            | F::StringAppendI64
+            | F::StringAppendU64
+            | F::StringAppendF64
+            | F::StringAppendBool
+            | F::StringAppendLiteral
             | F::StringFindFrom
             | F::StringByteLen
             | F::StringConcat

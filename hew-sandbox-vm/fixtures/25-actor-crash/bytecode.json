@@ -2,9 +2,9 @@
   "actors": [
     {
       "crash": 2,
-      "crash_action": 1,
+      "crash_action": 5,
       "crash_info": 0,
-      "crash_kind": 0,
+      "crash_kind": 4,
       "handlers": [
         {
           "callable": 3,
@@ -20,6 +20,7 @@
       "name": "Boom",
       "overflow": "block",
       "state_fields": [],
+      "state_type": 4,
       "stop": []
     }
   ],
@@ -27,23 +28,44 @@
     {
       "fields": [
         "kind",
-        "message"
+        "trap",
+        "message",
+        "site",
+        "trace"
       ],
       "id": 0,
       "name": "CrashInfo"
     },
     {
       "fields": [
+        "function",
+        "site",
+        "repeat"
+      ],
+      "id": 1,
+      "name": "std.failure.StackFrame"
+    },
+    {
+      "fields": [
+        "file",
+        "line",
+        "column"
+      ],
+      "id": 2,
+      "name": "SourceLocation"
+    },
+    {
+      "fields": [
         "reason",
         "message"
       ],
-      "id": 1,
+      "id": 3,
       "name": "SendFailure<Never>"
     }
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.10.0-rc1",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -96,6 +118,7 @@
             },
             "op": "call",
             "result": {
+              "managed_type": 11,
               "own": "owned",
               "value": 0
             },
@@ -174,9 +197,16 @@
               "value": 1
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 11,
+                  "own": "guaranteed",
+                  "value": 2
+                }
+              ],
               "dst": 2,
-              "op": "load.copy",
-              "own": "owned",
+              "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 237,
@@ -186,6 +216,7 @@
           ],
           "params": [
             {
+              "managed_type": 11,
               "own": "owned",
               "value": 1
             }
@@ -201,7 +232,7 @@
               "policy": "wait",
               "sealed": false
             },
-            "error_shape": 3,
+            "error_shape": 7,
             "inputs": [
               {
                 "decision": "borrow",
@@ -211,16 +242,17 @@
             "kind": "Ask",
             "op": "suspend",
             "request_shapes": {
-              "failure": 1,
+              "failure": 3,
               "message": null,
-              "reason": 5,
+              "reason": 9,
               "request": null
             },
             "result": {
-              "own": "none",
+              "managed_type": 15,
+              "own": "owned",
               "value": 3
             },
-            "result_shape": 2,
+            "result_shape": 6,
             "resumes": [
               {
                 "args": [
@@ -257,21 +289,29 @@
         },
         {
           "id": 8,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 2,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [
             {
-              "own": "none",
+              "managed_type": 15,
+              "own": "owned",
               "value": 4
             }
           ],
           "term": {
             "fault": {
               "args": [],
-              "to": 16
+              "to": 15
             },
             "normal": {
               "args": [],
-              "to": 15
+              "to": 14
             },
             "op": "cleanup.dispatch",
             "span": {
@@ -282,12 +322,19 @@
         },
         {
           "id": 9,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 2,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 12
             },
             "op": "goto",
             "span": {
@@ -298,12 +345,19 @@
         },
         {
           "id": 10,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 2,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 12
             },
             "op": "goto",
             "span": {
@@ -334,19 +388,12 @@
         },
         {
           "id": 12,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 2
-            }
-          ],
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 11
+              "to": 13
             },
             "op": "goto",
             "span": null
@@ -359,7 +406,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 14
+              "to": 11
             },
             "op": "goto",
             "span": null
@@ -367,30 +414,24 @@
         },
         {
           "id": 14,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 12
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 15,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 2
+              "value": 4
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 11,
+                  "own": "guaranteed",
+                  "value": 5
+                }
+              ],
               "dst": 5,
-              "op": "load.copy",
-              "own": "owned",
+              "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 271,
@@ -402,7 +443,7 @@
           "term": {
             "cancel": {
               "args": [],
-              "to": 18
+              "to": 20
             },
             "detail": {
               "actor": 0,
@@ -410,7 +451,7 @@
               "policy": "wait",
               "sealed": false
             },
-            "error_shape": 3,
+            "error_shape": 7,
             "inputs": [
               {
                 "decision": "borrow",
@@ -420,22 +461,23 @@
             "kind": "Ask",
             "op": "suspend",
             "request_shapes": {
-              "failure": 1,
+              "failure": 3,
               "message": null,
-              "reason": 5,
+              "reason": 9,
               "request": null
             },
             "result": {
-              "own": "none",
+              "managed_type": 15,
+              "own": "owned",
               "value": 6
             },
-            "result_shape": 2,
+            "result_shape": 6,
             "resumes": [
               {
                 "args": [
                   6
                 ],
-                "to": 17
+                "to": 19
               }
             ],
             "span": {
@@ -444,18 +486,18 @@
             },
             "unwind": {
               "args": [],
-              "to": 19
+              "to": 21
             }
           }
         },
         {
-          "id": 16,
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -465,70 +507,13 @@
           }
         },
         {
-          "id": 17,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 7
-            }
-          ],
-          "term": {
-            "fault": {
-              "args": [],
-              "to": 24
-            },
-            "normal": {
-              "args": [],
-              "to": 23
-            },
-            "op": "cleanup.dispatch",
-            "span": {
-              "end": 271,
-              "start": 271
-            }
-          }
-        },
-        {
-          "id": 18,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 21
-            },
-            "op": "goto",
-            "span": {
-              "end": 271,
-              "start": 271
-            }
-          }
-        },
-        {
-          "id": 19,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 21
-            },
-            "op": "goto",
-            "span": {
-              "end": 271,
-              "start": 271
-            }
-          }
-        },
-        {
-          "id": 20,
+          "id": 16,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 5
+              "value": 4
             }
           ],
           "params": [],
@@ -542,41 +527,113 @@
           }
         },
         {
-          "id": 21,
+          "id": 17,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 22
+              "to": 18
             },
             "op": "goto",
             "span": null
+          }
+        },
+        {
+          "id": 18,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 19,
+          "ops": [
+            {
+              "borrow": 5,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "managed_type": 15,
+              "own": "owned",
+              "value": 7
+            }
+          ],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 23
+            },
+            "normal": {
+              "args": [],
+              "to": 22
+            },
+            "op": "cleanup.dispatch",
+            "span": {
+              "end": 271,
+              "start": 271
+            }
+          }
+        },
+        {
+          "id": 20,
+          "ops": [
+            {
+              "borrow": 5,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 271,
+              "start": 271
+            }
+          }
+        },
+        {
+          "id": 21,
+          "ops": [
+            {
+              "borrow": 5,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 271,
+              "start": 271
+            }
           }
         },
         {
           "id": 22,
           "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 20
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 23,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 5
-            }
-          ],
           "params": [],
           "term": {
             "arms": [
@@ -585,10 +642,11 @@
                   "args": [
                     8
                   ],
-                  "to": 25
+                  "to": 27
                 },
                 "fields": [
                   {
+                    "managed_type": 3,
                     "own": "none",
                     "value": 8
                   }
@@ -600,11 +658,12 @@
                   "args": [
                     10
                   ],
-                  "to": 26
+                  "to": 28
                 },
                 "fields": [
                   {
-                    "own": "none",
+                    "managed_type": 5,
+                    "own": "owned",
                     "value": 10
                   }
                 ],
@@ -613,7 +672,7 @@
             ],
             "op": "switch.variant",
             "scrutinee": 7,
-            "shape": 2,
+            "shape": 6,
             "span": {
               "end": 271,
               "start": 271
@@ -621,13 +680,13 @@
           }
         },
         {
-          "id": 24,
+          "id": 23,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 21
+              "to": 25
             },
             "op": "goto",
             "span": {
@@ -637,9 +696,81 @@
           }
         },
         {
-          "id": 25,
+          "id": 24,
           "ops": [
             {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 7
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 25,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 26
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 26,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 24
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 27,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 3,
+              "own": "none",
+              "value": 9
+            }
+          ],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 30
+            },
+            "normal": {
+              "args": [
+                12
+              ],
+              "to": 29
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 12
+                }
+              ],
               "dst": 12,
               "op": "const.str",
               "own": "owned",
@@ -648,20 +779,73 @@
                 "start": 316
               },
               "str": 0
+            },
+            "span": {
+              "end": 316,
+              "start": 316
+            }
+          }
+        },
+        {
+          "id": 28,
+          "ops": [
+            {
+              "definitions": [
+                {
+                  "managed_type": 1,
+                  "own": "none",
+                  "value": 14
+                }
+              ],
+              "dst": 14,
+              "op": "variant.is",
+              "own": "none",
+              "shape": 7,
+              "source": 11,
+              "span": null,
+              "variant": 4
             }
           ],
           "params": [
             {
-              "own": "none",
-              "value": 9
+              "managed_type": 5,
+              "own": "owned",
+              "value": 11
+            }
+          ],
+          "term": {
+            "condition": 14,
+            "else": {
+              "args": [],
+              "to": 33
+            },
+            "op": "branch",
+            "span": {
+              "end": 271,
+              "start": 271
+            },
+            "then": {
+              "args": [],
+              "to": 32
+            }
+          }
+        },
+        {
+          "id": 29,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 13
             }
           ],
           "term": {
             "edge": {
               "args": [
-                12
+                13
               ],
-              "to": 29
+              "to": 43
             },
             "op": "goto",
             "span": {
@@ -671,55 +855,73 @@
           }
         },
         {
-          "id": 26,
-          "ops": [
-            {
-              "dst": 13,
-              "op": "variant.is",
-              "own": "none",
-              "shape": 3,
-              "source": 11,
-              "span": null,
-              "variant": 4
-            }
-          ],
-          "params": [
-            {
-              "own": "none",
-              "value": 11
-            }
-          ],
+          "id": 30,
+          "ops": [],
+          "params": [],
           "term": {
-            "condition": 13,
-            "else": {
+            "cleanup": {
               "args": [],
-              "to": 28
+              "to": 31
             },
-            "op": "branch",
+            "op": "checked_raise",
             "span": {
-              "end": 271,
-              "start": 271
+              "end": 316,
+              "start": 316
             },
-            "then": {
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 31,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
               "args": [],
-              "to": 27
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 316,
+              "start": 316
             }
           }
         },
         {
-          "id": 27,
+          "id": 32,
           "ops": [
             {
               "dst": null,
               "op": "variant.destructure",
               "results": [],
-              "shape": 3,
+              "shape": 7,
               "source": 11,
               "span": null,
               "variant": 4
+            }
+          ],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 35
             },
-            {
-              "dst": 14,
+            "normal": {
+              "args": [
+                15
+              ],
+              "to": 34
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 15
+                }
+              ],
+              "dst": 15,
               "op": "const.str",
               "own": "owned",
               "span": {
@@ -727,15 +929,68 @@
                 "start": 303
               },
               "str": 1
+            },
+            "span": {
+              "end": 303,
+              "start": 303
+            }
+          }
+        },
+        {
+          "id": 33,
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 38
+            },
+            "normal": {
+              "args": [
+                17
+              ],
+              "to": 37
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 17
+                }
+              ],
+              "dst": 17,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 316,
+                "start": 316
+              },
+              "str": 0
+            },
+            "span": {
+              "end": 316,
+              "start": 316
+            }
+          }
+        },
+        {
+          "id": 34,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 16
             }
           ],
-          "params": [],
           "term": {
             "edge": {
               "args": [
-                14
+                16
               ],
-              "to": 29
+              "to": 43
             },
             "op": "goto",
             "span": {
@@ -745,26 +1000,61 @@
           }
         },
         {
-          "id": 28,
-          "ops": [
-            {
-              "dst": 15,
-              "op": "const.str",
-              "own": "owned",
-              "span": {
-                "end": 316,
-                "start": 316
-              },
-              "str": 0
-            }
-          ],
+          "id": 35,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 36
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 303,
+              "start": 303
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 36,
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 303,
+              "start": 303
+            }
+          }
+        },
+        {
+          "id": 37,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 11
+            }
+          ],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 18
+            }
+          ],
+          "term": {
+            "edge": {
               "args": [
-                15
+                18
               ],
-              "to": 29
+              "to": 43
             },
             "op": "goto",
             "span": {
@@ -774,26 +1064,106 @@
           }
         },
         {
-          "id": 29,
+          "id": 38,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 39
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 316,
+              "start": 316
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 39,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 41
+            },
+            "op": "goto",
+            "span": {
+              "end": 316,
+              "start": 316
+            }
+          }
+        },
+        {
+          "id": 40,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 11
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 41,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 42
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 42,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 40
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 43,
           "ops": [],
           "params": [
             {
+              "managed_type": 2,
               "own": "owned",
-              "value": 16
+              "value": 19
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "borrow",
-                "value": 16
+                "value": 19
               }
             ],
             "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
-              "to": 30
+              "to": 44
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -809,20 +1179,20 @@
           }
         },
         {
-          "id": 30,
+          "id": 44,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 16
+              "value": 19
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 31
+              "to": 45
             },
             "op": "goto",
             "span": {
@@ -832,7 +1202,7 @@
           }
         },
         {
-          "id": 31,
+          "id": 45,
           "ops": [
             {
               "dst": null,
@@ -859,6 +1229,7 @@
       "places": [
         {
           "id": 0,
+          "managed_type": 11,
           "origin": "local"
         }
       ]
@@ -920,6 +1291,7 @@
               "request": null
             },
             "result": {
+              "managed_type": 11,
               "own": "owned",
               "value": 0
             },
@@ -992,6 +1364,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 11,
               "own": "owned",
               "value": 1
             }
@@ -1094,8 +1467,28 @@
         },
         {
           "id": 1,
-          "ops": [
-            {
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 8
+            },
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 7
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 2
+                }
+              ],
               "dst": 2,
               "op": "const.str",
               "own": "owned",
@@ -1104,33 +1497,11 @@
                 "start": 139
               },
               "str": 2
-            }
-          ],
-          "params": [],
-          "term": {
-            "args": [
-              {
-                "decision": "borrow",
-                "value": 2
-              }
-            ],
-            "callbacks": [],
-            "family": 0,
-            "normal": {
-              "args": [],
-              "to": 7
             },
-            "op": "runtime.call",
-            "releases_contents": false,
-            "result": null,
-            "result_member_shapes": [],
-            "result_shape": null,
             "span": {
               "end": 139,
               "start": 139
-            },
-            "structural": null,
-            "unwind": null
+            }
           }
         },
         {
@@ -1203,19 +1574,95 @@
         },
         {
           "id": 7,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 3
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 3
+              }
+            ],
+            "callbacks": [],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 10
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": null,
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 139,
+              "start": 139
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 9
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 139,
+              "start": 139
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 139,
+              "start": 139
+            }
+          }
+        },
+        {
+          "id": 10,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 2
+              "value": 3
             },
             {
-              "dst": 3,
+              "definitions": [
+                {
+                  "managed_type": 18,
+                  "own": "none",
+                  "value": 4
+                }
+              ],
+              "dst": 4,
               "fields": [],
               "op": "variant.make",
               "own": "none",
-              "shape": 1,
+              "shape": 5,
               "span": {
                 "end": 159,
                 "start": 159
@@ -1227,7 +1674,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 8
+              "to": 11
             },
             "op": "goto",
             "span": {
@@ -1237,7 +1684,7 @@
           }
         },
         {
-          "id": 8,
+          "id": 11,
           "ops": [
             {
               "dst": null,
@@ -1255,7 +1702,7 @@
             },
             "value": {
               "decision": "move",
-              "value": 3
+              "value": 4
             }
           }
         }
@@ -1265,10 +1712,12 @@
       "name": "__hew_actor_0_hook_crashed",
       "params": [
         {
+          "managed_type": 4,
           "own": "guaranteed",
           "value": 0
         },
         {
+          "managed_type": 17,
           "own": "owned",
           "value": 1
         }
@@ -1276,6 +1725,7 @@
       "places": [
         {
           "id": 0,
+          "managed_type": 17,
           "origin": "local"
         }
       ]
@@ -1313,8 +1763,28 @@
         },
         {
           "id": 1,
-          "ops": [
-            {
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 7
+            },
+            "normal": {
+              "args": [
+                1
+              ],
+              "to": 6
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.str",
               "own": "owned",
@@ -1323,20 +1793,7 @@
                 "start": 46
               },
               "str": 3
-            }
-          ],
-          "params": [],
-          "term": {
-            "assertion": null,
-            "cleanup": {
-              "args": [],
-              "to": 6
             },
-            "message": {
-              "decision": "borrow",
-              "value": 1
-            },
-            "op": "panic",
             "span": {
               "end": 46,
               "start": 46
@@ -1394,11 +1851,55 @@
         {
           "id": 6,
           "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 2
+            }
+          ],
+          "term": {
+            "assertion": null,
+            "cleanup": {
+              "args": [],
+              "to": 9
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 2
+            },
+            "op": "panic",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 8
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 46,
+              "start": 46
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 8
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -1408,13 +1909,29 @@
           }
         },
         {
-          "id": 7,
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 10,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 1
+              "value": 2
             }
           ],
           "params": [],
@@ -1428,26 +1945,26 @@
           }
         },
         {
-          "id": 8,
+          "id": 11,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 9
+              "to": 12
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 9,
+          "id": 12,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 10
             },
             "op": "goto",
             "span": null
@@ -1459,6 +1976,7 @@
       "name": "__hew_actor_0_Boom__explode",
       "params": [
         {
+          "managed_type": 4,
           "own": "guaranteed",
           "value": 0
         }
@@ -1466,7 +1984,270 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.10.0-rc1",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "1"
+    },
+    {
+      "id": 2,
+      "kind": "string",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 3,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    },
+    {
+      "fields": [],
+      "id": 4,
+      "kind": "aggregate",
+      "slot_bytes": "0"
+    },
+    {
+      "cases": [
+        [
+          7
+        ],
+        [
+          6
+        ],
+        [],
+        [
+          17
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 5,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "64",
+      "shape": 7,
+      "slot_bytes": "64"
+    },
+    {
+      "cases": [],
+      "id": 6,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 8,
+      "slot_bytes": "4"
+    },
+    {
+      "fields": [
+        20,
+        6
+      ],
+      "id": 7,
+      "kind": "aggregate",
+      "shape": 3,
+      "slot_bytes": "16"
+    },
+    {
+      "fields": [
+        2,
+        0,
+        0
+      ],
+      "id": 8,
+      "kind": "aggregate",
+      "shape": 2,
+      "slot_bytes": "24"
+    },
+    {
+      "fields": [
+        2,
+        12,
+        0
+      ],
+      "id": 9,
+      "kind": "aggregate",
+      "shape": 1,
+      "slot_bytes": "44"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 10,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 3,
+      "slot_bytes": "4"
+    },
+    {
+      "category": "actor",
+      "id": 11,
+      "kind": "handle",
+      "slot_bytes": "8"
+    },
+    {
+      "cases": [
+        [
+          8
+        ],
+        []
+      ],
+      "id": 12,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "28",
+      "shape": 1,
+      "slot_bytes": "28"
+    },
+    {
+      "cases": [
+        [
+          10
+        ],
+        []
+      ],
+      "id": 13,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "8",
+      "shape": 2,
+      "slot_bytes": "8"
+    },
+    {
+      "cases": [
+        [
+          16
+        ],
+        []
+      ],
+      "id": 14,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "12",
+      "shape": 0,
+      "slot_bytes": "12"
+    },
+    {
+      "cases": [
+        [
+          3
+        ],
+        [
+          5
+        ]
+      ],
+      "id": 15,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "68",
+      "shape": 6,
+      "slot_bytes": "68"
+    },
+    {
+      "element": 9,
+      "id": 16,
+      "kind": "vector",
+      "share_on_copy": false,
+      "slot_bytes": "8"
+    },
+    {
+      "fields": [
+        19,
+        13,
+        2,
+        12,
+        14
+      ],
+      "id": 17,
+      "kind": "aggregate",
+      "shape": 0,
+      "slot_bytes": "60"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        []
+      ],
+      "id": 18,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 5,
+      "slot_bytes": "4"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 19,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 4,
+      "slot_bytes": "4"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          0
+        ],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 20,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "12",
+      "shape": 9,
+      "slot_bytes": "12"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],
@@ -1498,6 +2279,141 @@
     {
       "cases": [
         {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 0,
+      "name": "Option<Vec<std.failure.StackFrame>>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 1,
+      "name": "Option<SourceLocation>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 2,
+      "name": "Option<std.failure.TrapKind>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "HeapExceeded"
+        },
+        {
+          "fields": [],
+          "name": "IntegerOverflow"
+        },
+        {
+          "fields": [],
+          "name": "DivideByZero"
+        },
+        {
+          "fields": [],
+          "name": "SignedMinDivNegOne"
+        },
+        {
+          "fields": [],
+          "name": "ShiftOutOfRange"
+        },
+        {
+          "fields": [],
+          "name": "IndexOutOfBounds"
+        },
+        {
+          "fields": [],
+          "name": "ActorSendFailed"
+        },
+        {
+          "fields": [],
+          "name": "MachineDispatchUnreachable"
+        },
+        {
+          "fields": [],
+          "name": "ExhaustivenessFallthrough"
+        },
+        {
+          "fields": [],
+          "name": "ModuleInitRegexFailed"
+        },
+        {
+          "fields": [],
+          "name": "WireDecodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "JoinBranchFailed"
+        },
+        {
+          "fields": [],
+          "name": "UserPanic"
+        },
+        {
+          "fields": [],
+          "name": "ActorUnhandledFailure"
+        },
+        {
+          "fields": [],
+          "name": "ActorTimerOverdue"
+        },
+        {
+          "fields": [],
+          "name": "StackOverflow"
+        },
+        {
+          "fields": [],
+          "name": "Failed"
+        }
+      ],
+      "id": 3,
+      "name": "std.failure.TrapKind",
+      "runtime_tags": {}
+    },
+    {
+      "cases": [
+        {
           "fields": [],
           "name": "Fault"
         },
@@ -1516,15 +2432,20 @@
         {
           "fields": [],
           "name": "TimerOverdue"
+        },
+        {
+          "fields": [],
+          "name": "StackOverflow"
         }
       ],
-      "id": 0,
+      "id": 4,
       "name": "CrashKind",
       "runtime_tags": {
         "CrashKindFault": 0,
         "CrashKindHandlerFailed": 3,
         "CrashKindHeapExceeded": 1,
         "CrashKindPartitionDetected": 2,
+        "CrashKindStackOverflow": 5,
         "CrashKindTimerOverdue": 4
       }
     },
@@ -1543,7 +2464,7 @@
           "name": "GiveUp"
         }
       ],
-      "id": 1,
+      "id": 5,
       "name": "CrashAction",
       "runtime_tags": {}
     },
@@ -1562,7 +2483,7 @@
           "name": "Err"
         }
       ],
-      "id": 2,
+      "id": 6,
       "name": "Result<(), ActorError<Never, Never>>",
       "runtime_tags": {
         "ResultErr": 1,
@@ -1588,7 +2509,9 @@
           "name": "Refused"
         },
         {
-          "fields": [],
+          "fields": [
+            "0"
+          ],
           "name": "Trapped"
         },
         {
@@ -1618,15 +2541,20 @@
         {
           "fields": [],
           "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "MessageTooLarge"
         }
       ],
-      "id": 3,
+      "id": 7,
       "name": "ActorError<Never, Never>",
       "runtime_tags": {
         "ActorErrorConnectionDropped": 9,
         "ActorErrorDead": 4,
         "ActorErrorEncodeFailed": 8,
         "ActorErrorFailed": 1,
+        "ActorErrorMessageTooLarge": 11,
         "ActorErrorNodeNotRunning": 6,
         "ActorErrorPartition": 10,
         "ActorErrorRefused": 2,
@@ -1638,7 +2566,7 @@
     },
     {
       "cases": [],
-      "id": 4,
+      "id": 8,
       "name": "Never",
       "runtime_tags": {}
     },
@@ -1697,9 +2625,13 @@
         {
           "fields": [],
           "name": "TimedOut"
+        },
+        {
+          "fields": [],
+          "name": "MessageTooLarge"
         }
       ],
-      "id": 5,
+      "id": 9,
       "name": "SendError",
       "runtime_tags": {
         "SendErrorBackpressure": 7,
@@ -1709,6 +2641,7 @@
         "SendErrorFull": 0,
         "SendErrorInvalidMessage": 11,
         "SendErrorLocalShutdown": 4,
+        "SendErrorMessageTooLarge": 13,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
         "SendErrorTimedOut": 12,

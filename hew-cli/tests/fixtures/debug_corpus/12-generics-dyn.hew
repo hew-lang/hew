@@ -1,0 +1,47 @@
+// Generic functions, generic records and dyn trait dispatch.
+trait Named {
+    fn name(self) -> string;
+}
+
+type Dog {
+    tag: string;
+}
+
+type Cat {
+    lives: i64;
+}
+
+impl Named for Dog {
+    fn name(self) -> string {
+        f"dog {self.tag}"
+    }
+}
+
+impl Named for Cat {
+    fn name(self) -> string {
+        f"cat {self.lives}"
+    }
+}
+
+type Box<T> {
+    value: T;
+}
+
+fn unbox<T>(b: Box<T>) -> T {
+    b.value
+}
+
+fn pick(flag: bool) -> dyn Named {
+    if flag {
+        Dog { tag: "rex" }
+    } else {
+        Cat { lives: 9 }
+    }
+}
+
+fn main() {
+    println(unbox(Box { value: 42 }));
+    println(unbox(Box { value: "boxed" }));
+    println(pick(true).name());
+    println(pick(false).name());
+}

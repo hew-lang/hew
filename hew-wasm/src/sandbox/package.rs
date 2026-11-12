@@ -92,6 +92,10 @@ pub enum ManagedLayout {
         element: u32,
     },
     Aggregate {
+        /// The canonical record shape when this layout represents a record.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, as = "Option<_>")]
+        shape: Option<u32>,
         fields: Vec<u32>,
     },
     Variant {

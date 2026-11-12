@@ -5,21 +5,75 @@
 //! valid state after its handlers drain and chooses the supervisor's recovery
 //! action. Actor state is released after the hook returns.
 //!
-//! ## `CrashInfo` carries `kind` + `message`
-//!
-//! `kind` identifies the public crash class using `CrashKind`. `message`
-//! is a heap-owned diagnostic string the runtime supplies (empty when no
-//! message is available); a crash hook can log or route on it.
+//! A crash hook or failed actor call receives owned diagnostic facts, including
+//! an optional source site and optional captured trace.
 
 /// Diagnostic payload passed to `#[on(crash)]` hooks.
 ///
-/// Match `kind` to choose a recovery action. `message` carries a heap-owned
-/// diagnostic string (empty when unavailable); private runtime fault codes
-/// are not part of this record.
+/// Match `kind` to choose a recovery action. `trap` identifies a known
+/// runtime failure, and `site` and `trace` are absent when unavailable. When
+/// an actor cannot afford all diagnostic data, the trace is omitted first,
+/// then the site; the message is empty if even it cannot be retained.
 pub type CrashInfo {
     kind: CrashKind;
+    trap: Option<TrapKind>;
     message: string;
+    site: Option<SourceLocation>;
+    trace: Option<Vec<StackFrame>>;
 }
+
+/// A captured Hew frame and its source declaration, when known.
+pub type StackFrame {
+    function: string;
+    site: Option<SourceLocation>;
+    /// Consecutive identical physical frames folded into this entry.
+    repeat: i64;
+}
+
+/// The captured trace, when one was available at the failure origin.
+pub fn backtrace(info: CrashInfo) -> Option<Vec<StackFrame>> {
+    info.trace
+}
+
+// BEGIN GENERATED TRAP KINDS
+/// A known runtime failure.
+pub enum TrapKind {
+    /// An actor's per-dispatch arena cap was exceeded.
+    HeapExceeded;
+    /// Checked integer arithmetic overflowed.
+    IntegerOverflow;
+    /// `/` or `%` with a zero divisor.
+    DivideByZero;
+    /// Signed `MIN / -1`, which is not representable.
+    SignedMinDivNegOne;
+    /// A shift count outside `[0, width)`.
+    ShiftOutOfRange;
+    /// An index or range outside its sequence.
+    IndexOutOfBounds;
+    /// A send to an actor that cannot accept it.
+    ActorSendFailed;
+    /// A machine step reached a state and event pair with no transition.
+    MachineDispatchUnreachable;
+    /// A `match` dispatch fell through every arm.
+    ExhaustivenessFallthrough;
+    /// A synthesized helper hit a compiler-invariant violation.
+    ModuleInitRegexFailed;
+    /// Bytes that are not a valid wire encoding of the type.
+    WireDecodeFailed;
+    /// A `join` branch resolved without a value.
+    JoinBranchFailed;
+    /// An explicit `panic`, `assert` or `expect`.
+    UserPanic;
+    /// A `fails` handler's error had no caller to receive it.
+    ActorUnhandledFailure;
+    /// An actor-owned request missed its handler-start deadline.
+    ActorTimerOverdue;
+    /// A call exhausted its stack, or a thread hit its stack guard.
+    StackOverflow;
+    /// A `fails` error escaped the program entry.
+    Failed;
+}
+// END GENERATED TRAP KINDS
 
 /// Recovery action returned by a `#[on(crash)]` hook.
 ///

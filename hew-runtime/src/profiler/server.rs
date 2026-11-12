@@ -417,7 +417,7 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
 /// Uses `util::json_array` + `util::push_json_string` for all user-sourced
 /// string fields so that RFC 8259 escaping (including `\b`, `\f`, and other
 /// U+0000–U+001F control characters) is handled by the canonical helper.
-fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
+pub(crate) fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
     let actors: Vec<_> = actors
         .iter()
         .map(|actor| hew_observe_protocol::ActorInfo {

@@ -38,10 +38,16 @@ fn render(source: &str, expr: &Spanned<Expr>) -> String {
                 source[ty.1.clone()].trim()
             )
         }
-        Expr::Binary { left, right, .. } => {
-            let op = source[left.1.end..right.1.start]
-                .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
-            format!("({} {op} {})", render(source, left), render(source, right))
+        Expr::Binary { first, steps } => {
+            let mut rendered = render(source, first);
+            let mut end = first.1.end;
+            for step in steps {
+                let op = source[end..step.right.1.start]
+                    .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
+                rendered = format!("({rendered} {op} {})", render(source, &step.right));
+                end = step.span.end;
+            }
+            rendered
         }
         Expr::Await(operand) => format!("(await {})", render(source, operand)),
         Expr::Clone(operand) => format!("(clone {})", render(source, operand)),

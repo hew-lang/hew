@@ -407,19 +407,20 @@ fn native_ask_receiver_fault_returns_error_without_cancelling_caller() {
         panic("receiver-fault");
     }
 }
+
 fn report(value: string) { println(value); }
 fn main() {
     let first = spawn Broken;
     match first.fail("direct-cleanup".to_upper()) {
         .Ok(value) => report(value),
-        .Err(ActorError.Trapped) => println("handler-trapped"),
+        .Err(ActorError.Trapped(_)) => println("handler-trapped"),
         .Err(_) => println("unexpected-error"),
     }
     let second = spawn Broken;
     let child = fork second.fail("fork-cleanup".to_upper());
     match await child {
         .Ok(value) => report(value),
-        .Err(ActorError.Trapped) => println("handler-trapped"),
+        .Err(ActorError.Trapped(_)) => println("handler-trapped"),
         .Err(_) => println("unexpected-error"),
     }
     println("caller-continues");
@@ -429,6 +430,131 @@ fn main() {
         1,
         "actor crash",
     );
+}
+
+#[test]
+fn crash_info_survives_actor_cleanup_and_preserves_optional_trace() {
+    require_codegen();
+    let dir = tempdir();
+    let input = dir.path().join("crash-info.hew");
+    std::fs::write(
+        &input,
+        r#"import std.failure as failure;
+actor Broken {
+    receive fn fail() -> i64 { panic("debug message"); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(info.message == "debug message");
+        assert(match info.trap { .Some(.UserPanic) => true, _ => false });
+        .GiveUp
+    }
+}
+fn main() {
+    let broken = spawn Broken;
+    let info = match broken.fail() {
+        .Err(.Trapped(info)) => info,
+        _ => panic("expected trapped handler"),
+    };
+    stopped(broken);
+    assert(info.message == "debug message");
+    assert(match info.trap { .Some(.UserPanic) => true, _ => false });
+    assert(match info.site { .Some(site) => site.line == 3, .None => false });
+    match failure.backtrace(info) {
+        .Some(frames) => { assert(frames.len() > 0); println("trace captured"); }
+        .None => println("trace absent"),
+    }
+}
+"#,
+    )
+    .unwrap();
+    for opt in ["0", "2"] {
+        let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("crash-info-{opt}"));
+        let mut build = Command::new(hew_binary());
+        build
+            .args(["build", "-g", "--opt-level", opt])
+            .arg(&input)
+            .arg("-o")
+            .arg(&binary);
+        let output = run_bounded_command(build, format!("build crash information O{opt}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        for (setting, expected) in [("0", "trace absent\n"), ("1", "trace captured\n")] {
+            let mut run = Command::new(&binary);
+            run.env("HEW_WORKERS", "1").env("HEW_BACKTRACE", setting);
+            let output = run_bounded_command(run, format!("run crash information O{opt}"));
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{}",
+                describe_output(&output)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                expected,
+                "{}",
+                describe_output(&output)
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("debug message"));
+        }
+    }
+}
+
+#[test]
+fn crash_info_degrades_without_recursing_at_the_heap_limit() {
+    require_codegen();
+    let dir = tempdir();
+    let input = dir.path().join("heap-failure.hew");
+    std::fs::write(&input, r#"#[max_heap(48)]
+actor Buffer {
+    var values: Vec<i64> = Vec.new();
+    receive fn fill() { for i in 0..4 { values.push(i); } }
+    receive fn exceed() { values.push(4); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind { .HeapExceeded => true, _ => false });
+        assert(match info.trap { .Some(.HeapExceeded) => true, _ => false });
+        assert(match info.trace { .None => true, _ => false });
+        .GiveUp
+    }
+}
+supervisor Group {
+    intensity: 1 within 60s;
+    child buffer: Buffer;
+}
+fn main() {
+    let group = spawn Group;
+    group.buffer.fill().expect("fill");
+    match group.buffer.exceed() {
+        .Err(.Trapped(info)) => assert(match info.trap { .Some(.HeapExceeded) => true, _ => false }),
+        _ => panic("expected limit"),
+    }
+    stopped(group.buffer);
+    stop(group);
+    stopped(group);
+    println("hook gave up");
+}
+"#).unwrap();
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "heap-failure");
+    let mut build = Command::new(hew_binary());
+    build
+        .args(["build", "-g"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&binary);
+    let output = run_bounded_command(build, "build heap failure");
+    assert!(output.status.success(), "{}", describe_output(&output));
+    let mut run = Command::new(binary);
+    run.env("HEW_WORKERS", "1").env("HEW_BACKTRACE", "1");
+    let output = run_bounded_command(run, "run heap failure");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hook gave up\n");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("HeapExceeded"), "{diagnostic}");
+    assert!(!diagnostic.contains("secondary failure"), "{diagnostic}");
 }
 
 #[test]

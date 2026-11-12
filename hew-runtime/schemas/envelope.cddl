@@ -120,6 +120,24 @@ setup-result-payload = {
 ; Replies have nil target/source and a positive request_id.
 ; Every request carries a recipient-bound grant and a positive request_id.
 ; Replies and withdrawals echo that request_id.
+; Failure replies carry one reason byte. HandlerTrapped failures may append
+; a CBOR failure-diagnostic. Other failure reasons and all not-admitted
+; replies carry exactly one byte. The entire diagnostic is at most 524288
+; bytes; names and messages are each at most 4096 UTF-8 bytes and a trace has
+; at most 48 frames. It contains values only, never local pointers or handles.
+
+failure-diagnostic = {
+    "version": 1,
+    "failure": {
+        "code": int .gt 0,
+        "message": text / nil,
+        "site": failure-location / nil,
+        "frames": [* failure-frame] / nil,
+        "frames_omitted": uint,
+    },
+}
+failure-location = { "file": text, "line": uint .gt 0, "column": uint }
+failure-frame = { "function": text / nil, "site": failure-location / nil, "repeat": uint .gt 0 }
 
 envelope-frame = {
     1 => wire-version, ; version
@@ -153,7 +171,7 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 12        ; current schema version; decoders reject unknown values
+wire-version = 13        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = wire-location
 node-session = wire-session

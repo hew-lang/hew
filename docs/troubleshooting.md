@@ -51,6 +51,47 @@ What to check:
 - If the program builds but you need a debugger, use
   `hew debug <file.hew> [-- args...]`.
 
+## Debugging a program
+
+Run a program under the available native debugger:
+
+```sh
+hew debug main.hew -- arg1 arg2
+```
+
+To attach to a running process, use `hew debug --attach PID`; your operating
+system's usual debugger-attach permissions apply.
+
+The debugger stops at `hew_fault_raise` when a Hew failure is raised, before
+its stack unwinds. Use `hew build -g main.hew -o app` to keep an executable
+for a later session. Add `--release` to optimize it; optimized code can inline
+functions and remove local variables.
+
+In CDB, one source line can map to several instructions. If a source-line
+breakpoint reports an ambiguous symbol, enable resolution for that debugger
+session (CDB 10.0.25310.1001 or newer):
+
+```text
+dx @$debuggerRootNamespace.Debugger.Settings.EngineInitialization.ResolveAmbiguousBreakpoints = true
+```
+
+For an editor using a GDB, LLDB or Windows debugger adapter, run
+`hew debug --print-config main.hew` and use the JSON it prints as a launch
+configuration. The command builds an executable under `target/hew-debug` in
+the current directory; rerun it after changing the program.
+
+A native `hew run` shows Hew stack frames for a failure. Set `HEW_BACKTRACE=0` to
+suppress them, or `HEW_BACKTRACE=full` to include runtime frames. For a
+recorded address, `hew symbolize ./app 0xADDRESS` resolves the function and
+source position from the executable's symbols. Use `--base` with a runtime
+image base and `--return-addresses` for addresses from a backtrace.
+
+A failed actor call returns `ActorError.Trapped(info)`; a crash hook receives
+the same failure facts. Inspect `info.message`, `info.trap` and `info.site`,
+or call `failure.backtrace(info)` for the captured frames. A missing site or
+trace is represented by `None`. A bounded actor may also omit diagnostic detail
+when it cannot retain it within its budget.
+
 ## Type errors & type inference
 
 Common signs:

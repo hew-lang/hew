@@ -1,0 +1,15 @@
+// defer runs in LIFO order at scope exit.
+fn work(n: i64) -> i64 {
+    defer println("work: outer defer");
+    var acc = 0;
+    for i in 0..n {
+        defer println("work: loop defer");
+        acc = acc + i;
+    }
+    defer println("work: last defer");
+    acc
+}
+
+fn main() {
+    println(work(2));
+}

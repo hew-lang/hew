@@ -3138,7 +3138,6 @@ impl Worker {
         let uri = Url::from_checked_file_path(&file).unwrap();
         let documents = DashMap::new();
         documents.insert(uri.clone(), make_doc(source));
-        let site = source.find("assert").unwrap();
         let event = json!({
             "event": "test_finished",
             "selector": format!("{}::fails", file.display()),
@@ -3146,7 +3145,7 @@ impl Worker {
             "kind": "assertion",
             "message": "assertion failed",
             "report": {
-                "site_offset": site,
+                "site": { "file": file.file_name().unwrap().to_str().unwrap(), "line": 2, "col": 14 },
                 "seed": "18446744073709551615",
                 "assertion": { "operator": "==", "left": "1", "right": "2" }
             }

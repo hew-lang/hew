@@ -5900,6 +5900,120 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StringAppendI64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_append_i64_checked",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringAppendU64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_append_u64_checked",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringAppendF64 => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_append_f64_checked",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringAppendBool => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_append_bool_checked",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::Bool,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StringAppendLiteral => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_append_literal_checked",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::ConstBytePointer,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::String),
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StringFindFrom => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_string_find_from",

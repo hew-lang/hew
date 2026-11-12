@@ -114,6 +114,106 @@ test("runProgram hello_world returns stdout and zero exit code", async () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("flat binary and pattern forms compile in the browser and execute", async () => {
+  const terms = " + x".repeat(3_000);
+  const alternatives = Array.from({ length: 2_000 }, (_, n) => n).join(" | ");
+  for (const [source, expected] of [
+    [
+      `fn f(x: i64) -> i64 { x${terms} } fn main() { println(f(1)); }`,
+      "3001\n",
+    ],
+    [
+      `fn f(x: i64) -> i64 { match x { ${alternatives} => 1, _ => 0 } }
+      fn main() { println(f(1999)); println(f(2000)); }`,
+      "1\n0\n",
+    ],
+  ]) {
+    const result = await runProgram(source, "");
+    assert.equal(result.exit_code, 0, JSON.stringify(result));
+    assert.equal(result.stdout, expected);
+    assert.deepEqual(result.diagnostics, []);
+  }
+});
+
+test("long malformed forms and genuine nesting produce diagnostics", async () => {
+  for (const source of [
+    `fn main() { let _ = x${" + x".repeat(3_000)} +; }`,
+    `fn main() { match 0 { ${Array.from({ length: 2_000 }, (_, n) => n).join(" | ")} | => 1 } }`,
+    `fn main() { let _ = ${"(".repeat(2_000)}1${")".repeat(2_000)}; }`,
+  ]) {
+    const result = await runProgram(source, "");
+    assert.equal(result.status, "compile_error");
+    assert.ok(
+      result.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+    );
+  }
+  const next = await runProgram('fn main() { println("still usable"); }', "");
+  assert.equal(next.exit_code, 0, JSON.stringify(next));
+  assert.equal(next.stdout, "still usable\n");
+});
+
+for (const name of [
+  "or-pattern-alternatives",
+  "binary-chain-evaluation",
+  "binary-chain-recovery",
+]) {
+  test(`flat source semantics preserve ${name}`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
+      "utf8",
+    );
+    const result = await runProgram(source, "");
+    if (name !== "binary-chain-evaluation") {
+      assert.equal(result.exit_code, 0, JSON.stringify(result));
+      assert.equal(
+        result.stdout,
+        name === "binary-chain-recovery" ? "a1\na2\no1\no2\n" : "",
+      );
+    } else {
+      assert.equal(result.status, "trap", JSON.stringify(result));
+      assert.ok(
+        result.diagnostics.some(
+          (diagnostic) => diagnostic.kind === "integer_overflow",
+        ),
+      );
+      assert.equal(
+        result.stdout,
+        "a1\na2\nall=false\no1\no2\nany=true\nm1\nm3\nm4\nm5\nmixed=true\nn1\nn2\nn3\nn4\nn5\nsum=14\n10 7 8 true 1\nasbsc\nt1\nt2\n",
+      );
+    }
+  });
+}
+
+for (const name of [
+  "scope-failure-budget",
+  "scope-failure-budget-exhaustion",
+]) {
+  test(`scope diagnostic budgeting preserves ${name}`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
+      "utf8",
+    );
+    const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+      source,
+      "sandbox-vm-export",
+    );
+    const compiled = typeof output === "string" ? JSON.parse(output) : output;
+    assert.deepEqual(compiled.diagnostics, []);
+    assert.ok(compiled.bytecode);
+    const trace = await runBytecode(compiled.bytecode, {
+      codecBridge: globalThis.__hewSandboxExecuteCodec,
+      calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+    });
+    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
+    assert.equal(trace.final_state.exit_code, 0);
+    assert.deepEqual(trace.final_state.stdout, []);
+    assert.deepEqual(trace.final_state.stderr, []);
+    assert.deepEqual(trace.final_state.diagnostics, []);
+    assert.deepEqual(trace.final_state.sandbox_rejections, []);
+    assert.deepEqual(trace.final_state.runtime_failures, []);
+  });
+}
+
 for (const [name, expected] of [
   ["capacity", "4\n4\nlimit\n"],
   ["alias", "8\nretained backing\n"],
@@ -133,32 +233,6 @@ for (const [name, expected] of [
     // still leaves the existing unrecovered process-exit debt.
     assert.equal(result.exit_code, 1, JSON.stringify(result));
     assert.equal(result.stdout, expected);
-  });
-}
-
-for (const name of [
-  "scope-failure-budget",
-  "scope-failure-budget-exhaustion",
-]) {
-  test(`actor-owned scope recovery preserves ${name}`, async () => {
-    const source = fs.readFileSync(
-      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
-      "utf8",
-    );
-    const output = globalThis.__hewSandboxCompileToSandboxBytecode(
-      source,
-      "sandbox-vm-export",
-    );
-    const compiled = typeof output === "string" ? JSON.parse(output) : output;
-    assert.deepEqual(compiled.diagnostics, []);
-    assert.ok(compiled.bytecode);
-    const trace = await runBytecode(compiled.bytecode);
-    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
-    assert.equal(trace.final_state.exit_code, 0);
-    assert.deepEqual(trace.final_state.stdout, []);
-    assert.deepEqual(trace.final_state.stderr, []);
-    assert.deepEqual(trace.final_state.diagnostics, []);
-    assert.deepEqual(trace.final_state.sandbox_rejections, []);
   });
 }
 
@@ -183,7 +257,7 @@ fn main() -> i64 {
     match enough.run() { .Ok(n) => println(n), _ => return 2, }
     stop(enough); stopped(enough);
     let small = spawn Small;
-    match small.run() { .Err(.Trapped) => println("task limit"), _ => return 3, }
+    match small.run() { .Err(.Trapped(_)) => println("task limit"), _ => return 3, }
     stopped(small);
     0
 }`,
@@ -208,7 +282,7 @@ actor Empty {
 fn main() -> i64 {
     let empty = spawn Empty;
     empty.ready().expect("zero-byte turn");
-    match empty.allocate() { .Err(.Trapped) => println("array limit"), _ => return 2, }
+    match empty.allocate() { .Err(.Trapped(_)) => println("array limit"), _ => return 2, }
     stopped(empty);
     0
 }`,
@@ -422,7 +496,7 @@ actor Document {
 fn main() -> i64 {
     let document = spawn Document { values: yaml.parse("[1,2,3,4]").expect("parse") };
     match document.copied_len() { .Ok(n) => println(n), _ => return 2, }
-    match document.detach() { .Err(.Trapped) => println("tree limit"), _ => return 3, }
+    match document.detach() { .Err(.Trapped(_)) => println("tree limit"), _ => return 3, }
     stopped(document);
     0
 }`,
@@ -924,4 +998,359 @@ test("calendar extern results require their checked record descriptor", async ()
     assert.equal(trace.result, "sandbox_rejected");
     assert.deepEqual(trace.final_state.stdout, []);
   }
+});
+
+test("owned CrashInfo retains actor origin through hooks and caller completion", async () => {
+  const result = await runProgram(
+    `
+import std.failure;
+fn explode() -> i64 {
+    defer { panic("secondary cleanup failure"); }
+    let message = " origin ".trim().to_upper() + "-message";
+    panic(message);
+}
+fn inspect(info: CrashInfo, label: string) {
+    assert(match info.kind { .Fault => true, _ => false, });
+    assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+    assert(info.message == "ORIGIN-message");
+    assert(info.site.is_none());
+    let frames = failure.backtrace(info).expect("origin trace");
+    assert(frames.len() >= 2);
+    assert(frames[0].function.contains("explode"));
+    assert(frames[0].repeat == 1);
+    for frame in frames {
+        assert(frame.site.is_none());
+        assert(!frame.function.contains("__hew_fn_main"));
+    }
+    println(label + ":" + info.message);
+}
+actor Worker {
+    receive fn run() -> i64 { explode() }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        inspect(info, "hook");
+        .GiveUp
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let retained = match worker.run() {
+        .Err(.Trapped(info)) => info,
+        _ => panic("expected original actor failure"),
+    };
+    stopped(worker);
+    inspect(retained, "caller");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.stdout.trim().split("\n").sort(), [
+    "caller:ORIGIN-message",
+    "hook:ORIGIN-message",
+  ]);
+  assert.equal(
+    result.exit_code,
+    1,
+    "an unrecovered actor failure remains visible",
+  );
+});
+
+test("checked actor traps retain their trap identity without a crash hook", async () => {
+  const result = await runProgram(
+    `
+fn quotient(n: i64) -> i64 { 10 / n }
+actor Divider { receive fn run(n: i64) -> i64 { quotient(n) } }
+fn main() {
+    let divider = spawn Divider;
+    match divider.run(0) {
+        .Err(.Trapped(info)) => {
+            assert(match info.kind { .Fault => true, _ => false, });
+            assert(match info.trap { .Some(.DivideByZero) => true, _ => false, });
+            assert(info.message == "DivideByZero");
+            assert(info.site.is_none());
+            let frames = info.trace.expect("origin trace");
+            assert(frames[0].function.contains("quotient"));
+            println("checked trap retained");
+        }
+        _ => panic("expected checked actor failure"),
+    }
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "checked trap retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("actor diagnostic budgets omit trace before message without replacing the fault", async () => {
+  const result = await runProgram(
+    `
+actor Worker { receive fn run() { panic("retained message"); } }
+#[max_heap(64)]
+actor Small {
+    receive fn observe(worker: Worker) {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.site.is_none());
+                assert(info.message == "retained message");
+                println("message retained");
+            }
+            _ => panic("expected actor failure"),
+        }
+    }
+}
+#[max_heap(8)]
+actor Tiny {
+    receive fn observe(worker: Worker) -> i64 {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.kind { .Fault => true, _ => false, });
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.site.is_none());
+                assert(info.message.is_empty());
+                1
+            }
+            _ => panic("expected actor failure"),
+        }
+    }
+}
+#[max_heap(8)]
+actor Limited {
+    receive fn run() { let _ = "x".repeat(100); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind { .HeapExceeded => true, _ => false, });
+        assert(match info.trap { .Some(.HeapExceeded) => true, _ => false, });
+        assert(info.trace.is_none());
+        assert(info.site.is_none());
+        assert(info.message.is_empty());
+        .GiveUp
+    }
+}
+fn main() {
+    let first = spawn Worker;
+    let small = spawn Small;
+    small.observe(first).expect("small caller survives");
+    let second = spawn Worker;
+    let tiny = spawn Tiny;
+    assert(tiny.observe(second).expect("tiny caller survives") == 1);
+    println("identity retained");
+    stop(small); stopped(small);
+    stop(tiny); stopped(tiny);
+    let limited = spawn Limited;
+    match limited.run() {
+        .Err(.Trapped(info)) => assert(match info.trap { .Some(.HeapExceeded) => true, _ => false, }),
+        _ => panic("expected heap failure"),
+    }
+    stopped(limited);
+    println("hook survived");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "message retained\nidentity retained\nhook survived\n",
+  );
+  assert.equal(result.exit_code, 1);
+});
+
+test("supervision preserves StackOverflow details through restart", async () => {
+  const result = await runProgram(
+    `
+fn descend(n: i64) -> i64 { let below = descend(n + 1); below - n }
+fn inspect(info: CrashInfo) {
+    assert(match info.kind { .StackOverflow => true, _ => false, });
+    assert(match info.trap { .Some(.StackOverflow) => true, _ => false, });
+    let frames = info.trace.expect("stack trace");
+    assert(frames[0].function.contains("descend"));
+    var repeated = false;
+    for frame in frames { if frame.repeat > 1 { repeated = true; } }
+    assert(repeated);
+}
+actor Walker {
+    receive fn run() -> i64 { descend(0) }
+    receive fn fresh() -> i64 { 7 }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction { inspect(info); .Restart }
+}
+supervisor Group { intensity: 3 within 60s; child walker: Walker; }
+fn main() {
+    let group = spawn Group;
+    let retained = match group.walker.run() {
+        .Err(.Trapped(info)) => info,
+        _ => panic("expected stack failure"),
+    };
+    restarted(group.walker);
+    assert(group.walker.fresh().expect("replacement actor") == 7);
+    inspect(retained);
+    stop(group); stopped(group);
+    println("stack recovered");
+}
+`,
+    "",
+    undefined,
+    { stepBudget: 3_000_000 },
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "stack recovered\n");
+  assert.equal(result.exit_code, 0);
+});
+
+test("owned actor messages match native UTF-8 snapshot bounds", async () => {
+  const result = await runProgram(
+    `
+fn inspect(info: CrashInfo, expected: i64) {
+    assert(info.message.byte_len() == expected);
+    assert(info.message.ends_with(" [truncated]"));
+}
+actor Worker {
+    var expected: i64;
+    receive fn run(message: string) { panic(message); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction { inspect(info, expected); .GiveUp }
+}
+fn main() {
+    let ascii = spawn Worker { expected: 4096 };
+    match ascii.run("x".repeat(5000)) {
+        .Err(.Trapped(info)) => inspect(info, 4096),
+        _ => panic("expected ASCII panic"),
+    }
+    stopped(ascii);
+    let unicode = spawn Worker { expected: 4095 };
+    match unicode.run("界".repeat(2000)) {
+        .Err(.Trapped(info)) => inspect(info, 4095),
+        _ => panic("expected Unicode panic"),
+    }
+    stopped(unicode);
+    println("bounded messages retained");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "bounded messages retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("distinct recursive call sites remain distinct physical trace frames", async () => {
+  const result = await runProgram(
+    `
+fn alternate(n: i64) -> i64 {
+    if n % 2 == 0 { let below = alternate(n + 1); below - n }
+    else { let below = alternate(n + 1); below + n }
+}
+actor Walker { receive fn run() -> i64 { alternate(0) } }
+fn main() {
+    let walker = spawn Walker;
+    match walker.run() {
+        .Err(.Trapped(info)) => {
+            assert(match info.trap { .Some(.StackOverflow) => true, _ => false, });
+            let frames = info.trace.expect("origin trace");
+            assert(frames.len() > 1);
+            for frame in frames { assert(frame.repeat == 1); }
+            println("distinct call sites retained");
+        }
+        _ => panic("expected stack failure"),
+    }
+}
+`,
+    "",
+    undefined,
+    { stepBudget: 3_000_000 },
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "distinct call sites retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("a reply exceeding its actor caller budget retains HeapExceeded", async () => {
+  const result = await runProgram(
+    fs.readFileSync(
+      path.join(
+        repoRoot,
+        "tests/core-acceptance/cases/actor-owned-budget-reply.hew",
+      ),
+      "utf8",
+    ),
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "7\nreply limit\n7\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("bounded messages fit a caller budget before optional trace storage", async () => {
+  const result = await runProgram(
+    `
+fn explode() -> i64 { panic("x".repeat(5000)); }
+actor Worker { receive fn run() -> i64 { explode() } }
+#[max_heap(4200)]
+actor Watcher {
+    receive fn observe(worker: Worker) -> i64 {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.message.byte_len() == 4096);
+                assert(info.message.ends_with(" [truncated]"));
+                info.message.byte_len()
+            }
+            _ => panic("expected worker failure"),
+        }
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let watcher = spawn Watcher;
+    assert(watcher.observe(worker).expect("observer survives") == 4096);
+    stop(watcher); stopped(watcher);
+    println("bounded budget retained");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "bounded budget retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+// This source is shared with native acceptance so the same semantic checks
+// exercise the real browser compiler and VM, including custom Display calls.
+test("streaming interpolation preserves rendering, order and aliases", async () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/fstring-append-order.hew"),
+    "utf8",
+  );
+  const result = await runProgram(source, "", undefined, {
+    stepBudget: 500000,
+  });
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "expression 1\ndisplay 1\nexpression 2\ndisplay 2\nexpression 3\ndisplay 3\ninterpolation passed\n",
+  );
+  assert.equal(result.exit_code, 0);
+});
+
+test("interpolation keeps originating faults and cleans up across suspension", async () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/fstring-append-fault.hew"),
+    "utf8",
+  );
+  const result = await runProgram(source, "", undefined, {
+    stepBudget: 1000000,
+  });
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "interpolation cancelled\ninterpolation recovered\n",
+  );
+  assert.equal(result.exit_code, 0);
 });

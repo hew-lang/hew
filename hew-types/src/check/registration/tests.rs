@@ -196,8 +196,8 @@ mod failure_surface_lockstep_tests {
             .collect();
         assert_eq!(
             field_names,
-            vec!["kind", "message"],
-            "CrashInfo must carry exactly `kind` then `message`"
+            vec!["kind", "trap", "message", "site", "trace"],
+            "CrashInfo must carry the complete owned failure details"
         );
     }
 }

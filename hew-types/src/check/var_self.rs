@@ -86,7 +86,24 @@ impl Checker {
 
     /// Checked after an expression's operands, so a move an operand performs
     /// (`consume(self.conn)`) is already out when the operation itself fails.
-    pub(super) fn check_receiver_whole_at_expr(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+    /// A binary operation that can fail while the receiver has a hole.
+    pub(super) fn check_receiver_whole_at_binary(&mut self, span: &Span, op: BinaryOp, ty: &Ty) {
+        if self.var_self_receiver_in_scope().is_none() {
+            return;
+        }
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let operation = if checked_integer_op(op, &self.subst.resolve(ty)) {
+            "this arithmetic"
+        } else if self.user_comparison_dispatch.contains_key(&key) {
+            // A user `Eq`/`Ord` implementation is an ordinary call.
+            "this comparison"
+        } else {
+            return;
+        };
+        self.refuse_fallible_with_receiver_hole(span, operation);
+    }
+
+    pub(super) fn check_receiver_whole_at_expr(&mut self, expr: &Expr, span: &Span) {
         if self.var_self_receiver_in_scope().is_none() {
             return;
         }
@@ -96,13 +113,6 @@ impl Checker {
             Expr::MethodCall {
                 receiver, method, ..
             } if self.method_call_can_fail(&key, receiver) => format!("`{}(...)`", method.0),
-            Expr::Binary { op, .. } if checked_integer_op(*op, &self.subst.resolve(ty)) => {
-                "this arithmetic".to_string()
-            }
-            // A user `Eq`/`Ord` implementation is an ordinary call.
-            Expr::Binary { .. } if self.user_comparison_dispatch.contains_key(&key) => {
-                "this comparison".to_string()
-            }
             // A user `Display` implementation is an ordinary call.
             Expr::InterpolatedString(parts)
                 if parts.iter().any(|part| {

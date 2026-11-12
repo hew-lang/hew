@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { staticOperations } from "../dist/interpreter/v1/package.js";
 import { runBytecode } from "../dist/interpreter/interpreter.js";
 
 const external = JSON.parse(
@@ -14,7 +15,7 @@ test("malformed instruction operands are rejected before any output", async () =
     const package_ = structuredClone(external);
     const operation = package_.functions
       .flatMap((fn) => fn.blocks)
-      .flatMap((block) => block.ops)
+      .flatMap((block) => [...staticOperations(block)])
       .find((op) => op.op === "const.str");
     assert.ok(operation, "external package contains a string instruction");
     operation.str = value;

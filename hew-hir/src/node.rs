@@ -44,6 +44,13 @@ pub struct HirModule {
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
     pub diagnostic_source_modules: HashMap<ItemId, String>,
+    /// The file span index (`hew_parser::module::FileSpanIndices`) each item
+    /// with a body was lowered from: 0 for the root file. Every site and scope
+    /// inside the item indexes that file.
+    pub item_files: HashMap<ItemId, u32>,
+    /// The concrete or generic `Self` of each impl method body, keyed by item
+    /// id: the receiver a person names the method by (`i64` in `i64.describe`).
+    pub item_receivers: HashMap<ItemId, ResolvedTy>,
     /// `ItemId`s of function items whose bodies PROVABLY index the root
     /// compilation unit's source text: functions lowered natively from the
     /// root file (module index 0), EXCLUDING generated trait default-method
@@ -1218,6 +1225,10 @@ impl HirExprKind {
                 }
                 pending.append(args);
             }
+            Self::Binary { first, steps } => {
+                take(first, pending);
+                pending.extend(std::mem::take(steps).into_iter().map(|step| step.right));
+            }
             Self::RcIntrinsic {
                 receiver, value, ..
             } => {
@@ -1239,7 +1250,6 @@ impl HirExprKind {
                 container: left,
                 index: right,
             }
-            | Self::Binary { left, right, .. }
             | Self::IdentityCompare { left, right }
             | Self::RangeValue {
                 start: left,
@@ -1344,6 +1354,13 @@ impl HirExprKind {
                     pending.push(*value);
                 }
             }
+            Self::Interpolation { segments } => {
+                for segment in std::mem::take(segments) {
+                    if let HirInterpolationSegment::Append { value, .. } = segment {
+                        pending.push(*value);
+                    }
+                }
+            }
             Self::Literal(_)
             | Self::RegexLiteralRef { .. }
             | Self::BindingRef { .. }
@@ -1406,6 +1423,69 @@ impl std::fmt::Debug for HirExpr {
     }
 }
 
+/// One step of a [`HirExprKind::Binary`] chain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBinaryStep {
+    pub op: BinaryOp,
+    pub right: HirExpr,
+    /// The value this step produces for the next step to read. `None` on
+    /// the last step, whose value is the enclosing expression.
+    pub result: Option<HirBinaryResult>,
+}
+
+/// The checked value of an intermediate step of a binary chain. It is read
+/// once, by the next step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBinaryResult {
+    pub node: HirNodeId,
+    pub site: SiteId,
+    pub ty: ResolvedTy,
+    pub span: Span,
+}
+
+impl HirExprKind {
+    /// The operands of a binary chain, in evaluation order.
+    pub fn binary_operands<'a>(
+        first: &'a HirExpr,
+        steps: &'a [HirBinaryStep],
+    ) -> impl Iterator<Item = &'a HirExpr> {
+        std::iter::once(first).chain(steps.iter().map(|step| &step.right))
+    }
+
+    /// The operands of a binary chain, mutably, in evaluation order.
+    pub fn binary_operands_mut<'a>(
+        first: &'a mut HirExpr,
+        steps: &'a mut [HirBinaryStep],
+    ) -> impl Iterator<Item = &'a mut HirExpr> {
+        std::iter::once(first).chain(steps.iter_mut().map(|step| &mut step.right))
+    }
+
+    /// `(left, op, right)` when this is a one-step binary expression.
+    #[must_use]
+    pub fn as_binary_pair(&self) -> Option<(&HirExpr, BinaryOp, &HirExpr)> {
+        match self {
+            HirExprKind::Binary { first, steps } => match steps.as_slice() {
+                [step] => Some((first, step.op, &step.right)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A one-step binary expression.
+    #[must_use]
+    pub fn binary(left: HirExpr, op: BinaryOp, right: HirExpr) -> HirExprKind {
+        HirExprKind::Binary {
+            first: Box::new(left),
+            steps: vec![HirBinaryStep {
+                op,
+                right,
+                result: None,
+            }],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirVarSelfMethodTarget {
     /// The declaration identity lives in the sibling `call_target` field.
@@ -1431,6 +1511,37 @@ pub struct HirTaskScopeResult {
 impl HirTaskScopeResult {
     pub(crate) const fn checked() -> Self {
         Self { checked: () }
+    }
+}
+
+/// One f-string segment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirInterpolationSegment {
+    /// Constant text, appended without materializing a string.
+    Literal(String),
+    /// A value appended by an accumulator `family` that either renders it in
+    /// place or copies a rendered string.
+    Append {
+        family: hew_types::RuntimeCallFamily,
+        value: Box<HirExpr>,
+    },
+}
+
+impl HirInterpolationSegment {
+    /// The evaluated expression of an appended segment.
+    #[must_use]
+    pub fn value(&self) -> Option<&HirExpr> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Append { value, .. } => Some(value),
+        }
+    }
+
+    pub fn value_mut(&mut self) -> Option<&mut HirExpr> {
+        match self {
+            Self::Literal(_) => None,
+            Self::Append { value, .. } => Some(value),
+        }
     }
 }
 
@@ -1472,10 +1583,12 @@ pub enum HirExprKind {
     ContextReader {
         reader: ExecutionContextReader,
     },
+    /// A left-associative run of binary operators: `first`, then each step
+    /// applied to the value so far. The last step's value is this
+    /// expression; every earlier step's value carries its own facts.
     Binary {
-        op: BinaryOp,
-        left: Box<HirExpr>,
-        right: Box<HirExpr>,
+        first: Box<HirExpr>,
+        steps: Vec<HirBinaryStep>,
     },
     /// Checker-authoritative unary expression (`!`, `-`, `~`).
     ///
@@ -2065,6 +2178,11 @@ pub enum HirExprKind {
     /// Transparent source-expression wrapper retained by lowering rewrites.
     SubsumedValue {
         source: Box<HirExpr>,
+    },
+    /// An f-string of two or more segments, evaluated left to right and
+    /// appended onto one owned accumulator string.
+    Interpolation {
+        segments: Vec<HirInterpolationSegment>,
     },
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.

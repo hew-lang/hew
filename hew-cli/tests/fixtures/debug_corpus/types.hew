@@ -1,0 +1,16 @@
+// Sibling module imported by 45-sibling-types.hew: records and methods declared in another file.
+pub type Point {
+    x: i64;
+    y: i64;
+}
+
+pub trait Describe {
+    fn describe(self) -> string;
+}
+
+impl Describe for Point {
+    fn describe(self) -> string {
+        let sum = self.x + self.y;
+        f"point {self.x},{self.y} sum {sum}"
+    }
+}

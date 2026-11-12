@@ -30,9 +30,9 @@ mod verify;
 mod wire;
 
 pub use actor::{
-    ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LifecycleTarget,
-    LocalObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
-    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
+    static_address_type, ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation,
+    LifecycleTarget, LocalObservationKind, SemActor, SemActorCoalesce, SemActorField,
+    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, compute_indexed_dominators,
@@ -48,7 +48,7 @@ pub use capability::{
     value_capability_callees, SemValueMethodPlan,
 };
 pub use coverage::{CoverageCounter, CoveragePlan};
-pub use debug::{SemDebugFacts, SemDebugScope};
+pub use debug::{SemDebugFacts, SemDebugScope, SemSourceSite, ROOT_FILE};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};
 pub use lower::{

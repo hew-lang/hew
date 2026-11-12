@@ -57,25 +57,32 @@ const INDEX_STRIDE: usize = 32;
 // Non-ASCII allocations keep a byte offset for every INDEX_STRIDE-th scalar
 // after the UTF-8 capacity. The table belongs to the same allocation and is
 // fully initialized before a handle can be shared.
-fn index_offset(capacity: usize) -> usize {
+fn try_index_offset(capacity: usize) -> Option<usize> {
     let align = core::mem::align_of::<usize>();
     core::mem::size_of::<HewStringHeader>()
-        .checked_add(capacity)
-        .and_then(|size| size.checked_add(align - 1))
-        .map_or_else(|| std::process::abort(), |size| size & !(align - 1))
+        .checked_add(capacity)?
+        .checked_add(align - 1)
+        .map(|size| size & !(align - 1))
+}
+
+fn index_offset(capacity: usize) -> usize {
+    try_index_offset(capacity).unwrap_or_else(|| std::process::abort())
+}
+
+fn try_allocation_size(capacity: usize, indexed: bool) -> Option<usize> {
+    let size = if indexed {
+        let table = capacity
+            .div_ceil(INDEX_STRIDE)
+            .checked_mul(core::mem::size_of::<usize>())?;
+        try_index_offset(capacity)?.checked_add(table)?
+    } else {
+        core::mem::size_of::<HewStringHeader>().checked_add(capacity)?
+    };
+    isize::try_from(size).ok().map(|_| size)
 }
 
 fn allocation_size(capacity: usize, indexed: bool) -> usize {
-    let size = if indexed {
-        capacity
-            .div_ceil(INDEX_STRIDE)
-            .checked_mul(core::mem::size_of::<usize>())
-            .and_then(|table| index_offset(capacity).checked_add(table))
-    } else {
-        core::mem::size_of::<HewStringHeader>().checked_add(capacity)
-    };
-    size.filter(|size| isize::try_from(*size).is_ok())
-        .unwrap_or_else(|| std::process::abort())
+    try_allocation_size(capacity, indexed).unwrap_or_else(|| std::process::abort())
 }
 
 unsafe fn index_table(value: *const HewString) -> *const usize {
@@ -263,6 +270,38 @@ pub unsafe fn string_into_nonnull(value: *mut HewString) -> *mut HewString {
 pub fn string_from_str(value: &str) -> *mut HewString {
     // SAFETY: a Rust `str` is valid UTF-8 and readable for its byte length.
     unsafe { string_alloc_utf8_unchecked(value.as_ptr(), value.len()) }
+}
+
+/// Copy UTF-8 into a managed string without aborting on allocation failure.
+/// `Some(null)` is the canonical empty string; `None` means unavailable.
+#[must_use]
+pub fn string_try_from_str(value: &str) -> Option<*mut HewString> {
+    if value.is_empty() {
+        return Some(core::ptr::null_mut());
+    }
+    let len = value.len();
+    let scalar_len = value.chars().count();
+    let indexed = scalar_len != len;
+    let total = try_allocation_size(len, indexed)?;
+    let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
+    if allocation.is_null() {
+        return None;
+    }
+    // SAFETY: the checked allocation contains the header, text and optional
+    // index; `value` supplies valid UTF-8 for the complete copy.
+    unsafe {
+        allocation.write(HewStringHeader {
+            byte_len: len,
+            capacity: len,
+            scalar_len,
+            rc: AtomicU32::new(1),
+        });
+        core::ptr::copy_nonoverlapping(value.as_ptr(), data(allocation.cast()).cast_mut(), len);
+        if indexed {
+            write_index(allocation.cast(), 0, 0);
+        }
+    }
+    Some(allocation.cast())
 }
 
 /// Validate and copy an arbitrary byte slice into one managed string.
@@ -506,6 +545,16 @@ pub unsafe fn string_append(value: *mut HewString, suffix: *const HewString) -> 
         }
         append_utf8(value, string_as_bytes(suffix), string_scalar_len(suffix))
     }
+}
+
+/// Append UTF-8 text to an owned receiver, growing unique storage in place.
+///
+/// # Safety
+/// `value` transfers one live owner or is null; `text` does not alias it.
+#[must_use]
+pub unsafe fn string_append_str(value: *mut HewString, text: &str) -> *mut HewString {
+    // SAFETY: `text` is valid UTF-8 with its own scalar count.
+    unsafe { append_utf8(value, text.as_bytes(), text.chars().count()) }
 }
 
 /// Append one scalar to an owned receiver, copying shared storage.

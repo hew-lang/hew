@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -277,6 +278,7 @@ class VersionBump(unittest.TestCase):
             script = base / "scripts/bump-version.sh"
             script.parent.mkdir()
             script.write_bytes((ROOT / "scripts/bump-version.sh").read_bytes())
+            (base / "scripts/version-locks.py").write_text("raise SystemExit(0)\n")
             inputs = {
                 "Cargo.toml": '[workspace.package]\nversion = "0.6.5"\n',
                 "docs/syntax-data.json": '{"version": "0.6.5"}\n',
@@ -315,6 +317,42 @@ class VersionBump(unittest.TestCase):
                 self.assertEqual(
                     (base / name).read_text(), content.replace("0.6.5", "0.6.6"), name
                 )
+
+
+class VersionLocks(unittest.TestCase):
+    def test_discovers_local_packages_and_rejects_stale_locks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="hew-version-locks-") as temporary:
+            base = Path(temporary)
+            (base / "scripts").mkdir()
+            (base / "scripts/version-locks.py").write_bytes(
+                (ROOT / "scripts/version-locks.py").read_bytes()
+            )
+            (base / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["compiler"]\n'
+                '[workspace.package]\nversion = "0.11.0-rc1"\n'
+            )
+            (base / "compiler").mkdir()
+            (base / "compiler/Cargo.toml").write_text(
+                '[package]\nname = "hew-example-compiler"\n'
+            )
+            (base / "nested").mkdir()
+            (base / "nested/Cargo.toml").write_text('[package]\nname = "consumer"\n')
+            (base / "nested/Cargo.lock").write_text(
+                '[[package]]\nname = "hew-example-compiler"\n'
+                'version = "0.10.0-rc2"\n'
+            )
+            subprocess.run(["git", "init", "-q", str(base)], check=True)
+            subprocess.run(["git", "add", "nested/Cargo.lock"], cwd=base, check=True)
+            command = [sys.executable, str(base / "scripts/version-locks.py"), "--check"]
+            result = subprocess.run(command, cwd=base, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("nested/Cargo.lock", result.stderr)
+            (base / "nested/Cargo.lock").write_text(
+                '[[package]]\nname = "hew-example-compiler"\n'
+                'version = "0.11.0-rc1"\n'
+            )
+            result = subprocess.run(command, cwd=base, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

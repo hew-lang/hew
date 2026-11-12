@@ -25,7 +25,7 @@ fn main() -> i64 {
         .Err(_) => return 1,
     }
     match buffer.detach() {
-        .Err(.Trapped) => println("retained backing"),
+        .Err(.Trapped(_)) => println("retained backing"),
         _ => return 2,
     }
     stopped(buffer);

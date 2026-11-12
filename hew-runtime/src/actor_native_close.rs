@@ -74,6 +74,33 @@ impl NativeActorCompletion {
         );
     }
 
+    /// Claim one external trap and retain its diagnostic before any waiter
+    /// can observe it. The same lock serializes competing requests with the
+    /// actor's checked-fault owner.
+    pub(crate) fn claim_external_trap(
+        &self,
+        pending: &AtomicI32,
+        code: i32,
+        actor_id: u64,
+        spawn_serial: u64,
+    ) -> bool {
+        let mut retained = self.fault.lock_or_recover();
+        if pending
+            .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        if code > 0 && retained.is_none() {
+            let fault = crate::fault::HewFault::external(code, actor_id, spawn_serial);
+            // Publish before the common breakpoint and before any losing
+            // requester can obtain the retained snapshot.
+            fault.raise();
+            *retained = Some(fault);
+        }
+        true
+    }
+
     /// Retain the complete incarnation diagnostic for every close observer.
     pub(crate) fn record_fault(&self, fault: crate::fault::HewFault) -> i32 {
         let mut retained = self.fault.lock_or_recover();
@@ -82,7 +109,13 @@ impl NativeActorCompletion {
         } else {
             *retained = Some(fault);
         }
-        super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
+        let fault = retained.as_ref().expect("retained terminal fault");
+        let code = super::report_checked_failure(fault);
+        // The actor's code root is still retained here, before a waiter or
+        // terminal cleanup can outlive its source tables.
+        // SAFETY: this completion retains the actor's code root.
+        let _ = unsafe { fault.snapshot() };
+        code
     }
 
     pub(crate) fn fault_message(&self) -> Option<String> {
@@ -90,6 +123,14 @@ impl NativeActorCompletion {
             .lock_or_recover()
             .as_ref()
             .map(|fault| fault.message().to_owned())
+    }
+
+    /// The same owned failure published to the crash hook and reply waiter.
+    pub(crate) fn fault_snapshot(&self) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
+        let fault = self.fault.lock_or_recover();
+        // SAFETY: this completion retains the code root; ordinary checked
+        // faults have already captured the snapshot at their origin.
+        unsafe { fault.as_ref()?.snapshot() }
     }
 
     /// Retain a fault raised by terminal hooks or state release separately
@@ -486,6 +527,37 @@ pub unsafe extern "C" fn hew_actor_wait_free(wait: *mut HewNativeActorWait) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    #[test]
+    fn competing_external_traps_publish_one_shared_failure() {
+        let completion = Arc::new(NativeActorCompletion::default());
+        let pending = Arc::new(AtomicI32::new(0));
+        let ready = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = [200, 212]
+            .into_iter()
+            .map(|code| {
+                let completion = Arc::clone(&completion);
+                let pending = Arc::clone(&pending);
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    (code, completion.claim_external_trap(&pending, code, 0, 0))
+                })
+            })
+            .collect();
+        ready.wait();
+        let winners: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter_map(|(code, won)| won.then_some(code))
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let first = completion.fault_snapshot().expect("failure snapshot");
+        let second = completion.fault_snapshot().expect("same failure snapshot");
+        assert_eq!(first.code, winners[0]);
+        assert_eq!(pending.load(Ordering::Acquire), winners[0]);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
     struct State(Arc<AtomicUsize>);
     impl Drop for State {
         fn drop(&mut self) {

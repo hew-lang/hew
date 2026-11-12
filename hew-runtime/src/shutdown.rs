@@ -708,10 +708,16 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
         // publish FAILED so the compiler-generated main epilogue returns a
         // non-zero status. No heap memory is freed on this path — the process
         // exit reclaims it without racing the still-active worker.
-        eprintln!(
-            "hew: shutdown drain timed out after {drain_window:?}; abandoning in-flight work"
+        crate::output::write(
+            crate::output::Stream::Err,
+            format!(
+                "hew: shutdown drain timed out after {drain_window:?}; abandoning in-flight work\n"
+            )
+            .as_bytes(),
         );
+        crate::shutdown_signal::write_actor_snapshot("drain timeout");
         shutdown_phase_store(PHASE_FAILED, Ordering::Release);
+        crate::shutdown_signal::finish_timed_out_shutdown();
         return;
     }
 

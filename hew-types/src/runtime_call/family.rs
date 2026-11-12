@@ -330,6 +330,13 @@ pub enum RuntimeCallFamily {
     StringAppend,
     StringPush,
     StringClear,
+    /// Interpolation segments rendered straight onto the owned accumulator.
+    StringAppendI64,
+    StringAppendU64,
+    StringAppendF64,
+    StringAppendBool,
+    /// A literal segment, passed as static bytes and a length.
+    StringAppendLiteral,
     StringFindFrom,
     StringByteLen,
     StringConcat,

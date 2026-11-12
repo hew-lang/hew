@@ -255,9 +255,10 @@ fn esc_visit_expr_inner(
                 esc_visit_arg(e, name, in_fork, acc);
             }
         }
-        Expr::Binary { left, right, .. } => {
-            esc_visit_expr(&left.0, name, in_fork, acc, false);
-            esc_visit_expr(&right.0, name, in_fork, acc, false);
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                esc_visit_expr(&operand.0, name, in_fork, acc, false);
+            }
         }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {

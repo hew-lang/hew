@@ -124,7 +124,7 @@ fn main() -> i64 {
     stopped(edit);
     let small_edit = spawn SmallDetach { values: values };
     match small_edit.edit() {
-        .Err(.Trapped) => println("detach limit"),
+        .Err(.Trapped(_)) => println("detach limit"),
         _ => return 2,
     }
     stopped(small_edit);
@@ -134,7 +134,7 @@ fn main() -> i64 {
     stopped(slice);
     let small_slice = spawn SmallSlice { values: values };
     match small_slice.read() {
-        .Err(.Trapped) => println("slice limit"),
+        .Err(.Trapped(_)) => println("slice limit"),
         _ => return 3,
     }
     stopped(small_slice);
@@ -144,7 +144,7 @@ fn main() -> i64 {
     stopped(append);
     let small_append = spawn SmallAppend { first: values, second: second };
     match small_append.join() {
-        .Err(.Trapped) => println("append limit"),
+        .Err(.Trapped(_)) => println("append limit"),
         _ => return 4,
     }
     stopped(small_append);
@@ -154,7 +154,7 @@ fn main() -> i64 {
     stopped(copy);
     let small_copy = spawn SmallCopy;
     match small_copy.read() {
-        .Err(.Trapped) => println("copy limit"),
+        .Err(.Trapped(_)) => println("copy limit"),
         _ => return 5,
     }
     stopped(small_copy);

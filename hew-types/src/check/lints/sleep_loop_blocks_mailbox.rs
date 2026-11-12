@@ -304,6 +304,11 @@ fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut
                 find_in_expr(ctx, levels, &value.0, out);
             }
         }
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                find_in_expr(ctx, levels, &operand.0, out);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -312,8 +317,7 @@ fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -738,13 +742,15 @@ fn bounded_expr_has_sleep_inner(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| bounded_expr_has_sleep(&key.0) || bounded_expr_has_sleep(&value.0)),
+        Expr::Binary { first, steps } => {
+            Expr::binary_operands(first, steps).any(|operand| bounded_expr_has_sleep(&operand.0))
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
         } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -1003,13 +1009,14 @@ fn expr_assigns_identifier_inner(expr: &Expr, name: &str) -> bool {
         Expr::MapLiteral { entries } => entries.iter().any(|(key, value)| {
             expr_assigns_identifier(&key.0, name) || expr_assigns_identifier(&value.0, name)
         }),
+        Expr::Binary { first, steps } => Expr::binary_operands(first, steps)
+            .any(|operand| expr_assigns_identifier(&operand.0, name)),
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
         } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..

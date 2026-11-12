@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
 use super::frames;
-use super::record::{FaultKind, FaultRecord};
+use super::record::{self, Fault};
 use super::stack::{self, ThreadLabel};
+use crate::failure_record::FailureRecord;
 
 const ALT_STACK_BYTES: usize = 64 * 1024;
 const RECORD_BYTES: usize = 8 * 1024;
@@ -32,7 +33,7 @@ const FAULT_SIGNALS: [libc::c_int; 5] = [
 
 /// Storage only the thread that won [`REPORTING`] touches.
 struct ReportSlot {
-    record: UnsafeCell<FaultRecord>,
+    record: UnsafeCell<FailureRecord>,
     text: UnsafeCell<[u8; RECORD_BYTES]>,
 }
 
@@ -41,7 +42,7 @@ struct ReportSlot {
 unsafe impl Sync for ReportSlot {}
 
 static SLOT: ReportSlot = ReportSlot {
-    record: UnsafeCell::new(FaultRecord::EMPTY),
+    record: UnsafeCell::new(FailureRecord::EMPTY),
     text: UnsafeCell::new([0; RECORD_BYTES]),
 };
 static REPORTING: AtomicBool = AtomicBool::new(false);
@@ -131,11 +132,12 @@ const fn signal_name(signal: libc::c_int) -> &'static str {
 }
 
 /// Whether `kill`, `raise` or `pthread_kill` sent the signal, rather than a
-/// faulting instruction. Such a signal carries no fault address.
-fn sent_by_process(info: &libc::siginfo_t) -> bool {
+/// faulting instruction, judged by its `si_code`. Such a signal carries no
+/// fault address.
+const fn sent_by_process(si_code: libc::c_int) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        info.si_code <= 0
+        si_code <= 0
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -143,8 +145,14 @@ fn sent_by_process(info: &libc::siginfo_t) -> bool {
         // non-fault origins from 0x10001. Darwin delivers a kill-sent fault
         // signal with a fault's si_code and no sender pid, so there it reads
         // as a fault.
-        info.si_code & 0x10000 != 0
+        si_code & 0x10000 != 0
     }
+}
+
+/// The name of a fault signal and whether a process sent it, for the
+/// failure record's rendering.
+pub(crate) const fn describe_fault(signal: i32, si_code: i32) -> (&'static str, bool) {
+    (signal_name(signal), sent_by_process(si_code))
 }
 
 /// Program counter of the faulting context.
@@ -219,37 +227,37 @@ unsafe fn fault_pc(context: *mut libc::c_void) -> Option<usize> {
 /// The caller owns [`SLOT`] (it won [`REPORTING`]); `info` and `context` are
 /// the handler's arguments.
 unsafe fn fill_record(
-    record: &mut FaultRecord,
+    record: &mut FailureRecord,
     signal: libc::c_int,
     info: *const libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
     let bounds = stack::current();
     // SAFETY: the kernel passes a valid siginfo to SA_SIGINFO handlers.
-    let (sent, address) = match unsafe { info.as_ref() } {
-        Some(info) if sent_by_process(info) => (true, 0),
+    let (si_code, address) = match unsafe { info.as_ref() } {
+        Some(info) if sent_by_process(info.si_code) => (info.si_code, 0),
         // SAFETY: si_addr is defined for the fault signals this handles.
-        Some(info) => (false, unsafe { info.si_addr() } as usize),
-        None => (false, 0),
+        Some(info) => (info.si_code, unsafe { info.si_addr() } as usize),
+        None => (0, 0),
     };
-    record.kind = if !sent && bounds.in_guard(address) {
-        FaultKind::StackOverflow
-    } else {
-        FaultKind::Signal
-    };
-    record.signal = signal.unsigned_abs();
-    record.signal_name = signal_name(signal);
-    record.sent = sent;
-    record.address = address;
-    record.thread = stack::current_label();
-    record.load_image_range();
-    record.frames.clear();
+    let sent = !info.is_null() && sent_by_process(si_code);
+    let overflow = !sent && bounds.in_guard(address);
+    record::begin(
+        record,
+        Fault {
+            signal,
+            si_code,
+            address,
+            overflow,
+        },
+        stack::current_label(),
+    );
     // SAFETY: forwarded from the handler.
     if let Some(pc) = unsafe { fault_pc(context) } {
-        if walk_is_safe(record.kind) {
-            frames::capture(pc, bounds, &mut record.frames);
+        if walk_is_safe(overflow) {
+            frames::capture(pc, bounds, record);
         } else {
-            record.frames.push(pc);
+            record.push_frame(pc);
         }
     }
 }
@@ -260,8 +268,8 @@ unsafe fn fill_record(
 /// prologue that has just moved the stack pointer into the guard, that row
 /// sends it to read the guard page, and the nested fault ends the process
 /// without a record. An overflow there reports only the faulting pc.
-const fn walk_is_safe(kind: FaultKind) -> bool {
-    !(cfg!(target_os = "freebsd") && matches!(kind, FaultKind::StackOverflow))
+const fn walk_is_safe(overflow: bool) -> bool {
+    !(cfg!(target_os = "freebsd") && overflow)
 }
 
 unsafe extern "C" fn fatal_signal_handler(
@@ -282,7 +290,7 @@ unsafe extern "C" fn fatal_signal_handler(
     unsafe {
         let record = &mut *SLOT.record.get();
         fill_record(record, signal, info, context);
-        let text = record.format_into(&mut *SLOT.text.get());
+        let text = record::finish(record, &mut *SLOT.text.get());
         crate::trap_code::write_stderr(text);
         let mut action = MaybeUninit::<libc::sigaction>::zeroed().assume_init();
         action.sa_sigaction = libc::SIG_DFL;
@@ -296,118 +304,14 @@ unsafe extern "C" fn fatal_signal_handler(
     }
 }
 
-/// Find the load range of the image this runtime is linked into. Called at
-/// installation, never from the handler.
-fn record_image_range() {
-    let anchor = fatal_signal_handler as *const () as usize;
-    let mut info = MaybeUninit::<libc::Dl_info>::zeroed();
-    // SAFETY: dladdr fills `info` for an address inside a loaded image.
-    if unsafe { libc::dladdr(anchor as *const libc::c_void, info.as_mut_ptr()) } == 0 {
-        return;
-    }
-    // SAFETY: dladdr returned success, so the structure is initialized.
-    let base = unsafe { info.assume_init() }.dli_fbase as usize;
-    // SAFETY: dli_fbase is the image's mapped header.
-    let end = unsafe { image::end(base, anchor) };
-    super::record::set_image_range(base, end.unwrap_or(usize::MAX));
-}
-
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-mod image {
-    /// `PT_LOAD`, which `libc` does not export for every ELF target.
-    const PT_LOAD: u32 = 1;
-
-    /// The end of the loaded ELF object that contains `anchor`.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "ELF addresses fit the pointer width of the process that mapped them"
-    )]
-    pub(super) unsafe fn end(_base: usize, anchor: usize) -> Option<usize> {
-        struct Search {
-            anchor: usize,
-            end: Option<usize>,
-        }
-        unsafe extern "C" fn visit(
-            info: *mut libc::dl_phdr_info,
-            _size: libc::size_t,
-            data: *mut libc::c_void,
-        ) -> libc::c_int {
-            // SAFETY: dl_iterate_phdr passes a valid info record and our data.
-            let (info, search) = unsafe { (&*info, &mut *data.cast::<Search>()) };
-            let bias = info.dlpi_addr as usize;
-            let mut low = usize::MAX;
-            let mut high = 0;
-            for index in 0..usize::from(info.dlpi_phnum) {
-                // SAFETY: dlpi_phdr has dlpi_phnum entries.
-                let header = unsafe { &*info.dlpi_phdr.add(index) };
-                if header.p_type == PT_LOAD {
-                    let start = bias + header.p_vaddr as usize;
-                    low = low.min(start);
-                    high = high.max(start + header.p_memsz as usize);
-                }
-            }
-            if low <= search.anchor && search.anchor < high {
-                search.end = Some(high);
-                return 1;
-            }
-            0
-        }
-        let mut search = Search { anchor, end: None };
-        // SAFETY: the callback only reads the records it is given.
-        unsafe { libc::dl_iterate_phdr(Some(visit), (&raw mut search).cast()) };
-        search.end
-    }
-}
-
-#[cfg(target_vendor = "apple")]
-mod image {
-    /// The end of the Mach-O image whose header is at `base`: its highest
-    /// segment, relative to `__TEXT`.
-    #[allow(deprecated, reason = "libc's Mach-O header types match the loaded ABI")]
-    pub(super) unsafe fn end(base: usize, _anchor: usize) -> Option<usize> {
-        const LC_SEGMENT_64: u32 = 0x19;
-        // SAFETY: `base` is a mapped mach_header_64 from dladdr.
-        unsafe {
-            let header = &*(base as *const libc::mach_header_64);
-            let mut command = base + size_of::<libc::mach_header_64>();
-            let mut text = None;
-            let mut high = 0_u64;
-            for _ in 0..header.ncmds {
-                let load = &*(command as *const libc::load_command);
-                if load.cmd == LC_SEGMENT_64 {
-                    let segment = &*(command as *const libc::segment_command_64);
-                    if segment.filesize != 0 || segment.vmsize != 0 {
-                        if segment.fileoff == 0 && segment.filesize != 0 {
-                            text = Some(segment.vmaddr);
-                        }
-                        high = high.max(segment.vmaddr + segment.vmsize);
-                    }
-                }
-                command += load.cmdsize as usize;
-            }
-            Some(base + usize::try_from(high.checked_sub(text?)?).ok()?)
-        }
-    }
-}
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "freebsd",
-    target_vendor = "apple"
-)))]
-mod image {
-    pub(super) unsafe fn end(_base: usize, _anchor: usize) -> Option<usize> {
-        None
-    }
-}
-
 pub(crate) fn init_crash_handling() {
     static INSTALL: Once = Once::new();
     let mut installed_here = false;
     INSTALL.call_once(|| {
         installed_here = true;
-        record_image_range();
+        // The handler reads the backtrace policy and image facts; settle
+        // them now, since a program without actors never starts a scheduler.
+        crate::fault::configure_from_env();
         // Bind the unwinder's lazy symbols and caches now; resolving them in
         // the handler would cost stack and take the loader's locks.
         frames::warm_up();
@@ -488,7 +392,7 @@ mod tests {
 
     /// A forged fault at `address`, outside any signal frame.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn classify_forged(address: usize, bounds: StackBounds) -> FaultRecord {
+    fn classify_forged(address: usize, bounds: StackBounds) -> FailureRecord {
         // SAFETY: siginfo_t is plain data; the fields read are set below.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         info.si_signo = libc::SIGSEGV;
@@ -505,7 +409,7 @@ mod tests {
         }
         let mut uc = forged_context(0xDEAD);
         let previous = stack::set_current_for_test(bounds);
-        let mut record = FaultRecord::EMPTY;
+        let mut record = FailureRecord::EMPTY;
         // SAFETY: the record is local; info and context are forged but valid.
         unsafe {
             fill_record(
@@ -530,38 +434,25 @@ mod tests {
             guard: 4096,
         };
         let overflow = classify_forged(bounds.low - 16, bounds);
-        assert_eq!(overflow.kind, FaultKind::StackOverflow);
-        assert_eq!(overflow.address, bounds.low - 16);
+        assert_eq!(overflow.kind_name(), "StackOverflow");
+        assert_eq!(overflow.signal.guard_hit, 1);
+        assert_eq!(overflow.signal.fault_addr, bounds.low - 16);
         // The walk starts at the faulting pc; this test's own frames follow.
         assert_eq!(
-            overflow.frames.runs().first().map(|run| run.pc),
+            overflow.frames().first().map(|frame| frame.pc),
             Some(0xDEAD)
         );
 
         let wild = classify_forged(8, bounds);
-        assert_eq!(wild.kind, FaultKind::Signal);
+        assert_eq!(wild.kind_name(), "Signal");
+        assert_eq!(wild.signal.guard_hit, 0);
     }
 
     #[test]
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn a_sent_signal_is_never_overflow() {
-        // SAFETY: siginfo_t is plain data.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        info.si_code = 0; // SI_USER
-        assert!(sent_by_process(&info));
-        info.si_code = 1;
-        assert!(!sent_by_process(&info));
-    }
-
-    #[test]
-    fn the_image_range_covers_the_handler() {
-        record_image_range();
-        let mut record = FaultRecord::EMPTY;
-        record.load_image_range();
-        let handler = fatal_signal_handler as *const () as usize;
-        assert!(record.image_base != 0 && record.image_base <= handler);
-        assert!(handler < record.image_end, "{record:x?}");
-        // libc lives in another image (statically linked targets aside).
-        assert!(record.image_end != usize::MAX);
+        assert!(sent_by_process(0)); // SI_USER
+        assert!(!sent_by_process(1));
+        assert_eq!(describe_fault(libc::SIGSEGV, 0), ("SIGSEGV", true));
     }
 }

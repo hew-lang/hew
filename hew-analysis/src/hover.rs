@@ -866,8 +866,9 @@ fn find_pattern_binding_type(
                     find_pattern_binding_type(pattern, elem_ty, types, word, offset)
                 })
         }
-        Pattern::Or(left, right) => find_pattern_binding_type(left, source_ty, types, word, offset)
-            .or_else(|| find_pattern_binding_type(right, source_ty, types, word, offset)),
+        Pattern::Or(alternatives) => alternatives.iter().find_map(|alternative| {
+            find_pattern_binding_type(alternative, source_ty, types, word, offset)
+        }),
         Pattern::Regex { captures, .. } => {
             // Named captures are bound as `string` in the arm body.
             captures
@@ -946,9 +947,9 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
                 .as_ref()
                 .and_then(|pattern| find_binding_name(pattern, word, offset))
         }),
-        Pattern::Or(left, right) => {
-            find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
-        }
+        Pattern::Or(alternatives) => alternatives
+            .iter()
+            .find_map(|alternative| find_binding_name(alternative, word, offset)),
         Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
         Pattern::NominalPath { payload, .. } => match payload.as_ref() {
             None => None,

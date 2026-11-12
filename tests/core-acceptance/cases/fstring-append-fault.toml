@@ -1,0 +1,10 @@
+[[case]]
+id = "fstring-append-fault"
+intent = "An interpolation retains the first shared value until later Display, releases its accumulator on panic or checked growth refusal, restarts cleanly, and keeps it live across await."
+source = "cases/fstring-append-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "interpolation cancelled\ninterpolation recovered\n"
+exit = 0

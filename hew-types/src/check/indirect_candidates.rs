@@ -71,6 +71,24 @@ impl Checker {
         span: &Span,
     ) -> IndirectCallCandidates {
         let candidates = self.unerased_value_candidates(expr, span);
+        self.erased_value_candidates(span, candidates)
+    }
+
+    /// The candidates of a binary operation's value, which no operator
+    /// produces beyond what its checked type admits.
+    pub(super) fn binary_value_candidates(&self, span: &Span) -> IndirectCallCandidates {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let candidates = self
+            .typed_value_candidates(&key, false)
+            .unwrap_or_else(IndirectCallCandidates::unknown);
+        self.erased_value_candidates(span, candidates)
+    }
+
+    fn erased_value_candidates(
+        &self,
+        span: &Span,
+        candidates: IndirectCallCandidates,
+    ) -> IndirectCallCandidates {
         let site = SpanKey::in_module(span, self.current_module_idx);
         if self.dyn_trait_coercions.contains_key(&site) {
             IndirectCallCandidates::single(CallableCandidate::Erasure {
@@ -82,26 +100,33 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one provenance dispatch covers the checked expression forms"
-    )]
-    fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        if matches!(expr, Expr::Literal(_))
-            || self.expr_types.get(&key).is_some_and(|ty| {
+    /// Candidates settled by the checked type or already published for `key`.
+    fn typed_value_candidates(
+        &self,
+        key: &SpanKey,
+        literal: bool,
+    ) -> Option<IndirectCallCandidates> {
+        if literal
+            || self.expr_types.get(key).is_some_and(|ty| {
                 !Self::type_may_carry_value_candidates(
                     &self.subst.resolve(ty).materialize_literal_defaults(),
                 )
             })
         {
-            return IndirectCallCandidates {
+            return Some(IndirectCallCandidates {
                 known: Vec::new(),
                 may_be_unknown: false,
-            };
+            });
         }
-        if let Some(candidates) = self.expression_value_candidates.get(&key) {
-            return candidates.clone();
+        self.expression_value_candidates.get(key).cloned()
+    }
+
+    fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if let Some(candidates) =
+            self.typed_value_candidates(&key, matches!(expr, Expr::Literal(_)))
+        {
+            return candidates;
         }
 
         match expr {

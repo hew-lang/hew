@@ -872,6 +872,11 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::StringAppend
             | R::StringPush
             | R::StringClear
+            | R::StringAppendI64
+            | R::StringAppendU64
+            | R::StringAppendF64
+            | R::StringAppendBool
+            | R::StringAppendLiteral
             | R::StringFindFrom
             | R::StringByteLen
             | R::StringConcat

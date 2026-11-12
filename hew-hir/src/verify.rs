@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, HirNodeId, ResolvedRef, ScopeId, SiteId};
+use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
-    HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
-    HirStmtKind, HirSupervisorDecl, HirVarSelfMethodTarget,
+    HirBinaryStep, HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate,
+    HirModule, HirStmtKind, HirSupervisorDecl, HirVarSelfMethodTarget,
 };
 use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
@@ -63,12 +63,18 @@ impl<'a> HirAnalysis<'a> {
 pub struct HirSourceFacts {
     pub sites: HashMap<SiteId, HirSiteSource>,
     pub scopes: HashMap<ScopeId, HirScopeExtent>,
+    /// The file span index each item with a body was lowered from.
+    pub item_files: HashMap<crate::ids::ItemId, u32>,
+    /// The `Self` type of each impl method body.
+    pub item_receivers: HashMap<crate::ids::ItemId, hew_types::ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirSiteSource {
     pub span: Range<usize>,
     pub source_module: Option<String>,
+    /// The file span index `span` indexes, when the enclosing item recorded one.
+    pub file: Option<u32>,
 }
 
 /// One lexical block scope: its source extent and the scope enclosing it.
@@ -77,6 +83,8 @@ pub struct HirScopeExtent {
     pub span: Range<usize>,
     pub parent: Option<ScopeId>,
     pub source_module: Option<String>,
+    /// The file span index `span` indexes, when the enclosing item recorded one.
+    pub file: Option<u32>,
 }
 
 /// Analyze structural contracts and collect source attribution together.
@@ -115,6 +123,8 @@ pub fn analyze_hir(module: &HirModule) -> HirAnalysis<'_> {
         source_facts: HirSourceFacts {
             sites: verifier.site_spans,
             scopes: verifier.scope_extents,
+            item_files: module.item_files.clone(),
+            item_receivers: module.item_receivers.clone(),
         },
         site_parents: verifier.site_parents,
     }
@@ -127,6 +137,7 @@ struct Verifier {
     nodes: HashSet<HirNodeId>,
     diagnostics: Vec<HirDiagnostic>,
     current_source_module: Option<String>,
+    current_source_file: Option<u32>,
     site_spans: HashMap<SiteId, HirSiteSource>,
     current_expr_parent: Option<SiteId>,
     site_parents: HashMap<SiteId, Option<SiteId>>,
@@ -214,7 +225,7 @@ impl Verifier {
 
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
-            self.current_source_module = Self::item_source_module(module, item);
+            self.enter_item(module, item);
             match item {
                 HirItem::Function(func) => self.function(func),
                 HirItem::TypeDecl(decl) => {
@@ -306,7 +317,7 @@ impl Verifier {
                     self.expr(&c.value);
                 }
             }
-            self.current_source_module = None;
+            self.leave_item();
         }
     }
 
@@ -364,6 +375,7 @@ impl Verifier {
                 span: block.span.clone(),
                 parent: enclosing,
                 source_module: self.current_source_module.clone(),
+                file: self.current_source_file,
             });
         self.block_body(block);
         self.current_scope = enclosing;
@@ -403,6 +415,44 @@ impl Verifier {
         let parent = self.current_expr_parent.replace(expr.site);
         self.site_parents.insert(expr.site, parent);
         hew_parser::stack::ensure_sufficient_stack(|| self.expr_inner(expr));
+        self.current_expr_parent = parent;
+    }
+
+    /// A chain's intermediate values are expressions of their own: each has
+    /// a node and site, and is the parent of the operands it combines.
+    fn binary_chain(&mut self, expr: &HirExpr, first: &HirExpr, steps: &[HirBinaryStep]) {
+        let value_site = |index: usize| {
+            steps
+                .get(index)
+                .and_then(|step| step.result.as_ref())
+                .map_or(expr.site, |result| result.site)
+        };
+        let last = steps.len().saturating_sub(1);
+        for (index, step) in steps.iter().enumerate() {
+            match &step.result {
+                Some(result) if index < last => {
+                    self.node(result.node, result.span.clone());
+                    self.site(result.site, result.span.clone());
+                    self.site_parents
+                        .insert(result.site, Some(value_site(index + 1)));
+                }
+                None if index == last => {}
+                _ => self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "binary chain".to_string(),
+                        reason:
+                            "only the last step's value is the enclosing expression".to_string(),
+                    },
+                    expr.span.clone(),
+                    "a binary chain step lacks its result facts",
+                )),
+            }
+        }
+        let parent = self.current_expr_parent;
+        for (index, operand) in HirExprKind::binary_operands(first, steps).enumerate() {
+            self.current_expr_parent = Some(value_site(index.saturating_sub(1)));
+            self.expr(operand);
+        }
         self.current_expr_parent = parent;
     }
 
@@ -518,8 +568,8 @@ impl Verifier {
                     ));
                 }
             }
-            HirExprKind::Binary { left, right, .. }
-            | HirExprKind::IdentityCompare { left, right } => {
+            HirExprKind::Binary { first, steps } => self.binary_chain(expr, first, steps),
+            HirExprKind::IdentityCompare { left, right } => {
                 self.expr(left);
                 self.expr(right);
             }
@@ -1033,6 +1083,14 @@ impl Verifier {
                 self.expr(source);
             }
             HirExprKind::SubsumedValue { source, .. } => self.expr(source),
+            HirExprKind::Interpolation { segments } => {
+                for value in segments
+                    .iter()
+                    .filter_map(crate::HirInterpolationSegment::value)
+                {
+                    self.expr(value);
+                }
+            }
             HirExprKind::MachineVariantCtor { payload, .. } => {
                 if let Some(fields) = payload {
                     for (_, val) in fields {
@@ -1275,6 +1333,7 @@ impl Verifier {
         self.site_spans.entry(id).or_insert_with(|| HirSiteSource {
             span: span.clone(),
             source_module: self.current_source_module.clone(),
+            file: self.current_source_file,
         });
         if !self.sites.insert(id) {
             self.diagnostics.push(self.diagnostic(
@@ -1295,8 +1354,26 @@ impl Verifier {
         }
     }
 
+    /// Attribute the item's diagnostics and source facts to its module and file.
+    fn enter_item(&mut self, module: &HirModule, item: &HirItem) {
+        self.current_source_module = Self::item_source_module(module, item);
+        self.current_source_file = module.item_files.get(&Self::item_id(item)).copied();
+    }
+
+    fn leave_item(&mut self) {
+        self.current_source_module = None;
+        self.current_source_file = None;
+    }
+
     fn item_source_module(module: &HirModule, item: &HirItem) -> Option<String> {
-        let id = match item {
+        module
+            .diagnostic_source_modules
+            .get(&Self::item_id(item))
+            .cloned()
+    }
+
+    fn item_id(item: &HirItem) -> ItemId {
+        match item {
             HirItem::Function(item) => item.id,
             HirItem::TypeDecl(item) => item.id,
             HirItem::Record(item) => item.id,
@@ -1305,8 +1382,7 @@ impl Verifier {
             HirItem::Impl(item) => item.id,
             HirItem::ExternFn(item) => item.id,
             HirItem::Const(item) => item.id,
-        };
-        module.diagnostic_source_modules.get(&id).cloned()
+        }
     }
 }
 
@@ -1384,6 +1460,8 @@ mod tests {
             test_entry_plans: Vec::new(),
             items,
             diagnostic_source_modules: HashMap::new(),
+            item_files: HashMap::new(),
+            item_receivers: HashMap::new(),
             root_item_ids: HashSet::default(),
             trait_object_layouts: Arc::default(),
             structural_witnesses: Vec::new(),

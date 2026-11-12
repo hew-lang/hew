@@ -11,6 +11,9 @@ use inkwell::types::StructType;
 #[path = "physical_actor_ask.rs"]
 mod ask;
 
+#[path = "physical_actor_failure.rs"]
+mod failure;
+
 #[path = "physical_actor_ingress.rs"]
 mod ingress;
 
@@ -3232,7 +3235,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(refused, rejected, uncertain)
             .llvm_ctx("return the message only on proven nonadmission")?;
         self.builder.position_at_end(uncertain);
-        self.emit_ask_result(destination, status, None, delivery_ty)?;
+        self.emit_ask_result(destination, status, None, delivery_ty, None)?;
         self.builder
             .build_unconditional_branch(done)
             .llvm_ctx("finish unknown delivery")?;

@@ -3368,14 +3368,16 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
         );
         let output = check_qualified_variant_root(&source);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let root = output.defs.root_module().expect("root module");
         assert!(output
             .used_imports
             .iter()
-            .any(|site| site.start == source.find("import m;").unwrap()));
+            .any(|site| site.file == root && site.start == source.find("import m;").unwrap()));
         assert!(output
             .used_imports
             .iter()
-            .all(|site| site.start != source.find("import m.{ Mode };").unwrap()));
+            .all(|site| site.file != root
+                || site.start != source.find("import m.{ Mode };").unwrap()));
         let unused: Vec<_> = output
             .warnings
             .iter()
@@ -3391,14 +3393,15 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
     let source = "import m;\nimport m.{ Mode };\nfn main() { let value: Mode = Mode.Present(42); }";
     let output = check_qualified_variant_root(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let root = output.defs.root_module().expect("root module");
     assert!(output
         .used_imports
         .iter()
-        .any(|site| site.start == source.find("import m.{ Mode };").unwrap()));
+        .any(|site| site.file == root && site.start == source.find("import m.{ Mode };").unwrap()));
     assert!(output
         .used_imports
         .iter()
-        .all(|site| site.start != source.find("import m;").unwrap()));
+        .all(|site| site.file != root || site.start != source.find("import m;").unwrap()));
     let unused: Vec<_> = output
         .warnings
         .iter()
@@ -3410,7 +3413,11 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
     let shadowed = "import m;\nfn main() { let m = 1; assert(m == 1); }";
     let output = check_qualified_variant_root(shadowed);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
-    assert!(output.used_imports.is_empty());
+    let root = output.defs.root_module().expect("root module");
+    assert!(output
+        .used_imports
+        .iter()
+        .all(|site| site.file != root || site.start != shadowed.find("import m;").unwrap()));
     assert!(output.warnings.iter().any(|warning| {
         warning.kind == TypeErrorKind::UnusedImport
             && warning.span.start == shadowed.find("import m;").unwrap()

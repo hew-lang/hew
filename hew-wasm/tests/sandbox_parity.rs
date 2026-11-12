@@ -1649,8 +1649,8 @@ fn signed_min_div_neg_one_matches_native() {
         let (native, sandbox) =
             case_outputs_with_inputs(case, "", hew_compile::SourceSet::in_memory());
         assert_eq!(
-            String::from_utf8_lossy(&native.stderr),
-            "hew: failure: SignedMinDivNegOne (203)\n",
+            comparable_stderr(&String::from_utf8_lossy(&native.stderr)),
+            ["hew: failure: SignedMinDivNegOne (203)", ""],
             "{name} native failure"
         );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "start\n", "{name}");
@@ -2043,13 +2043,131 @@ fn case_outputs_with_inputs(
 
 #[cfg(unix)]
 fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
+    if case.test_name == "supervisor-wired-nested-prerequisite" {
+        let stderr = String::from_utf8_lossy(&native.stderr);
+        assert!(
+            stderr.lines().any(|line| line.starts_with("hew: supervisor ")
+                && line.contains(" giving up on child worker: restart intensity 0 in 60s")
+                && line.ends_with(" exceeded; escalating")),
+            "native supervisor escalation must identify the child and its exhausted policy: {stderr}"
+        );
+    }
     assert_eq!(
-        String::from_utf8_lossy(&sandbox.stderr),
-        String::from_utf8_lossy(&native.stderr),
+        comparable_stderr(&String::from_utf8_lossy(&sandbox.stderr)),
+        comparable_stderr(&String::from_utf8_lossy(&native.stderr)),
         "{} stderr mismatch\nnative:\n{}\nsandbox:\n{}",
         case.test_name,
         describe_output(native),
         describe_output(sandbox)
+    );
+}
+
+/// Compare shared failure identity and messages while retaining ordinary
+/// stderr. Native faults carry source and worker context that the sandbox
+/// package cannot currently represent.
+#[cfg(unix)]
+fn comparable_stderr(stderr: &str) -> Vec<String> {
+    let mut fault_kind = None;
+    stderr
+        .split('\n')
+        .filter_map(|line| {
+            if let Some(failure) = line.strip_prefix("hew: failure: ") {
+                fault_kind = failure.split_once(" (").map(|(kind, _)| kind);
+            }
+            if line.starts_with("hew:   supervised as ")
+                || line.starts_with("hew: exiting 1: ")
+                    && (line.ends_with(" unrecovered actor crash")
+                        || line.ends_with(" unrecovered actor crashes"))
+                || line.starts_with("hew: supervisor ")
+                    && line.contains(" giving up on child ")
+                    && line.contains(": restart intensity ")
+                    && line.ends_with(" exceeded; escalating")
+            {
+                return None;
+            }
+            if let Some(context) = line.strip_prefix("hew:   in actor ") {
+                if let Some((actor, handler)) = context.split_once(" handler ") {
+                    if let (Some((_, id)), Some((handler, _))) =
+                        (actor.rsplit_once('#'), handler.split_once(" (thread "))
+                    {
+                        return Some(format!("hew: actor crash in {handler} (actor {id})"));
+                    }
+                }
+            }
+            if let Some(context) = line.strip_prefix("hew: actor crash in ") {
+                if let Some((actor, kind)) = context.rsplit_once(": ") {
+                    if Some(kind) == fault_kind {
+                        return Some(format!("hew: actor crash in {actor}"));
+                    }
+                }
+            }
+            if line.starts_with("hew: failure: ") || line.starts_with("hew: secondary failure: ") {
+                if let Some((failure, location)) = line.split_once(") at ") {
+                    // A message can contain colons, so locate the first numeric
+                    // line/column pair following the source path instead.
+                    for (index, _) in location.match_indices(':') {
+                        let Some((source_line, column_and_message)) =
+                            location[index + 1..].split_once(':')
+                        else {
+                            continue;
+                        };
+                        if source_line.is_empty()
+                            || !source_line.bytes().all(|byte| byte.is_ascii_digit())
+                        {
+                            continue;
+                        }
+                        let column_end = column_and_message
+                            .bytes()
+                            .take_while(u8::is_ascii_digit)
+                            .count();
+                        if column_end > 0 {
+                            let suffix = &column_and_message[column_end..];
+                            if suffix.is_empty() || suffix.starts_with(": ") {
+                                return Some(format!("{failure}){suffix}"));
+                            }
+                        }
+                    }
+                }
+            }
+            Some(line.to_string())
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn stderr_comparison_preserves_fault_identity_and_user_output() {
+    let native = "hew: failure: UserPanic (212) at /src/demo.hew:7:9: bad: value\n\
+hew:   in actor Worker#2 handler Worker.run (thread hew-worker-1)\n\
+hew:   supervised as supervisor#3/worker\n\
+hew: supervisor supervisor#3 [one_for_one] giving up on child worker: restart intensity 0 in 60s exceeded; escalating\n\
+user stderr\nhew: exiting 1: 1 unrecovered actor crashes\n";
+    let sandbox = "hew: failure: UserPanic (212): bad: value\n\
+hew: actor crash in Worker.run (actor 2): UserPanic\nuser stderr\n";
+    assert_eq!(comparable_stderr(native), comparable_stderr(sandbox));
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(&sandbox.replace("bad: value", "different"))
+    );
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(&sandbox.replace("Worker.run", "Worker.other"))
+    );
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(&sandbox.replace("(actor 2): UserPanic", "(actor 2): DivideByZero"))
+    );
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(&sandbox.replace("user stderr", "other stderr"))
+    );
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(&format!("{sandbox}hew: supervisor unexpected failure\n"))
+    );
+    assert_ne!(
+        comparable_stderr(native),
+        comparable_stderr(sandbox.trim_end())
     );
 }
 

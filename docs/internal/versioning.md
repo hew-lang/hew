@@ -45,7 +45,7 @@ untagged builds, where `X` counts commits since the nearest reachable Hew
 release tag. Unrelated tags do not affect that count. A dirty checkout also
 appends `.dirty`; a clean build at the matching tag reports the plain version.
 
-The 0.10 candidate uses base `0.10.0-rc1`. Untagged candidate builds retain
+The 0.11 development candidate uses base `0.11.0-rc1`. Untagged candidate builds retain
 their derived development count and commit; the matching signed tag identifies
 the plain candidate version. Keep edition 2026 unchanged. The
 post-release bump is separate from the qualified release commit and its tag. The

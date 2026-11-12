@@ -240,15 +240,23 @@ jobs:
         # xwin 0.10 handles the current SDK manifest's payload path separators.
         run: cargo install cargo-xwin --locked --version 0.23.1
 
+      # scripts/release-lib.py adds the archive's frame-pointer and path-remap
+      # flags, then strips debug info from every member but the runtime's.
       - name: Build FreeBSD release library
         if: matrix.builder == 'zig' && !matrix.build_std
-        run: cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+        run: >-
+          python3 scripts/release-lib.py build
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Build FreeBSD release library with standard library
         if: matrix.build_std
         env:
           RUSTC_BOOTSTRAP: "1"
-        run: cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+        run: >-
+          python3 scripts/release-lib.py build
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Build aarch64 FreeBSD release consumer
         if: matrix.build_std
@@ -264,7 +272,10 @@ jobs:
         if: matrix.builder == 'xwin'
         env:
           AWS_LC_SYS_PREBUILT_NASM: "1"
-        run: cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+        run: >-
+          python3 scripts/release-lib.py build
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Record FreeBSD ABI baseline
         if: matrix.build_std
@@ -520,14 +531,25 @@ jobs:
       # ── Rust builds ─────────────────────────────────────────────────────
 
       - name: Build the Hew toolchain
-        run: cargo build -p hew-cli --release --target ${{ matrix.rust_target }}
+        shell: bash
+        run: |
+          # The compiler's line tables ship as a separate debug asset: a dSYM
+          # on macOS, and on Windows a PDB the executable names by base name.
+          case "${{ matrix.target }}" in
+          darwin-*) export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed ;;
+          windows-*) export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS='-Clink-arg=/PDBALTPATH:%_PDB%' ;;
+          esac
+          cargo build -p hew-cli --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         if: startsWith(matrix.target, 'darwin')
         # The shipped archive builds under the non-LTO release-lib profile:
         # external Rust staticlibs (--link-lib packages) cannot dedupe their
         # verbatim libstd members against a fat-LTO archive.
-        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+        run: >-
+          python3 scripts/release-lib.py build
+          --archive target/${{ matrix.rust_target }}/release-lib/libhew.a --
+          cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Prove release library consumer linking (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -572,14 +594,13 @@ jobs:
             --native-lib-name "libhew.a" \
             --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
             --destination "${ARCHIVE_NAME}" \
-            --completion-shells "bash zsh fish"
+            --completion-shells "bash zsh fish" \
+            --debug-symbols "${ARCHIVE_NAME}-debug"
 
-          # macOS release binaries embed static LLVM support and rely on
-          # Mach-O weak/coalesced definitions that `strip` can break. Keep the
-          # packaged binaries unstripped so the published archive matches the
-          # already-validated release build.
-          echo "Skipping strip on macOS release binaries."
-
+          # The binary keeps its symbol table: macOS release binaries embed
+          # static LLVM support and rely on Mach-O weak/coalesced definitions
+          # that a full `strip` can break. Only the debug map is stripped; the
+          # dSYM in the debug asset holds the DWARF.
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       - name: Verify macOS binaries have no non-system dynamic dependencies
@@ -623,7 +644,8 @@ jobs:
             --native-lib-name "hew.lib" \
             --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
             --destination "${ARCHIVE_NAME}" \
-            --completion-shells "bash zsh fish powershell"
+            --completion-shells "bash zsh fish powershell" \
+            --debug-symbols "${ARCHIVE_NAME}-debug"
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
@@ -719,7 +741,9 @@ jobs:
 
       - name: Create tar.gz (Unix)
         if: "!startsWith(matrix.target, 'windows')"
-        run: tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+        run: |
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          tar czf "${ARCHIVE_NAME}-debug.tar.gz" "${ARCHIVE_NAME}-debug"
 
       - name: Test packaged SDK (Unix)
         if: "!startsWith(matrix.target, 'windows')"
@@ -728,14 +752,19 @@ jobs:
 
       - name: Create zip (Windows)
         if: startsWith(matrix.target, 'windows')
-        run: Compress-Archive -Path "${env:ARCHIVE_NAME}" -DestinationPath "${env:ARCHIVE_NAME}.zip"
+        run: |
+          Compress-Archive -Path "${env:ARCHIVE_NAME}" -DestinationPath "${env:ARCHIVE_NAME}.zip"
+          Compress-Archive -Path "${env:ARCHIVE_NAME}-debug" -DestinationPath "${env:ARCHIVE_NAME}-debug.zip"
         shell: pwsh
 
       - name: Test packaged SDK (Windows)
         if: startsWith(matrix.target, 'windows')
         timeout-minutes: 20
         shell: bash
-        run: make SHELL=bash test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.zip"
+        run: >-
+          make SHELL=bash test-packaged-sdk
+          PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.zip"
+          PACKAGED_SDK_DEBUG_ARCHIVE="${ARCHIVE_NAME}-debug.zip"
 
       - name: Upload packaged SDK acceptance
         if: always()
@@ -757,12 +786,28 @@ jobs:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.tar.gz
 
+      - name: Upload debug symbols (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARCHIVE_NAME }}-debug
+          path: ${{ env.ARCHIVE_NAME }}-debug.tar.gz
+          if-no-files-found: error
+
       - name: Upload artifact (Windows)
         if: startsWith(matrix.target, 'windows')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.zip
+
+      - name: Upload debug symbols (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARCHIVE_NAME }}-debug
+          path: ${{ env.ARCHIVE_NAME }}-debug.zip
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
@@ -854,6 +899,11 @@ jobs:
             release-${{ matrix.target }}-jammy-cargo-
 
       - name: Build the matched Hew SDK artifacts
+        env:
+          # lld and some GCC builds add no build-id by default; the split debug
+          # asset is keyed by it.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-Wl,--build-id
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Clink-arg=-Wl,--build-id
         run: |
           if [ "${{ matrix.live_sdk }}" = true ]; then
             make live-release-artifacts TARGET_TRIPLE="${{ matrix.rust_target }}"
@@ -900,14 +950,15 @@ jobs:
             --native-lib-name "libhew.a" \
             --wasi-lib-dir "portable-release-libs/wasm32-wasip1" "$@" \
             --destination "${ARCHIVE_NAME}" \
-            --completion-shells "bash zsh fish"
-
-          strip "${ARCHIVE_NAME}/bin/hew"
+            --completion-shells "bash zsh fish" \
+            --debug-symbols "${ARCHIVE_NAME}-debug"
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
       - name: Create tar.gz
-        run: tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+        run: |
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          tar czf "${ARCHIVE_NAME}-debug.tar.gz" "${ARCHIVE_NAME}-debug"
 
       - name: Test packaged SDK
         timeout-minutes: 20
@@ -929,6 +980,13 @@ jobs:
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.tar.gz
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARCHIVE_NAME }}-debug
+          path: ${{ env.ARCHIVE_NAME }}-debug.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD build — x86_64 via QEMU VM (assessed under the patch policy)
@@ -971,7 +1029,8 @@ jobs:
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "15.1"
-          mem: 8192
+          # Leave headroom for the full-LTO driver and guest kernel/file cache.
+          mem: 12288
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
             printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
@@ -1005,7 +1064,19 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli --release
+            # The split debug asset is keyed by the GNU build-id.
+            export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS=-Clink-arg=-Wl,--build-id
+            if /usr/bin/time -l cargo build -p hew-cli --release; then
+              :
+            else
+              build_status=$?
+              # Retain guest evidence even when a killed compiler prevents copyback.
+              sysctl hw.physmem hw.realmem hw.ncpu vm.swap_total || true
+              swapinfo -h || true
+              vmstat -s || true
+              dmesg -a || true
+              exit "$build_status"
+            fi
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
@@ -1021,12 +1092,11 @@ jobs:
               --native-lib-name "libhew.a" \
               --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
               --destination "${ARCHIVE_NAME}" \
-              --completion-shells "bash zsh fish"
-
-            # Staging proves every binary exists; strip failures remain fatal.
-            strip "${ARCHIVE_NAME}/bin/hew"
+              --completion-shells "bash zsh fish" \
+              --debug-symbols "${ARCHIVE_NAME}-debug"
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+            tar czf "${ARCHIVE_NAME}-debug.tar.gz" "${ARCHIVE_NAME}-debug"
 
             export PATH="/usr/local/llvm22/bin:$PATH"
             gmake test-packaged-sdk PYTHON=python3.12 PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz"
@@ -1047,6 +1117,13 @@ jobs:
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.tar.gz
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.archive.outputs.name }}-debug
+          path: ${{ steps.archive.outputs.name }}-debug.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
   # npm packages — @hew-lang/wasm (hew-wasm) and @hew-lang/sandbox-vm, built,
@@ -1177,6 +1254,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: hew-${{ needs.validate.outputs.tag }}-${{ matrix.target }}
+          path: dist/
+
+      - name: Download Linux debug symbols
+        if: env.FINAL == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hew-${{ needs.validate.outputs.tag }}-${{ matrix.target }}-debug
           path: dist/
 
       - name: Build Linux packages

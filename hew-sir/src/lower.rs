@@ -2019,6 +2019,8 @@ struct Builder<'hir, 'service> {
 
 #[path = "lower_aggregate.rs"]
 mod aggregate;
+#[path = "lower_binary.rs"]
+mod binary;
 #[path = "lower_builder_core.rs"]
 mod builder_core;
 #[path = "lower_call.rs"]

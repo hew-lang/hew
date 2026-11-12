@@ -120,9 +120,13 @@ fn generic_numeric_arithmetic_keeps_concrete_overflow_semantics() {
             describe_output(&output)
         );
         assert!(output.stdout.is_empty(), "{}", describe_output(&output));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
-            "hew: failure: IntegerOverflow (201)\n"
+        // One line: the kind, then the overflowing operation's site.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("hew: failure: IntegerOverflow (201) at ")
+                && stderr.ends_with("generic-numeric-overflow.hew:1:39\n")
+                && stderr.lines().count() == 1,
+            "{stderr}"
         );
     }
 }

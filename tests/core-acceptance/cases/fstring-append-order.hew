@@ -1,0 +1,60 @@
+type Label {
+    number: i64;
+}
+
+type Plain {
+    number: i64;
+}
+
+impl Display for Label {
+    fn fmt(self) -> string {
+        println(f"display {self.number}");
+        f"label={self.number}"
+    }
+}
+
+fn label(number: i64) -> Label {
+    println(f"expression {number}");
+    Label { number: number }
+}
+
+fn surrounded<T: Display>(value: T) -> string {
+    f"[{value}]"
+}
+
+fn main() {
+    assert(f"" == "");
+    assert(f"{42}" == "42");
+    let maximum: u64 = 18446744073709551615;
+    assert(surrounded(maximum) == "[18446744073709551615]");
+    assert(surrounded("é✓") == "[é✓]");
+    assert(f"{label(1)}:{label(2)}" == "label=1:label=2");
+    assert(surrounded(label(3)) == "[label=3]");
+    var original = "unchanged";
+    let alias = original;
+    assert(f"{original}:{ { original = "changed"; original } }" == "unchanged:changed");
+    assert(original == "changed");
+    assert(alias == "unchanged");
+    assert(f"<{alias}>" == "<unchanged>");
+    let minimum: i64 = -9223372036854775807 - 1;
+    let signed8: i8 = -128;
+    let signed16: i16 = -32768;
+    let signed32: i32 = -2147483648;
+    let signed_size: isize = -37;
+    let unsigned8: u8 = 255;
+    let unsigned16: u16 = 65535;
+    let unsigned32: u32 = 4294967295;
+    let unsigned_size: usize = 37;
+    assert(f"v={signed8}:{signed16}:{signed32}:{signed_size}" == "v=-128:-32768:-2147483648:-37");
+    assert(f"v={unsigned8}:{unsigned16}:{unsigned32}:{unsigned_size}" == "v=255:65535:4294967295:37");
+    let tiny: f64 = 0.0000000001;
+    let large: f64 = 100000000000000000000.0;
+    assert(f"v={tiny}:{large}" == "v=" + tiny.fmt() + ":" + large.fmt());
+    let f: f64 = -0.0;
+    let small: f32 = 0.00001;
+    assert(f"v={minimum}:{maximum}" == "v=-9223372036854775808:18446744073709551615");
+    assert(f"v={f}:{small}" == "v=" + f.fmt() + ":" + small.fmt());
+    assert(f"v={true}:{false}:{'é'}:{'✓'}:{'\0'}" == "v=true:false:é:✓:\0");
+    assert(f"v={Plain { number: 4 }:?}".contains("4"));
+    println("interpolation passed");
+}

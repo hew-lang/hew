@@ -80,9 +80,7 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation, stdou
         StderrExpectation::NoFaultDiagnostics => {
             assert!(
                 !stderr.lines().any(|line| {
-                    line.starts_with("hew: failure:")
-                        || line.starts_with("hew: secondary failure:")
-                        || line.starts_with("hew: actor crash")
+                    line.starts_with("hew: failure:") || line.starts_with("hew: secondary failure:")
                 }),
                 "remote observation must not report the origin fault again:\n{stderr}"
             );
@@ -90,40 +88,29 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation, stdou
         StderrExpectation::ExactOneCrashIn(context)
         | StderrExpectation::ExactOneLocalCrashIn(context)
         | StderrExpectation::ExactOneRemoteLinkCrashIn(context) => {
-            let prefix = format!("hew: actor crash in {context} (actor ");
-            let diagnostics: Vec<_> = stderr
-                .lines()
-                .filter(|line| line.starts_with(&prefix))
-                .collect();
+            let crashes = actor_crashes(stderr, context);
             assert_eq!(
-                diagnostics.len(),
+                crashes.len(),
                 1,
-                "expected exactly one current-format crash diagnostic in {context}; stderr:\n{stderr}"
+                "expected exactly one crash record in {context}; stderr:\n{stderr}"
             );
-            let identity = diagnostics[0]
-                .strip_prefix(&prefix)
-                .and_then(|tail| tail.split_once("): "))
-                .map(|(actor_id, reason)| {
-                    assert!(
-                        !reason.is_empty(),
-                        "crash diagnostic must include a reason; stderr:\n{stderr}"
-                    );
-                    actor_id
-                })
-                .expect("crash diagnostic must contain `(actor <id>): <reason>`");
+            let crash = &crashes[0];
             assert!(
-                identity.parse::<u64>().is_ok_and(|actor_id| actor_id != 0),
-                "crash diagnostic must include a non-zero local actor identity; stderr:\n{stderr}"
+                !crash.kind.is_empty(),
+                "crash record must name its failure kind; stderr:\n{stderr}"
+            );
+            assert!(
+                crash.actor_id != 0,
+                "crash record must include a non-zero local actor identity; stderr:\n{stderr}"
             );
             if matches!(expectation, StderrExpectation::ExactOneRemoteLinkCrashIn(_)) {
                 let location = stdout
                     .lines()
                     .find_map(|line| line.strip_prefix("LINK_ORIGIN "))
                     .expect("fixture must publish the authenticated remote Location");
-                assert!(
-                    diagnostics[0].ends_with(&format!(
-                        " while handling link exit from remote {location}"
-                    )),
+                assert_eq!(
+                    crash.remote_origin,
+                    Some(location),
                     "linked crash must retain its exact remote node, actor and incarnation; stdout:\n{stdout}\nstderr:\n{stderr}"
                 );
                 assert_eq!(
@@ -135,19 +122,69 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation, stdou
                 );
             } else if matches!(expectation, StderrExpectation::ExactOneLocalCrashIn(_)) {
                 assert!(
-                    !diagnostics[0].contains("while handling link exit from remote"),
+                    crash.remote_origin.is_none(),
                     "a local actor fault must not acquire a remote origin: {stderr}"
                 );
             }
         }
         StderrExpectation::NoCrashIn(context) => {
-            let prefix = format!("hew: actor crash in {context}");
             assert!(
-                !stderr.lines().any(|line| line.starts_with(&prefix)),
-                "did not expect a crash diagnostic in {context}; stderr:\n{stderr}"
+                actor_crashes(stderr, context).is_empty(),
+                "did not expect a crash record in {context}; stderr:\n{stderr}"
             );
         }
     }
+}
+
+/// One actor crash record on stderr: its failure kind, the crashed actor and
+/// the remote link that delivered the failure, if any.
+struct ActorCrash<'a> {
+    kind: &'a str,
+    actor_id: u64,
+    remote_origin: Option<&'a str>,
+}
+
+/// The crash records whose actor type or handler matches `context`.
+///
+/// A record starts `hew: failure: <Kind> (<code>)`; an actor's turn adds
+/// `hew:   in actor <Type>#<id> handler <context>`, and a crash delivered by a
+/// remote link exit adds `hew:   while handling link exit from remote <location>`.
+fn actor_crashes<'a>(stderr: &'a str, context: &str) -> Vec<ActorCrash<'a>> {
+    let mut crashes = Vec::new();
+    let mut lines = stderr.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(head) = line.strip_prefix("hew: failure: ") else {
+            continue;
+        };
+        let kind = head.split(" (").next().unwrap_or_default();
+        let mut actor = None;
+        let mut remote_origin = None;
+        while let Some(detail) = lines.next_if(|next| next.starts_with("hew:   ")) {
+            if let Some(rest) = detail.strip_prefix("hew:   in actor ") {
+                let (id, detail) = rest.split_once(' ').unwrap_or((rest, ""));
+                actor = id.rsplit_once('#').and_then(|(actor_type, id)| {
+                    let handler = detail
+                        .strip_prefix("handler ")
+                        .and_then(|value| value.split_whitespace().next());
+                    (actor_type == context || handler == Some(context))
+                        .then(|| id.parse::<u64>().ok())
+                        .flatten()
+                });
+            } else if let Some(location) =
+                detail.strip_prefix("hew:   while handling link exit from remote ")
+            {
+                remote_origin = Some(location);
+            }
+        }
+        if let Some(actor_id) = actor {
+            crashes.push(ActorCrash {
+                kind,
+                actor_id,
+                remote_origin,
+            });
+        }
+    }
+    crashes
 }
 
 struct CompiledNodeBinary {
@@ -386,6 +423,9 @@ impl SecureScenario {
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if scenario == "inbound_isolation" {
+            command.env("HEW_BACKTRACE", "1");
+        }
         for (key, value) in extra_env {
             command.env(key, value);
         }

@@ -75,14 +75,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 990,
+      "budget_remaining": 987,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 8,
       "span": null,
-      "step_count": 10,
+      "step_count": 13,
       "type": "step.committed"
     },
     {
@@ -108,14 +108,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 982,
+      "budget_remaining": 979,
       "id": "actor:a1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 11,
       "span": null,
-      "step_count": 18,
+      "step_count": 21,
       "type": "step.committed"
     },
     {
@@ -171,14 +171,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 973,
+      "budget_remaining": 970,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 18,
       "span": null,
-      "step_count": 27,
+      "step_count": 30,
       "type": "step.committed"
     },
     {
@@ -221,14 +221,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 965,
+      "budget_remaining": 959,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 23,
       "span": null,
-      "step_count": 35,
+      "step_count": 41,
       "type": "step.committed"
     },
     {
@@ -254,14 +254,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 961,
+      "budget_remaining": 954,
       "id": "actor:a2",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 26,
       "span": null,
-      "step_count": 39,
+      "step_count": 46,
       "type": "step.committed"
     },
     {
@@ -295,14 +295,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 957,
+      "budget_remaining": 950,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 30,
       "span": null,
-      "step_count": 43,
+      "step_count": 50,
       "type": "step.committed"
     },
     {
@@ -343,7 +343,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 925,
+    "budget_remaining": 932,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -370,7 +370,7 @@
     "stdout": [
       "done\n"
     ],
-    "step_count": 75,
+    "step_count": 68,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -378,7 +378,7 @@
     }
   },
   "fixture_id": "supervisor-restart",
-  "hew_version": "0.6.1",
+  "hew_version": "0.10.0-rc1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

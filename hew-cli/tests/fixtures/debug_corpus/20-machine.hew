@@ -1,0 +1,25 @@
+// State machine with events.
+machine Light {
+    events {
+        Go;
+        Stop;
+    }
+
+    state Idle;
+    state Running;
+    state Stopped;
+
+    on Go: Idle => Running;
+    on Stop: Running => Stopped;
+
+    default { state }
+}
+
+fn main() {
+    var light: Light = .Idle;
+    println(light.state_name());
+    let _ = light.step(.Go);
+    println(light.state_name());
+    let _ = light.step(.Stop);
+    println(light.state_name());
+}

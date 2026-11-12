@@ -900,9 +900,10 @@ impl Checker {
     pub(super) fn unguarded_leaf_patterns(arms: &[MatchArm]) -> Vec<&Pattern> {
         fn visit<'pattern>(pattern: &'pattern Pattern, out: &mut Vec<&'pattern Pattern>) {
             match pattern {
-                Pattern::Or(left, right) => {
-                    visit(&left.0, out);
-                    visit(&right.0, out);
+                Pattern::Or(alternatives) => {
+                    for alternative in alternatives {
+                        visit(&alternative.0, out);
+                    }
                 }
                 _ => out.push(pattern),
             }

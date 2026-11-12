@@ -24,7 +24,7 @@ fn main() {
         .Ok(v) => println(v),
         .Err(e) => match e {
             ActorError.Rejected(_) => println("rejected"),
-            ActorError.Trapped => println("trapped"),
+            ActorError.Trapped(_) => println("trapped"),
             ActorError.Dead => println("dead"),
             ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),
@@ -41,7 +41,7 @@ fn main() {
         .Err(e) => match e {
             ActorError.Rejected(_) => println("rejected"),
             ActorError.Failed(reason) => println(reason),
-            ActorError.Trapped => println("trapped"),
+            ActorError.Trapped(_) => println("trapped"),
             ActorError.Dead => println("dead"),
             ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),

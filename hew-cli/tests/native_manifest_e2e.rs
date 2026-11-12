@@ -104,7 +104,8 @@ fn trimmed_package_paths_are_stable_across_roots() {
         write(&root.join("native/calc.c"), "#include <stdio.h>\n#include \"calc.h\"\nint32_t calc_answer(int32_t extra) { fprintf(stderr, \"%s\\n\", __FILE__); return CALC_BASE + extra; }\n");
     }
     assert_untrimmed_debug_source(&roots);
-    for flags in [&["--trim-paths"][..], &["--release"][..]] {
+    // A debug build keeps absolute paths unless asked to trim them.
+    for flags in [&["--trim-paths"][..], &["--release", "--trim-paths"][..]] {
         let objects: Vec<_> = roots
             .iter()
             .map(|root| emit_package_paths(root, flags))
@@ -269,7 +270,7 @@ fn assert_untrimmed_debug_source(roots: &[PathBuf; 2]) {
     let original_roots = roots.to_vec();
     let original: Vec<_> = original_roots
         .iter()
-        .map(|root| emit_package_paths(root, &["--release", "--no-trim-paths"]))
+        .map(|root| emit_package_paths(root, &["--release"]))
         .collect();
     assert_ne!(original[0].0, original[1].0);
     for (root, (_, llvm)) in original_roots.iter().zip(&original) {

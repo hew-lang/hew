@@ -904,18 +904,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_propagate_fault()
     }
 
+    /// The fault-site id of `block`'s terminator: its index in the module's
+    /// site table.
     fn terminator_site(&self, block: &PhysicalBlock) -> Option<u32> {
         let index = u32::try_from(block.ops.len())
             .expect("verified physical operation count fits a u32 index");
+        let attribution = self.module.debug.functions.get(&self.function.callable)?;
+        let offset = *attribution.sites.get(&(block.id, index))?;
         self.module
             .debug
-            .functions
-            .get(&self.function.callable)?
-            .sites
-            .get(&(block.id, index))
-            .copied()
+            .fault_site_id(hew_mir::physical::SemSourceSite {
+                file: attribution.file,
+                offset,
+            })
     }
 
+    /// Record fault-site id `site` on the active fault.
     pub(super) fn attach_active_fault_site(&self, site: Option<u32>) -> CodegenResult<()> {
         let Some(site) = site else {
             return Ok(());
@@ -930,11 +934,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("load fault for source site")?;
         let attach = get_or_declare_external(
             self.llvm,
-            "hew_fault_set_site",
+            "hew_fault_set_site_in_image",
             self.ctx.void_type().fn_type(
                 &[
                     self.ctx.ptr_type(AddressSpace::default()).into(),
                     self.ctx.i32_type().into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
                 ],
                 false,
             ),
@@ -945,6 +952,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &[
                     fault.into(),
                     self.ctx.i32_type().const_int(u64::from(site), false).into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::FILE_TABLE_SYMBOL)
+                        .expect("source tables emitted before functions")
+                        .as_pointer_value()
+                        .into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::SITE_TABLE_SYMBOL)
+                        .expect("source tables emitted before functions")
+                        .as_pointer_value()
+                        .into(),
+                    self.llvm
+                        .get_global(hew_debug_abi::SYMTAB_SYMBOL)
+                        .map_or_else(
+                            || self.ctx.ptr_type(AddressSpace::default()).const_null(),
+                            |table| table.as_pointer_value(),
+                        )
+                        .into(),
                 ],
                 "fault.site",
             )

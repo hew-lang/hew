@@ -26,6 +26,11 @@ specifications.
   verification and validate the changed result.
 - When two representations disagree, reject the ambiguity or resolve it at the
   owning layer before crossing the boundary.
+- Same-precedence binary runs and pattern alternatives remain flat across
+  shared frontend consumers. Binary steps retain each prefix's checked type
+  and source identity; flattening must preserve left-associative evaluation,
+  guarded suspension, per-step overflow and temporary cleanup. Pattern
+  alternatives retain source order and share checked binding identities.
 
 ## Ownership proofs and runtime work
 
@@ -38,6 +43,14 @@ specifications.
 - Runtime occupancy, sharing and budget accounting represent genuinely dynamic
   state. Preserve the required release, COW and cancellation behaviour while
   removing redundant metadata and checks.
+
+- String interpolation selects Display semantically, evaluates each segment
+  in source order and keeps its owned accumulator visible to fault and
+  suspension cleanup. Scalar and literal appends reuse the ordinary checked
+  string COW growth and capacity-budget contract. They must not reserve guessed
+  capacity before later source expressions or Display calls run. Canonical
+  append capacity may retain slack; an allocation reduction does not imply a
+  lower retained payload or peak memory use.
 
 ## Declaration and type identity
 

@@ -157,6 +157,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         functions: vec![function],
         type_facts: facts.rows().clone(),
         resources,
+        defs: hew_types::DefTable::fixture(),
         ..SemModule::default()
     }
 }

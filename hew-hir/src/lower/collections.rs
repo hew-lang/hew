@@ -499,11 +499,7 @@ impl LowerCtx<'_> {
                 let length =
                     self.make_expr(length, ResolvedTy::I64, IntentKind::Read, span.clone());
                 let zero = self.make_i64_literal(0, span.clone());
-                HirExprKind::Binary {
-                    op: BinaryOp::Equal,
-                    left: Box::new(length),
-                    right: Box::new(zero),
-                }
+                HirExprKind::binary(length, BinaryOp::Equal, zero)
             }
             HirExprKind::ResolvedImplCall {
                 target: CallTarget::RuntimeCollection(method),

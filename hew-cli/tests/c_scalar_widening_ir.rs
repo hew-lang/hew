@@ -28,6 +28,9 @@ fn main() {
     data.push(7);
     let narrow = unsafe { widening_probe(flag, 1, -1, 2, -2, 3) };
     let truth = unsafe { widening_truth() };
+    // Exercise dynamic conversion independently of interpolation's append
+    // specialization; a constant conversion cannot test register widening.
+    println(to_string(truth));
     println(f"{narrow} {truth} {data.len()}");
 }
 "#;
@@ -106,6 +109,11 @@ fn narrow_extern_arguments_carry_their_c_widening_on_every_target() {
             "{target:?}"
         );
         assert_eq!(
+            declaration(&ir, "hew_string_append_bool_checked"),
+            "declare ptr @hew_string_append_bool_checked(ptr, i8 zeroext, ptr)",
+            "{target:?}"
+        );
+        assert_eq!(
             declaration(&ir, "hew_print_value"),
             "declare void @hew_print_value(i8 zeroext, i64, i1 zeroext)",
             "{target:?}"
@@ -124,6 +132,13 @@ fn narrow_extern_arguments_carry_their_c_widening_on_every_target() {
             ir.lines()
                 .any(|line| line.contains("call ptr @hew_bool_to_string(i8 zeroext %")),
             "{target:?}: the call site carries the declaration's widening:\n{ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("call ptr @hew_string_append_bool_checked(")
+                    && line.contains("i8 zeroext %")
+            }),
+            "{target:?}: interpolation preserves the dynamic bool's widening:\n{ir}"
         );
     }
 }

@@ -461,6 +461,11 @@ impl<'a> Control<'a> {
             }
             Expr::Block(block) | Expr::Scope { body: block } => self.block(block)?,
             Expr::UnsafeBlock(block) => self.block(block)?,
+            Expr::Binary { first, steps } => {
+                for operand in Expr::binary_operands_mut(first, steps) {
+                    self.expr(operand)?;
+                }
+            }
             Expr::Coalesce { left, right } => {
                 self.expr(left)?;
                 self.expr(right)?;
@@ -473,8 +478,7 @@ impl<'a> Control<'a> {
                 self.expr(object)?;
                 self.expr(index)?;
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Is {
+            Expr::Is {
                 lhs: left,
                 rhs: right,
             }

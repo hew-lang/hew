@@ -320,11 +320,7 @@ impl LowerCtx<'_> {
         let len = self.make_vec_len_call(receiver, elem_ty, span.clone());
         let zero = self.make_i64_literal(0, span.clone());
         let condition = self.make_expr(
-            HirExprKind::Binary {
-                op: BinaryOp::Greater,
-                left: Box::new(len),
-                right: Box::new(zero),
-            },
+            HirExprKind::binary(len, BinaryOp::Greater, zero),
             ResolvedTy::Bool,
             IntentKind::Read,
             span.clone(),

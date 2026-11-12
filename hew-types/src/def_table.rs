@@ -1184,7 +1184,16 @@ impl DefTable {
     /// test paths, embedded sources): identity must be deterministic, never
     /// dependent on `canonicalize` succeeding.
     fn intern_source_key(source: &Path) -> PathBuf {
-        std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf())
+        std::fs::canonicalize(source).unwrap_or_else(|_| {
+            // Embedded documents can reach one source both as `std/file.hew`
+            // and `./std/file.hew`. A host without a filesystem cannot
+            // canonicalize either spelling, but `.` never changes identity.
+            // Preserve `..` because resolving it could cross a symlink.
+            source
+                .components()
+                .filter(|part| !matches!(part, std::path::Component::CurDir))
+                .collect()
+        })
     }
 
     /// Mint (or resolve) the identity of a graph module with canonical dotted
@@ -1978,6 +1987,21 @@ mod tests {
             table.module_path_for_source(Path::new("/two/lib.hew")),
             Some("lib#mod")
         );
+    }
+
+    #[test]
+    fn embedded_source_dot_spelling_reuses_module_identity() {
+        let mut table = DefTable::new();
+        let first = table.mint_module(
+            "virtual.failure",
+            &[PathBuf::from("virtual-missing/failure.hew")],
+        );
+        let second = table.mint_module(
+            "virtual.failure",
+            &[PathBuf::from("./virtual-missing/failure.hew")],
+        );
+        assert_eq!(first, second);
+        assert_eq!(table.module_path(second), "virtual.failure");
     }
 
     /// A sourceless mint (`std.builtins`) is a placeholder for the module, not

@@ -84,6 +84,8 @@ pub struct HewReplyChannel {
     /// is status-bearing: `hew_reply_channel_failure_kind` names WHY no value
     /// arrived instead of collapsing every failure into "null".
     fail_reason: AtomicI32,
+    /// Immutable facts for a handler fault, published before the ready flag.
+    failure: Mutex<Option<Arc<crate::failure_snapshot::FailureSnapshot>>>,
     /// The waiter-kind discriminator (W6.010), as the caller's incarnation.
     /// When set, the waiter is a PARKED CONTINUATION belonging to that exact
     /// incarnation: a reply wakes it through
@@ -154,6 +156,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         native_reply_release: None,
         allocation_failed: AtomicBool::new(false),
         fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
+        failure: Mutex::new(None),
         caller_actor_id: AtomicU64::new(0),
         caller_actor_serial: AtomicU64::new(0),
         lock: Mutex::new(()),
@@ -535,14 +538,33 @@ pub(crate) unsafe fn hew_reply_channel_mark_failed(ch: *mut HewReplyChannel, rea
 /// `hew_reply_channel_failure_kind` read observes it (release/acquire through
 /// the ready flag).
 pub(crate) unsafe fn hew_reply_channel_publish_crash_fallback(ch: *mut HewReplyChannel) {
+    // SAFETY: forwards the sender reference and has no diagnostic to attach.
+    unsafe { publish_crash_fallback_with_failure(ch, None) };
+}
+
+/// Publish the same owned failure retained by the actor completion.
+/// The sender reference is consumed just as in the ordinary fallback.
+pub(crate) unsafe fn publish_crash_fallback_with_failure(
+    ch: *mut HewReplyChannel,
+    failure: Option<Arc<crate::failure_snapshot::FailureSnapshot>>,
+) {
     if ch.is_null() {
         return;
     }
     // SAFETY: caller guarantees `ch` is a live reply channel reference.
     unsafe {
+        *(*ch).failure.lock_or_recover() = failure;
         hew_reply_channel_mark_failed(ch, crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED);
         let _ = hew_reply(ch, ptr::null_mut(), 0);
     }
+}
+
+/// Borrow the published failure through a retained waiter-side channel.
+pub(crate) unsafe fn published_failure(
+    ch: *const HewReplyChannel,
+) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
+    // SAFETY: the caller retains a live channel through this read.
+    unsafe { ch.as_ref() }?.failure.lock_or_recover().clone()
 }
 
 /// Classify a resolved-null reply: WHY did the wait produce no value?
@@ -2551,6 +2573,33 @@ mod tests {
 
         for h in handles {
             h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn crash_reply_retains_the_failure_after_sender_release() {
+        let failure = Arc::new(crate::failure_snapshot::FailureSnapshot {
+            code: 212,
+            message: Some("broken".into()),
+            site: Some(crate::failure_snapshot::Location {
+                file: "actor.hew".into(),
+                line: 3,
+                column: 5,
+            }),
+            frames: None,
+            frames_omitted: 0,
+        });
+        // SAFETY: the test owns the waiter and sender references.
+        unsafe {
+            let channel = hew_reply_channel_new();
+            hew_reply_channel_retain(channel);
+            publish_crash_fallback_with_failure(channel, Some(Arc::clone(&failure)));
+            assert!(hew_reply_wait(channel).is_null());
+            let received = published_failure(channel).unwrap();
+            assert!(Arc::ptr_eq(&failure, &received));
+            hew_reply_channel_free(channel);
+            drop(failure);
+            assert_eq!(received.site.as_ref().unwrap().file, "actor.hew");
         }
     }
 

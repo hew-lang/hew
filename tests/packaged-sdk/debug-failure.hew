@@ -1,0 +1,9 @@
+fn level2(x: i64) -> i64 {
+    let y = x * 3;
+    if y == 12 { panic("too big"); }
+    y
+}
+fn main() -> i64 {
+    println(level2(4));
+    0
+}

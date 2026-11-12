@@ -399,10 +399,24 @@ fn dump_expr_inner(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr,
         HirExprKind::ContextReader { reader } => {
             writeln!(out, "{pad}  context-reader {reader:?}").expect("write to string");
         }
-        HirExprKind::Binary { op, left, right } => {
-            writeln!(out, "{pad}  binary {op}").expect("write to string");
-            dump_expr(defs, out, left, indent + 4);
-            dump_expr(defs, out, right, indent + 4);
+        HirExprKind::Binary { first, steps } => {
+            writeln!(out, "{pad}  binary").expect("write to string");
+            dump_expr(defs, out, first, indent + 4);
+            for step in steps {
+                match &step.result {
+                    Some(result) => writeln!(
+                        out,
+                        "{pad}    {} -> {} {}: {}",
+                        step.op,
+                        result.node,
+                        result.site,
+                        result.ty.user_facing()
+                    ),
+                    None => writeln!(out, "{pad}    {}", step.op),
+                }
+                .expect("write to string");
+                dump_expr(defs, out, &step.right, indent + 4);
+            }
         }
         HirExprKind::IdentityCompare { left, right } => {
             writeln!(out, "{pad}  identity-compare").expect("write to string");
@@ -984,6 +998,20 @@ fn dump_expr_inner(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr,
         HirExprKind::SubsumedValue { source } => {
             writeln!(out, "{pad}  subsumed-value").expect("write to string");
             dump_expr(defs, out, source, indent + 4);
+        }
+        HirExprKind::Interpolation { segments } => {
+            writeln!(out, "{pad}  interpolation").expect("write to string");
+            for segment in segments {
+                match segment {
+                    crate::HirInterpolationSegment::Literal(text) => {
+                        writeln!(out, "{pad}    literal {text:?}").expect("write to string");
+                    }
+                    crate::HirInterpolationSegment::Append { family, value } => {
+                        writeln!(out, "{pad}    append {family:?}").expect("write to string");
+                        dump_expr(defs, out, value, indent + 6);
+                    }
+                }
+            }
         }
         HirExprKind::MachineVariantCtor {
             machine_name,

@@ -1,0 +1,38 @@
+// One-level operator chains evaluate left to right, each operator on the
+// value so far: `&&` and `||` stop at the first deciding operand, checked
+// arithmetic traps at the step that overflows, and a string chain releases
+// each intermediate value.
+
+fn seen(tag: string, value: bool) -> bool {
+    println(tag);
+    value
+}
+
+fn num(tag: string, value: i64) -> i64 {
+    println(tag);
+    value
+}
+
+fn main() {
+    let all = seen("a1", true) && seen("a2", false) && seen("a3", true);
+    println(f"all={all}");
+    let any = seen("o1", false) || seen("o2", true) || seen("o3", false);
+    println(f"any={any}");
+    let mixed = seen("m1", false) && seen("m2", true) || seen("m3", true) && seen("m4", false)
+        || seen("m5", true);
+    println(f"mixed={mixed}");
+    let sum = num("n1", 10) - num("n2", 3) + num("n3", 4) * num("n4", 2) - num("n5", 1);
+    println(f"sum={sum}");
+    let quotient = 100 / 3 % 7 * 2;
+    let bits = 1 | 2 | 4 ^ 6 & 3;
+    let shifts = 1 << 4 << 2 >> 3;
+    let ordered = 1 < 2 == true != false;
+    let wrapped: u8 = 250 &+ 3 &+ 4;
+    println(f"{quotient} {bits} {shifts} {ordered} {wrapped}");
+    let word = "s";
+    let joined = "a" + word + "b" + word + "c";
+    println(joined);
+    let big: i64 = 9223372036854775800;
+    let trapped = big + num("t1", 1) + num("t2", 10) + num("t3", 1);
+    println(f"unreachable {trapped}");
+}

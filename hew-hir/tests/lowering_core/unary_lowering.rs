@@ -25,7 +25,9 @@ fn contains_unary(expr: &HirExpr, expected: UnaryOp) -> bool {
         HirExprKind::Unary { op, operand, .. } => {
             *op == expected || contains_unary(operand, expected)
         }
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+        HirExprKind::Binary { first, steps } => HirExprKind::binary_operands(first, steps)
+            .any(|operand| contains_unary(operand, expected)),
+        HirExprKind::IdentityCompare { left, right } => {
             contains_unary(left, expected) || contains_unary(right, expected)
         }
         HirExprKind::If {

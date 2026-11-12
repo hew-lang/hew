@@ -3721,9 +3721,7 @@ fn verify_operation_shape(
                 },
             ));
         }
-        SemOpKind::ActorIngressAdapter(_)
-            if result.ty != crate::ActorIngressAdapter::pointer_type() =>
-        {
+        SemOpKind::ActorIngressAdapter(_) if result.ty != crate::static_address_type() => {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidConstType {
@@ -4318,14 +4316,20 @@ fn verify_operation_shape(
                 invalid_operation(function, operation.id, reason, diagnostics);
             }
         }
-        SemOpKind::ConstStr(_) if result.ty != ResolvedTy::String => diagnostics.push(diag(
-            function,
-            SirDiagnosticKind::InvalidConstType {
-                op: operation.id,
-                expected: "string",
-                actual: result.ty.user_facing().to_string(),
-            },
-        )),
+        // A literal is an owned string, or the static address of its bytes
+        // handed to a runtime operation.
+        SemOpKind::ConstStr(_)
+            if result.ty != ResolvedTy::String && result.ty != crate::static_address_type() =>
+        {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidConstType {
+                    op: operation.id,
+                    expected: "string",
+                    actual: result.ty.user_facing().to_string(),
+                },
+            ));
+        }
         SemOpKind::ConstBytes(_) if result.ty != ResolvedTy::Bytes => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {

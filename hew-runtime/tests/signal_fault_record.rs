@@ -17,6 +17,8 @@ fn run_child(case: &str) -> Output {
     Command::new(std::env::current_exe().expect("test executable resolves"))
         .args(["child_entry", "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD_CASE, case)
+        // A Rust test binary has no Hew symbol table; print every frame.
+        .env("HEW_BACKTRACE", "full")
         .output()
         .expect("child test process launches")
 }
@@ -100,12 +102,12 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
     let output = run_child("overflow");
     let stderr = stderr_of(&output);
     assert_eq!(
-        stderr.matches("hew: failure: StackOverflow at 0x").count(),
+        stderr.matches("hew: failure: StackOverflow (215)").count(),
         1,
         "exactly one StackOverflow record: {stderr}"
     );
     assert!(
-        stderr.contains("thread main\n  #0 0x"),
+        stderr.contains(", thread main\nhew:   at 0x"),
         "the record names the thread and the faulting frame: {stderr}"
     );
     // FreeBSD's unwinder cannot step out of an overflowing prologue, so its
@@ -121,7 +123,7 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
             "overflow must die by SIGSEGV or SIGBUS, got {:?}; stderr:\n{stderr}",
             output.status
         );
-        assert!(stderr.contains("at address 0x"), "{stderr}");
+        assert!(stderr.contains("(stack guard), thread main"), "{stderr}");
     }
     #[cfg(windows)]
     assert_eq!(
@@ -144,25 +146,21 @@ fn assert_frames_walk_the_recursion(stderr: &str) {
     let mut lines = stderr.lines().peekable();
     let mut recursion = None;
     while let Some(line) = lines.next() {
-        let Some(frame) = line.trim_start().strip_prefix('#') else {
+        let Some(frame) = line.strip_prefix("hew:   at 0x") else {
             continue;
         };
         let repeated = lines
             .peek()
             .is_some_and(|next| next.contains("identical frames"));
-        let pc = frame
-            .split_whitespace()
-            .nth(1)
-            .and_then(|pc| pc.strip_prefix("0x"))
-            .and_then(|hex| usize::from_str_radix(hex, 16).ok());
+        let pc = usize::from_str_radix(frame.trim(), 16).ok();
         if repeated {
             recursion = pc;
             break;
         }
     }
     let pc = recursion.unwrap_or_else(|| panic!("a collapsed recursion run: {stderr}"));
-    // Each frame reports its call site, inside descend, which is far smaller
-    // than a page.
+    // Each repeated frame is a return address inside descend, which is far
+    // smaller than a page.
     assert!(
         (descend..descend + 4096).contains(&pc),
         "the repeated frame {pc:#x} is a descend call site (descend={descend:#x}): {stderr}"
@@ -175,7 +173,7 @@ fn a_wild_pointer_is_a_signal_not_an_overflow() {
     let output = run_child("null");
     let stderr = stderr_of(&output);
     assert!(
-        stderr.contains("hew: failure: Signal at 0x"),
+        stderr.contains("hew: failure: Signal ("),
         "null read is an ordinary fault: {stderr}"
     );
     assert!(!stderr.contains("StackOverflow"), "{stderr}");
@@ -187,7 +185,7 @@ fn a_wild_pointer_is_a_signal_not_an_overflow() {
             "null read must die by its signal, got {:?}; stderr:\n{stderr}",
             output.status
         );
-        assert!(stderr.contains("at address 0x0,"), "{stderr}");
+        assert!(stderr.contains(") at 0x0, thread main"), "{stderr}");
     }
     #[cfg(windows)]
     assert_eq!(

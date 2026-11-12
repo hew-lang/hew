@@ -224,6 +224,11 @@ fn scan_expr_for_vec_index_gate_inner(
                 scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
             }
         }
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -232,8 +237,7 @@ fn scan_expr_for_vec_index_gate_inner(
             scan_expr_for_vec_index_gate(left, expr_types, diagnostics);
             scan_expr_for_vec_index_gate(right, expr_types, diagnostics);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..

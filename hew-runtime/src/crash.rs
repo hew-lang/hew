@@ -1,69 +1,22 @@
-//! Crash forensics and reporting for the Hew actor runtime.
+//! Actor crash recording and per-actor crash statistics.
 //!
-//! Provides crash reporting, per-actor crash statistics, and a global crash log
-//! for debugging actor crashes. This builds on the signal handling infrastructure
-//! in [`crate::signal`] to record detailed crash information.
+//! An actor crash is recorded from its [`FailureRecord`]: the record raised
+//! where the actor failed, completed with the actor's identity. The record is
+//! printed once, kept in a ring of the 64 most recent crashes (`/api/crashes`)
+//! and counted in the labelled crash metric.
 //!
-//! # Architecture
-//!
-//! - [`CrashReport`] — detailed crash information for a single incident
-//! - [`CrashStats`] — per-actor crash statistics with sliding window
-//! - [`RECENT_CRASHES`] — global ring buffer of recent crashes (64 entries)
-//! - C ABI functions for allocating/managing crash statistics
+//! [`CrashStats`] is the supervisor's per-child sliding window, exchanged with
+//! generated code through the C ABI below.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::lifetime::PoisonSafe;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-// ── Crash report struct ────────────────────────────────────────────────
-
-/// Detailed information about a single actor crash.
-///
-/// This struct is exchanged with C code and must maintain ABI compatibility.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CrashReport {
-    /// Unique ID of the crashed actor.
-    pub actor_id: u64,
-    /// Process identifier (PID) of the crashed actor.
-    ///
-    /// Always equals `actor_id`; kept for C-ABI layout compatibility.
-    pub actor_pid: u64,
-    /// Signal number that caused the crash (SIGSEGV=11, SIGBUS=7, etc.).
-    pub signal: i32,
-    /// Signal sub-code (`SEGV_MAPERR=1`, `SEGV_ACCERR=2`, etc.).
-    pub signal_code: i32,
-    /// Memory address that caused the fault.
-    pub fault_addr: usize,
-    /// Message type being processed when the crash occurred.
-    pub msg_type: i32,
-    /// Monotonic timestamp in nanoseconds when the crash occurred.
-    pub timestamp_ns: u64,
-    /// Worker thread ID that was executing the actor.
-    pub worker_id: u32,
-    /// Total crash count for this actor (from `CrashStats`).
-    pub total_crashes: u32,
-}
-
-impl CrashReport {
-    /// Create a zeroed crash report (for when no crashes have occurred).
-    const fn zeroed() -> Self {
-        Self {
-            actor_id: 0,
-            actor_pid: 0,
-            signal: 0,
-            signal_code: 0,
-            fault_addr: 0,
-            msg_type: 0,
-            timestamp_ns: 0,
-            worker_id: 0,
-            total_crashes: 0,
-        }
-    }
-}
+use crate::failure_record::{copy_name, FailureRecord};
+use crate::lifetime::PoisonSafe;
 
 // ── Per-actor crash statistics ─────────────────────────────────────────
 
@@ -129,48 +82,177 @@ impl CrashStats {
     }
 }
 
-// ── Global crash log ────────────────────────────────────────────────────
+// ── Crash ring ──────────────────────────────────────────────────────────
 
-/// Global ring buffer of recent crashes, bounded to 64 entries.
-static RECENT_CRASHES: PoisonSafe<VecDeque<CrashReport>> = PoisonSafe::new(VecDeque::new());
+/// The most recent crashes, oldest first.
+static RECENT_CRASHES: PoisonSafe<VecDeque<StoredCrash>> = PoisonSafe::new(VecDeque::new());
 
-/// Maximum number of crashes to keep in the global log.
-const MAX_CRASH_LOG_SIZE: usize = 64;
-
-/// Add a crash report to the global crash log.
-///
-/// If the log is full, removes the oldest entry to make room.
-/// Recovers from a poisoned mutex so that crash reports are never silently
-/// discarded; the data protected by this lock is append-only and safe to use
-/// after poison recovery.
-pub(crate) fn push_crash_report(report: CrashReport) {
-    crate::observe::record_actor_crash();
-    push_crash_report_to(&RECENT_CRASHES, report);
+/// A crash-ring entry with its own source identity.
+#[derive(Clone, Debug)]
+pub struct StoredCrash {
+    record: FailureRecord,
+    // Shared allocations keep the pointers in every cloned record valid.
+    _site_file: Option<std::sync::Arc<std::ffi::CString>>,
+    _frame_names: [Option<std::sync::Arc<std::ffi::CString>>; crate::failure_record::MAX_FRAMES],
+    _frame_files: [Option<std::sync::Arc<std::ffi::CString>>; crate::failure_record::MAX_FRAMES],
 }
 
-/// Inner implementation shared with tests.  Accepts any
-/// `&PoisonSafe<VecDeque<CrashReport>>` so tests can supply a local, isolated
-/// value without touching the process-global `RECENT_CRASHES`.
-fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashReport) {
+impl std::ops::Deref for StoredCrash {
+    type Target = FailureRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.record
+    }
+}
+
+impl StoredCrash {
+    /// The source file retained by this crash entry, if available.
+    #[must_use]
+    pub fn site_file(&self) -> Option<&str> {
+        self.record.site_file()
+    }
+}
+
+/// Maximum number of crashes to keep in the ring.
+const MAX_CRASH_LOG_SIZE: usize = 64;
+
+/// Actor crashes no supervisor recovered: unsupervised crashes plus children a
+/// supervisor gave up on.
+static UNRECOVERED_CRASHES: AtomicU64 = AtomicU64::new(0);
+
+fn push_crash_to(log: &PoisonSafe<VecDeque<StoredCrash>>, record: &FailureRecord) {
+    fn owned_text(source: *const std::ffi::c_char) -> Option<std::sync::Arc<std::ffi::CString>> {
+        if source.is_null() {
+            return None;
+        }
+        // SAFETY: the caller retains the failure and its source image while
+        // the crash entry is made.
+        let source = unsafe { std::ffi::CStr::from_ptr(source) };
+        if source.to_bytes_with_nul().len() > 4096 {
+            return None;
+        }
+        Some(std::sync::Arc::new(source.to_owned()))
+    }
+    let site_file = owned_text(record.site.file);
+    let mut copy = *record;
+    copy.site.file = site_file.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    let mut names = std::array::from_fn(|_| None);
+    let mut files = std::array::from_fn(|_| None);
+    for (index, frame) in record.frames().iter().enumerate() {
+        names[index] = owned_text(frame.hew_fn);
+        files[index] = owned_text(frame.file);
+        copy.frames[index].hew_fn = names[index]
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr());
+        copy.frames[index].file = files[index]
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr());
+    }
     log.access(|crashes| {
-        // Make room if needed
         while crashes.len() >= MAX_CRASH_LOG_SIZE {
             crashes.pop_front();
         }
-        crashes.push_back(report);
+        crashes.push_back(StoredCrash {
+            record: copy,
+            _site_file: site_file,
+            _frame_names: names,
+            _frame_files: files,
+        });
     });
 }
 
-/// Record a logical actor failure caught by the scheduler's language-unwind
-/// boundary, and report it once on stderr.
+/// Fill the actor half of `record` from the running turn: identity, type,
+/// handler, supervisor role, worker and the incarnation it replaced.
+pub(crate) fn describe_current_actor(record: &mut FailureRecord) {
+    let context = crate::execution_context::current_context();
+    if context.is_null() {
+        return;
+    }
+    // SAFETY: a non-null canonical context is the live activation frame.
+    let (actor, supervisor, child_index) = unsafe {
+        (
+            (*context).actor,
+            (*context).parent_supervisor,
+            (*context).supervisor_child_index,
+        )
+    };
+    if actor.is_null() {
+        return;
+    }
+    // SAFETY: the context's actor is live for the current turn.
+    let (id, serial, dispatch) = unsafe {
+        (
+            (*actor).id,
+            (*actor).spawn_serial,
+            (*actor).dispatch.map_or(0, |dispatch| dispatch as usize),
+        )
+    };
+    // SAFETY: this is the active turn carrier, restored on every resume.
+    let msg_type = unsafe { (*context).actor_message_type };
+    describe_actor(record, id, msg_type, dispatch);
+    record.actor.spawn_serial = serial;
+    record.worker_id = crate::observe::current_worker_id();
+    #[cfg(not(target_arch = "wasm32"))]
+    if !supervisor.is_null() {
+        copy_name(
+            &mut record.supervisor,
+            &crate::supervisor::role_path(supervisor.cast(), child_index),
+        );
+        note_incarnation(record, supervisor as usize, child_index);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (supervisor, child_index);
+}
+
+/// Fill the actor identity of `record` from its id and dispatch registration.
+fn describe_actor(record: &mut FailureRecord, id: u64, msg_type: i32, dispatch: usize) {
+    use crate::profiler::actor_registry;
+
+    record.actor.id = id;
+    record.actor.msg_type = msg_type;
+    copy_name(
+        &mut record.actor.actor_type,
+        &actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch),
+    );
+    if let Some(handler) = actor_registry::handler_name_by_ptr(dispatch, msg_type) {
+        copy_name(&mut record.actor.handler, &handler);
+    }
+}
+
+/// The last incarnation seen failing in each supervisor child slot.
+/// `(supervisor, child index)` to `(actor id, spawn serial)`.
+#[cfg(not(target_arch = "wasm32"))]
+type Incarnations = Vec<((usize, i32), (u64, u64))>;
+#[cfg(not(target_arch = "wasm32"))]
+static INCARNATIONS: PoisonSafe<Incarnations> = PoisonSafe::new(Vec::new());
+
+/// Link a failing actor to the incarnation its supervisor slot held before,
+/// then remember it as that slot's latest.
+#[cfg(not(target_arch = "wasm32"))]
+fn note_incarnation(record: &mut FailureRecord, supervisor: usize, child_index: i32) {
+    let slot = (supervisor, child_index);
+    let current = (record.actor.id, record.actor.spawn_serial);
+    INCARNATIONS.access(|incarnations| {
+        match incarnations.iter_mut().find(|(key, _)| *key == slot) {
+            Some((_, previous)) => {
+                if previous.0 != current.0 {
+                    record.actor.previous_id = previous.0;
+                    record.actor.previous_spawn_serial = previous.1;
+                    *previous = current;
+                }
+            }
+            None => incarnations.push((slot, current)),
+        }
+    });
+}
+
+/// Record a logical actor failure caught by the scheduler's unwind boundary.
 ///
-/// Logical failures do not carry hardware `siginfo_t`; the typed Hew trap code
-/// occupies `signal`, matching the historical recovery report and the public
-/// `CrashReport`/observe schema. The scheduler supplies the message type when a
-/// mailbox node backs the activation; resumed continuations use zero, and
-/// `dispatch_ptr` is the crashing actor's dispatch function as a `usize` (zero
-/// when the activation has none) — the key both context registries are stamped
-/// with at startup.
+/// The failure was raised at its origin on this thread; its record is taken
+/// from there and printed now unless the fault report already printed it.
+/// A crash with no raised failure (a bare trap code) is described here.
+/// `dispatch_ptr` is the crashing actor's dispatch function, the key of the
+/// type and handler registries.
 pub(crate) fn record_logical_crash(
     actor_id: u64,
     code: i32,
@@ -178,90 +260,93 @@ pub(crate) fn record_logical_crash(
     dispatch_ptr: usize,
     link_target: Option<crate::monitor::HewNotificationTarget>,
 ) {
-    push_logical_crash_report(actor_id, code, msg_type);
-    emit_crash_diagnostic(actor_id, code, msg_type, dispatch_ptr, link_target);
+    let (mut record, printed, _owner) = crate::fault::take_crash_cause(code).unwrap_or_else(|| {
+        let mut record = FailureRecord::new(code);
+        let _ = crate::monotonic::monotonic_ns();
+        record.wall_time_ns = crate::failure_record::wall_time_ns();
+        record.build = crate::failure_record::build_info();
+        crate::failure_record::publish_last_fault(&record);
+        (record, false, None)
+    });
+    // The scheduler's identity of the failed turn is authoritative; the
+    // origin may have run outside the turn's bookkeeping (a resumed frame).
+    if record.actor.id != actor_id || record.actor.msg_type != msg_type {
+        describe_actor(&mut record, actor_id, msg_type, dispatch_ptr);
+    }
+    if !printed {
+        let mut text = vec![0u8; 16 * 1024];
+        let len = crate::failure_record::format_into(&record, &mut text);
+        text.truncate(len);
+        text.extend_from_slice(remote_origin(link_target).as_bytes());
+        crate::output::write(crate::output::Stream::Err, &text);
+    }
+    if record.supervisor[0] == 0 {
+        UNRECOVERED_CRASHES.fetch_add(1, Ordering::Relaxed);
+    }
+    crate::observe::record_actor_crash(
+        record.kind_name(),
+        crate::failure_record::padded_str(&record.actor.actor_type),
+    );
+    push_crash_to(&RECENT_CRASHES, &record);
 }
 
-/// Put one logical failure in the crash log without reporting it.
-fn push_logical_crash_report(actor_id: u64, code: i32, msg_type: i32) {
-    let report = CrashReport {
-        actor_id,
-        actor_pid: actor_id,
-        signal: code,
-        signal_code: 0,
-        fault_addr: 0,
-        msg_type,
-        timestamp_ns: monotonic_time_ns(),
-        worker_id: 0,
-        total_crashes: 0,
-    };
-    push_crash_report(report);
-}
-
-/// Write the single user-facing line for a logical actor crash.
-///
-/// This is the only stderr writer on the crash path. `emit_crash_diagnostic_sig_safe`
-/// went with the siglongjmp recovery tier; the unwind path that replaced it stamps
-/// the trap code, suppresses the typed `HewPanic` message in the panic hook and
-/// records the crash silently, so an unsupervised crash reached the user as exit 1
-/// with nothing written at all. `record_logical_crash` is the one funnel every
-/// logical crash passes through, which is why the line is written here rather than
-/// at either scheduler catch site — one crash, one line.
-///
-/// Context is resolved from the registries codegen stamps at startup: the
-/// fully-qualified handler name when `(dispatch_ptr, msg_type)` is registered,
-/// otherwise the actor's type name. Both degrade to a named actor, never to the
-/// opaque `msg_type=-N` form the retired diagnostic printed.
-fn emit_crash_diagnostic(
-    actor_id: u64,
-    code: i32,
-    msg_type: i32,
-    dispatch_ptr: usize,
-    link_target: Option<crate::monitor::HewNotificationTarget>,
-) {
-    use crate::profiler::actor_registry;
-
-    let context = actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
-        .unwrap_or_else(|| actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch_ptr));
-    let reason = match crate::internal::types::ExitReason::from_error_code(code) {
-        crate::internal::types::ExitReason::Signal(signal) => format!("Signal({signal})"),
-        named => named.trap_kind_name().to_owned(),
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let origin = link_target
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+    link_target
         .and_then(crate::monitor::HewNotificationTarget::remote_location)
         .map_or_else(String::new, |location| {
-            format!(" while handling link exit from remote {location}")
-        });
-    #[cfg(target_arch = "wasm32")]
-    let origin = {
-        let _ = link_target;
-        String::new()
-    };
+            format!("hew:   while handling link exit from remote {location}\n")
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
+    String::new()
+}
+
+/// Record a fault-injected crash. Deliberately silent: a deterministic
+/// simulation hook is the harness asking for a crash, not a program fault the
+/// user has to diagnose, and the injecting frame has already released the
+/// actor it would name.
+pub(crate) fn record_injected_crash(actor_id: u64) {
+    let mut record = FailureRecord::new(0);
+    record.set_message("crash injected by the deterministic driver");
+    record.actor.id = actor_id;
+    record.wall_time_ns = crate::failure_record::wall_time_ns();
+    crate::observe::record_actor_crash(record.kind_name(), "");
+    push_crash_to(&RECENT_CRASHES, &record);
+}
+
+/// A supervisor gave up on a child: its crash is now unrecovered.
+pub(crate) fn note_supervisor_giveup() {
+    UNRECOVERED_CRASHES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Say why the process exits with status 1, once, when unrecovered actor
+/// crashes decided it.
+pub(crate) fn report_unrecovered_exit() {
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    let count = UNRECOVERED_CRASHES.load(Ordering::Relaxed);
+    if count == 0 || REPORTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let noun = if count == 1 { "crash" } else { "crashes" };
     crate::output::write(
         crate::output::Stream::Err,
-        format!("hew: actor crash in {context} (actor {actor_id}): {reason}{origin}\n").as_bytes(),
+        format!("hew: exiting 1: {count} unrecovered actor {noun}\n").as_bytes(),
     );
 }
 
-/// Record a fault-injected crash in the global crash log.
-///
-/// Uses `signal = -1` so injected failures remain distinguishable from typed
-/// logical traps and hardware signals. Deliberately silent: a deterministic
-/// simulation hook is the harness asking for a crash, not a program fault the
-/// user has to diagnose, and the injecting frame has already released the actor
-/// it would name.
-pub(crate) fn record_injected_crash(actor_id: u64) {
-    push_logical_crash_report(actor_id, -1, 0);
+/// The most recent crash, if any.
+#[must_use]
+pub fn last_crash() -> Option<StoredCrash> {
+    RECENT_CRASHES.access(|crashes| crashes.back().cloned())
 }
 
-// ── Monotonic timestamp utility ─────────────────────────────────────────
-
-/// Get the current monotonic time in nanoseconds, anchored on the process-wide
-/// epoch ([`crate::monotonic`]).
-fn monotonic_time_ns() -> u64 {
-    // Add 1 so the timestamp is never zero — callers use 0 as "not set".
-    crate::monotonic::monotonic_ns().saturating_add(1)
+/// Every crash in the ring, oldest first.
+#[must_use]
+pub fn recent_crashes() -> Vec<StoredCrash> {
+    RECENT_CRASHES.access(|crashes| crashes.iter().cloned().collect())
 }
 
 // ── C ABI functions ─────────────────────────────────────────────────────
@@ -305,19 +390,9 @@ pub unsafe extern "C" fn hew_crash_stats_record(
 ///
 /// Returns the number of recorded crashes whose timestamp falls in
 /// `[now_ns - window_ns, now_ns]`. `now_ns` MUST come from the **same monotonic
-/// clock** that produced the timestamps passed to [`hew_crash_stats_record`].
-///
-/// WHY the caller supplies `now_ns` instead of this function reading its own
-/// clock: crash timestamps are recorded by the supervisor with
-/// `supervisor::monotonic_time_ns()` (its own process-lifetime epoch). This
-/// module owns a *separate* lazily-initialized epoch. When the two epochs were
-/// captured at different times (epoch ordering is non-deterministic and depends
-/// on which module first read the clock), a timestamp recorded against the
-/// supervisor epoch can read as "in the future" of this module's `now`, so the
-/// `timestamp <= now_ns` window guard silently dropped it. Under load that
-/// undercounted recent crashes and left the circuit breaker closed when it
-/// should have opened — a fail-open supervisor defect. Taking `now_ns` from the
-/// recording clock makes the comparison single-clock and race-free.
+/// clock** that produced the timestamps passed to [`hew_crash_stats_record`]:
+/// counting against a second epoch reads a fresh timestamp as "in the future"
+/// and undercounts, leaving the circuit breaker closed when it should open.
 ///
 /// # Safety
 ///
@@ -354,98 +429,55 @@ pub unsafe extern "C" fn hew_crash_stats_free(stats: *mut CrashStats) {
     drop(unsafe { Box::from_raw(stats) }); // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
-/// Add a crash report to the global crash log.
-///
-/// # Safety
-///
-/// No preconditions — `report` is passed by value.
-#[no_mangle]
-pub unsafe extern "C" fn hew_crash_log_push(report: CrashReport) {
-    push_crash_report(report);
-}
-
-/// Get the total number of crashes recorded in the global log.
+/// The number of crashes in the ring.
 ///
 /// # Safety
 ///
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_crash_log_count() -> i32 {
-    crash_log_count_of(&RECENT_CRASHES)
+    crash_count_of(&RECENT_CRASHES)
 }
 
-/// Get the most recent crash report from the global log.
-///
-/// Returns a zeroed [`CrashReport`] if no crashes have been recorded.
-///
-/// # Safety
-///
-/// No preconditions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_crash_log_last() -> CrashReport {
-    crash_log_last_of(&RECENT_CRASHES)
+fn crash_count_of(log: &PoisonSafe<VecDeque<StoredCrash>>) -> i32 {
+    log.access(|crashes| i32::try_from(crashes.len()).expect("the ring holds 64 entries"))
 }
 
-/// Inner implementation for [`hew_crash_log_count`].
-///
-/// Accepts any `&PoisonSafe<VecDeque<CrashReport>>` so that tests can supply a
-/// locally-isolated value without touching the process-global `RECENT_CRASHES`.
-/// Recovers from poison so that crashes pushed via [`push_crash_report_to`]
-/// remain visible after a panic in a lock-holder.
-fn crash_log_count_of(log: &PoisonSafe<VecDeque<CrashReport>>) -> i32 {
-    log.access(|crashes| {
-        #[expect(
-            clippy::cast_possible_wrap,
-            clippy::cast_possible_truncation,
-            reason = "crash log is bounded to 64 entries, well within i32 positive range"
-        )]
-        {
-            crashes.len() as i32
-        }
-    })
-}
-
-/// Inner implementation for [`hew_crash_log_last`].
-///
-/// Same poison-recovery policy as [`crash_log_count_of`] and
-/// [`push_crash_report_to`]: the three read/write operations on
-/// `RECENT_CRASHES` are now behaviourally consistent.
-fn crash_log_last_of(log: &PoisonSafe<VecDeque<CrashReport>>) -> CrashReport {
-    log.access(|crashes| crashes.back().copied().unwrap_or_else(CrashReport::zeroed))
-}
-
+/// The `/api/crashes` body: the ring, newest first.
 #[cfg(feature = "profiler")]
+#[must_use]
 pub fn snapshot_crashes_json() -> String {
-    use std::fmt::Write as _;
-
-    RECENT_CRASHES.access(|crashes| {
-        let mut json = String::from("[");
-        for (i, crash) in crashes.iter().rev().enumerate() {
-            if i > 0 {
-                json.push(',');
-            }
+    // Seconds since process start, as the observe timeline shows them.
+    let now_wall = crate::failure_record::wall_time_ns();
+    let start_wall = now_wall.saturating_sub(crate::monotonic::monotonic_ns());
+    let crashes: Vec<serde_json::Value> = recent_crashes()
+        .iter()
+        .rev()
+        .map(|crash| {
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "nanosecond precision loss is acceptable for display"
             )]
-            let time_s = crash.timestamp_ns as f64 / 1_000_000_000.0;
-            // The `signal` field carries either an OS signal number (SIGSEGV,
-            // SIGILL, SIGBUS, SIGFPE, …) or a canonical `HEW_TRAP_*` discriminator
-            // (200-band) depending on the crash path. `trap_kind` is the resolved
-            // human-readable slug derived through `ExitReason::from_error_code`,
-            // so downstream observe/profiler consumers no longer need their own
-            // copy of the trap-code → name table.
-            let trap_kind =
-                crate::internal::types::ExitReason::from_error_code(crash.signal).trap_kind_name();
-            let _ = write!(
-                json,
-                r#"{{"time_s":{time_s},"actor_id":"{}","signal":{},"trap_kind":"{trap_kind}","msg_type":{},"fault_addr":"{}"}}"#,
-                crash.actor_id, crash.signal, crash.msg_type, crash.fault_addr,
-            );
-        }
-        json.push(']');
-        json
-    })
+            let time_s = crash.wall_time_ns.saturating_sub(start_wall) as f64 / 1_000_000_000.0;
+            serde_json::json!({
+                "time_s": time_s,
+                "actor_id": crash.actor.id.to_string(),
+                "signal": crash.code,
+                "trap_kind": crash.kind_name(),
+                "msg_type": crash.actor.msg_type,
+                "fault_addr": crash.signal.fault_addr.to_string(),
+                "actor_type": crate::failure_record::padded_str(&crash.actor.actor_type),
+                "handler": crate::failure_record::padded_str(&crash.actor.handler),
+                "spawn_serial": crash.actor.spawn_serial.to_string(),
+                "supervisor": crate::failure_record::padded_str(&crash.supervisor),
+                "message": String::from_utf8_lossy(crash.message_bytes()),
+                "file": crash.site_file(),
+                "line": crash.site.line,
+                "col": crash.site.col,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(crashes).to_string()
 }
 
 #[cfg(test)]
@@ -472,7 +504,6 @@ mod tests {
         // SAFETY: No preconditions for this test.
         let stats = unsafe { hew_crash_stats_new() };
 
-        // Record a crash
         // SAFETY: stats is valid and we're single-threaded in test.
         unsafe {
             hew_crash_stats_record(stats, 11, 1000);
@@ -491,7 +522,6 @@ mod tests {
         // SAFETY: No preconditions for this test.
         let stats = unsafe { hew_crash_stats_new() };
 
-        // Fill the circular buffer and wrap around
         // SAFETY: stats is valid and we're single-threaded in test.
         unsafe {
             for i in 0..10 {
@@ -500,9 +530,8 @@ mod tests {
 
             assert_eq!((*stats).total_crashes, 10);
             assert_eq!((*stats).recent_head, 10);
-            // Check that old entries were overwritten
-            assert_eq!((*stats).recent_timestamps[0], 1008); // 10 % 8 = 2, so slot 0 has timestamp 1008
-            assert_eq!((*stats).recent_timestamps[1], 1009); // 11 % 8 = 3, so slot 1 has timestamp 1009
+            assert_eq!((*stats).recent_timestamps[0], 1008);
+            assert_eq!((*stats).recent_timestamps[1], 1009);
 
             hew_crash_stats_free(stats);
         }
@@ -510,200 +539,110 @@ mod tests {
 
     #[test]
     fn recent_count_uses_caller_clock_not_a_second_epoch() {
-        // Regression: the circuit breaker recorded crash timestamps with the
-        // supervisor's monotonic clock but counted recent crashes against this
-        // module's *separate* epoch via `hew_crash_stats_recent_count`'s own
-        // `monotonic_time_ns()`. When the recording clock ran ahead of the
-        // counting clock (non-deterministic epoch ordering under load), a
-        // freshly-recorded timestamp read as "in the future" and the
-        // `timestamp <= now_ns` window guard silently dropped it — undercounting
-        // crashes and leaving the breaker CLOSED when it should OPEN.
-        //
-        // The fix takes `now_ns` from the SAME clock that recorded the
-        // timestamps. This test models the skew directly: record two crashes at
-        // T and T+1µs, then count with a `now_ns` that equals the latest
-        // recorded timestamp (the caller's own clock). Both must be counted.
         // SAFETY: stats is valid, single-threaded test.
         let stats = unsafe { hew_crash_stats_new() };
         // SAFETY: stats is the valid pointer from hew_crash_stats_new above;
         // all record/recent_count/free calls are single-threaded in this test.
         unsafe {
-            let t0: u64 = 5_000_000_000; // 5s on the recording clock
-            let t1: u64 = t0 + 1_000; // +1µs
+            let t0: u64 = 5_000_000_000;
+            let t1: u64 = t0 + 1_000;
             hew_crash_stats_record(stats, -1, t0);
             hew_crash_stats_record(stats, -1, t1);
-
-            let window_ns: u64 = 60 * 1_000_000_000; // 60s window
-
-            // `now_ns` == latest recorded timestamp (single-clock contract).
-            // Both crashes fall in [now-window, now].
-            assert_eq!(
-                hew_crash_stats_recent_count(stats, window_ns, t1),
-                2,
-                "both recorded crashes must count when now_ns is the recording clock"
-            );
-
-            // A `now_ns` BEHIND the recorded timestamps (the cross-epoch skew
-            // the bug introduced) would drop the future-looking entries. The
-            // window guard correctly excludes timestamps strictly after `now_ns`,
-            // which is exactly why supplying the wrong (lagging) clock undercounted.
-            assert_eq!(
-                hew_crash_stats_recent_count(stats, window_ns, t0 - 1),
-                0,
-                "timestamps after a stale now_ns are excluded — the skew failure mode"
-            );
-
-            // Boundary: now_ns exactly at the older crash counts only it.
-            assert_eq!(
-                hew_crash_stats_recent_count(stats, window_ns, t0),
-                1,
-                "now_ns at the older timestamp counts exactly the in-window entry"
-            );
-
+            let window_ns: u64 = 60 * 1_000_000_000;
+            assert_eq!(hew_crash_stats_recent_count(stats, window_ns, t1), 2);
+            // Timestamps after a stale now_ns are excluded: the skew failure mode.
+            assert_eq!(hew_crash_stats_recent_count(stats, window_ns, t0 - 1), 0);
+            assert_eq!(hew_crash_stats_recent_count(stats, window_ns, t0), 1);
             hew_crash_stats_free(stats);
         }
     }
 
+    fn crash(id: u64, code: i32) -> FailureRecord {
+        let mut record = FailureRecord::new(code);
+        record.actor.id = id;
+        record
+    }
+
     #[test]
-    fn crash_log_push_and_count() {
-        let report = CrashReport {
-            actor_id: 42,
-            actor_pid: 100,
-            signal: 11,
-            signal_code: 1,
-            fault_addr: 0xdead_beef,
-            msg_type: 5,
-            timestamp_ns: 1000,
-            worker_id: 3,
-            total_crashes: 1,
-        };
-
-        // SAFETY: No preconditions for test.
-        unsafe {
-            let initial_count = hew_crash_log_count();
-            hew_crash_log_push(report);
-            let new_count = hew_crash_log_count();
-
-            assert_eq!(new_count, initial_count + 1);
-
-            let last = hew_crash_log_last();
-            assert_eq!(last.actor_id, 42);
-            assert_eq!(last.signal, 11);
+    fn ring_keeps_the_newest_sixty_four() {
+        let log = PoisonSafe::new(VecDeque::new());
+        for id in 1..=70 {
+            push_crash_to(&log, &crash(id, 202));
         }
-    }
-
-    #[test]
-    fn crash_report_zeroed() {
-        let report = CrashReport::zeroed();
-        assert_eq!(report.actor_id, 0);
-        assert_eq!(report.signal, 0);
-        assert_eq!(report.fault_addr, 0);
-    }
-
-    #[test]
-    fn monotonic_time_is_reasonable() {
-        let t1 = monotonic_time_ns();
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        let t2 = monotonic_time_ns();
-
-        // Should have advanced by at least 1ms (1_000_000 ns)
-        assert!(t2 > t1);
-        assert!(t2 - t1 >= 1_000_000);
-    }
-
-    /// `push_crash_report` must record the crash even when the underlying
-    /// mutex is poisoned.
-    ///
-    /// Tests through `push_crash_report_to` (the inner function that
-    /// `push_crash_report` delegates to), supplying a local isolated log.
-    /// This exercises the exact production body — the only difference from
-    /// calling `push_crash_report` directly is that we avoid contaminating
-    /// the process-global `RECENT_CRASHES`.
-    ///
-    /// # Poison-recovery mechanism
-    ///
-    /// `PoisonSafe::access` uses `unwrap_or_else(PoisonError::into_inner)` so
-    /// the inner value is still accessible after a panic-in-closure.  We
-    /// verify this by poisoning the inner mutex with `catch_unwind`, then
-    /// asserting that a subsequent push and read both succeed.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn push_crash_report_survives_poison() {
-        use std::collections::VecDeque;
-
-        let log: PoisonSafe<VecDeque<CrashReport>> = PoisonSafe::new(VecDeque::new());
-
-        // Poison the PoisonSafe by panicking inside access.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            log.access(|_| panic!("intentional poison"));
-        }));
-        assert!(
-            log.is_poisoned_for_test(),
-            "precondition: inner mutex must be poisoned"
-        );
-
-        // Calling push_crash_report_to through a poisoned PoisonSafe must
-        // still record the report (not silently drop it).
-        let report = CrashReport {
-            actor_id: 42,
-            signal: 11,
-            ..CrashReport::zeroed()
-        };
-        push_crash_report_to(&log, report);
-
-        let (len, actor_id, signal) = log.access(|crashes| {
-            (
-                crashes.len(),
-                crashes.back().map_or(0, |c| c.actor_id),
-                crashes.back().map_or(0, |c| c.signal),
-            )
+        assert_eq!(crash_count_of(&log), 64);
+        log.access(|crashes| {
+            assert_eq!(crashes.front().unwrap().actor.id, 7);
+            assert_eq!(crashes.back().unwrap().actor.id, 70);
         });
-        assert_eq!(len, 1, "push_crash_report_to must record through poison");
-        assert_eq!(actor_id, 42);
-        assert_eq!(signal, 11);
     }
 
-    /// After a poison event the public readers `hew_crash_log_count` /
-    /// `hew_crash_log_last` must return the real log contents, not the
-    /// fail-closed defaults (`0` / zeroed report).
-    ///
-    /// Tests through the extracted `crash_log_count_of` / `crash_log_last_of`
-    /// inner functions so we can supply a locally-isolated value without
-    /// touching the process-global `RECENT_CRASHES`.
+    #[test]
+    fn ring_retains_source_after_the_failure_owner_is_dropped() {
+        let log = PoisonSafe::new(VecDeque::new());
+        let source = std::ffi::CString::new("retired.hew").unwrap();
+        let mut record = crash(1, 212);
+        record.site.file = source.as_ptr();
+        record.site.line = 4;
+        record.push_frame(123);
+        record.frames[0].hew_fn = source.as_ptr();
+        push_crash_to(&log, &record);
+        drop(source);
+        log.access(|crashes| {
+            let crash = crashes.back().unwrap();
+            assert_eq!(crash.site_file(), Some("retired.hew"));
+            assert_eq!(crash.site.line, 4);
+            assert_eq!(
+                // SAFETY: the crash entry owns its copied frame name.
+                unsafe { std::ffi::CStr::from_ptr(crash.frames[0].hew_fn) }.to_bytes(),
+                b"retired.hew"
+            );
+        });
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn crash_log_readers_survive_poison() {
-        use std::collections::VecDeque;
-
-        let log: PoisonSafe<VecDeque<CrashReport>> = PoisonSafe::new(VecDeque::new());
-
-        // Poison the PoisonSafe.
+    fn ring_records_survive_poison() {
+        let log: PoisonSafe<VecDeque<StoredCrash>> = PoisonSafe::new(VecDeque::new());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             log.access(|_| panic!("intentional poison"));
         }));
-        assert!(log.is_poisoned_for_test(), "precondition: must be poisoned");
+        assert!(log.is_poisoned_for_test());
+        push_crash_to(&log, &crash(99, 7));
+        assert_eq!(crash_count_of(&log), 1);
+        log.access(|crashes| assert_eq!(crashes.back().unwrap().actor.id, 99));
+    }
 
-        // Write a report through the poisoned log.
-        let report = CrashReport {
-            actor_id: 99,
-            signal: 7,
-            ..CrashReport::zeroed()
-        };
-        push_crash_report_to(&log, report);
+    #[test]
+    fn a_restarted_slot_links_its_successor_to_the_crashed_incarnation() {
+        let slot = (0x5000_usize, 3);
+        let mut first = crash(10, 202);
+        first.actor.spawn_serial = 100;
+        note_incarnation(&mut first, slot.0, slot.1);
+        assert_eq!(first.actor.previous_id, 0);
 
-        // count: must return 1, not the fail-closed 0.
+        // The same incarnation failing again is not a restart.
+        let mut again = first;
+        note_incarnation(&mut again, slot.0, slot.1);
+        assert_eq!(again.actor.previous_id, 0);
+
+        let mut successor = crash(11, 202);
+        successor.actor.spawn_serial = 101;
+        note_incarnation(&mut successor, slot.0, slot.1);
         assert_eq!(
-            crash_log_count_of(&log),
-            1,
-            "crash_log_count_of must return the real count through poison"
+            (
+                successor.actor.previous_id,
+                successor.actor.previous_spawn_serial
+            ),
+            (10, 100)
         );
 
-        // last: must return the pushed report, not a zeroed default.
-        let last = crash_log_last_of(&log);
-        assert_eq!(
-            last.actor_id, 99,
-            "crash_log_last_of must return the real report through poison"
-        );
-        assert_eq!(last.signal, 7);
+        // The ring still holds the predecessor's record after the restart.
+        let log = PoisonSafe::new(VecDeque::new());
+        push_crash_to(&log, &first);
+        push_crash_to(&log, &successor);
+        log.access(|crashes| {
+            assert_eq!(crashes[0].actor.id, 10);
+            assert_eq!(crashes[1].actor.previous_id, 10);
+        });
     }
 }

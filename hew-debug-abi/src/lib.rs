@@ -362,6 +362,22 @@ impl<'a> Table<'a> {
         }))
     }
 
+    /// The signed start and end offsets from the symtab base, without decoding the name.
+    ///
+    /// # Errors
+    /// Returns a [`TableError`] when the entry is truncated.
+    #[inline]
+    pub fn symbol_range(&self, index: usize) -> Result<Option<(i32, i32)>, TableError> {
+        debug_assert_eq!(self.kind, TableKind::Symtab);
+        let Some(at) = self.entry_at(index) else {
+            return Ok(None);
+        };
+        Ok(Some((
+            read_u32(self.bytes, at)?.cast_signed(),
+            read_u32(self.bytes, at + 4)?.cast_signed(),
+        )))
+    }
+
     /// The function entry at `index` of a symtab, with its name.
     ///
     /// # Errors
@@ -691,6 +707,8 @@ mod tests {
         let triple = table.symbol(1).unwrap().unwrap();
         assert_eq!(triple.name, "util.triple");
         assert_eq!((triple.start, triple.end), (-64, -16));
+        assert_eq!(table.symbol_range(1).unwrap(), Some((-64, -16)));
+        assert_eq!(table.symbol_range(2).unwrap(), None);
         assert_eq!((triple.file_id, triple.decl_line), (1, 2));
         assert_eq!(table.symbol(0).unwrap().unwrap().name, "main");
     }

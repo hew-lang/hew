@@ -155,12 +155,13 @@ pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Op
     let symtab = table(base, TableKind::Symtab)?;
     let base = base as usize;
     (0..symtab.len()).find_map(|index| {
-        let symbol = symtab.symbol(index).ok()??;
-        let start = base.wrapping_add_signed(symbol.start as isize);
-        let end = base.wrapping_add_signed(symbol.end as isize);
+        let (start, end) = symtab.symbol_range(index).ok()??;
+        let start = base.wrapping_add_signed(start as isize);
+        let end = base.wrapping_add_signed(end as isize);
         if !(start..end).contains(&pc) {
             return None;
         }
+        let symbol = symtab.symbol(index).ok()??;
         let position = locate_in(files, symbol.file_id, None).map(|position| SourcePosition {
             line: symbol.decl_line,
             ..position
@@ -175,7 +176,7 @@ pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_debug_abi::{FileRecord, SiteEntry, TableWriter};
+    use hew_debug_abi::{FileRecord, SiteEntry, SymbolRecord, TableWriter};
     use std::ffi::CStr;
 
     #[test]
@@ -204,5 +205,63 @@ mod tests {
         // SAFETY: as above.
         assert_eq!(unsafe { CStr::from_ptr(b.file) }.to_bytes(), b"second.hew");
         assert_eq!((a.line, b.line, b.col), (1, 2, 3));
+    }
+
+    #[test]
+    fn function_lookup_skips_invalid_names_and_preserves_range_boundaries() {
+        let files = TableWriter::files(&[FileRecord {
+            name: "worker.hew",
+            line_starts: &[0],
+            md5: [0; 16],
+        }]);
+        let symbols = [
+            SymbolRecord {
+                name: "bad",
+                file_id: 0,
+                decl_line: 1,
+            },
+            SymbolRecord {
+                name: "worker",
+                file_id: 0,
+                decl_line: 7,
+            },
+        ];
+        let (mut bytes, slots) = TableWriter::symtab(&symbols);
+        for slot in &slots {
+            bytes[slot.start..slot.start + 4].copy_from_slice(&(-64i32).to_le_bytes());
+            bytes[slot.end..slot.end + 4].copy_from_slice(&(-16i32).to_le_bytes());
+        }
+        // The first entry overlaps the valid one but its name is invalid UTF-8.
+        let name_offset = u32::from_le_bytes(
+            bytes[slots[0].start + 8..slots[0].start + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        bytes[name_offset] = 0xff;
+        let base = bytes.as_ptr() as usize;
+        // SAFETY: both table allocations remain live while their results are used.
+        let find = |offset: isize| unsafe {
+            function_at_in(
+                files.as_ptr(),
+                bytes.as_ptr(),
+                base.wrapping_add_signed(offset),
+            )
+        };
+        let function = find(-64).unwrap();
+        assert_eq!(
+            // SAFETY: the resolved name borrows the live symbol table.
+            unsafe { CStr::from_ptr(function.name) }.to_bytes(),
+            b"worker"
+        );
+        let position = function.position.unwrap();
+        assert_eq!(
+            // SAFETY: the resolved file name borrows the live file table.
+            unsafe { CStr::from_ptr(position.file) }.to_bytes(),
+            b"worker.hew"
+        );
+        assert_eq!(position.line, 7);
+        assert!(find(-17).is_some());
+        assert!(find(-65).is_none());
+        assert!(find(-16).is_none());
     }
 }

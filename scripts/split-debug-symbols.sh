@@ -48,7 +48,10 @@ case "$triple" in
     [ -d "$built_dir/hew.dSYM" ] ||
         die "missing $built_dir/hew.dSYM; build with CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed"
     mkdir -p "$destination"
-    cp -R "$built_dir/hew.dSYM" "$destination/hew.dSYM"
+    # Cargo may expose the bundle as a symlink into deps/. Copy its contents
+    # so the release archive contains the actual DWARF rather than that link.
+    mkdir -p "$destination/hew.dSYM"
+    cp -R "$built_dir/hew.dSYM/." "$destination/hew.dSYM/"
     strip -S "$binary" || die "strip -S failed on $binary"
     ;;
 *-windows-msvc)

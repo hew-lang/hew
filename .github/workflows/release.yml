@@ -748,7 +748,15 @@ jobs:
       - name: Test packaged SDK (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         timeout-minutes: 20
-        run: make test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz"
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "${TARGET}" == darwin-* ]]; then
+            make test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz" \
+              PACKAGED_SDK_DEBUG_ARCHIVE="${ARCHIVE_NAME}-debug.tar.gz"
+          else
+            make test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz"
+          fi
 
       - name: Create zip (Windows)
         if: startsWith(matrix.target, 'windows')

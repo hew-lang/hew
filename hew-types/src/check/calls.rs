@@ -5,6 +5,20 @@
 use super::*;
 use crate::check::types::GenericCallee;
 
+/// Migration guidance for a builtin retained solely to diagnose old source.
+#[must_use]
+pub fn retired_builtin_call(name: &str) -> Option<&'static str> {
+    match name {
+        "supervisor_stop" => {
+            Some("use `stop(supervisor)`; call `stopped(supervisor)` when release must be awaited")
+        }
+        "close" => Some("use `stop(actor)` for actor shutdown, or `value.close()` for a resource"),
+        "closed" => Some("use `stopped(actor)` to await actor release"),
+        "supervisor_child" => Some("access the declared child role, such as `supervisor.worker`"),
+        _ => None,
+    }
+}
+
 pub(super) enum SignatureArgApplication<'a> {
     PositionalOnly {
         arity_context: String,
@@ -1391,26 +1405,18 @@ impl Checker {
     pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
         use crate::stdlib_authority::Intrinsic;
 
-        let retired = match target {
-            CallTarget::Runtime(crate::RuntimeCallFamily::SupervisorStop) => Some((
-                "supervisor_stop",
-                "use `stop(supervisor)`; call `stopped(supervisor)` when release must be awaited",
-            )),
-            CallTarget::Builtin { endpoint } => match endpoint.as_str() {
-                "close" => Some((
-                    "close",
-                    "use `stop(actor)` for actor shutdown, or `value.close()` for a resource",
-                )),
-                "closed" => Some(("closed", "use `stopped(actor)` to await actor release")),
-                "supervisor_child" => Some((
-                    "supervisor_child",
-                    "access the declared child role, such as `supervisor.worker`",
-                )),
-                _ => None,
-            },
+        let retired_name = match target {
+            CallTarget::Runtime(crate::RuntimeCallFamily::SupervisorStop) => {
+                Some("supervisor_stop")
+            }
+            CallTarget::Builtin { endpoint } if endpoint.as_str() != "supervisor_stop" => {
+                Some(endpoint.as_str())
+            }
             _ => None,
         };
-        if let Some((name, replacement)) = retired {
+        if let Some((name, replacement)) = retired_name
+            .and_then(|name| retired_builtin_call(name).map(|replacement| (name, replacement)))
+        {
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -2588,6 +2594,16 @@ impl Checker {
                         c_symbol: resolved_fn_name.clone(),
                     },
                 );
+            }
+            if let CallTarget::User(declaration) = &target {
+                if let Some(op) =
+                    self.intrinsic_math_generic_op_for_signature(self.defs.path(*declaration))
+                {
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::GenericMathIntrinsic { op },
+                    );
+                }
             }
             self.record_direct_call_target(span, target);
             return applied_sig.return_type;

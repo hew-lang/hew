@@ -878,7 +878,8 @@ impl<'src> Parser<'src> {
     }
 
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
-    pub(crate) fn is_ident_token(tok: &Token<'_>) -> bool {
+    #[must_use]
+    pub fn is_ident_token(tok: &Token<'_>) -> bool {
         matches!(tok, Token::Identifier(_)) || Self::contextual_keyword_name(tok).is_some()
     }
 

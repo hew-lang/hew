@@ -1,0 +1,12 @@
+import std.math;
+import std.math.{abs, min as lesser, max as greater, sqrt as root};
+
+fn main() {
+    println(math.abs(-9));
+    println(abs(-4));
+    println(lesser(3, 7));
+    println(greater(3, 7));
+    println(abs(-2.5));
+    println(lesser(3.5, 7.5));
+    println(root(16.0));
+}

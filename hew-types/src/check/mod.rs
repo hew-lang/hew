@@ -31,6 +31,7 @@ mod bounds;
 mod branch_join;
 mod callables;
 mod calls;
+pub use self::calls::retired_builtin_call;
 pub mod cleanup_effects;
 mod closure_inference;
 mod coerce;

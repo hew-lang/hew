@@ -417,3 +417,5 @@ finally {
 }
 
 Write-Host "Windows installer transaction and release-selection tests passed"
+# The final negative test intentionally leaves a nonzero native exit status.
+exit 0

@@ -1026,12 +1026,17 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn exit_watch_reports_the_exit_without_reaping() {
-        let child = start("sleep", &["0.2"], 1);
+        let child = start("sh", &["-c", "read -r gate; exit 7"], 2);
         assert!(!child.is_null());
         // SAFETY: the test owns this live child.
         let pid = u32::try_from(unsafe { hew_process_id(child) }).unwrap();
         let watch = ExitWatch::open(pid).unwrap();
         assert!(!watch.exited());
+        {
+            // SAFETY: the test owns this live child; its piped stdin gates exit.
+            let mut state = unsafe { &*child }.state.lock_or_recover();
+            std::io::Write::write_all(state.child.stdin.as_mut().unwrap(), b"exit\n").unwrap();
+        }
         let mut ready = libc::pollfd {
             fd: watch.fd(),
             events: libc::POLLIN,
@@ -1040,11 +1045,11 @@ mod tests {
         // SAFETY: one live descriptor; blocks until the child exits.
         assert_eq!(unsafe { libc::poll(&raw mut ready, 1, 10_000) }, 1);
         assert!(watch.exited());
+        // An exit notification can precede publication of the waitable status.
+        // Reaping still fails if observing the watch already reaped the child.
+        assert_eq!(wait(child), (false, 7));
         // SAFETY: the test owns this live child.
         unsafe {
-            // The watch reaped nothing: the status is still there to take.
-            assert_eq!(hew_process_poll(child), 1);
-            assert_eq!(hew_process_status(child), 0);
             // Reaped: a later wait's stream has already ended.
             let pair = hew_process_exit_stream(child);
             assert!(!pair.is_null() && (*pair).sink.is_null());

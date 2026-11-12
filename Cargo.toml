@@ -42,7 +42,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.11.0-rc2"
+version = "0.11.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]

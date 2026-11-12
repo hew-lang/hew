@@ -6,6 +6,8 @@
 
 - Supersede RC2 before binary publication to correct native debug source
   attribution for imported functions.
+- Preserve the exact destination of admitted remote requests so authenticated
+  withdrawal can prevent queued work from starting.
 
 ## [0.11.0-rc2] - 2026-11-11
 

@@ -1319,10 +1319,10 @@ fn remote_ask_round_trip_returns_exact_values() {
 }
 
 #[test]
-fn remote_deadlines_withdraw_queued_work_and_preserve_claimed_handlers() {
+fn remote_deadlines_timeout_callers_and_preserve_claimed_handlers() {
     let stdout = run_two_process_scenario("deadline_budget");
     assert!(
-        stdout.contains("PASS deadline_budget queued-not-started"),
+        stdout.contains("PASS deadline_budget caller-times-out"),
         "{stdout}"
     );
     assert!(

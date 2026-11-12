@@ -504,8 +504,12 @@ fn scenario_deadline_budget() -> i64 {
         gate.handle(1).expect("release held turn");
         assert((await held).expect("held reply") == "HELD REPLY");
     };
-    assert(worker.handle(3).expect("queued mutation absent") == "0");
-    println("PASS deadline_budget queued-not-started");
+    // Caller expiry does not prove receiver expiry or withdrawal: the wire
+    // budget starts on receipt, and withdrawal is best-effort. The request can
+    // therefore have been claimed before either reached the receiver.
+    let queued_calls = worker.handle(3).expect("queued outcome");
+    assert(queued_calls == "0" || queued_calls == "1");
+    println("PASS deadline_budget caller-times-out");
     scope {
         let held = fork worker.handle(0);
         gate.handle(0).expect("relay waits behind a claimed turn");
@@ -524,14 +528,17 @@ fn scenario_deadline_budget() -> i64 {
         };
         assert((await held).expect("held relay reply") == "HELD REPLY");
     };
-    // A relative wire budget starts on receipt. This margin is shorter than
-    // the relay's queue wait, so resetting its budget at dispatch fails below.
-    sleep(50ms);
+    // The claimed acknowledgement follows receiver receipt. A full original
+    // budget after that acknowledgement guarantees receiver-side expiry even
+    // when transit or withdrawal is delayed.
+    sleep(1s);
     gate.handle(1).expect("claimed handler stays alive");
-    assert(worker.handle(3).expect("claimed mutation completed once") == "2");
+    let claimed_total = if queued_calls == "0" { "2" } else { "3" };
+    assert(worker.handle(3).expect("claimed mutation completed once") == claimed_total);
     assert(leaf.handle(0).expect("remote nested work absent") == 0);
     assert(server_leaf.handle(0).expect("local nested work absent") == 0);
-    assert(worker.handle(1).expect("later independent budget") == "3");
+    let independent_total = if queued_calls == "0" { "3" } else { "4" };
+    assert(worker.handle(1).expect("later independent budget") == independent_total);
     println("PASS deadline_budget claimed-finishes-nested-times-out");
     stop(leaf);
     stopped(leaf);

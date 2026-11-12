@@ -86,18 +86,51 @@ pub fn complete(
     // Add type definitions and function signatures from the type checker.
     if let Some(tc) = type_output {
         for id in tc.type_defs.keys() {
-            items.push(CompletionItem {
-                label: tc.defs.path(id.declaration()).to_string(),
-                kind: CompletionKind::Type,
-                detail: None,
-                documentation: None,
-                insert_text: None,
-                insert_text_is_snippet: false,
-                sort_text: None,
-            });
+            if !visible_from_root(tc, id.declaration()) {
+                continue;
+            }
+            let path = tc.defs.path(id.declaration());
+            for label in visible_type_labels(tc, path) {
+                items.push(CompletionItem {
+                    label,
+                    kind: CompletionKind::Type,
+                    detail: None,
+                    documentation: None,
+                    insert_text: None,
+                    insert_text_is_snippet: false,
+                    sort_text: None,
+                });
+            }
         }
-        for (name, sig) in tc.sigs().entries() {
-            items.push(fn_sig_completion(name, sig));
+        // Signature lookup keys include method linkage names and canonical
+        // module paths. They are not necessarily names in this source scope.
+        // Resolve file-backed root functions by declaration owner, even when
+        // their signature key includes the root module's canonical path.
+        for (name, id) in &tc.fn_sig_keys {
+            let leaf = name.rsplit('.').next().unwrap_or(name);
+            if is_source_identifier(leaf)
+                && tc.root_value_bindings.contains(leaf)
+                && (name == leaf || tc.defs.module(*id) == tc.defs.root_module())
+                && matches!(
+                    tc.defs.kind(*id),
+                    hew_types::DeclarationKind::Function
+                        | hew_types::DeclarationKind::ExternFunction
+                )
+            {
+                if let Some(sig) = tc.sigs().of(*id) {
+                    items.push(fn_sig_completion(leaf, sig));
+                }
+            }
+        }
+        items.extend(imported_function_completions(tc));
+        for (name, sig) in &tc.builtin_fn_sigs {
+            if is_source_identifier(name.as_str())
+                && !sig.is_builtin_variant
+                && !sig.associated
+                && hew_types::check::retired_builtin_call(name.as_str()).is_none()
+            {
+                items.push(fn_sig_completion(name.as_str(), sig));
+            }
         }
     }
 
@@ -119,6 +152,65 @@ pub fn complete(
     items
 }
 
+/// Explicit imports publish lexical bindings to canonical signatures.
+fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
+    tc.import_fn_name_aliases
+        .iter()
+        .filter(|((module, file, binding), _)| {
+            module.is_none() && *file == 0 && is_source_identifier(binding)
+        })
+        .filter_map(|((_, _, binding), source)| {
+            tc.sigs()
+                .get(source)
+                .map(|sig| fn_sig_completion(binding, sig))
+        })
+        .collect()
+}
+
+/// Render type identities through the root file's actual import bindings.
+fn visible_type_labels(tc: &TypeCheckOutput, path: &str) -> Vec<String> {
+    if is_source_identifier(path) {
+        return vec![path.to_string()];
+    }
+    let mut labels = Vec::new();
+    for ((module, file, binding), owner) in &tc.import_type_name_aliases {
+        if module.is_none() && *file == 0 && owner == path && is_source_identifier(binding) {
+            labels.push(binding.clone());
+        }
+    }
+    if let Some((owner, name)) = path.rsplit_once('.') {
+        if is_source_identifier(name) {
+            for ((module, file, binding), imported) in &tc.module_import_bindings {
+                if module.is_none()
+                    && *file == 0
+                    && imported == owner
+                    && is_source_identifier(binding)
+                {
+                    labels.push(format!("{binding}.{name}"));
+                }
+            }
+            // The compiler publishes these known declarations in the prelude.
+            if hew_types::actor_delivery::DECLARATIONS
+                .iter()
+                .any(|known| known.path() == path && owner == "std.builtins")
+            {
+                labels.push(name.to_string());
+            }
+        }
+    }
+    labels
+}
+
+fn visible_from_root(tc: &TypeCheckOutput, declaration: hew_types::DefId) -> bool {
+    let owner = tc.defs.module(declaration);
+    owner.is_none()
+        || tc.defs.visibility_access_allowed(
+            owner,
+            tc.defs.root_module(),
+            tc.defs.visibility(declaration),
+        )
+}
+
 fn try_is_type_pattern_completions(
     source: &str,
     type_output: Option<&TypeCheckOutput>,
@@ -133,8 +225,10 @@ fn try_is_type_pattern_completions(
     let mut items: Vec<_> = tc
         .type_defs
         .keys()
-        .map(|id| CompletionItem {
-            label: tc.defs.path(id.declaration()).to_string(),
+        .filter(|id| visible_from_root(tc, id.declaration()))
+        .flat_map(|id| visible_type_labels(tc, tc.defs.path(id.declaration())))
+        .map(|label| CompletionItem {
+            label,
             kind: CompletionKind::Type,
             detail: None,
             documentation: None,
@@ -167,6 +261,7 @@ fn try_is_type_pattern_completions(
         });
     }
     items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
     (!items.is_empty()).then_some(items)
 }
 
@@ -192,7 +287,8 @@ fn try_dot_completions(
         // No receiver TYPE: the token before the dot may name an imported
         // module rather than a value. Offer that module's members. Tried only
         // after the typed-receiver lookup, so a value always wins the dot.
-        return module_member_completions(source, receiver_end, tc);
+        return module_member_completions(source, receiver_end, tc)
+            .or_else(|| type_member_completions(source, receiver_end, tc));
     };
 
     let mut items = Vec::new();
@@ -259,7 +355,11 @@ fn try_dot_completions(
         }
     }
     for (method_name, sig) in collect_method_sigs_for_receiver(tc, receiver_ty) {
-        items.push(fn_sig_completion(&method_name, &sig));
+        if !sig.associated {
+            let mut item = fn_sig_completion(&method_name, &sig);
+            item.kind = CompletionKind::Method;
+            items.push(item);
+        }
     }
     // Fields and methods come from hash tables; list them by label.
     items.sort_by(|a, b| a.label.cmp(&b.label));
@@ -288,7 +388,14 @@ fn module_member_completions(
     tc: &TypeCheckOutput,
 ) -> Option<Vec<CompletionItem>> {
     // `receiver_end` is the index OF the dot, so slice up to it exclusively.
-    let binding = trailing_identifier(source.get(..receiver_end)?)?;
+    let before = source.get(..receiver_end)?.trim_end();
+    let binding = trailing_identifier(before)?;
+    if before[..before.len() - binding.len()]
+        .trim_end()
+        .ends_with('.')
+    {
+        return None;
+    }
     let owner = tc
         .module_import_bindings
         .get(&(None, 0, binding.to_string()))?;
@@ -301,15 +408,28 @@ fn module_member_completions(
     };
 
     let mut items = Vec::new();
-    for (key, sig) in tc.sigs().entries() {
-        if let Some(leaf) = direct_leaf(key) {
-            items.push(fn_sig_completion(&leaf, sig));
+    for (key, id) in &tc.fn_sig_keys {
+        if let Some(leaf) = direct_leaf(key).filter(|leaf| is_source_identifier(leaf)) {
+            if matches!(
+                tc.defs.kind(*id),
+                hew_types::DeclarationKind::Function | hew_types::DeclarationKind::ExternFunction
+            ) && visible_from_root(tc, *id)
+            {
+                if let Some(sig) = tc.sigs().of(*id) {
+                    items.push(fn_sig_completion(&leaf, sig));
+                }
+            }
         }
     }
-    for (id, definition) in &tc.type_defs {
-        let Some(leaf) = direct_leaf(tc.defs.path(id.declaration())) else {
+    for id in tc.type_defs.keys() {
+        let Some(leaf) =
+            direct_leaf(tc.defs.path(id.declaration())).filter(|leaf| is_source_identifier(leaf))
+        else {
             continue;
         };
+        if !visible_from_root(tc, id.declaration()) {
+            continue;
+        }
         items.push(CompletionItem {
             label: leaf,
             kind: CompletionKind::Type,
@@ -319,27 +439,169 @@ fn module_member_completions(
             insert_text_is_snippet: false,
             sort_text: None,
         });
-        // An exported enum's variants are spellable through the same binding.
-        for variant in definition.variants.keys() {
-            items.push(CompletionItem {
-                label: variant.clone(),
-                kind: CompletionKind::Type,
-                detail: None,
-                documentation: None,
-                insert_text: None,
-                insert_text_is_snippet: false,
-                sort_text: None,
-            });
-        }
-    }
-    if items.is_empty() {
-        return None;
     }
     // Members come from hash tables; list them by label.
     items.sort_by(|a, b| a.label.cmp(&b.label));
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
+}
+
+/// Skip a trailing type-argument list while finding the type head before `.`.
+fn type_head_before_arguments(source: &str) -> Option<&str> {
+    use hew_lexer::Token;
+
+    let tokens: Vec<_> = hew_lexer::Lexer::new(source).collect();
+    if !matches!(tokens.last()?.0, Token::Greater | Token::GreaterGreater) {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (token, span) in tokens.into_iter().rev() {
+        match token {
+            Token::Greater => depth += 1,
+            Token::GreaterGreater => depth += 2,
+            Token::Less | Token::LessLess => {
+                depth = depth.checked_sub(if matches!(token, Token::Less) { 1 } else { 2 })?;
+                if depth == 0 {
+                    return Some(source[..span.start].trim_end());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Complete associated functions after a type name, never instance methods.
+fn type_member_completions(
+    source: &str,
+    receiver_end: usize,
+    tc: &TypeCheckOutput,
+) -> Option<Vec<CompletionItem>> {
+    let (name, nominal, module_qualified) = type_head_at(source.get(..receiver_end)?, tc)?;
+    let mut methods = Vec::new();
+    if let Some(id) = nominal {
+        if !visible_from_root(tc, id.declaration()) {
+            return None;
+        }
+        if let Some(definition) = tc.type_defs.get(&id) {
+            methods.extend(
+                definition
+                    .methods
+                    .iter()
+                    .filter(|(_, sig)| {
+                        sig.associated
+                            && sig
+                                .impl_method
+                                .as_ref()
+                                .is_none_or(|method| visible_from_root(tc, method.declaration))
+                    })
+                    .map(|(name, sig)| (name.clone(), sig.clone())),
+            );
+        }
+        methods.extend(
+            tc.dispatch
+                .methods_of(id)
+                .filter_map(|(name, _, declaration)| {
+                    tc.sigs()
+                        .of(declaration)
+                        .filter(|sig| sig.associated && visible_from_root(tc, declaration))
+                        .map(|sig| (name.to_string(), sig.clone()))
+                }),
+        );
+    }
+    if !module_qualified
+        && nominal.is_none_or(|id| tc.defs.declared_builtin(id.declaration()).is_some())
+    {
+        let prefix = format!("{name}::");
+        methods.extend(tc.builtin_fn_sigs.iter().filter_map(|(key, sig)| {
+            let member = key.as_str().strip_prefix(&prefix)?;
+            (sig.associated && is_source_identifier(member))
+                .then(|| (member.to_string(), sig.clone()))
+        }));
+    }
+    let mut items = if nominal.is_none() && !module_qualified {
+        try_enum_variant_completions(source, Some(tc), receiver_end + 1).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if let Some(definition) = nominal.and_then(|id| tc.type_defs.get(&id)) {
+        if definition.kind == TypeDefKind::Enum {
+            items.extend(
+                definition
+                    .variants
+                    .iter()
+                    .map(|(name, variant)| CompletionItem {
+                        label: name.clone(),
+                        kind: CompletionKind::Constant,
+                        detail: variant_completion_detail(variant),
+                        documentation: None,
+                        insert_text: None,
+                        insert_text_is_snippet: false,
+                        sort_text: None,
+                    }),
+            );
+        }
+    }
+    items.extend(
+        methods
+            .into_iter()
+            .filter(|(name, _)| is_source_identifier(name))
+            .map(|(name, sig)| fn_sig_completion(&name, &sig)),
+    );
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
+    (nominal.is_some() || !items.is_empty()).then_some(items)
+}
+
+/// Resolve a root-scope type head using the checker's lexical import bindings.
+fn type_head_at<'a>(
+    source: &'a str,
+    tc: &TypeCheckOutput,
+) -> Option<(&'a str, Option<hew_types::NominalId>, bool)> {
+    let before = source.trim_end();
+    let before = type_head_before_arguments(before).unwrap_or(before);
+    let name = trailing_identifier(before)?;
+    let prefix = before[..before.len() - name.len()].trim_end();
+    let module_qualified = prefix.ends_with('.');
+    let qualified = if let Some(module_prefix) = prefix.strip_suffix('.') {
+        let binding = trailing_identifier(module_prefix.trim_end())?;
+        let owner = tc
+            .module_import_bindings
+            .get(&(None, 0, binding.to_string()))?;
+        Some(format!("{owner}.{name}"))
+    } else {
+        tc.import_type_name_aliases
+            .get(&(None, 0, name.to_string()))
+            .cloned()
+    };
+    let direct = tc.defs.lookup_nominal(name);
+    let nominal = if module_qualified {
+        qualified
+            .as_deref()
+            .and_then(|path| tc.defs.lookup_nominal(path))
+    } else {
+        direct
+            .filter(|id| tc.defs.declared_builtin(id.declaration()).is_none())
+            .or_else(|| {
+                qualified
+                    .as_deref()
+                    .and_then(|path| tc.defs.lookup_nominal(path))
+            })
+            .or(direct)
+    };
+    Some((name, nominal, module_qualified))
+}
+
+fn is_source_identifier(name: &str) -> bool {
+    let mut tokens = hew_lexer::Lexer::new(name);
+    let Some((token, span)) = tokens.next() else {
+        return false;
+    };
+    span.start == 0
+        && span.end == name.len()
+        && tokens.next().is_none()
+        && hew_parser::parser::Parser::is_ident_token(&token)
 }
 
 /// The identifier ending at the end of `text`, if any.
@@ -1238,6 +1500,111 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn callable_candidates_follow_the_source_context() {
+        let source = r"type Boxed<T> { value: T; }
+impl<T> Boxed<T> {
+    fn new(value: T) -> Boxed<T> { Boxed { value } }
+    fn get(self) -> T { self.value }
+}
+fn identity<T>(value: T) -> T { value }
+fn main() {
+    let b = Boxed.new(1);
+    let n = b.get();
+    println(identity(n));
+}
+";
+        let tc = type_check(source);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let parsed = hew_parser::parse(source);
+        let global = complete(
+            source,
+            &parsed,
+            Some(&tc),
+            source.find("identity(n)").unwrap(),
+        );
+        assert!(global.iter().any(|item| item.label == "identity"));
+        assert!(!global.iter().any(|item| item.label.contains("::")));
+        let static_offset = source.find("Boxed.new").unwrap() + "Boxed.".len();
+        let associated = complete(source, &parsed, Some(&tc), static_offset);
+        assert!(associated.iter().any(|item| item.label == "new"));
+        assert!(!associated.iter().any(|item| item.label == "get"));
+        let instance_offset = source.find("b.get").unwrap() + "b.".len();
+        let instance = complete(source, &parsed, Some(&tc), instance_offset);
+        assert!(instance.iter().any(|item| item.label == "get"));
+        assert!(!instance.iter().any(|item| item.label == "new"));
+    }
+
+    #[test]
+    fn builtin_type_completion_offers_associated_constructor() {
+        let source = "fn main() { let values: Vec<i64> = Vec.new(); let _ = values.len(); }";
+        let tc = type_check(source);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = source.find("Vec.new").unwrap() + "Vec.".len();
+        let items = complete(source, &hew_parser::parse(source), Some(&tc), offset);
+        assert!(items.iter().any(|item| item.label == "new"));
+        assert!(!items.iter().any(|item| item.label == "push"));
+    }
+
+    #[test]
+    fn explicitly_parameterized_type_offers_its_associated_function() {
+        for type_name in ["Vec<i64>", "Vec<Vec<i64>>"] {
+            let source =
+                format!("fn main() {{ let values = {type_name}.new(); println(values.len()); }}");
+            let tc = type_check(&source);
+            assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+            let offset = source.find(&format!("{type_name}.new")).unwrap() + type_name.len() + 1;
+            let items = complete(&source, &hew_parser::parse(&source), Some(&tc), offset);
+            assert!(items.iter().any(|item| item.label == "new"), "{items:?}");
+            assert!(!items.iter().any(|item| item.label == "push"), "{items:?}");
+        }
+    }
+
+    #[test]
+    fn imported_type_associated_completion_uses_the_module_binding() {
+        let root = "fn main() { let value = ledger.Boxed.new(3); println(value.get()); }";
+        let module = "pub type Boxed<T> { value: T; } impl<T> Boxed<T> { pub fn new(value: T) -> Boxed<T> { Boxed { value } } pub fn get(self) -> T { self.value } }";
+        let tc = type_check_with_modules(root, &[(&["hew", "models"], Some("ledger"), module)]);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = root.find("ledger.Boxed.new").unwrap() + "ledger.Boxed.".len();
+        let items = complete(root, &hew_parser::parse(root), Some(&tc), offset);
+        assert!(items.iter().any(|item| item.label == "new"), "{items:?}");
+        assert!(!items.iter().any(|item| item.label == "get"), "{items:?}");
+    }
+
+    #[test]
+    fn user_function_can_shadow_a_retired_builtin() {
+        let source = "fn close(n: i64) -> i64 { n } fn main() { println(close(3)); }";
+        let tc = type_check(source);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = source.rfind("close(3)").unwrap();
+        let items = complete(source, &hew_parser::parse(source), Some(&tc), offset);
+        assert!(items.iter().any(|item| item.label == "close"
+            && item
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("i64"))));
+    }
+
+    #[test]
+    fn module_completions_exclude_private_functions_and_unqualified_variants() {
+        let root = "fn main() { println(ledger.go()); }";
+        let module =
+            "fn hidden() -> i64 { 1 } pub fn go() -> i64 { hidden() } pub enum Colour { Red; }";
+        let tc = type_check_with_modules(root, &[(&["hew", "models"], Some("ledger"), module)]);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = root.find("ledger.go").unwrap() + "ledger.".len();
+        let items = complete(root, &hew_parser::parse(root), Some(&tc), offset);
+        assert!(items.iter().any(|item| item.label == "go"), "{items:?}");
+        assert!(items.iter().any(|item| item.label == "Colour"), "{items:?}");
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.label == "hidden" || item.label == "Red"),
+            "{items:?}"
+        );
+    }
+
     const CURSOR: &str = "/*cursor*/";
 
     fn items_at_cursor(
@@ -1713,9 +2080,7 @@ fn example() {
             .map(|item| item.label)
             .collect();
 
-        assert!(labels.iter().any(|label| label == "fn"));
-        assert!(labels.iter().any(|label| label == "Point"));
-        assert!(!labels.iter().any(|label| label == "x"));
+        assert!(labels.is_empty());
     }
 
     #[test]

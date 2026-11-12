@@ -1,0 +1,11 @@
+[[case]]
+id = "math-intrinsic-local-function"
+intent = "A local function with an intrinsic name keeps its own callable identity."
+source = "cases/math-intrinsic-local-function.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "104\n"
+exit = 0

@@ -919,6 +919,97 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// Lower the checker-selected generic math operation for either call syntax.
+    pub(super) fn lower_generic_math_intrinsic(
+        &mut self,
+        op: hew_types::MathGenericOp,
+        args: &[CallArg],
+        span: &Span,
+        name: &str,
+    ) -> (HirExprKind, ResolvedTy) {
+        let key = self.mk_key(span);
+        let LoweredCallArgs {
+            args: lowered_args,
+            evaluation_order,
+        } = self.lower_call_args(args, span);
+        let checked_ret_ty = self
+            .checked_expr_type(&key)
+            .map(|ty| ty.materialize_literal_defaults())
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
+        let dispatch_ty = checked_ret_ty
+            .as_ref()
+            .filter(|ty| stdlib_catalog::generic_math_intrinsic_callee(op, ty).is_some())
+            .cloned()
+            .or_else(|| lowered_args.first().map(|arg| arg.ty.clone()));
+        let Some(dispatch_ty) = dispatch_ty else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("math.{name}"),
+                    reason: "generic math intrinsic had no lowered arguments".to_string(),
+                },
+                span.clone(),
+                "generic math intrinsic dispatch requires at least one checked argument",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "generic math intrinsic `math.{name}` has no dispatch type"
+                )),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some((symbol, ret_ty)) =
+            stdlib_catalog::generic_math_intrinsic_callee(op, &dispatch_ty)
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: format!("math.{name}"),
+                    reason: format!("no generic math intrinsic for operand type `{dispatch_ty}`"),
+                },
+                span.clone(),
+                "current math intrinsic dispatch supports i64 and f64 operands",
+            ));
+            return (
+                HirExprKind::Unsupported(format!(
+                    "generic math intrinsic `math.{name}` unsupported for `{dispatch_ty}`"
+                )),
+                ResolvedTy::Unit,
+            );
+        };
+        let resolved_ref = self
+            .fn_registry
+            .get(symbol)
+            .map_or(ResolvedRef::Unresolved, |entry| {
+                entry
+                    .builtin_family
+                    .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
+            });
+        let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+            params: Vec::new(),
+            ret: Box::new(ret_ty.clone()),
+        };
+        let callee = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: callee_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: symbol.to_string(),
+                resolved: resolved_ref,
+            },
+            span: span.clone(),
+        };
+        (
+            HirExprKind::Call {
+                target: self.registered_symbol_target(symbol),
+                callee: Box::new(callee),
+                args: lowered_args,
+                evaluation_order,
+            },
+            ret_ty,
+        )
+    }
+
     /// Lower a call expression. An early-complete call returns its finished
     /// expression; every other shape returns its kind and type for the
     /// caller to finish. Kept out of `lower_expr_inner` so its locals do not
@@ -947,6 +1038,11 @@ impl LowerCtx<'_> {
 
         let lowered = {
             let rewrite_key = self.mk_key(&span);
+            if let Some(MethodCallRewrite::GenericMathIntrinsic { op }) =
+                self.method_call_rewrites.get(&rewrite_key).cloned()
+            {
+                return Ok(self.lower_generic_math_intrinsic(op, args, &span, "intrinsic"));
+            }
             // `handle(msg)` on a lambda actor is a completion call, not a
             // callable-value invocation: the checker records it as an ask.
             if let Some(ActorMethodKind::Ask {

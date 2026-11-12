@@ -104,14 +104,13 @@ pub fn complete(
         }
         // Signature lookup keys include method linkage names and canonical
         // module paths. They are not necessarily names in this source scope.
-        // Only ordinary functions with a bare lookup key belong here; methods
-        // are offered at their receiver or type instead.
+        // Resolve file-backed root functions by declaration owner, even when
+        // their signature key includes the root module's canonical path.
         for (name, id) in &tc.fn_sig_keys {
-            if is_source_identifier(name)
-                && (tc.root_value_bindings.contains(name)
-                    || tc
-                        .import_fn_name_aliases
-                        .contains_key(&(None, 0, name.clone())))
+            let leaf = name.rsplit('.').next().unwrap_or(name);
+            if is_source_identifier(leaf)
+                && tc.root_value_bindings.contains(leaf)
+                && (name == leaf || tc.defs.module(*id) == tc.defs.root_module())
                 && matches!(
                     tc.defs.kind(*id),
                     hew_types::DeclarationKind::Function
@@ -119,10 +118,11 @@ pub fn complete(
                 )
             {
                 if let Some(sig) = tc.sigs().of(*id) {
-                    items.push(fn_sig_completion(name, sig));
+                    items.push(fn_sig_completion(leaf, sig));
                 }
             }
         }
+        items.extend(imported_function_completions(tc));
         for (name, sig) in &tc.builtin_fn_sigs {
             if is_source_identifier(name.as_str())
                 && !sig.is_builtin_variant
@@ -150,6 +150,21 @@ pub fn complete(
     items.retain(|item| seen.insert(item.label.clone()));
 
     items
+}
+
+/// Explicit imports publish lexical bindings to canonical signatures.
+fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
+    tc.import_fn_name_aliases
+        .iter()
+        .filter(|((module, file, binding), _)| {
+            module.is_none() && *file == 0 && is_source_identifier(binding)
+        })
+        .filter_map(|((_, _, binding), source)| {
+            tc.sigs()
+                .get(source)
+                .map(|sig| fn_sig_completion(binding, sig))
+        })
+        .collect()
 }
 
 /// Render type identities through the root file's actual import bindings.

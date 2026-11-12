@@ -24,7 +24,7 @@ test('completion insertions compile and execute with the intended call context',
   assert.ok(!welcomeItems.some(item => item.label.includes('::')));
   assert.ok(!welcomeItems.some(item => ['hew_actor_timer_release', 'close', 'closed', 'supervisor_stop', 'supervisor_child'].includes(item.label)));
 
-  let code = `// café\nimport std.math;\ntype Boxed<T> { value: T; }\nimpl<T> Boxed<T> {\n    fn new(value: T) -> Boxed<T> { Boxed { value } }\n    fn get(self) -> T { self.value }\n}\nfn identity<T>(value: T) -> T { value }\nfn main() {\n    var values: Vec<i64> = Vec<i64>.missing();\n    values.push(1);\n    let item = Boxed.missing(41);\n    let n = item.missing();\n    println(missing(n));\n    println(values.len());\n    println(math.missing(-3));\n}\n`;
+  let code = `// café\nimport std.math;\nimport std.math.{sign as polarity};\ntype Boxed<T> { value: T; }\nimpl<T> Boxed<T> {\n    fn new(value: T) -> Boxed<T> { Boxed { value } }\n    fn get(self) -> T { self.value }\n}\n/// Return the given value.\nfn identity<T>(value: T) -> T { value }\nfn main() {\n    var values: Vec<i64> = Vec<i64>.missing();\n    values.push(1);\n    let item = Boxed.missing(41);\n    let n = item.missing();\n    println(missing(n));\n    println(values.len());\n    println(math.missing(-3));\n    println(missing(-4));\n}\n`;
   function select(marker, wanted, absent = []) {
     const start = code.indexOf(marker);
     assert.notEqual(start, -1, marker);
@@ -33,6 +33,10 @@ test('completion insertions compile and execute with the intended call context',
     const items = JSON.parse(compiler.complete(code, offset));
     const selected = items.find(item => item.label === wanted);
     assert.ok(selected, `missing ${wanted} in ${marker}`);
+    if (wanted === 'identity') {
+      assert.ok(selected.detail?.includes('identity'), JSON.stringify(selected));
+      assert.ok(selected.documentation?.includes('Return the given value'), JSON.stringify(selected));
+    }
     for (const label of absent) assert.ok(!items.some(item => item.label === label), `unexpected ${label} in ${marker}`);
     const insertion = selected.insert_text ?? selected.label;
     assert.equal(selected.insert_text_is_snippet, false);
@@ -43,10 +47,11 @@ test('completion insertions compile and execute with the intended call context',
   select('item.missing', 'get', ['new']);
   select('println(missing', 'identity');
   select('math.missing', 'abs');
+  select('println(missing(-4)', 'polarity');
   const output = JSON.parse(compiler.compileToSandboxBytecode(code, 'sandbox-vm-export'));
   const {trace, stdout} = await execute(output);
   assert.equal(trace.final_state.exit_code, 0);
-  assert.equal(stdout, '41\n1\n3\n');
+  assert.equal(stdout, '41\n1\n3\n-1\n');
 
   if (process.env.HEW_NATIVE_BIN) {
     const dir = mkdtempSync(join(tmpdir(), 'hew-completion-'));
@@ -55,7 +60,7 @@ test('completion insertions compile and execute with the intended call context',
       writeFileSync(path, code);
       const result = spawnSync(process.env.HEW_NATIVE_BIN, ['run', path], {encoding: 'utf8'});
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout, '41\n1\n3\n');
+      assert.equal(result.stdout, '41\n1\n3\n-1\n');
     } finally {
       rmSync(dir, {recursive: true, force: true});
     }

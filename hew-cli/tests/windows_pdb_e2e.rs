@@ -82,6 +82,73 @@ fn recorded_failure_address_resolves_through_the_generated_pdb() {
 }
 
 #[test]
+fn imported_failure_address_resolves_to_its_own_source_in_the_pdb() {
+    require_codegen();
+    let dir = tempdir();
+    let source = dir.path().join("main.hew");
+    let imported = dir.path().join("helper.hew");
+    std::fs::write(
+        &source,
+        "import helper;\nfn main() { println(helper.level2(4)); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &imported,
+        "pub fn level2(x: i64) -> i64 {\n    let y = x * 3;\n    if y == 12 { panic(\"too big\"); }\n    y\n}\n",
+    )
+    .unwrap();
+    let binary = dir.path().join("imported.exe");
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["build", "-g"])
+        .arg(source)
+        .arg("-o")
+        .arg(&binary);
+    let result = run_bounded_command(command, "build imported Windows debug fixture");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let log = dir.path().join("imported-failure.ndjson");
+    let mut command = Command::new(&binary);
+    command
+        .env("HEW_BACKTRACE", "1")
+        .env("HEW_FAILURE_LOG", &log);
+    let result = run_bounded_command(command, "run imported Windows debug fixture");
+    assert!(!result.status.success());
+    let text = std::fs::read_to_string(&log).expect("failure log");
+    let record: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let frame = record["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|frame| frame["hew_fn"] == "helper.level2")
+        .unwrap_or_else(|| panic!("imported frame missing: {record}"));
+    let pc = frame["pc"].as_str().expect("frame address");
+    let base = record["build"]["image_base"].as_str().expect("image base");
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("symbolize")
+        .arg(binary.with_extension("pdb"))
+        .arg(pc)
+        .arg(format!("--base={base}"))
+        .arg("--return-addresses");
+    let result = run_bounded_command(command, "symbolize imported Windows failure PDB");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        stdout.contains("helper.level2") && stdout.contains("helper.hew:3"),
+        "{stdout}"
+    );
+}
+
+#[test]
 #[ignore = "requires the Windows Debugging Tools component (run by the release gate)"]
 fn cdb_stops_at_source_and_reads_a_live_local() {
     let dir = tempdir();

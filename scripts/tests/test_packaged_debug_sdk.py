@@ -91,6 +91,7 @@ class WindowsDebugAcceptance(unittest.TestCase):
 
 
 class MacosSplitSymbols(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "requires POSIX symlink and shell semantics")
     def test_copies_cargo_symlink_target_into_the_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

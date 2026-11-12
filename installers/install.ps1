@@ -57,7 +57,8 @@ param(
     [switch]$Stable,
     [string]$Prefix,
     [switch]$DryRun,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$LoadFunctionsOnly
 )
 
 if ($Version -and $Stable) {
@@ -124,19 +125,13 @@ function Show-Help {
     Write-Host "    install.ps1 [OPTIONS]"
     Write-Host ""
     Write-Host "  OPTIONS:" -ForegroundColor White
-    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.1.0). Default: newest"
-    Write-Host "                     release including release candidates"
-    Write-Host "    -Stable          Install the newest final (non-rc) release instead of"
-    Write-Host "                     the newest release candidate"
+    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.9.2). Default: latest"
     Write-Host "    -Prefix  <dir>   Installation directory. Default: `$env:HEW_HOME or `$env:USERPROFILE\.hew"
-    Write-Host "    -DryRun          Resolve the version and print what would be installed,"
-    Write-Host "                     without installing it"
     Write-Host "    -Help            Show this help message"
     Write-Host ""
     Write-Host "  EXAMPLES:" -ForegroundColor White
-    Write-Host "    irm https://hew.sh/install.ps1 | iex"
-    Write-Host "    .\install.ps1 -Version 0.1.0"
-    Write-Host "    .\install.ps1 -Stable"
+    Write-Host "    irm https://install.hew.sh/install.ps1 | iex"
+    Write-Host "    .\install.ps1 -Version 0.9.2"
     Write-Host "    .\install.ps1 -Prefix C:\tools\hew"
     Write-Host ""
 }
@@ -205,9 +200,309 @@ function Expand-TarGz {
     }
 }
 
+function Get-MissingRequiredBinary {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $binary = "hew.exe"
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "bin/$binary"))) {
+        return $binary
+    }
+    return $null
+}
+
+function Test-ToolchainInstallationComplete {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    $versionFile = Join-Path $InstallDir ".hew-version"
+    if (-not (Test-Path -LiteralPath $versionFile)) {
+        return $false
+    }
+    $installedVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    return $installedVersion -eq $Version -and -not (Get-MissingRequiredBinary -InstallDir $InstallDir)
+}
+
+function Confirm-ArchiveChecksum {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$ArchiveName
+    )
+
+    $expectedHash = $null
+    foreach ($line in Get-Content -LiteralPath $ChecksumsPath) {
+        if ($line -match "^([0-9a-fA-F]{64})\s+(.+)$") {
+            $hash = $Matches[1]
+            $file = $Matches[2].Trim()
+            if ($file -eq $ArchiveName) {
+                $expectedHash = $hash.ToLower()
+                break
+            }
+        }
+    }
+    if (-not $expectedHash) {
+        throw "Checksum for ${ArchiveName} not found in $(Split-Path -Leaf $ChecksumsPath)"
+    }
+
+    $actualHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLower()
+    if ($actualHash -ne $expectedHash) {
+        throw "SHA-256 mismatch!`n  Expected: ${expectedHash}`n  Got:      ${actualHash}"
+    }
+}
+
+function Get-AndVerifyArchiveChecksum {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumsUrl,
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$ArchiveName,
+        [scriptblock]$DownloadFile = {
+            param($Url, $Destination)
+            Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+        }
+    )
+
+    & $DownloadFile $ChecksumsUrl $ChecksumsPath
+    Confirm-ArchiveChecksum `
+        -ChecksumsPath $ChecksumsPath `
+        -ArchivePath $ArchivePath `
+        -ArchiveName $ArchiveName
+}
+
+function Stage-ReleaseToolchain {
+    param(
+        [Parameter(Mandatory = $true)][string]$InnerDir,
+        [Parameter(Mandatory = $true)][string]$StageBin,
+        [Parameter(Mandatory = $true)][string]$StageLib
+    )
+
+    New-Item -ItemType Directory -Path $StageBin -Force | Out-Null
+    New-Item -ItemType Directory -Path $StageLib -Force | Out-Null
+
+    foreach ($binary in @("hew", "hew-lsp", "hew-observe")) {
+        $source = Join-Path $InnerDir "bin/${binary}.exe"
+        $destinationName = "${binary}.exe"
+        if (-not (Test-Path -LiteralPath $source)) {
+            $source = Join-Path $InnerDir "bin/${binary}"
+            $destinationName = $binary
+        }
+        if (-not (Test-Path -LiteralPath $source)) {
+            if ($binary -eq "hew") {
+                throw "Release archive is missing required binary: ${binary}"
+            }
+            continue
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $StageBin $destinationName) -Force
+    }
+
+    $libSource = Join-Path $InnerDir "lib"
+    if (-not (Test-Path -LiteralPath $libSource)) {
+        throw "Release archive is missing required lib directory."
+    }
+    Copy-Item -Path (Join-Path $libSource "*") -Destination $StageLib -Recurse -Force
+}
+
+function Install-ReleasePayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$InnerDir,
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [scriptblock]$CopyPath = {
+            param($Source, $Destination, $Recurse)
+            if ($Recurse) {
+                Copy-Item -Path $Source -Destination $Destination -Recurse -Force -ErrorAction Stop
+            }
+            else {
+                Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            }
+        }
+    )
+
+    foreach ($directory in @("std", "completions")) {
+        New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
+        $source = Join-Path $InnerDir $directory
+        if (Test-Path -LiteralPath $source) {
+            & $CopyPath (Join-Path $source "*") (Join-Path $InstallDir $directory) $true
+        }
+    }
+
+    foreach ($file in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
+        $source = Join-Path $InnerDir $file
+        if (Test-Path -LiteralPath $source) {
+            & $CopyPath $source (Join-Path $InstallDir $file) $false
+        }
+    }
+}
+
+function Install-StagedToolchain {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+        [Parameter(Mandatory = $true)]
+        [string]$StageBin,
+        [Parameter(Mandatory = $true)]
+        [string]$StageLib,
+        [Parameter(Mandatory = $true)]
+        [string]$VersionFile,
+        [scriptblock]$CreateDirectory = {
+            param($Path)
+            New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
+        },
+        [scriptblock]$MovePath = {
+            param($Source, $Destination)
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+        },
+        [scriptblock]$RemovePath = {
+            param($Path)
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        }
+    )
+
+    $binDir = Join-Path $InstallDir "bin"
+    $libDir = Join-Path $InstallDir "lib"
+    $transactionId = [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+    $backupRoot = Join-Path $InstallDir ".hew-backup-${transactionId}"
+    $backupBin = Join-Path $backupRoot "bin"
+    $backupLib = Join-Path $backupRoot "lib"
+
+    # Track each completed transition. Rollback must never remove a destination
+    # that still contains an untouched original directory.
+    $binBackedUp = $false
+    $libBackedUp = $false
+    $binInstalled = $false
+    $libInstalled = $false
+    $versionFileExisted = Test-Path -LiteralPath $VersionFile
+    $previousVersion = if ($versionFileExisted) {
+        Get-Content -LiteralPath $VersionFile -Raw
+    }
+    else {
+        $null
+    }
+
+    & $CreateDirectory $backupRoot
+    try {
+        if (Test-Path -LiteralPath $binDir) {
+            & $MovePath $binDir $backupBin
+            $binBackedUp = $true
+        }
+        if (Test-Path -LiteralPath $libDir) {
+            & $MovePath $libDir $backupLib
+            $libBackedUp = $true
+        }
+
+        & $MovePath $StageBin $binDir
+        $binInstalled = $true
+        & $MovePath $StageLib $libDir
+        $libInstalled = $true
+        # A completed bin/lib swap is not a completed installation. Invalidate
+        # the marker until the remaining payload has copied successfully so a
+        # failed payload copy cannot make the next run exit early.
+        Set-Content -LiteralPath $VersionFile -Value "incomplete-${transactionId}" -NoNewline
+    }
+    catch {
+        $installError = $_
+        try {
+            if ($libInstalled -and (Test-Path -LiteralPath $libDir)) {
+                & $RemovePath $libDir
+            }
+            if ($binInstalled -and (Test-Path -LiteralPath $binDir)) {
+                & $RemovePath $binDir
+            }
+            if ($libBackedUp -and (Test-Path -LiteralPath $backupLib)) {
+                & $MovePath $backupLib $libDir
+            }
+            if ($binBackedUp -and (Test-Path -LiteralPath $backupBin)) {
+                & $MovePath $backupBin $binDir
+            }
+            if ($versionFileExisted) {
+                Set-Content -LiteralPath $VersionFile -Value $previousVersion -NoNewline
+            }
+            elseif (Test-Path -LiteralPath $VersionFile) {
+                Remove-Item -LiteralPath $VersionFile -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            throw "Install failed and rollback also failed. Previous files remain under ${backupRoot}. Install error: ${installError}; rollback error: $_"
+        }
+
+        if (Test-Path -LiteralPath $backupRoot) {
+            Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw $installError
+    }
+
+    if (Test-Path -LiteralPath $backupRoot) {
+        Remove-Item -LiteralPath $backupRoot -Recurse -Force
+    }
+}
+
+function Install-ReleaseToolchain {
+    param(
+        [Parameter(Mandatory = $true)][string]$InnerDir,
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$StageBin,
+        [Parameter(Mandatory = $true)][string]$StageLib,
+        [Parameter(Mandatory = $true)][string]$VersionFile,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [scriptblock]$CreateDirectory,
+        [scriptblock]$MovePath,
+        [scriptblock]$RemovePath,
+        [scriptblock]$CopyPath
+    )
+
+    $toolchainArguments = @{
+        InstallDir = $InstallDir
+        StageBin = $StageBin
+        StageLib = $StageLib
+        VersionFile = $VersionFile
+    }
+    if ($CreateDirectory) { $toolchainArguments.CreateDirectory = $CreateDirectory }
+    if ($MovePath) { $toolchainArguments.MovePath = $MovePath }
+    if ($RemovePath) { $toolchainArguments.RemovePath = $RemovePath }
+    Install-StagedToolchain @toolchainArguments
+
+    $payloadArguments = @{
+        InnerDir = $InnerDir
+        InstallDir = $InstallDir
+    }
+    if ($CopyPath) { $payloadArguments.CopyPath = $CopyPath }
+    Install-ReleasePayload @payloadArguments
+
+    # This is the completion marker: write it only after every required
+    # toolchain transition and all available payload copies succeed.
+    Set-Content -LiteralPath $VersionFile -Value $Version -NoNewline
+}
+
+function Select-NewestTag {
+    param([string[]]$Tags)
+    # $Tags: 'X.Y.Z' or 'X.Y.Z-rcN' strings, no leading 'v'.
+    $best = $null
+    $bestKey = $null
+    foreach ($tag in $Tags) {
+        if ($tag -notmatch '^(\d+)\.(\d+)\.(\d+)(-rc(\d+))?$') { continue }
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $patch = [int]$Matches[3]
+        # A final release outranks any rc of the same major.minor.patch.
+        $rc = if ($Matches[4]) { [int]$Matches[5] } else { 999999 }
+        $key = "{0:D6}.{1:D6}.{2:D6}.{3:D6}" -f $major, $minor, $patch, $rc
+        if (-not $bestKey -or $key -gt $bestKey) {
+            $bestKey = $key
+            $best = $tag
+        }
+    }
+    return $best
+}
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+if ($LoadFunctionsOnly) {
+    return
+}
 
 if ($Help) {
     Show-Help
@@ -251,27 +546,6 @@ $BinDir = Join-Path $InstallDir "bin"
 # SemVer 2.0.0 §11 precedence comparison if the tag scheme ever grows more
 # prerelease kinds.
 # ---------------------------------------------------------------------------
-
-function Select-NewestTag {
-    param([string[]]$Tags)
-    # $Tags: 'X.Y.Z' or 'X.Y.Z-rcN' strings, no leading 'v'.
-    $best = $null
-    $bestKey = $null
-    foreach ($tag in $Tags) {
-        if ($tag -notmatch '^(\d+)\.(\d+)\.(\d+)(-rc(\d+))?$') { continue }
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        $patch = [int]$Matches[3]
-        # A final release outranks any rc of the same major.minor.patch.
-        $rc = if ($Matches[4]) { [int]$Matches[5] } else { 999999 }
-        $key = "{0:D6}.{1:D6}.{2:D6}.{3:D6}" -f $major, $minor, $patch, $rc
-        if (-not $bestKey -or $key -gt $bestKey) {
-            $bestKey = $key
-            $best = $tag
-        }
-    }
-    return $best
-}
 
 if (-not $Version) {
     Write-Step -Label "Fetching version" -NoNewline
@@ -329,14 +603,19 @@ Write-Host ""
 # ---------------------------------------------------------------------------
 
 $versionFile = Join-Path $InstallDir ".hew-version"
-if (Test-Path $versionFile) {
+if (Test-ToolchainInstallationComplete -InstallDir $InstallDir -Version $Version) {
+    Write-Host "  Hew v${Version} is already installed at ${InstallDir}" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  To reinstall, remove $versionFile and run again."
+    Write-Host ""
+    exit 0
+}
+if (Test-Path -LiteralPath $versionFile) {
     $installedVersion = (Get-Content $versionFile -Raw).Trim()
     if ($installedVersion -eq $Version) {
-        Write-Host "  Hew v${Version} is already installed at ${InstallDir}" -ForegroundColor Yellow
+        $missingBinary = Get-MissingRequiredBinary -InstallDir $InstallDir
+        Write-Host "  Hew v${Version} is missing ${missingBinary}; restoring the release toolchain." -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "  To reinstall, remove $versionFile and run again."
-        Write-Host ""
-        exit 0
     }
 }
 
@@ -394,37 +673,20 @@ try {
     $checksumsPath = Join-Path $tempDir $checksumsName
     try {
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri "${baseUrl}/${checksumsName}" -OutFile $checksumsPath -UseBasicParsing
-        $ProgressPreference = $savedProgressPreference
-
-        $expectedHash = $null
-        foreach ($line in Get-Content $checksumsPath) {
-            if ($line -match "^([0-9a-fA-F]{64})\s+(.+)$") {
-                $hash = $Matches[1]
-                $file = $Matches[2].Trim()
-                if ($file -eq $archiveName) {
-                    $expectedHash = $hash.ToLower()
-                    break
-                }
-            }
-        }
-
-        if (-not $expectedHash) {
-            Write-Host "failed" -ForegroundColor Red
-            Write-ErrorAndExit "Checksum for ${archiveName} not found in ${checksumsName}"
-        }
-
-        $actualHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLower()
-        if ($actualHash -ne $expectedHash) {
-            Write-Host "failed" -ForegroundColor Red
-            Write-ErrorAndExit "SHA-256 mismatch!`n  Expected: ${expectedHash}`n  Got:      ${actualHash}"
-        }
+        Get-AndVerifyArchiveChecksum `
+            -ChecksumsUrl "${baseUrl}/${checksumsName}" `
+            -ChecksumsPath $checksumsPath `
+            -ArchivePath $archivePath `
+            -ArchiveName $archiveName
 
         Write-Host "done" -ForegroundColor Green
     }
-    catch [System.Net.WebException] {
+    catch {
+        Write-Host "failed" -ForegroundColor Red
+        Write-ErrorAndExit "Failed to download or verify ${checksumsName}: $_"
+    }
+    finally {
         $ProgressPreference = $savedProgressPreference
-        Write-Host "skipped" -ForegroundColor DarkGray
     }
 
     # ------------------------------------------------------------------
@@ -444,82 +706,43 @@ try {
             throw "Unknown archive format: $archiveName"
         }
 
-        # Find the inner directory (e.g. hew-v0.1.0-windows-x86_64/)
+        # Find the inner directory (e.g. hew-v0.9.2-windows-x86_64/)
         $innerDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
         if (-not $innerDir) {
             Write-Host "failed" -ForegroundColor Red
             Write-ErrorAndExit "Archive does not contain expected directory structure."
         }
 
-        # Prepare install directory — remove old bin/ and lib/ but preserve user data
-        if (Test-Path $InstallDir) {
-            foreach ($subdir in @("bin", "lib")) {
-                $sub = Join-Path $InstallDir $subdir
-                if (Test-Path $sub) {
-                    Remove-Item -Path $sub -Recurse -Force
-                }
+        # Stage the required toolchain before touching the current installation.
+        # Keeping the staging and backup directories under InstallDir also keeps
+        # the directory renames on the same volume.
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        $transactionId = [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+        $stageRoot = Join-Path $InstallDir ".hew-install-${transactionId}"
+        $stageBin = Join-Path $stageRoot "bin"
+        $stageLib = Join-Path $stageRoot "lib"
+        Stage-ReleaseToolchain `
+            -InnerDir $innerDir.FullName `
+            -StageBin $stageBin `
+            -StageLib $stageLib
+
+        # Swap bin/ and lib/ as one rollback-protected transaction. A failure
+        # restores only directories whose backup move completed, preserving any
+        # original destination that was never moved.
+        try {
+            Install-ReleaseToolchain `
+                -InnerDir $innerDir.FullName `
+                -InstallDir $InstallDir `
+                -StageBin $stageBin `
+                -StageLib $stageLib `
+                -VersionFile $versionFile `
+                -Version $Version
+        }
+        finally {
+            if (Test-Path -LiteralPath $stageRoot) {
+                Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
-
-        # Create standard directories
-        foreach ($dir in @("bin", "lib", "std", "include", "completions", "share")) {
-            New-Item -ItemType Directory -Path (Join-Path $InstallDir $dir) -Force | Out-Null
-        }
-
-        # Copy binaries
-        foreach ($bin in @("hew")) {
-            # On Windows, binaries have .exe extension
-            foreach ($ext in @(".exe", "")) {
-                $src = Join-Path $innerDir.FullName "bin/${bin}${ext}"
-                if (Test-Path $src) {
-                    Copy-Item -Path $src -Destination (Join-Path $InstallDir "bin/${bin}${ext}") -Force
-                }
-            }
-        }
-
-        # Copy all of lib/ — preserves libhew.a at both the flat path and any
-        # triple-specific subdirectory (e.g. lib/x86_64-pc-windows-msvc/hew.lib)
-        $libSrc = Join-Path $innerDir.FullName "lib"
-        if (Test-Path $libSrc) {
-            Copy-Item -Path (Join-Path $libSrc "*") -Destination (Join-Path $InstallDir "lib") -Recurse -Force
-        }
-
-        # Standard library (best-effort — may not be in older releases)
-        $stdSrc = Join-Path $innerDir.FullName "std"
-        if (Test-Path $stdSrc) {
-            Copy-Item -Path (Join-Path $stdSrc "*") -Destination (Join-Path $InstallDir "std") -Recurse -Force
-        }
-
-        # C header for C code that exchanges values with Hew (absent from older releases)
-        $includeSrc = Join-Path $innerDir.FullName "include"
-        if (Test-Path $includeSrc) {
-            Copy-Item -Path (Join-Path $includeSrc "*") -Destination (Join-Path $InstallDir "include") -Recurse -Force
-        }
-
-        $shareSrc = Join-Path $innerDir.FullName "share"
-        if (Test-Path $shareSrc) {
-            Copy-Item -Path (Join-Path $shareSrc "*") -Destination (Join-Path $InstallDir "share") -Recurse -Force
-        }
-
-        # Generate shell completions from installed binaries
-        $hewBin = Join-Path $InstallDir "bin/hew.exe"
-        if (-not (Test-Path $hewBin)) { $hewBin = Join-Path $InstallDir "bin/hew" }
-        $compDir = Join-Path $InstallDir "completions"
-        foreach ($sh in @("bash", "zsh", "fish")) {
-            try { & $hewBin  completions $sh | Out-File -Encoding utf8NoBOM (Join-Path $compDir "hew.$sh")  } catch {}
-        }
-        try { & $hewBin  completions powershell | Out-File -Encoding UTF8 (Join-Path $compDir "hew.ps1")  } catch {}
-
-        # Copy license and doc files
-        foreach ($f in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
-            $src = Join-Path $innerDir.FullName $f
-            if (Test-Path $src) {
-                Copy-Item -Path $src -Destination (Join-Path $InstallDir $f) -Force
-            }
-        }
-
-        # Write version marker
-        Set-Content -Path $versionFile -Value $Version -NoNewline
 
         Write-Host "done" -ForegroundColor Green
     }
@@ -536,7 +759,7 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
-# Environment variables — add to user PATH and set HEW_HOME
+# Environment variables — add to user PATH and set HEW_HOME / HEW_STD
 # ---------------------------------------------------------------------------
 
 $pathUpdated = $false
@@ -553,8 +776,12 @@ if ($currentHewHome -ne $InstallDir) {
     [System.Environment]::SetEnvironmentVariable("HEW_HOME", $InstallDir, [System.EnvironmentVariableTarget]::User)
 }
 
-# The compiler finds its standard library beside itself (<prefix>\std), so
-# HEW_STD is not set; it remains available as an explicit override.
+# Persist HEW_STD for the standard library
+$StdDir = Join-Path $InstallDir "std"
+$currentHewStd = [System.Environment]::GetEnvironmentVariable("HEW_STD", [System.EnvironmentVariableTarget]::User)
+if ($currentHewStd -ne $StdDir) {
+    [System.Environment]::SetEnvironmentVariable("HEW_STD", $StdDir, [System.EnvironmentVariableTarget]::User)
+}
 
 # ---------------------------------------------------------------------------
 # Success message
@@ -580,10 +807,4 @@ else {
     Write-Host " to verify the installation."
 }
 
-Write-Host ""
-Write-Host "  To activate PowerShell completions, add this to your " -NoNewline
-Write-Host '$PROFILE' -ForegroundColor Cyan -NoNewline
-Write-Host ":"
-Write-Host ""
-Write-Host "    . `"$(Join-Path $InstallDir 'completions\hew.ps1')`"" -ForegroundColor DarkGray
 Write-Host ""

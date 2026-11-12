@@ -125,6 +125,7 @@ fn debug_build_resolves_imported_function_to_its_own_source() {
     )
     .unwrap();
     std::fs::write(&imported, "// imported module\n\npub fn triple(x: i64) -> i64 {\n    let value = x * 3;\n    value + 1\n}\n").unwrap();
+    let imported = imported.canonicalize().unwrap();
 
     for optimized in [false, true] {
         let binary =
@@ -170,7 +171,10 @@ fn debug_build_resolves_imported_function_to_its_own_source() {
         assert!(stdout.contains(&expected), "{stdout}");
         if !optimized {
             // Check body locations too, not just the subprogram declaration.
-            let addresses: Vec<_> = (0..symbol.size())
+            // Mach-O does not record symbol sizes, so bound the probe even
+            // when the object reader reports zero. Match the function name
+            // below as well as the line to exclude neighbouring functions.
+            let addresses: Vec<_> = (0..symbol.size().clamp(1024, 8192))
                 .step_by(4)
                 .map(|offset| format!("{:#x}", address + offset))
                 .collect();
@@ -183,7 +187,10 @@ fn debug_build_resolves_imported_function_to_its_own_source() {
             );
             for line in [4, 5] {
                 assert!(
-                    stdout.contains(&format!("{}:{line}", imported.display())),
+                    stdout
+                        .lines()
+                        .any(|frame| frame.contains("helper.triple at ")
+                            && frame.contains(&format!("{}:{line}", imported.display()))),
                     "{stdout}"
                 );
             }

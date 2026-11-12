@@ -126,6 +126,7 @@ fn debug_build_resolves_imported_function_to_its_own_source() {
     .unwrap();
     std::fs::write(&imported, "// imported module\n\npub fn triple(x: i64) -> i64 {\n    let value = x * 3;\n    value + 1\n}\n").unwrap();
     let imported = imported.canonicalize().unwrap();
+    let source_dir = dir.path().canonicalize().unwrap();
 
     for optimized in [false, true] {
         let binary =
@@ -136,7 +137,7 @@ fn debug_build_resolves_imported_function_to_its_own_source() {
             command.args(["--opt-level", "2"]);
             command
                 .arg("--remap-path-prefix")
-                .arg(format!("{}=/virtual/source", dir.path().display()));
+                .arg(format!("{}=/virtual/source", source_dir.display()));
         }
         let result = command.arg(&src).arg("-o").arg(&binary).output().unwrap();
         assert!(

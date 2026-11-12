@@ -1,4 +1,5 @@
 # Unreleased
 
-The next development candidate is [v0.11.0-rc1](v0.11.0-rc1.md). Its
-preparation and platform and packaged-toolchain qualification remain pending.
+Unreleased changes are tracked in the
+[unreleased changelog](../../CHANGELOG.md#unreleased). See the
+[v0.11.0-rc4 notes](v0.11.0-rc4.md) for the 0.11 release candidate.

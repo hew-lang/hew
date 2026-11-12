@@ -5,7 +5,7 @@ import { runBytecode } from "../dist/interpreter/index.js";
 function literalPackage(literal, length) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.11.0",
+    hew_version: "0.11.0-rc4",
     compiler_version: "literal-append-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

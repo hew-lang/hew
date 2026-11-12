@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc4] - 2026-11-12
+
+- Offer completions with valid source spelling and call context for free
+  functions, static constructors and instance methods.
+- Compile selected and renamed `std.math` `abs`, `min` and `max` imports,
+  and selected `sqrt`, in native and browser sandbox programs.
+- Preserve grouped machine guards when formatting, keep consecutive constants
+  together and use a consistent layout for multiline `else if` chains.
+- Correct the machine guide's mutable record example and document existing
+  state spread behaviour.
+- Repair incomplete Unix and Windows installations and verify the published
+  bytes and stable formula during release channel publication.
+
 ## [0.11.0-rc3] - 2026-11-11
 
 - Supersede RC2 before binary publication to correct native debug source

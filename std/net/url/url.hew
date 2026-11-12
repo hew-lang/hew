@@ -372,7 +372,11 @@ fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -
         (b - 48) as i32
     } else if b >= 65 && b <= 70 {
         (b - 55) as i32
-    } else if b >= 97 && b <= 102 { (b - 87) as i32 } else { -1 as i32 }
+    } else if b >= 97 && b <= 102 {
+        (b - 87) as i32
+    } else {
+        -1 as i32
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

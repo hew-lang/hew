@@ -1,0 +1,37 @@
+machine Motion {
+    events {
+        Tick { now: i64; ready: bool; }
+    }
+    state Hold { side: bool; since: i64; flash: i64; }
+    state Dodge { side: bool; until: i64; flash: i64; }
+    on Tick { now, ready }: Dodge => Hold when (ready || now >= state.until) && now > 1 { ..state, side: !state.side, since: now }
+    default { state }
+}
+
+type Controller {
+    motion: Motion;
+}
+
+impl Controller {
+    fn tick(var self, now: i64, ready: bool) {
+        let _ = self.motion.step(.Tick { now, ready }).expect("step failed");
+    }
+}
+
+impl Motion {
+    fn holding(self) -> bool {
+        self.state_name() == "Hold"
+    }
+}
+
+fn main() {
+    var controller = Controller { motion: Motion.Dodge { side: true, until: 3, flash: 9 } };
+    controller.tick(0, true);
+    println(controller.motion.state_name());
+    controller.tick(3, false);
+    println(controller.motion.holding());
+    match controller.motion {
+        .Hold { side, since, flash } => println(f"{side} {since} {flash}"),
+        _ => println("Dodge"),
+    }
+}

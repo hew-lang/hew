@@ -43,10 +43,19 @@ function New-ToolchainTree {
     }
     $std = Join-Path $Root "std"
     $completions = Join-Path $Root "completions"
+    $include = Join-Path $Root "include"
+    $share = Join-Path $Root "share/hew"
     New-Item -ItemType Directory -Path $std -Force | Out-Null
     New-Item -ItemType Directory -Path $completions -Force | Out-Null
+    New-Item -ItemType Directory -Path $include -Force | Out-Null
+    New-Item -ItemType Directory -Path $share -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $std "prelude.hew") -Value "${Prefix}-std" -NoNewline
+    Set-Content -LiteralPath (Join-Path $completions "hew.powershell") -Value "${Prefix}-completion" -NoNewline
     Set-Content -LiteralPath (Join-Path $completions "hew.ps1") -Value "${Prefix}-completion" -NoNewline
+    Set-Content -LiteralPath (Join-Path $include "hew.h") -Value "${Prefix}-header" -NoNewline
+    Set-Content -LiteralPath (Join-Path $include "hew_host.h") -Value "${Prefix}-host-header" -NoNewline
+    Set-Content -LiteralPath (Join-Path $share "hew-gdb.py") -Value "${Prefix}-gdb" -NoNewline
+    Set-Content -LiteralPath (Join-Path $share "hew_lldb.py") -Value "${Prefix}-lldb" -NoNewline
     Set-Content -LiteralPath (Join-Path $Root "README.md") -Value "${Prefix}-readme" -NoNewline
 }
 
@@ -62,6 +71,8 @@ function New-TransactionFixture {
         Set-Content -LiteralPath (Join-Path $install ".hew-version") -Value "0.1.0" -NoNewline
     }
     New-ToolchainTree -Root $source -Prefix "new"
+    # Shipped archives contain hew.powershell, not the legacy alias.
+    Remove-Item -LiteralPath (Join-Path $source "completions/hew.ps1")
     Stage-ReleaseToolchain -InnerDir $source -StageBin (Join-Path $stage "bin") -StageLib (Join-Path $stage "lib")
     return @{
         Root = $root
@@ -97,6 +108,22 @@ function Assert-HashesEqual {
 function Assert-Version {
     param([string]$VersionFile, [string]$Expected, [string]$Message)
     Assert-Equal $Expected (Get-Content -LiteralPath $VersionFile -Raw) $Message
+}
+
+function Assert-Payload {
+    param([string]$Root, [string]$Prefix, [string]$Message)
+    foreach ($entry in @(
+        @("include/hew.h", "${Prefix}-header"),
+        @("include/hew_host.h", "${Prefix}-host-header"),
+        @("share/hew/hew-gdb.py", "${Prefix}-gdb"),
+        @("share/hew/hew_lldb.py", "${Prefix}-lldb"),
+        @("completions/hew.powershell", "${Prefix}-completion"),
+        @("completions/hew.ps1", "${Prefix}-completion"),
+        @("std/prelude.hew", "${Prefix}-std"),
+        @("README.md", "${Prefix}-readme")
+    )) {
+        Assert-Equal $entry[1] (Get-Content -LiteralPath (Join-Path $Root $entry[0]) -Raw) "${Message} $($entry[0])"
+    }
 }
 
 function Invoke-TestInstall {
@@ -192,6 +219,7 @@ try {
     $expectedHashes = Get-ToolchainHashes -Root $fresh.Source
     Invoke-TestInstall -Fixture $fresh -Version "0.2.0"
     Assert-HashesEqual $expectedHashes $fresh.Install "fresh install inventory"
+    Assert-Payload $fresh.Install "new" "fresh install payload"
     Assert-Version $fresh.VersionFile "0.2.0" "fresh install version"
 }
 finally { Remove-Item -LiteralPath $fresh.Root -Recurse -Force -ErrorAction SilentlyContinue }
@@ -205,6 +233,7 @@ try {
     $newHashes = Get-ToolchainHashes -Root $upgrade.Install
     if ($oldHashes["bin/hew.exe"] -eq $newHashes["bin/hew.exe"]) { throw "upgrade did not replace binaries" }
     Assert-HashesEqual $expectedHashes $upgrade.Install "upgrade inventory"
+    Assert-Payload $upgrade.Install "new" "upgrade payload"
     Assert-Version $upgrade.VersionFile "0.2.0" "upgrade version"
 }
 finally { Remove-Item -LiteralPath $upgrade.Root -Recurse -Force -ErrorAction SilentlyContinue }
@@ -217,12 +246,12 @@ try {
     Invoke-TestInstall -Fixture $repair -Version "0.1.0"
     Assert-Equal $null (Get-MissingRequiredBinary -InstallDir $repair.Install) "repair completion"
     Assert-HashesEqual $expectedHashes $repair.Install "repair inventory"
+    Assert-Payload $repair.Install "new" "repair payload"
     Assert-Version $repair.VersionFile "0.1.0" "repair version"
 }
 finally { Remove-Item -LiteralPath $repair.Root -Recurse -Force -ErrorAction SilentlyContinue }
 
-# A payload failure after the bin/lib swap must leave an incomplete marker so
-# the same requested version retries, then a successful retry repairs payload.
+# A staging copy failure leaves the existing installation untouched; retry repairs it.
 $payloadRetry = New-TransactionFixture -MissingCompiler
 try {
     $oldPayloadHash = (Get-FileHash -LiteralPath (Join-Path $payloadRetry.Install "std/prelude.hew") -Algorithm SHA256).Hash
@@ -242,6 +271,26 @@ try {
     Assert-Equal $newPayloadHash (Get-FileHash -LiteralPath (Join-Path $payloadRetry.Install "std/prelude.hew") -Algorithm SHA256).Hash "payload retry repair"
 }
 finally { Remove-Item -LiteralPath $payloadRetry.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+# A failure during the payload swap restores all prior payload and toolchain files.
+$payloadRollback = New-TransactionFixture
+try {
+    $oldHashes = Get-ToolchainHashes -Root $payloadRollback.Install
+    $failShareInstall = {
+        param($Source, $Destination)
+        if ($Source -like '*/payload/share' -or $Source -like '*\payload\share') {
+            throw "injected share install failure"
+        }
+        Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+    }
+    Assert-ThrowsLike {
+        Invoke-TestInstall -Fixture $payloadRollback -Version "0.2.0" -MovePath $failShareInstall
+    } "*injected share install failure*" "payload rollback"
+    Assert-HashesEqual $oldHashes $payloadRollback.Install "payload rollback toolchain"
+    Assert-Payload $payloadRollback.Install "old" "payload rollback"
+    Assert-Version $payloadRollback.VersionFile "0.1.0" "payload rollback version"
+}
+finally { Remove-Item -LiteralPath $payloadRollback.Root -Recurse -Force -ErrorAction SilentlyContinue }
 
 # The v0.9.2 release inventory contains only hew; optional tools may be absent.
 $coreOnly = New-TransactionFixture
@@ -335,6 +384,11 @@ if ($Mode -eq 'stable') { . $Installer -Stable -DryRun -Prefix $Prefix }
 else { . $Installer -DryRun -Prefix $Prefix }
 '@ | Set-Content -LiteralPath $harness
     $shell = (Get-Process -Id $PID).Path
+    $helpOutput = & $shell -NoProfile -File $installerPath -Help 2>&1 | Out-String
+    Assert-Equal 0 $LASTEXITCODE 'help exit'
+    foreach ($expected in @('-Stable', '-DryRun', 'https://hew.sh/install.ps1')) {
+        if (-not $helpOutput.Contains($expected)) { throw "Help is missing ${expected}: $helpOutput" }
+    }
     foreach ($case in @(@('default', 'v0.11.0-rc2'), @('stable', 'v0.10.0'))) {
         $prefix = Join-Path $selectionRoot $case[0]
         $output = & $shell -NoProfile -File $harness -Installer $installerPath -Prefix $prefix -Mode $case[0] 2>&1 | Out-String

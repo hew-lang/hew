@@ -125,13 +125,16 @@ function Show-Help {
     Write-Host "    install.ps1 [OPTIONS]"
     Write-Host ""
     Write-Host "  OPTIONS:" -ForegroundColor White
-    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.9.2). Default: latest"
+    Write-Host "    -Version <ver>   Install a specific version. Default: newest release, including release candidates"
+    Write-Host "    -Stable          Install the newest final release"
     Write-Host "    -Prefix  <dir>   Installation directory. Default: `$env:HEW_HOME or `$env:USERPROFILE\.hew"
+    Write-Host "    -DryRun          Print what would be installed without installing it"
     Write-Host "    -Help            Show this help message"
     Write-Host ""
     Write-Host "  EXAMPLES:" -ForegroundColor White
-    Write-Host "    irm https://install.hew.sh/install.ps1 | iex"
-    Write-Host "    .\install.ps1 -Version 0.9.2"
+    Write-Host "    irm https://hew.sh/install.ps1 | iex"
+    Write-Host "    .\install.ps1 -Version 0.10.0"
+    Write-Host "    .\install.ps1 -Stable"
     Write-Host "    .\install.ps1 -Prefix C:\tools\hew"
     Write-Host ""
 }
@@ -319,12 +322,18 @@ function Install-ReleasePayload {
         }
     )
 
-    foreach ($directory in @("std", "completions")) {
+    foreach ($directory in @("std", "completions", "include", "share")) {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
         $source = Join-Path $InnerDir $directory
         if (Test-Path -LiteralPath $source) {
             & $CopyPath (Join-Path $source "*") (Join-Path $InstallDir $directory) $true
         }
+    }
+
+    # Keep the established PowerShell profile path while using the packaged completion.
+    $powerShellCompletion = Join-Path $InnerDir "completions/hew.powershell"
+    if (Test-Path -LiteralPath $powerShellCompletion) {
+        & $CopyPath $powerShellCompletion (Join-Path $InstallDir "completions/hew.ps1") $false
     }
 
     foreach ($file in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
@@ -344,7 +353,11 @@ function Install-StagedToolchain {
         [Parameter(Mandatory = $true)]
         [string]$StageLib,
         [Parameter(Mandatory = $true)]
+        [string]$StagePayload,
+        [Parameter(Mandatory = $true)]
         [string]$VersionFile,
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
         [scriptblock]$CreateDirectory = {
             param($Path)
             New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
@@ -372,6 +385,8 @@ function Install-StagedToolchain {
     $libBackedUp = $false
     $binInstalled = $false
     $libInstalled = $false
+    $payloadBackedUp = [System.Collections.Generic.List[string]]::new()
+    $payloadInstalled = [System.Collections.Generic.List[string]]::new()
     $versionFileExisted = Test-Path -LiteralPath $VersionFile
     $previousVersion = if ($versionFileExisted) {
         Get-Content -LiteralPath $VersionFile -Raw
@@ -395,14 +410,29 @@ function Install-StagedToolchain {
         $binInstalled = $true
         & $MovePath $StageLib $libDir
         $libInstalled = $true
-        # A completed bin/lib swap is not a completed installation. Invalidate
-        # the marker until the remaining payload has copied successfully so a
-        # failed payload copy cannot make the next run exit early.
         Set-Content -LiteralPath $VersionFile -Value "incomplete-${transactionId}" -NoNewline
+        foreach ($item in Get-ChildItem -LiteralPath $StagePayload -Force) {
+            $destination = Join-Path $InstallDir $item.Name
+            $backup = Join-Path $backupRoot $item.Name
+            if (Test-Path -LiteralPath $destination) {
+                & $MovePath $destination $backup
+                $payloadBackedUp.Add($item.Name)
+            }
+            & $MovePath $item.FullName $destination
+            $payloadInstalled.Add($item.Name)
+        }
+        Set-Content -LiteralPath $VersionFile -Value $Version -NoNewline
     }
     catch {
         $installError = $_
         try {
+            for ($i = $payloadInstalled.Count - 1; $i -ge 0; $i--) {
+                & $RemovePath (Join-Path $InstallDir $payloadInstalled[$i])
+            }
+            for ($i = $payloadBackedUp.Count - 1; $i -ge 0; $i--) {
+                $name = $payloadBackedUp[$i]
+                & $MovePath (Join-Path $backupRoot $name) (Join-Path $InstallDir $name)
+            }
             if ($libInstalled -and (Test-Path -LiteralPath $libDir)) {
                 & $RemovePath $libDir
             }
@@ -451,27 +481,35 @@ function Install-ReleaseToolchain {
         [scriptblock]$CopyPath
     )
 
+    # Stage the remaining payload, retaining unrelated existing files, before
+    # any live path is moved. A copy failure therefore leaves the install intact.
+    $payloadStage = Join-Path (Split-Path -Parent $StageBin) "payload"
+    if (Test-Path -LiteralPath $payloadStage) {
+        Remove-Item -LiteralPath $payloadStage -Recurse -Force -ErrorAction Stop
+    }
+    New-Item -ItemType Directory -Path $payloadStage -Force | Out-Null
+    foreach ($name in @("std", "completions", "include", "share", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
+        $existing = Join-Path $InstallDir $name
+        if (Test-Path -LiteralPath $existing) {
+            Copy-Item -LiteralPath $existing -Destination $payloadStage -Recurse -Force -ErrorAction Stop
+        }
+    }
+    $payloadArguments = @{ InnerDir = $InnerDir; InstallDir = $payloadStage }
+    if ($CopyPath) { $payloadArguments.CopyPath = $CopyPath }
+    Install-ReleasePayload @payloadArguments
+
     $toolchainArguments = @{
         InstallDir = $InstallDir
         StageBin = $StageBin
         StageLib = $StageLib
+        StagePayload = $payloadStage
         VersionFile = $VersionFile
+        Version = $Version
     }
     if ($CreateDirectory) { $toolchainArguments.CreateDirectory = $CreateDirectory }
     if ($MovePath) { $toolchainArguments.MovePath = $MovePath }
     if ($RemovePath) { $toolchainArguments.RemovePath = $RemovePath }
     Install-StagedToolchain @toolchainArguments
-
-    $payloadArguments = @{
-        InnerDir = $InnerDir
-        InstallDir = $InstallDir
-    }
-    if ($CopyPath) { $payloadArguments.CopyPath = $CopyPath }
-    Install-ReleasePayload @payloadArguments
-
-    # This is the completion marker: write it only after every required
-    # toolchain transition and all available payload copies succeed.
-    Set-Content -LiteralPath $VersionFile -Value $Version -NoNewline
 }
 
 function Select-NewestTag {

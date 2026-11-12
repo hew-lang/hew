@@ -3030,6 +3030,14 @@ Pass machines by value into and out of free functions and mutate a local `var`.
 A machine also works as an actor state field or as a field of a mutable record:
 
 ```hew
+machine Door {
+    events { Open; }
+    state Shut;
+    state Ajar;
+    on Open: Shut => Ajar;
+    default { state }
+}
+
 type House { door: Door; }
 
 impl House {

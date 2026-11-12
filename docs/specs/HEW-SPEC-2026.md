@@ -2065,10 +2065,11 @@ Three-tier model — written as a prefix keyword before the item keyword:
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
-> **Implementation note:** both boundaries are enforced at every cross-module
-> reference site: a private item referenced from outside its module is
-> rejected with `E_VISIBILITY_PRIVATE`, and a `package` item referenced from
-> outside its package is rejected with `E_VISIBILITY_PACKAGE`.
+> **Implementation note:** top-level item boundaries are enforced across
+> modules: a private item referenced from outside its module is rejected with
+> `E_VISIBILITY_PRIVATE`, and a `package` item referenced from outside its
+> package is rejected with `E_VISIBILITY_PACKAGE`. The compiler does not yet
+> fully enforce private or package visibility for authored inherent methods.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 

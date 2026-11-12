@@ -732,6 +732,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
 #[test]
 fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     let _guard = crate::runtime_test_guard();
+    let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
     let (node, port, peer, _) = start_authorized_tcp_pair(365, 366);
     crate::pid::hew_pid_set_local_node(365);
     let actor = spawn_remote_test_actor(noop_dispatch);
@@ -767,6 +768,7 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
                 vec!["tests.Counter.handle".into()],
             )
             .unwrap();
+        let request_deadline = crate::request_deadline::RequestDeadline::after(60_000_000_000);
         handle_inbound_ask(
             location,
             "tests.Counter.handle",
@@ -778,13 +780,26 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             publication,
             offer.grant_id,
-            crate::request_deadline::RequestDeadline::default(),
+            request_deadline,
             crate::request_state::RequestKind::CallReject,
         );
         assert_eq!(
             manager.inbound_ask_active.load(Ordering::Acquire),
             1,
             "admission at iteration {iteration}, publication {publication}, previous {previous_publication:?}"
+        );
+        // Drive inbound admission without a worker racing the dispatch claim.
+        manager.inbound_asks.poll_for_test(42);
+        // Observe actual mailbox admission before withdrawing: the test owns
+        // the dequeued message and deliberately delays the dispatch claim.
+        // SAFETY: the test is the only consumer of this actor's mailbox.
+        let message = unsafe { crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast()) };
+        assert!(!message.is_null(), "request was not queued");
+        assert_eq!(
+            // SAFETY: the dequeued node retains its request envelope.
+            unsafe { crate::request_state::message_deadline((*message).envelope) },
+            request_deadline,
+            "queueing must retain the receiver's original expiry"
         );
         for (target, connection, request) in [
             (actor_id + 1, publication, 42),
@@ -807,6 +822,14 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
         manager.inbound_asks.withdraw(location, publication, 42);
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
+        // SAFETY: the dequeued node and its reply channel remain owned here.
+        unsafe {
+            assert!(!crate::request_state::claim_message(
+                (*message).envelope,
+                (*message).reply_channel.cast()
+            ));
+            crate::mailbox::hew_msg_node_free(message);
+        }
         previous_publication = Some(publication);
     }
     // SAFETY: the queued requests have released their ownership above.

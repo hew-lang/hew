@@ -32,6 +32,31 @@ impl std::fmt::Debug for InboundAsks {
 }
 
 impl InboundAsks {
+    #[cfg(test)]
+    pub(super) fn poll_for_test(&self, request_id: u64) {
+        let work = self
+            .targets
+            .lock_or_recover()
+            .values()
+            .flatten()
+            .find(|work| {
+                work.call
+                    .lock_or_recover()
+                    .as_ref()
+                    .is_some_and(|call| call.request_id == request_id)
+            })
+            .cloned()
+            .expect("inbound request");
+        let waker = HewWaker {
+            context: Arc::as_ptr(&work).cast_mut().cast(),
+            wake,
+            retain,
+            release,
+        };
+        let mut call = work.call.lock_or_recover();
+        assert!(!call.as_mut().expect("pending call").poll(&waker));
+    }
+
     pub(super) fn admit(
         self: &Arc<Self>,
         target: ActorIncarnation,
@@ -89,10 +114,7 @@ impl InboundAsks {
                     call.as_ref().is_some_and(|call| {
                         call.publication == publication
                             && call.request_id == request_id
-                            && call
-                                .admission
-                                .as_ref()
-                                .is_some_and(|admission| admission.location == destination)
+                            && call.destination == destination
                     })
                 })
                 .map(|index| (*target, index))
@@ -200,6 +222,7 @@ pub(super) struct PendingCall {
     source_node: u16,
     request_id: u64,
     publication: u64,
+    destination: crate::node_identity::Location,
     deadline: crate::request_deadline::RequestDeadline,
     admission: Option<super::service::RemoteAdmission>,
     manager: SendConnMgr,
@@ -242,6 +265,7 @@ impl PendingCall {
             source_node,
             request_id,
             publication,
+            destination: admission.location,
             deadline,
             admission: Some(admission),
             manager,

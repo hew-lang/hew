@@ -1974,6 +1974,7 @@ pub(super) mod tests {
                       \x20   let ok = scanner.has_next(sc);\n\
                       \x20   let token = scanner.text(sc);\n\
                       \x20   let words = scanner.words(\"one two\");\n\
+                      \x20   let mode = scanner.SplitMode.SplitWords;\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_scanner", source);
 
@@ -1995,13 +1996,26 @@ pub(super) mod tests {
             "has_next",
             "text",
             "words",
-            "SplitWords",
+            "SplitMode",
         ] {
             assert!(
                 completions.contains(&expected.to_string()),
                 "completion on std::io::scanner should include `{expected}`, got: {completions:?}",
             );
         }
+        assert!(
+            !completions.contains(&"SplitWords".to_string()),
+            "enum variants require their type before the variant name"
+        );
+        let variant_offset =
+            source.find("scanner.SplitMode.SplitWords").unwrap() + "scanner.SplitMode.".len();
+        let variants = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            variant_offset,
+        );
+        assert!(variants.iter().any(|item| item.label == "SplitWords"));
         let inlays = surface_inlays(&doc);
         for expected in ["bool", "string", "Vec<string>"] {
             assert!(

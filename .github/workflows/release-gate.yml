@@ -30,9 +30,6 @@ jobs:
             pw useradd -n hew-ci -m -s /bin/sh
           run: |
             set -eux
-            git rev-parse HEAD
-            sha256 tests/core-acceptance/fixtures/ownership-balance/actor_state_vec_seat.hew
-            git diff --exit-code 730d34b77114cd8876f4c806705eb7c47f5240ba -- tests/core-acceptance/fixtures/ownership-balance/actor_state_vec_seat.hew
             chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
             su -m hew-ci -c 'sh -s' <<'HEW_DIAGNOSTIC'
             set -eux
@@ -43,6 +40,9 @@ jobs:
             export CARGO="$HOME/.cargo/bin/cargo"
             export PYTHON=/usr/local/bin/python3.12
             git config --global --add safe.directory "$(pwd)"
+            git rev-parse HEAD
+            sha256 tests/core-acceptance/fixtures/ownership-balance/actor_state_vec_seat.hew
+            git diff --exit-code 730d34b77114cd8876f4c806705eb7c47f5240ba -- tests/core-acceptance/fixtures/ownership-balance/actor_state_vec_seat.hew
             rustc --version
             /usr/local/llvm22/bin/llvm-config --version
             gmake hew-native

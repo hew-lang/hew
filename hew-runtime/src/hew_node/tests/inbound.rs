@@ -795,8 +795,8 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         // SAFETY: the test is the only consumer of this actor's mailbox.
         let message = unsafe { crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast()) };
         assert!(!message.is_null(), "request was not queued");
-        // SAFETY: the dequeued node retains its request envelope.
         assert_eq!(
+            // SAFETY: the dequeued node retains its request envelope.
             unsafe { crate::request_state::message_deadline((*message).envelope) },
             request_deadline,
             "queueing must retain the receiver's original expiry"

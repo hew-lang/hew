@@ -765,6 +765,9 @@ impl Checker {
                     .map(crate::CallableParameter::borrowed)
                     .collect(),
                 return_type,
+                // Namespace-qualified compiler builtins registered here are
+                // associated calls such as `Vec.new()` and `Node.start()`.
+                associated: name.contains("::"),
                 ..FnSig::default()
             },
         );
@@ -810,6 +813,7 @@ impl Checker {
                 bounds,
                 params,
                 return_type,
+                associated: name.contains("::"),
                 ..FnSig::default()
             },
         );

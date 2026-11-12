@@ -1,7 +1,9 @@
 // Exercise the actual browser export with the matching VM after `make wasm`.
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
+import {tmpdir} from 'node:os';
+import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import test from 'node:test';
 
@@ -13,6 +15,52 @@ const {runBytecode} = await import(pathToFileURL(vmPath));
 const compile = (entry, files) => JSON.parse(compiler.compileProjectToSandboxBytecode(JSON.stringify({entry, files}), 'sandbox-vm-export'));
 const source = (path, source) => ({path, source});
 const manifest = source('user/hew.toml', '[package]\nname = "user"\n');
+
+test('completion insertions compile and execute with the intended call context', async () => {
+  const welcome = '\n// Welcome to Hew Playground!\n// Tap an example or write your own code.\n\nfn main() {\n    println("Hello from Hew!");\n}\n';
+  const welcomeItems = JSON.parse(compiler.complete(welcome, Buffer.byteLength(welcome)));
+  assert.ok(welcomeItems.some(item => item.label === 'println'));
+  assert.ok(welcomeItems.some(item => item.label === 'ActorError'));
+  assert.ok(!welcomeItems.some(item => item.label.includes('::')));
+  assert.ok(!welcomeItems.some(item => ['hew_actor_timer_release', 'close', 'closed', 'supervisor_stop', 'supervisor_child'].includes(item.label)));
+
+  let code = `// café\nimport std.math;\ntype Boxed<T> { value: T; }\nimpl<T> Boxed<T> {\n    fn new(value: T) -> Boxed<T> { Boxed { value } }\n    fn get(self) -> T { self.value }\n}\nfn identity<T>(value: T) -> T { value }\nfn main() {\n    var values: Vec<i64> = Vec<i64>.missing();\n    values.push(1);\n    let item = Boxed.missing(41);\n    let n = item.missing();\n    println(missing(n));\n    println(values.len());\n    println(math.missing(-3));\n}\n`;
+  function select(marker, wanted, absent = []) {
+    const start = code.indexOf(marker);
+    assert.notEqual(start, -1, marker);
+    const tokenStart = start + marker.indexOf('missing');
+    const offset = Buffer.byteLength(code.slice(0, tokenStart));
+    const items = JSON.parse(compiler.complete(code, offset));
+    const selected = items.find(item => item.label === wanted);
+    assert.ok(selected, `missing ${wanted} in ${marker}`);
+    for (const label of absent) assert.ok(!items.some(item => item.label === label), `unexpected ${label} in ${marker}`);
+    const insertion = selected.insert_text ?? selected.label;
+    assert.equal(selected.insert_text_is_snippet, false);
+    code = code.slice(0, tokenStart) + insertion + code.slice(tokenStart + 'missing'.length);
+  }
+  select('Vec<i64>.missing', 'new', ['push']);
+  select('Boxed.missing', 'new', ['get']);
+  select('item.missing', 'get', ['new']);
+  select('println(missing', 'identity');
+  select('math.missing', 'abs');
+  const output = JSON.parse(compiler.compileToSandboxBytecode(code, 'sandbox-vm-export'));
+  const {trace, stdout} = await execute(output);
+  assert.equal(trace.final_state.exit_code, 0);
+  assert.equal(stdout, '41\n1\n3\n');
+
+  if (process.env.HEW_NATIVE_BIN) {
+    const dir = mkdtempSync(join(tmpdir(), 'hew-completion-'));
+    try {
+      const path = join(dir, 'completion.hew');
+      writeFileSync(path, code);
+      const result = spawnSync(process.env.HEW_NATIVE_BIN, ['run', path], {encoding: 'utf8'});
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, '41\n1\n3\n');
+    } finally {
+      rmSync(dir, {recursive: true, force: true});
+    }
+  }
+});
 
 async function execute(output, stdin = '') {
   assert.ok(output.bytecode, JSON.stringify(output.diagnostics));

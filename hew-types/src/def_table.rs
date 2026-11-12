@@ -1027,6 +1027,26 @@ impl DefTable {
             .unwrap_or(hew_parser::ast::Visibility::Pub)
     }
 
+    /// Whether a declaration with this visibility is accessible across modules.
+    #[must_use]
+    pub fn visibility_access_allowed(
+        &self,
+        declaration: Option<ModuleId>,
+        accessor: Option<ModuleId>,
+        visibility: hew_parser::ast::Visibility,
+    ) -> bool {
+        use hew_parser::ast::Visibility;
+        match visibility {
+            Visibility::Pub => true,
+            Visibility::Private => {
+                matches!((declaration, accessor), (Some(owner), Some(here)) if owner == here)
+            }
+            Visibility::Package => {
+                matches!((declaration, accessor), (Some(owner), Some(here)) if self.same_package(owner, here))
+            }
+        }
+    }
+
     /// Whether two modules share the frontend's canonical package anchor.
     #[must_use]
     pub fn same_package(&self, a: ModuleId, b: ModuleId) -> bool {

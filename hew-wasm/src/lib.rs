@@ -1466,6 +1466,34 @@ mod tests {
     }
 
     #[test]
+    fn welcome_completions_do_not_expose_internal_signature_keys() {
+        let source = "\n// Welcome to Hew Playground!\n// Tap an example or write your own code.\n\nfn main() {\n    println(\"Hello from Hew!\");\n}\n";
+        let result = ok(complete(source, source.len()));
+        let items: Vec<hew_analysis::CompletionItem> = serde_json::from_str(&result).unwrap();
+        let leaked: Vec<_> = items
+            .iter()
+            .filter(|item| item.label.contains("::"))
+            .map(|item| &item.label)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "internal signature keys leaked: {}",
+            leaked.len()
+        );
+        assert!(!items
+            .iter()
+            .any(|item| item.label == "hew_actor_timer_release"));
+        assert!(items.iter().any(|item| item.label == "println"));
+        assert!(items.iter().any(|item| item.label == "ActorError"));
+        for retired in ["close", "closed", "supervisor_stop", "supervisor_child"] {
+            assert!(
+                !items.iter().any(|item| item.label == retired),
+                "offered retired {retired}"
+            );
+        }
+    }
+
+    #[test]
     fn document_symbols_returns_symbols() {
         let source = "fn foo() {} fn bar() {}";
         let result = ok(document_symbols(source));

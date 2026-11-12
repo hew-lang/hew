@@ -15,16 +15,7 @@ impl Checker {
                 |path| self.defs.module_for_path(path),
             )
         };
-        match visibility {
-            Visibility::Pub => true,
-            Visibility::Private => match (module(declaration), module(accessor)) {
-                (Some(owner), Some(here)) => owner == here,
-                _ => false,
-            },
-            Visibility::Package => match (module(declaration), module(accessor)) {
-                (Some(owner), Some(here)) => self.defs.same_package(owner, here),
-                _ => false,
-            },
-        }
+        self.defs
+            .visibility_access_allowed(module(declaration), module(accessor), visibility)
     }
 }

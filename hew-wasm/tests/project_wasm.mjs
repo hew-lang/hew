@@ -24,7 +24,7 @@ test('completion insertions compile and execute with the intended call context',
   assert.ok(!welcomeItems.some(item => item.label.includes('::')));
   assert.ok(!welcomeItems.some(item => ['hew_actor_timer_release', 'close', 'closed', 'supervisor_stop', 'supervisor_child'].includes(item.label)));
 
-  let code = `// café\nimport std.math;\nimport std.math.{sign as polarity};\ntype Boxed<T> { value: T; }\nimpl<T> Boxed<T> {\n    fn new(value: T) -> Boxed<T> { Boxed { value } }\n    fn get(self) -> T { self.value }\n}\n/// Return the given value.\nfn identity<T>(value: T) -> T { value }\nfn main() {\n    var values: Vec<i64> = Vec<i64>.missing();\n    values.push(1);\n    let item = Boxed.missing(41);\n    let n = item.missing();\n    println(missing(n));\n    println(values.len());\n    println(math.missing(-3));\n    println(missing(-4));\n}\n`;
+  let code = `// café\nimport std.math;\nimport std.math.{sign as polarity, abs as magnitude};\ntype Boxed<T> { value: T; }\nimpl<T> Boxed<T> {\n    fn new(value: T) -> Boxed<T> { Boxed { value } }\n    fn get(self) -> T { self.value }\n}\n/// Return the given value.\nfn identity<T>(value: T) -> T { value }\nfn main() {\n    var values: Vec<i64> = Vec<i64>.missing();\n    values.push(1);\n    let item = Boxed.missing(41);\n    let n = item.missing();\n    println(missing(n));\n    println(values.len());\n    println(math.missing(-3));\n    println(missing(-4));\n    println(missing(-5));\n}\n`;
   function select(marker, wanted, absent = []) {
     const start = code.indexOf(marker);
     assert.notEqual(start, -1, marker);
@@ -48,10 +48,11 @@ test('completion insertions compile and execute with the intended call context',
   select('println(missing', 'identity');
   select('math.missing', 'abs');
   select('println(missing(-4)', 'polarity');
+  select('println(missing(-5)', 'magnitude');
   const output = JSON.parse(compiler.compileToSandboxBytecode(code, 'sandbox-vm-export'));
   const {trace, stdout} = await execute(output);
   assert.equal(trace.final_state.exit_code, 0);
-  assert.equal(stdout, '41\n1\n3\n-1\n');
+  assert.equal(stdout, '41\n1\n3\n-1\n5\n');
 
   if (process.env.HEW_NATIVE_BIN) {
     const dir = mkdtempSync(join(tmpdir(), 'hew-completion-'));
@@ -60,7 +61,7 @@ test('completion insertions compile and execute with the intended call context',
       writeFileSync(path, code);
       const result = spawnSync(process.env.HEW_NATIVE_BIN, ['run', path], {encoding: 'utf8'});
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.stdout, '41\n1\n3\n-1\n');
+      assert.equal(result.stdout, '41\n1\n3\n-1\n5\n');
     } finally {
       rmSync(dir, {recursive: true, force: true});
     }
@@ -80,6 +81,8 @@ test('language cohort executes through the browser compiler and VM', async t => 
     ['tests/core-acceptance/cases/duration-decimals.hew', 'exact duration decimals\n'],
     ['tests/vertical-slice/accept/semaphore_leases.hew', 'semaphore leases ok\n'],
     ['tests/core-acceptance/cases/machine-generic-step-limits.hew', 'generic machine rollback passed\n'],
+    ['tests/core-acceptance/cases/math-selected-intrinsics.hew', '9\n4\n3\n7\n2.5\n3.5\n4\n'],
+    ['tests/core-acceptance/cases/math-intrinsic-local-function.hew', '104\n'],
   ];
   for (const [path, expected] of cases) {
     await t.test(path, async () => {

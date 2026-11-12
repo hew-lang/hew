@@ -2595,6 +2595,16 @@ impl Checker {
                     },
                 );
             }
+            if let CallTarget::User(declaration) = &target {
+                if let Some(op) =
+                    self.intrinsic_math_generic_op_for_signature(self.defs.path(*declaration))
+                {
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::GenericMathIntrinsic { op },
+                    );
+                }
+            }
             self.record_direct_call_target(span, target);
             return applied_sig.return_type;
         }

@@ -1,0 +1,7 @@
+fn abs(value: i64) -> i64 {
+    value + 100
+}
+
+fn main() {
+    println(abs(4));
+}

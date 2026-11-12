@@ -11,6 +11,7 @@ use super::StorageId;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::rc::Rc;
 
 use hew_mir::physical::debug_names::DisplayName;
 use hew_mir::physical::CallableId;
@@ -88,8 +89,8 @@ impl LineIndex {
 pub(super) struct DebugEmitter<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
     file: DIFile<'ctx>,
-    lines: LineIndex,
-    /// Root-unit lexical blocks, in HIR scope order.
+    files: BTreeMap<u32, (DIFile<'ctx>, Rc<LineIndex>)>,
+    /// Lexical blocks, in HIR scope order.
     scopes: Vec<SemDebugScope>,
     /// Source field names of each concrete record, in declaration order.
     records: HashMap<ResolvedTy, Vec<PhysicalDebugField>>,
@@ -109,6 +110,8 @@ pub(super) struct DebugEmitter<'ctx> {
 /// One body's subprogram and its lexical block tree.
 pub(super) struct FunctionDebug<'ctx> {
     subprogram: DISubprogram<'ctx>,
+    file: DIFile<'ctx>,
+    lines: Option<Rc<LineIndex>>,
     blocks: HashMap<u32, DILexicalBlock<'ctx>>,
     /// `(start, end, scope)` sorted innermost-first, so the first containing
     /// entry is the tightest scope around a byte.
@@ -191,10 +194,42 @@ impl<'ctx> DebugEmitter<'ctx> {
             ctx.i32_type().const_int(version, false),
         );
         let file = checksummed_file(&builder, unit, &file_name, &directory, source.text);
+        let mut files = BTreeMap::new();
+        files.insert(
+            hew_mir::physical::ROOT_FILE,
+            (file, Rc::new(LineIndex::new(source.text))),
+        );
+        for (&id, source_file) in &debug.files {
+            if id == hew_mir::physical::ROOT_FILE {
+                continue;
+            }
+            let path = &source_file.debug_path;
+            let name = path.file_name().map_or_else(
+                || "module.hew".to_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let directory = source_directory(path);
+            let imported = imported_checksummed_file(&builder, &name, &directory, &source_file.md5);
+            let Some(imported) = imported else { continue };
+            files.insert(
+                id,
+                (
+                    imported,
+                    Rc::new(LineIndex {
+                        starts: source_file
+                            .line_starts
+                            .iter()
+                            .map(|&offset| offset as usize)
+                            .collect(),
+                        len: source_file.byte_len as usize,
+                    }),
+                ),
+            );
+        }
         Self {
             builder,
             file,
-            lines: LineIndex::new(source.text),
+            files,
             scopes: debug.scopes.clone(),
             records: debug.records.clone().into_iter().collect(),
             enums: debug.enums.clone().into_iter().collect(),
@@ -227,10 +262,12 @@ impl<'ctx> DebugEmitter<'ctx> {
     ) -> FunctionDebug<'ctx> {
         let display = self.names.get(&callable.id);
         let artificial = display.is_none_or(|name| name.artificial);
+        let source = self.files.get(&attribution.file);
+        let file = source.map_or(self.file, |(file, _)| *file);
         let line = if artificial {
             0
         } else {
-            self.lines.line(attribution.decl)
+            source.map_or(0, |(_, lines)| lines.line(attribution.decl))
         };
         let params: Vec<DIType<'ctx>> = callable
             .params
@@ -242,17 +279,17 @@ impl<'ctx> DebugEmitter<'ctx> {
         // would make `finish` print the status as the value.
         let subroutine =
             self.builder
-                .create_subroutine_type(self.file, None, &params, DIFlags::PROTOTYPED);
+                .create_subroutine_type(file, None, &params, DIFlags::PROTOTYPED);
         let flags = if artificial {
             DIFlags::PROTOTYPED | DIFlags::ARTIFICIAL
         } else {
             DIFlags::PROTOTYPED
         };
         let subprogram = self.builder.create_function(
-            self.file.as_debug_info_scope(),
+            file.as_debug_info_scope(),
             display.map_or(callable.symbol.as_str(), |name| name.text.as_str()),
             Some(""),
-            self.file,
+            file,
             line,
             subroutine,
             /* is_local_to_unit */ false,
@@ -270,6 +307,8 @@ impl<'ctx> DebugEmitter<'ctx> {
         value.set_subprogram(subprogram);
         let mut function = FunctionDebug {
             subprogram,
+            file,
+            lines: source.map(|(_, lines)| lines.clone()),
             blocks: HashMap::new(),
             ranges: Vec::new(),
             locals: RefCell::new(HashMap::new()),
@@ -330,7 +369,11 @@ impl<'ctx> DebugEmitter<'ctx> {
         let owned: Vec<&SemDebugScope> = self
             .scopes
             .iter()
-            .filter(|scope| scope.start >= attribution.decl && scope.start < attribution.end)
+            .filter(|scope| {
+                scope.file == attribution.file
+                    && scope.start >= attribution.decl
+                    && scope.start < attribution.end
+            })
             .collect();
         let mut remaining = owned;
         loop {
@@ -353,9 +396,9 @@ impl<'ctx> DebugEmitter<'ctx> {
                 };
                 let block = self.builder.create_lexical_block(
                     parent,
-                    self.file,
-                    self.lines.line(scope.start),
-                    self.lines.column(scope.start),
+                    function.file,
+                    function.line(scope.start),
+                    function.column(scope.start),
                 );
                 function.blocks.insert(scope.id, block);
                 function.ranges.push((scope.start, scope.end, scope.id));
@@ -381,8 +424,8 @@ impl<'ctx> DebugEmitter<'ctx> {
         let scope = function.scope_for(offset);
         self.builder.create_debug_location(
             ctx,
-            self.lines.line(offset),
-            self.lines.column(offset),
+            function.line(offset),
+            function.column(offset),
             scope,
             None,
         )
@@ -440,13 +483,13 @@ impl<'ctx> DebugEmitter<'ctx> {
         let (decl, parameter) = (*decl, *parameter);
         let di_type = self.resolve_type(ty, layout, target)?;
         if let Some(index) = parameter {
-            let line = self.lines.line(decl);
+            let line = function.line(decl);
             let scope = function.subprogram.as_debug_info_scope();
             let variable = self.builder.create_parameter_variable(
                 scope,
                 name,
                 index,
-                self.file,
+                function.file,
                 line,
                 di_type,
                 /* always_preserve */ true,
@@ -455,11 +498,11 @@ impl<'ctx> DebugEmitter<'ctx> {
             return Some((variable, scope, line));
         }
         let scope = function.scope_for(decl);
-        let line = self.lines.line(decl);
+        let line = function.line(decl);
         let variable = self.builder.create_auto_variable(
             scope,
             name,
-            self.file,
+            function.file,
             line,
             di_type,
             /* always_preserve */ true,
@@ -600,7 +643,9 @@ impl<'ctx> DebugEmitter<'ctx> {
             .iter()
             .find(|candidate| candidate.id == scope)
             .is_some_and(|candidate| {
-                candidate.start >= attribution.decl && candidate.start < attribution.end
+                candidate.file == attribution.file
+                    && candidate.start >= attribution.decl
+                    && candidate.start < attribution.end
             })
     }
 }
@@ -686,8 +731,7 @@ fn source_directory(path: &Path) -> String {
 }
 
 /// The compile unit's file, carrying the MD5 of the text compiled. The shim
-/// installs it as the unit's own file, and every function and type uses the
-/// same node, so the line table has one checksummed file entry.
+/// installs it as the unit's own file; imported files get separate entries.
 ///
 /// LLVM's C API creates a file without a checksum; `physical_debug_shim.cpp`
 /// provides that one step.
@@ -735,7 +779,57 @@ fn checksummed_file<'ctx>(
     unsafe { std::mem::transmute::<LLVMMetadataRef, DIFile<'ctx>>(file) }
 }
 
+/// An imported file uses the checksum and path recorded when its source was read.
+fn imported_checksummed_file<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    name: &str,
+    directory: &str,
+    checksum: &[u8; 16],
+) -> Option<DIFile<'ctx>> {
+    use inkwell::llvm_sys::prelude::{LLVMDIBuilderRef, LLVMMetadataRef};
+    use std::fmt::Write as _;
+    unsafe extern "C" {
+        fn hewLLVMDIChecksumFile(
+            builder: LLVMDIBuilderRef,
+            name: *const std::ffi::c_char,
+            name_len: usize,
+            directory: *const std::ffi::c_char,
+            directory_len: usize,
+            checksum: *const std::ffi::c_char,
+        ) -> LLVMMetadataRef;
+    }
+    let mut hex = String::with_capacity(32);
+    for byte in checksum {
+        write!(hex, "{byte:02x}").expect("write to String");
+    }
+    // SAFETY: the builder belongs to this live context and the shim borrows
+    // the strings only for the call; the checksum is exactly 32 hex bytes.
+    let file = unsafe {
+        hewLLVMDIChecksumFile(
+            builder.as_mut_ptr(),
+            name.as_ptr().cast(),
+            name.len(),
+            directory.as_ptr().cast(),
+            directory.len(),
+            hex.as_ptr().cast(),
+        )
+    };
+    if file.is_null() {
+        return None;
+    }
+    // SAFETY: the shim returned a live DIFile node in this context.
+    Some(unsafe { std::mem::transmute::<LLVMMetadataRef, DIFile<'ctx>>(file) })
+}
+
 impl<'ctx> FunctionDebug<'ctx> {
+    fn line(&self, offset: u32) -> u32 {
+        self.lines.as_ref().map_or(0, |lines| lines.line(offset))
+    }
+
+    fn column(&self, offset: u32) -> u32 {
+        self.lines.as_ref().map_or(0, |lines| lines.column(offset))
+    }
+
     /// The innermost lexical block containing `offset`, else the subprogram.
     fn scope_for(&self, offset: u32) -> DIScope<'ctx> {
         self.ranges

@@ -345,6 +345,8 @@ struct Formatter<'a> {
     /// Depth of f-string interpolations being printed; their expressions sit
     /// inside one string token, so the formatter chooses their parentheses.
     interpolation_depth: usize,
+    /// Keep every branch of a multiline `if` chain in the same layout.
+    multiline_else_if: bool,
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
@@ -387,6 +389,7 @@ impl<'a> Formatter<'a> {
             openers,
             printed_parens: std::collections::HashSet::new(),
             interpolation_depth: 0,
+            multiline_else_if: false,
             comments,
             next_comment: 0,
             prev_source_pos: 0,
@@ -521,7 +524,11 @@ impl<'a> Formatter<'a> {
             return false;
         };
         let after_dot = open >= 2 && matches!(self.tokens[open - 2].0, hew_lexer::Token::Dot);
-        crate::parser::Parser::is_ident_token(previous)
+        // `when` can be a contextual name, but also introduces a machine
+        // guard. Calls mark their own parentheses before formatting arguments;
+        // treating a guard's first group as a call would discard it.
+        (crate::parser::Parser::is_ident_token(previous)
+            && (!matches!(previous, hew_lexer::Token::When) || after_dot))
             || matches!(
                 previous,
                 hew_lexer::Token::RightParen
@@ -1340,11 +1347,13 @@ impl<'a> Formatter<'a> {
             }
         }
         for (i, item) in program.items.iter().enumerate() {
-            // Consecutive imports stay packed unless the author separated
-            // them with a blank line; every other pair of items is separated.
+            // Consecutive imports and constants stay packed unless the author
+            // separated them with a blank line.
             let separate = i > 0
-                && !(matches!(item.0, Item::Import(_))
+                && !((matches!(item.0, Item::Import(_))
                     && matches!(program.items[i - 1].0, Item::Import(_))
+                    || matches!(item.0, Item::Const(_))
+                        && matches!(program.items[i - 1].0, Item::Const(_)))
                     && !blank_line_before(self.source, item.1.start));
             self.flush_comments_and_separate(item.1.start, separate);
             self.prev_source_pos = item.1.start;
@@ -4762,13 +4771,17 @@ impl<'a> Formatter<'a> {
                 then_block,
                 else_block,
             } => {
-                if !self.format_short_conditional(condition, then_block, else_block.as_deref()) {
+                let multiline = std::mem::take(&mut self.multiline_else_if);
+                if multiline
+                    || !self.format_short_conditional(condition, then_block, else_block.as_deref())
+                {
                     self.write("if ");
                     self.format_cond_expr(condition);
                     self.write(" ");
                     self.format_expr(then_block);
                     if let Some(eb) = else_block {
                         self.write_else();
+                        self.multiline_else_if = matches!(eb.0, Expr::If { .. });
                         self.format_expr(eb);
                     }
                 }

@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-guard-record-spread"
+intent = "A grouped machine guard selects transitions correctly through a mutable record field, and a transition spread carries overlapping fields between states."
+source = "cases/machine-guard-record-spread.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Dodge\ntrue\nfalse 3 9\n"
+exit = 0

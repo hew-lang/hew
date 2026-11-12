@@ -1481,6 +1481,34 @@ fn main() {
 ```
 
 Spread is pure, so it is admitted inside a transition body.
+The source and target can be different states: name the target fields that
+change, and `..state` reads each remaining target field from the source state.
+Those fields must exist on the source and have compatible types.
+
+```hew
+machine Motion {
+    events { Tick { now: i64; } }
+    state Hold { side: bool; since: i64; flash: i64; }
+    state Dodge { side: bool; until: i64; flash: i64; }
+    on Tick { now }: Dodge => Hold when now >= state.until {
+        ..state, side: !state.side, since: now
+    }
+    default { state }
+}
+
+fn main() {
+    var motion = Motion.Dodge { side: true, until: 3, flash: 9 };
+    let _ = motion.step(.Tick { now: 3 }).expect("machine step failed");
+    match motion {
+        .Hold { side, since, flash } => println(f"{side} {since} {flash}"),
+        _ => println("Dodge"),
+    }
+}
+```
+
+This prints `false 3 9`: the transition changes `side` and `since` and carries
+`flash` across. The spread reads fields just as explicit `state.field`
+expressions do; ordinary type and ownership rules still apply.
 
 ### Nested record fields
 
@@ -2999,11 +3027,27 @@ fn main() {
 ```
 
 Pass machines by value into and out of free functions and mutate a local `var`.
-A machine also works as an actor state field. What does not work is a machine
-inside a plain record: `.step()` requires a `var`-bound receiver and a record
-field is not one, so `r.d.step(.Open)` is rejected with `` `.step()` requires a
-mutable binding receiver; this expression is not declared with `var` ``. Copy
-the field into a local `var`, step it, and write it back.
+A machine also works as an actor state field or as a field of a mutable record:
+
+```hew
+type House { door: Door; }
+
+impl House {
+    fn open(var self) {
+        let _ = self.door.step(.Open).expect("machine step failed");
+    }
+}
+
+fn main() {
+    var house = House { door: Door.Shut };
+    house.open();
+    println(house.door.state_name()); // Ajar
+}
+```
+
+The receiver must be mutable: a `var` record permits stepping its field, and a
+`var self` method can step a field through `self`. Machines can also have
+inherent `impl` methods.
 
 ### Grouping states: composite states
 

@@ -23,6 +23,37 @@ fn assert_faithful(source: &str) {
 }
 
 #[test]
+fn machine_guards_keep_grouping_and_comments() {
+    for guard in [
+        "(a || b >= state.n) && b > 1",
+        "((a || b >= state.n)) && b > 1",
+        "(a /* choice */ || b >= state.n) && b > 1",
+        "a || (b >= state.n && b > 1)",
+    ] {
+        let source = format!(
+            "machine M {{ events {{ Go {{ a: bool; b: i64; }} }} state Off {{ n: i64; }} state On {{ n: i64; }} on Go {{ a, b }}: Off => On when {guard} {{ n: b }} default {{ state }} }}\n"
+        );
+        assert_faithful(&source);
+    }
+    // `when` also remains a valid contextual function name.
+    assert_faithful(
+        "fn when(a: bool) -> bool { a }\nfn main() { let x = when((true || false) && true); }\n",
+    );
+}
+
+#[test]
+fn if_chains_and_constant_groups_keep_comments_and_spacing() {
+    let source = "fn band(range: f64) -> i64 {\n    if range > 480.0 { 2 } else if range < 150.0 { 0 } else { 1 }\n}\n\nconst A: f64 = 1.0;\nconst B: f64 = 2.0;\n// A comment.\nconst C: f64 = 3.0;\n\nconst D: f64 = 4.0;\n";
+    assert_faithful(source);
+    let formatted = format_source(source, &parse(source).program);
+    assert!(
+        formatted.contains("} else if range < 150.0 {\n        0\n    } else {\n        1\n    }"),
+        "{formatted}"
+    );
+    assert!(formatted.contains("const A: f64 = 1.0;\nconst B: f64 = 2.0;\n// A comment.\nconst C: f64 = 3.0;\n\nconst D: f64 = 4.0;"), "{formatted}");
+}
+
+#[test]
 fn raw_macro_line_endings_stay_verbatim() {
     for source in [
         "p!(\r)",

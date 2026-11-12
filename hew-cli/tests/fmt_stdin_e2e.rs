@@ -63,6 +63,21 @@ fn fmt_stdin_writes_formatted_source_to_stdout() {
 }
 
 #[test]
+fn fmt_stdin_preserves_a_grouped_machine_guard() {
+    let input = "machine M { events { Go { a: bool; b: i64; } } state Off { n: i64; } state On { n: i64; } on Go { a, b }: Off => On when (a || b >= state.n) && b > 1 { n: b } default { state } }\n";
+    let output = run_fmt(&["fmt", "--stdin"], input);
+    assert!(
+        output.status.success(),
+        "fmt rejected the guard: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let formatted = String::from_utf8(output.stdout).unwrap();
+    assert!(formatted.contains("when (a || b >= state.n) && b > 1"));
+    let checked = run_fmt(&["fmt", "--check", "--stdin"], &formatted);
+    assert!(checked.status.success(), "formatted source must be stable");
+}
+
+#[test]
 fn fmt_stdin_handles_regex_records_and_is_operator() {
     let input = concat!(
         r#"type Point {

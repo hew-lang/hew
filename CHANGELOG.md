@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc2] - 2026-11-11
+
+- Supersede the unpublished RC1 binaries and include its debugging,
+  interpolation and compiler robustness improvements.
+- Package the actual macOS compiler dSYM and validate its UUID and source
+  line table against the shipped executable.
+
 ## [0.11.0-rc1] - 2026-11-11
 
 - Add first-class failure diagnostics and native debugging support.

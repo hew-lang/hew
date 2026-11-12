@@ -148,6 +148,56 @@ def check_windows_debug_sdk(sdk, debug_archive, output, source, run):
     }
 
 
+def check_macos_debug_sdk(sdk, debug_archive, output, run):
+    """Verify the archived compiler DWARF matches the packaged Mach-O."""
+    with tarfile.open(debug_archive) as package:
+        entries = package.getmembers()
+        for entry in entries:
+            require(
+                not Path(entry.name).is_absolute()
+                and ".." not in Path(entry.name).parts,
+                f"invalid debug archive path: {entry.name}",
+            )
+        dwarf = [
+            entry
+            for entry in entries
+            if "/hew.dSYM/Contents/Resources/DWARF/" in entry.name and entry.isfile()
+        ]
+        require(len(dwarf) == 1, "debug archive must contain one compiler DWARF file")
+        plist = [
+            entry
+            for entry in entries
+            if entry.name.endswith("/hew.dSYM/Contents/Info.plist") and entry.isfile()
+        ]
+        require(len(plist) == 1, "debug archive must contain the dSYM Info.plist")
+        packaged_dwarf = output / "packaged-hew.dwarf"
+        with (
+            package.extractfile(dwarf[0]) as source_file,
+            packaged_dwarf.open("wb") as target,
+        ):
+            shutil.copyfileobj(source_file, target)
+
+    _, image_uuid, _ = run(
+        "debug-compiler-uuid", ["dwarfdump", "--uuid", sdk / "bin/hew"]
+    )
+    _, dwarf_uuid, _ = run("debug-dsym-uuid", ["dwarfdump", "--uuid", packaged_dwarf])
+    uuid = rb"UUID: ([0-9A-Fa-f-]+) \(arm64\)"
+    image_match = re.search(uuid, image_uuid)
+    dwarf_match = re.search(uuid, dwarf_uuid)
+    require(
+        image_match and dwarf_match and image_match.group(1) == dwarf_match.group(1),
+        "compiler and debug archive UUIDs differ",
+    )
+    _, lines, _ = run(
+        "debug-dsym-lines", ["dwarfdump", "--debug-line=0", packaged_dwarf]
+    )
+    require(b"file_names[" in lines, "compiler debug archive has no source line table")
+    return {
+        "archive_sha256": digest(debug_archive),
+        "compiler_dwarf_sha256": digest(packaged_dwarf),
+    }
+
+
 def require_register_recurrence(ir, loop_info):
     identifier = r'"(?:[^"\\]|\\.)*"|[-A-Za-z$._0-9]+'
     functions = {}
@@ -250,10 +300,11 @@ def main():
         "outcome": "running",
     }
     windows = sys.platform == "win32"
-    if windows and args.debug_archive is None:
-        parser.error("Windows SDK acceptance requires --debug-archive")
-    if args.debug_archive is not None and not windows:
-        parser.error("--debug-archive is currently supported only on Windows")
+    macos = sys.platform == "darwin"
+    if (windows or macos) and args.debug_archive is None:
+        parser.error("Windows and macOS SDK acceptance require --debug-archive")
+    if args.debug_archive is not None and not (windows or macos):
+        parser.error("--debug-archive is currently supported only on Windows and macOS")
     if args.debug_archive is not None and not args.debug_archive.is_file():
         parser.error(f"debug archive does not exist: {args.debug_archive}")
     suffix = ".exe" if windows else ""
@@ -419,6 +470,12 @@ def main():
                 output,
                 root / "tests/packaged-sdk/debug-failure.hew",
                 run,
+            )
+            save()
+
+        if macos:
+            receipt["macos_debug"] = check_macos_debug_sdk(
+                sdk, args.debug_archive, output, run
             )
             save()
 

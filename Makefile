@@ -1706,6 +1706,7 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
+	$(PYTHON) scripts/tests/test_packaged_debug_sdk.py
 	$(MAKE) test-release-channels
 
 .PHONY: test-release-channels

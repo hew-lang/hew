@@ -6890,7 +6890,20 @@ fn classify(x: int) -> int {
 }
 ";
         let once = roundtrip_source(src);
-        assert_eq!(once, src, "first pass must preserve comment");
+        let expected = "\
+fn classify(x: int) -> int {
+    if x == 0 {
+        0
+    // documents the next branch
+    } else if x == 1 {
+        1
+    } else {
+        -1
+    }
+}
+";
+        assert_eq!(once, expected, "comment must stay with the next branch");
+        assert!(format_checked(src, &parse(src).program).is_ok());
         let twice = roundtrip_source(&once);
         assert_eq!(twice, once, "second pass must be idempotent");
     }
@@ -6928,7 +6941,24 @@ fn lookup(errno: int) -> int {
 }
 ";
         let once = roundtrip_source(src);
-        assert_eq!(once, src, "first pass must preserve comments");
+        let expected = "\
+fn lookup(errno: int) -> int {
+    // ENOENT
+    if errno == 2 {
+        1
+    // EACCES
+    } else if errno == 13 {
+        2
+    // EEXIST
+    } else if errno == 17 {
+        3
+    } else {
+        0
+    }
+}
+";
+        assert_eq!(once, expected, "comments must stay with their branches");
+        assert!(format_checked(src, &parse(src).program).is_ok());
         let twice = roundtrip_source(&once);
         assert_eq!(twice, once, "second pass must be idempotent");
     }

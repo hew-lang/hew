@@ -80,7 +80,7 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 
 | Platform                 | Command                                                                                             |
 | ------------------------ | --------------------------------------------------------------------------------------------------- |
-| macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew` (newest release, rc included) or `hew@stable` (final releases only) |
+| macOS / Linux (Homebrew) | `brew install hew-lang/hew/hew` (newest release, rc included) or `brew install hew-lang/hew/hew-stable` (final releases only) |
 | FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                                           |
 | Arch Linux (AUR)         | `yay -S hew-bin`                                                                                    |
 | Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                    |
@@ -124,7 +124,7 @@ The image is tagged `hew:local-<version>` and uses the release Dockerfile.
 The Homebrew formula lives in the `homebrew-hew` tap repo, not here — the
 release workflow's `homebrew` job triggers that repo's own
 `update-formula.yml`, which updates `Formula/hew.rb` and
-`Formula/hew@stable.rb`.
+`Formula/hew-stable.rb`.
 
 ## Package templates
 

@@ -171,6 +171,10 @@ LINT_GATES += observe-protocol-check
 test-install-version-resolution:
 	@sh installers/test-pick-newest-tag.sh
 
+.PHONY: test-install-archive
+test-install-archive:
+	@$(PYTHON) installers/test-install-sh.py
+
 
 # Local GitHub Actions syntax, expression, local-action input, and embedded-shell
 # validation. Run this before pushing workflow edits: a malformed CI workflow
@@ -819,7 +823,7 @@ licenses:
 licenses-check:
 	scripts/check-licenses-fresh.sh
 
-release-checks: dependency-policy licenses-check test-install-version-resolution ## Release: validate dependency policy, notices and installer ordering
+release-checks: dependency-policy licenses-check test-install-version-resolution test-install-archive ## Release: validate dependency policy, notices and installer
 
 # ── Derived baselines ─────────────────────────────────────────────────────
 #

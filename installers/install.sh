@@ -319,9 +319,13 @@ main() {
     if [ -f "$version_file" ]; then
         installed="$(cat "$version_file")"
         if [ "$installed" = "$VERSION" ]; then
-            printf "  Hew v%s is already installed at %s\n\n" "$VERSION" "$INSTALL_PREFIX"
-            printf "  To reinstall, remove %s and run again.\n\n" "$version_file"
-            exit 0
+            if [ -x "${INSTALL_PREFIX}/bin/hew" ]; then
+                printf "  Hew v%s is already installed at %s\n\n" "$VERSION" "$INSTALL_PREFIX"
+                printf "  To reinstall, remove %s and run again.\n\n" "$version_file"
+                exit 0
+            fi
+            printf "  Hew v%s is missing %s; restoring the release toolchain.\n\n" \
+                "$VERSION" "hew"
         fi
     fi
 
@@ -354,15 +358,21 @@ main() {
     extracted_dir="${TMPDIR_INSTALL}/hew-v${VERSION}-${OS}-${ARCH}"
     [ -d "$extracted_dir" ] || err "expected directory ${extracted_dir} not found after extraction"
 
+    # Validate the archive before creating or changing the installation.
+    [ -f "${extracted_dir}/bin/hew" ] || err "release archive is missing required binary: hew"
+
     # Install files
     mkdir -p "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/lib" \
         "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/include" \
         "${INSTALL_PREFIX}/completions" "${INSTALL_PREFIX}/share"
 
-    if [ -f "${extracted_dir}/bin/hew" ]; then
-        cp -f "${extracted_dir}/bin/hew" "${INSTALL_PREFIX}/bin/hew"
-        chmod +x "${INSTALL_PREFIX}/bin/hew"
-    fi
+    # Hew is required; older release archives can also contain optional tools.
+    for b in hew hew-lsp hew-observe; do
+        if [ -f "${extracted_dir}/bin/${b}" ]; then
+            cp -f "${extracted_dir}/bin/${b}" "${INSTALL_PREFIX}/bin/${b}"
+            chmod +x "${INSTALL_PREFIX}/bin/${b}"
+        fi
+    done
 
     # Copy all of lib/ — preserves libhew.a at both the flat path and any
     # triple-specific subdirectory (e.g. lib/aarch64-apple-darwin/libhew.a)

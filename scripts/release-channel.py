@@ -53,10 +53,15 @@ def npm_dist(spec: str, registry: str) -> dict | None:
     return metadata
 
 
-def npm_verify(spec: str, registry: str, archive: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="hew-npm-") as temp:
-        packed = json.loads(
-            command(
+def npm_verify(
+    spec: str, registry: str, archive: Path, *, wait_for_visibility: bool = False
+) -> None:
+    # A successful publish can precede registry propagation. Bound read-only
+    # retries to five minutes per package within the publisher's job budget.
+    deadline = time.monotonic() + 300 if wait_for_visibility else None
+    while True:
+        with tempfile.TemporaryDirectory(prefix="hew-npm-") as temp:
+            args = [
                 "npm",
                 "pack",
                 spec,
@@ -69,14 +74,45 @@ def npm_verify(spec: str, registry: str, archive: Path) -> None:
                 temp,
                 "--cache",
                 str(Path(temp) / "cache"),
-            ).stdout
-        )
-        remote = Path(temp) / packed[0]["filename"]
-        if remote.parent != Path(temp) or digest(remote.read_bytes()) != digest(
-            archive.read_bytes()
-        ):
-            raise RuntimeError(f"Published bytes differ for {spec}; refusing overwrite")
-    print(f"Verified identical tarball: {spec} on {registry}")
+            ]
+            if wait_for_visibility:
+                # This loop owns the retry budget; do not nest npm's backoff.
+                args += ["--fetch-retries=0", "--fetch-timeout=15000"]
+            result = command(*args, check=False)
+            if result.returncode == 0:
+                packed = json.loads(result.stdout)
+                remote = Path(temp) / packed[0]["filename"]
+                if remote.parent != Path(temp) or digest(remote.read_bytes()) != digest(
+                    archive.read_bytes()
+                ):
+                    raise RuntimeError(
+                        f"Published bytes differ for {spec}; refusing overwrite"
+                    )
+                print(f"Verified identical tarball: {spec} on {registry}")
+                return
+            try:
+                code = json.loads(result.stdout)["error"]["code"]
+            except (ValueError, KeyError, TypeError):
+                code = None
+            if deadline is None or code not in {
+                "E404",
+                "E502",
+                "E503",
+                "E504",
+                "ETIMEDOUT",
+                "ECONNRESET",
+            }:
+                raise RuntimeError(
+                    f"Cannot verify published tarball for {spec}: "
+                    f"{result.stderr or result.stdout}"
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"Timed out verifying published tarball for {spec}: "
+                    f"{result.stderr or result.stdout}"
+                )
+        time.sleep(min(5, remaining))
 
 
 def publish_npm() -> None:
@@ -114,6 +150,7 @@ def publish_npm() -> None:
                 args.append("--provenance")
             command(*args)
             print(f"Published: {spec} on {registry}")
+            npm_verify(spec, registry, archive, wait_for_visibility=True)
         else:
             npm_verify(spec, registry, archive)
 
@@ -299,7 +336,7 @@ def publish_homebrew() -> None:
         if terminal.get("displayTitle") != title:
             raise RuntimeError("Homebrew run version differs")
         source = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
-        formulas = ["hew.rb"] + ([] if "-" in version else ["hew@stable.rb"])
+        formulas = ["hew.rb"] + ([] if "-" in version else ["hew-stable.rb"])
         for formula in formulas:
             text = command(
                 "gh",

@@ -1832,7 +1832,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Homebrew — hew-lang/homebrew-hew's update-formula.yml downloads the
   # published archives. Formula/hew.rb tracks every release (prereleases
-  # included); Formula/hew@stable.rb tracks final releases only.
+  # included); Formula/hew-stable.rb tracks final releases only.
   # ─────────────────────────────────────────────────────────────────────────
   publish-homebrew:
     needs: [validate, github-release, release-assets]

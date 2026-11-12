@@ -925,10 +925,10 @@ fn source_files(
             let text = std::fs::read_to_string(path).ok()?;
             let display = table_source_path(path).to_string_lossy().into_owned();
             let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-            Some((
-                file,
-                hew_mir::physical::PhysicalSourceFile::new(canonical, display, &text),
-            ))
+            let debug_path = display_source_path(&canonical);
+            let mut source = hew_mir::physical::PhysicalSourceFile::new(canonical, display, &text);
+            source.debug_path = debug_path;
+            Some((file, source))
         })
         .collect()
 }

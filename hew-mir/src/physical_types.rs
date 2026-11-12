@@ -1603,7 +1603,7 @@ impl PhysicalModule {
     }
 }
 
-pub use hew_sir::{SemDebugScope, SemSourceSite};
+pub use hew_sir::{SemDebugScope, SemSourceSite, ROOT_FILE};
 
 /// Source attribution carried for native debug metadata and the always-emitted
 /// source, site and function tables.
@@ -1645,8 +1645,10 @@ impl PhysicalDebug {
 /// One source file as debuggers and the runtime see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalSourceFile {
-    /// Canonical absolute path, for the `DIFile` directory and name.
+    /// Canonical absolute source path.
     pub path: std::path::PathBuf,
+    /// Source path under the debugger's path-remapping policy.
+    pub debug_path: std::path::PathBuf,
     /// The spelling shown to people and stored in the image's file table: the
     /// trimmed path under `--trim-paths`, otherwise the path as given.
     pub display: String,
@@ -1666,6 +1668,7 @@ impl PhysicalSourceFile {
     pub fn new(path: std::path::PathBuf, display: String, text: &str) -> Self {
         use md5::Digest;
         Self {
+            debug_path: path.clone(),
             path,
             display,
             md5: md5::Md5::digest(text.as_bytes()).into(),

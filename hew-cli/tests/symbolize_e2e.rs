@@ -113,6 +113,92 @@ fn optimized_debug_build_resolves_a_hew_function_to_its_source() {
     names_level2_in_source(true);
 }
 
+#[test]
+fn debug_build_resolves_imported_function_to_its_own_source() {
+    require_codegen();
+    let dir = tempdir();
+    let src = dir.path().join("main.hew");
+    let imported = dir.path().join("helper.hew");
+    std::fs::write(
+        &src,
+        "import helper;\n\nfn main() {\n    println(helper.triple(7));\n}\n",
+    )
+    .unwrap();
+    std::fs::write(&imported, "// imported module\n\npub fn triple(x: i64) -> i64 {\n    let value = x * 3;\n    value + 1\n}\n").unwrap();
+    let imported = imported.canonicalize().unwrap();
+    let source_dir = dir.path().canonicalize().unwrap();
+
+    for optimized in [false, true] {
+        let binary =
+            hew_testutil::compiled_binary_path(dir.path(), if optimized { "opt" } else { "debug" });
+        let mut command = Command::new(hew_binary());
+        command.args(["build", "-g"]);
+        if optimized {
+            command.args(["--opt-level", "2"]);
+            command
+                .arg("--remap-path-prefix")
+                .arg(format!("{}=/virtual/source", source_dir.display()));
+        }
+        let result = command.arg(&src).arg("-o").arg(&binary).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let data = std::fs::read(&binary).unwrap();
+        let object = object::File::parse(&*data).unwrap();
+        let symbol = object
+            .symbols()
+            .find(|symbol| {
+                symbol
+                    .name()
+                    .is_ok_and(|name| name.ends_with("__hew_fn_helper$triple"))
+            })
+            .expect("imported function symbol");
+        let address = symbol.address();
+        let result = symbolize(&binary, &[format!("{address:#x}")]);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(stdout.contains("helper.triple at "), "{stdout}");
+        let expected = if optimized {
+            "/virtual/source/helper.hew:3".to_owned()
+        } else {
+            format!("{}:3", imported.display())
+        };
+        assert!(stdout.contains(&expected), "{stdout}");
+        if !optimized {
+            // Check body locations too, not just the subprogram declaration.
+            // Mach-O does not record symbol sizes, so bound the probe even
+            // when the object reader reports zero. Match the function name
+            // below as well as the line to exclude neighbouring functions.
+            let addresses: Vec<_> = (0..symbol.size().clamp(1024, 8192))
+                .step_by(4)
+                .map(|offset| format!("{:#x}", address + offset))
+                .collect();
+            let result = symbolize(&binary, &addresses);
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            for line in [4, 5] {
+                assert!(
+                    stdout
+                        .lines()
+                        .any(|frame| frame.contains("helper.triple at ")
+                            && frame.contains(&format!("{}:{line}", imported.display()))),
+                    "{stdout}"
+                );
+            }
+        }
+    }
+}
+
 const PANICS: &str = "\
 fn level2(x: i64) -> i64 {
     if x > 3 {

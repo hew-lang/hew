@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.11.0-rc3] - 2026-11-11
+
+- Supersede RC2 before binary publication to correct native debug source
+  attribution for imported functions.
+
 ## [0.11.0-rc2] - 2026-11-11
 
 - Supersede the unpublished RC1 binaries and include its debugging,

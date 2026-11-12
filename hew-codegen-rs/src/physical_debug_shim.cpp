@@ -237,6 +237,20 @@ hewLLVMDICompileUnitChecksumFile(LLVMDIBuilderRef builder, LLVMMetadataRef unit,
   return reinterpret_cast<LLVMMetadataRef>(file);
 }
 
+// Create an imported source file using the digest measured at source loading.
+extern "C" LLVMMetadataRef
+hewLLVMDIChecksumFile(LLVMDIBuilderRef builder, const char *name,
+                      size_t name_len, const char *directory,
+                      size_t directory_len, const char *checksum) {
+  if (!builder)
+    return nullptr;
+  auto *file = unwrapBuilder(builder)->createFile(
+      StringRef(name, name_len), StringRef(directory, directory_len),
+      DIFile::ChecksumInfo<StringRef>(DIFile::CSK_MD5,
+                                      StringRef(checksum, 32)));
+  return reinterpret_cast<LLVMMetadataRef>(file);
+}
+
 // Whether `machine` optimizes: the compile unit and every subprogram state it
 // so a debugger expects partial locations instead of reporting a fault.
 extern "C" bool hewLLVMTargetMachineOptimizes(LLVMTargetMachineRef machine) {

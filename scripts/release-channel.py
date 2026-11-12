@@ -299,7 +299,7 @@ def publish_homebrew() -> None:
         if terminal.get("displayTitle") != title:
             raise RuntimeError("Homebrew run version differs")
         source = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
-        formulas = ["hew.rb"] + ([] if "-" in version else ["hew@stable.rb"])
+        formulas = ["hew.rb"] + ([] if "-" in version else ["hew-stable.rb"])
         for formula in formulas:
             text = command(
                 "gh",

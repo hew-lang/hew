@@ -438,13 +438,17 @@ class HomebrewDelivery(unittest.TestCase):
     def test_terminal_success_and_exact_both_formulas_required(self):
         self.execute()
         self.assertTrue(any(args[1:3] == ("run", "watch") for args in self.calls))
+        formula_paths = {
+            args[2].split("?", 1)[0]
+            for args in self.calls
+            if args[1] == "api" and "/contents/Formula/" in args[2]
+        }
         self.assertEqual(
-            sum(
-                "/contents/Formula/" in args[2]
-                for args in self.calls
-                if args[1] == "api"
-            ),
-            2,
+            formula_paths,
+            {
+                "repos/hew-lang/homebrew-hew/contents/Formula/hew.rb",
+                "repos/hew-lang/homebrew-hew/contents/Formula/hew-stable.rb",
+            },
         )
 
     def test_existing_completion_and_exact_formula_skip_dispatch(self):

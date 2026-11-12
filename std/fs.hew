@@ -96,7 +96,11 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
     } else if errno == 110 || errno == 60 {
         IoError.TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89
-    } else if errno == 125 || errno == 89 { IoError.Cancelled(errno) } else { IoError.Other(errno) }
+    } else if errno == 125 || errno == 89 {
+        IoError.Cancelled(errno)
+    } else {
+        IoError.Other(errno)
+    }
 }
 
 /// Map the runtime's canonical, platform-independent error-kind tag (from
@@ -122,7 +126,11 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
         IoError.AlreadyExists(errno)
     } else if kind == 4 {
         IoError.TimedOut(errno)
-    } else if kind == 6 { IoError.Unsupported(errno) } else { io_error_from_errno(errno) }
+    } else if kind == 6 {
+        IoError.Unsupported(errno)
+    } else {
+        io_error_from_errno(errno)
+    }
 }
 
 /// Print an `IoError`'s variant name and raw OS errno.
@@ -587,7 +595,11 @@ fn metadata_from(raw: RawMetadata) -> Metadata fails IoError {
         FileKind.File
     } else if raw.kind == 1 {
         FileKind.Directory
-    } else if raw.kind == 2 { FileKind.Symlink } else { FileKind.Other };
+    } else if raw.kind == 2 {
+        FileKind.Symlink
+    } else {
+        FileKind.Other
+    };
     Metadata { kind: kind, size: raw.size, mode: present(raw.mode), owner: present(raw.owner) }
 }
 

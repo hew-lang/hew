@@ -143,7 +143,11 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
                     f"{label}{lineno}:"
                 } else if show_label {
                     f"{label}"
-                } else if cfg.flag_n { f"{lineno}:" } else { "" };
+                } else if cfg.flag_n {
+                    f"{lineno}:"
+                } else {
+                    ""
+                };
                 println(f"{prefix}{raw_line}");
             }
         }

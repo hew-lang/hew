@@ -48,7 +48,11 @@ pub fn barrier() -> Result<(), ObserveError> {
     };
     if status == 0 {
         .Ok(())
-    } else if status == -1 { .Err(ObserveError.ActorTurn) } else { .Err(ObserveError.TimedOut) }
+    } else if status == -1 {
+        .Err(ObserveError.ActorTurn)
+    } else {
+        .Err(ObserveError.TimedOut)
+    }
 }
 
 extern "C" {

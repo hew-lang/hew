@@ -1,6 +1,7 @@
 //! Module assembly: declarations, glue, callables and process entry.
 
 use super::*;
+use hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME;
 
 #[cfg(test)]
 pub(super) fn build_module<'ctx>(
@@ -39,8 +40,10 @@ pub(super) fn build_module_with_host<'ctx>(
     let llvm = ctx.create_module(name);
     llvm.set_triple(&triple);
     llvm.set_data_layout(&data_layout);
-    let debug = debug_source
-        .map(|source| debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug));
+    let debug = debug_source.map(|source| {
+        let optimized = debug::optimizes(machine);
+        debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug, optimized)
+    });
     let mut emitter = ModuleEmitter {
         ctx,
         module: physical,
@@ -56,6 +59,9 @@ pub(super) fn build_module_with_host<'ctx>(
         let owner = emitter.llvm.add_global(pointer, None, "HewLiveCodeOwner");
         owner.set_initializer(&pointer.const_null());
     }
+    // Fault sites must refer to this module's tables, including for embedded
+    // modules whose tables are private to their image.
+    symtab::emit_source_tables(&emitter.llvm, physical, debug_source.is_some());
     emitter.declare_functions()?;
     emitter.emit_managed_descriptors()?;
     emitter.emit_regex_lifecycle()?;
@@ -72,6 +78,16 @@ pub(super) fn build_module_with_host<'ctx>(
     emitter.emit_actor_ingress_adapters()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
+    for callable in &physical.callables {
+        let body = if callable.is_resumable {
+            emitter.ramps.get(&callable.id)
+        } else {
+            emitter.functions.get(&callable.id)
+        };
+        if let Some(body) = body {
+            symtab::tag_callable(*body, callable.id);
+        }
+    }
     if let Some(export) = host {
         host::emit(&emitter, export)?;
     }
@@ -80,11 +96,80 @@ pub(super) fn build_module_with_host<'ctx>(
         debug.finalize();
     }
     c_abi::seal_c_scalar_widening(&emitter.llvm)?;
-    emitter
-        .llvm
-        .verify()
-        .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
+    keep_frames_walkable(&emitter.llvm);
+    verify_bounded(&emitter.llvm)?;
     Ok(emitter.llvm)
+}
+
+/// Keep a frame-pointer chain and asynchronous unwind tables through every
+/// function the module defines, at every optimization level, so sampling
+/// profilers, crash backtraces and debuggers can walk Hew frames either way.
+/// Unwind tables do not depend on `-g`: LLVM would otherwise emit them only
+/// for the functions debug information describes, and a `-g` image would lay
+/// out its code at other addresses. Bodies LLVM later splits out of these
+/// (coroutine resume and destroy parts) inherit both.
+fn keep_frames_walkable(module: &Module<'_>) {
+    let ctx = module.get_context();
+    let frame_pointer = ctx.create_string_attribute("frame-pointer", "all");
+    // 2 is `uwtable(async)`: tables valid at every instruction.
+    let unwind_table = ctx.create_enum_attribute(
+        inkwell::attributes::Attribute::get_named_enum_kind_id("uwtable"),
+        2,
+    );
+    for function in module.get_functions() {
+        if function.count_basic_blocks() > 0 {
+            function.add_attribute(inkwell::attributes::AttributeLoc::Function, frame_pointer);
+            function.add_attribute(inkwell::attributes::AttributeLoc::Function, unwind_table);
+        }
+    }
+}
+
+/// Longest verifier report a diagnostic carries. LLVM prints every offending
+/// instruction and metadata node in full; one bad debug type can repeat across
+/// thousands of locals.
+const VERIFY_REPORT_LIMIT: usize = 4096;
+
+/// Verify `module`, reporting a failure as a bounded diagnostic that names the
+/// failing functions. LLVM's own report is truncated to
+/// [`VERIFY_REPORT_LIMIT`] bytes so a malformed module never floods stderr.
+pub(crate) fn verify_bounded(module: &Module<'_>) -> CodegenResult<()> {
+    let Err(report) = module.verify() else {
+        return Ok(());
+    };
+    let report = report.to_string_lossy();
+    let failing: Vec<String> = module
+        .get_functions()
+        .filter(|function| function.count_basic_blocks() > 0 && !function.verify(false))
+        .take(4)
+        .map(|function| function.get_name().to_string_lossy().into_owned())
+        .collect();
+    let mut message = String::new();
+    if !failing.is_empty() {
+        message.push_str("in function ");
+        for (index, name) in failing.iter().enumerate() {
+            if index > 0 {
+                message.push_str(", ");
+            }
+            message.push('`');
+            message.push_str(name);
+            message.push('`');
+        }
+        message.push_str(": ");
+    }
+    if report.len() <= VERIFY_REPORT_LIMIT {
+        message.push_str(report.trim_end());
+    } else {
+        let mut cut = VERIFY_REPORT_LIMIT;
+        while !report.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        message.push_str(&report[..cut]);
+        message.push_str(&format!(
+            "\n... ({} more bytes of verifier output omitted)",
+            report.len() - cut
+        ));
+    }
+    Err(CodegenError::LlvmVerify(message))
 }
 
 /// The module-private array of compiled `*HewRegex` handles. Native module
@@ -721,8 +806,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let plan = self.module.entry_exit_plan.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("physical executable entry has no typed exit plan".into())
         })?;
+        // A WASI module exports `main` itself; a native image names its C
+        // entry apart from the Hew `main`, and the link aliases `main` to it.
+        let wasm = self.module.target.triple.starts_with("wasm32");
         let wrapper = self.llvm.add_function(
-            "main",
+            if wasm { "main" } else { C_ENTRY_DEBUG_NAME },
             self.ctx.i32_type().fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -732,8 +820,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
         self.emit_selected_entry_body(&builder, wrapper, entry_id, plan.action.clone())?;
-        if self.module.target.triple.starts_with("wasm32") {
+        if wasm {
             self.emit_wasi_entry_adapter(wrapper)?;
+        }
+        if let Some(debug) = &self.debug {
+            debug.shim(self.ctx, wrapper, C_ENTRY_DEBUG_NAME);
         }
         Ok(())
     }
@@ -850,7 +941,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             ));
         }
         let wrapper = self.llvm.add_function(
-            "main",
+            C_ENTRY_DEBUG_NAME,
             self.ctx.i32_type().fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -901,6 +992,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(Some(&failure))
             .llvm_ctx("return invalid test selection")?;
+        if let Some(debug) = &self.debug {
+            debug.shim(self.ctx, wrapper, C_ENTRY_DEBUG_NAME);
+        }
         Ok(())
     }
 
@@ -929,5 +1023,123 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_return(Some(&status))
             .llvm_ctx("return the WASI process status")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use inkwell::debug_info::{
+        AsDIScope, DIFlags, DIFlagsConstants, DWARFEmissionKind, DWARFSourceLanguage,
+    };
+
+    use super::*;
+
+    /// One function whose local is described by an enumerator in place of a
+    /// type: the shape of the bad `DILocalVariable` a broken type lowering
+    /// produces.
+    fn add_malformed_function<'ctx>(
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &inkwell::debug_info::DebugInfoBuilder<'ctx>,
+        file: inkwell::debug_info::DIFile<'ctx>,
+        index: usize,
+    ) {
+        let function = module.add_function(
+            &format!("malformed_{index}"),
+            ctx.void_type().fn_type(&[], false),
+            None,
+        );
+        let routine = builder.create_subroutine_type(file, None, &[], DIFlags::ZERO);
+        let subprogram = builder.create_function(
+            file.as_debug_info_scope(),
+            &format!("malformed_{index}"),
+            None,
+            file,
+            1,
+            routine,
+            false,
+            true,
+            1,
+            DIFlags::ZERO,
+            false,
+        );
+        function.set_subprogram(subprogram);
+        let entry = ctx.append_basic_block(function, "entry");
+        let ir = ctx.create_builder();
+        ir.position_at_end(entry);
+        let slot = ir.build_alloca(ctx.i64_type(), "slot").unwrap();
+        let location =
+            builder.create_debug_location(ctx, 1, 1, subprogram.as_debug_info_scope(), None);
+        let not_a_type = builder.create_enumerator("NotAType", 0, false).as_type();
+        let variable = builder.create_auto_variable(
+            subprogram.as_debug_info_scope(),
+            "bad",
+            file,
+            1,
+            not_a_type,
+            true,
+            DIFlags::ZERO,
+            0,
+        );
+        super::super::debug::insert_declare(builder, slot, variable, location, entry);
+        ir.set_current_debug_location(location);
+        ir.build_return(None).unwrap();
+    }
+
+    #[test]
+    fn verify_bounded_reports_a_malformed_debug_module_within_the_limit() {
+        let ctx = Context::create();
+        let module = ctx.create_module("malformed");
+        module.add_basic_value_flag(
+            "Debug Info Version",
+            inkwell::module::FlagBehavior::Warning,
+            ctx.i32_type().const_int(3, false),
+        );
+        let (builder, unit) = module.create_debug_info_builder(
+            true,
+            DWARFSourceLanguage::Rust,
+            "malformed.hew",
+            ".",
+            "hew",
+            false,
+            "",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+        let file = unit.get_file();
+        // Enough bad locals that LLVM's full report would run far past the
+        // limit.
+        for index in 0..200 {
+            add_malformed_function(&ctx, &module, &builder, file, index);
+        }
+        builder.finalize();
+        let error = verify_bounded(&module).expect_err("a malformed debug type fails verification");
+        let CodegenError::LlvmVerify(message) = error else {
+            panic!("expected a verifier diagnostic, got {error:?}");
+        };
+        assert!(
+            message.len() <= VERIFY_REPORT_LIMIT + 256,
+            "diagnostic is {} bytes",
+            message.len()
+        );
+        assert!(message.contains("omitted"), "{message}");
+        assert!(message.contains("malformed_0"), "{message}");
+    }
+
+    #[test]
+    fn verify_bounded_accepts_a_valid_module() {
+        let ctx = Context::create();
+        let module = ctx.create_module("valid");
+        let function = module.add_function("ok", ctx.void_type().fn_type(&[], false), None);
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        builder.build_return(None).unwrap();
+        verify_bounded(&module).expect("a valid module verifies");
     }
 }

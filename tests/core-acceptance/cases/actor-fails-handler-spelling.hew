@@ -50,7 +50,7 @@ fn main() {
         .Err(problem) => match problem {
             ActorError.Failed(reason) => println(f"{reason}"),
             ActorError.Rejected(_) => println("rejected"),
-            ActorError.Trapped => println("trapped"),
+            ActorError.Trapped(_) => println("trapped"),
             ActorError.Dead => println("dead"),
             ActorError.TimedOut => println("timeout"),
             ActorError.NodeNotRunning => println("node not running"),

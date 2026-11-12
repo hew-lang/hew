@@ -8,10 +8,10 @@ use std::ops::Range;
 use finl_unicode::categories::CharacterCategories;
 
 use crate::ast::{
-    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildClause,
-    ChildSpec, CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock,
-    ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix,
-    Item, LambdaParam, Literal, MachineDecl, MachineState, MachineTransition,
+    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, BinaryStep, Block, CallArg,
+    ChildClause, ChildSpec, CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr,
+    ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl,
+    ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MachineState, MachineTransition,
     MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
     OverflowPolicy, Param, ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl,
     RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
@@ -3711,6 +3711,8 @@ impl<'a> Formatter<'a> {
             | Expr::Await(operand)
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
+            Expr::Binary { first, steps } => Expr::binary_operands(first, steps)
+                .all(|operand| Self::can_format_expr_inline(&operand.0)),
             Expr::PostfixTry(operand) => Self::can_format_expr_inline(&operand.0),
             Expr::Coalesce { left, right } => {
                 Self::can_format_expr_inline(&left.0) && Self::can_format_expr_inline(&right.0)
@@ -3718,8 +3720,7 @@ impl<'a> Formatter<'a> {
             Expr::OptionalChain { receiver, body } => {
                 Self::can_format_expr_inline(&receiver.0) && Self::can_format_expr_inline(&body.0)
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Handle {
+            Expr::Handle {
                 operand: left,
                 body: right,
                 ..
@@ -4474,6 +4475,19 @@ impl<'a> Formatter<'a> {
     /// Write a binary operator with its surrounding spaces. A range prints
     /// tight (`0..n`) when both operands are atoms and spaced
     /// (`a + 1 .. b.len() - 1`) otherwise.
+    /// Every operator in a chain shares one precedence, and each operand
+    /// after the first sits on the right of its operator.
+    fn format_binary_chain(&mut self, first: &Spanned<Expr>, steps: &[BinaryStep]) {
+        let prec = binop_precedence(steps[0].op);
+        self.format_expr_prec(first, prec, false);
+        let mut left = first;
+        for step in steps {
+            self.write_binary_op(step.op, left, &step.right);
+            self.format_expr_prec(&step.right, prec, true);
+            left = &step.right;
+        }
+    }
+
     fn write_binary_op(&mut self, op: BinaryOp, left: &Spanned<Expr>, right: &Spanned<Expr>) {
         let tight = matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive)
             && self.is_range_atom(left)
@@ -4534,8 +4548,8 @@ impl<'a> Formatter<'a> {
     /// [`Self::format_expr_prec`] for an expression the source does not
     /// parenthesize.
     fn format_expr_prec_bare(&mut self, expr: &Spanned<Expr>, parent_prec: u8, is_right: bool) {
-        if let Expr::Binary { left, op, right } = &expr.0 {
-            let prec = binop_precedence(*op);
+        if let Expr::Binary { first, steps } = &expr.0 {
+            let prec = binop_precedence(steps[0].op);
             // Need parens when:
             // 1. Our precedence is lower than the parent (tighter parent binds first)
             // 2. Same precedence AND we're on the right side (handles non-associative like a-b-c)
@@ -4544,9 +4558,7 @@ impl<'a> Formatter<'a> {
             if needs_parens {
                 self.write("(");
             }
-            self.format_expr_prec(left, prec, false);
-            self.write_binary_op(*op, left, right);
-            self.format_expr_prec(right, prec, true);
+            self.format_binary_chain(first, steps);
             if needs_parens {
                 self.write(")");
             }
@@ -4622,12 +4634,7 @@ impl<'a> Formatter<'a> {
                     self.next_comment += 1;
                 }
             }
-            Expr::Binary { left, op, right } => {
-                let prec = binop_precedence(*op);
-                self.format_expr_prec(left, prec, false);
-                self.write_binary_op(*op, left, right);
-                self.format_expr_prec(right, prec, true);
-            }
+            Expr::Binary { first, steps } => self.format_binary_chain(first, steps),
             Expr::Unary { op, operand } => {
                 match op {
                     UnaryOp::Not => self.write("!"),
@@ -5409,10 +5416,13 @@ impl<'a> Formatter<'a> {
                 self.comma_sep(patterns, Formatter::format_pattern);
                 self.write(")");
             }
-            Pattern::Or(left, right) => {
-                self.format_pattern(left);
-                self.write_token(" | ", |t| matches!(t, hew_lexer::Token::Pipe));
-                self.format_pattern(right);
+            Pattern::Or(alternatives) => {
+                for (index, alternative) in alternatives.iter().enumerate() {
+                    if index > 0 {
+                        self.write_token(" | ", |t| matches!(t, hew_lexer::Token::Pipe));
+                    }
+                    self.format_pattern(alternative);
+                }
             }
             Pattern::Regex { pattern, .. } => {
                 self.write("re\"");
@@ -5992,7 +6002,7 @@ fn leftmost_operand(mut expr: &Spanned<Expr>) -> &Spanned<Expr> {
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => object,
             Expr::MethodCall { receiver, .. } | Expr::OptionalChain { receiver, .. } => receiver,
             Expr::Call { function, .. } => function,
-            Expr::Binary { left, .. } => left,
+            Expr::Binary { first, .. } => first,
             Expr::Coalesce { left, .. } => left,
             Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) => inner,
             Expr::Await(inner) => inner,

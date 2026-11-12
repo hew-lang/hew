@@ -442,13 +442,19 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const HewString) -> i64 {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut HewString {
-    // Match C's %g format: compact representation with scientific notation
-    // for very large/small values, trailing zeros trimmed.
+    let mut buf = [0u8; 64];
+    let text = render_f64(f, &mut buf);
+    // SAFETY: the rendering is valid UTF-8 of its own length.
+    unsafe { string_alloc_utf8_unchecked(text.as_ptr(), text.len()) }
+}
+
+/// Render like C's `%g`: compact, with scientific notation for very large or
+/// small values and trailing zeros trimmed.
+fn render_f64(f: f64, buf: &mut [u8; 64]) -> &str {
     unsafe extern "C" {
         fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> i32;
     }
     let f = crate::print::canonical_f64_for_render(f);
-    let mut buf = [0u8; 64];
     // SAFETY: buf is large enough for any %g output. snprintf is available
     // on all platforms (MSVC CRT, glibc, musl).
     let len = unsafe {
@@ -459,13 +465,9 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut HewString {
             f,
         )
     };
-    if len < 0 {
-        return std::ptr::null_mut();
-    }
-    #[expect(clippy::cast_sign_loss, reason = "len >= 0 checked above")]
-    let len = (len as usize).min(buf.len());
-    // SAFETY: buf contains len valid bytes from snprintf.
-    unsafe { string_alloc_utf8_unchecked(buf.as_ptr(), len) }
+    let len = usize::try_from(len).unwrap_or(0).min(buf.len());
+    // snprintf writes ASCII digits, signs, exponents, `inf` and `nan`.
+    std::str::from_utf8(&buf[..len]).unwrap_or_default()
 }
 
 /// Convert a `bool` to `"true"` or `"false"`. Caller must free the result with `hew_string_drop`.
@@ -829,22 +831,119 @@ pub unsafe extern "C" fn hew_string_push_checked(
     out_status: *mut i32,
 ) -> *mut HewString {
     let scalar = char::from_u32(scalar).unwrap_or_else(|| std::process::abort());
+    let mut bytes = [0u8; 4];
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, scalar.encode_utf8(&mut bytes), out_status) }
+}
+
+/// Append `text` only after canonical capacity acquisition succeeds. A
+/// refusal writes its status and leaves the receiver owned by the caller.
+unsafe fn append_text_checked(
+    value: *mut HewString,
+    text: &str,
+    out_status: *mut i32,
+) -> *mut HewString {
     // SAFETY: the original receiver stays initialized until reservation commits.
     unsafe {
         out_status.write(0);
-        let permit = match prepare_string_append(value, scalar.len_utf8()) {
+        let permit = match prepare_string_append(value, text.len()) {
             Ok(permit) => permit,
             Err(status) => {
                 out_status.write(status);
                 return core::ptr::null_mut();
             }
         };
-        let result = string_push(value, scalar);
+        let result = hew_cabi::string::string_append_str(value, text);
         if let Some(permit) = permit {
             permit.commit(result as usize);
         }
         result
     }
+}
+
+/// Append a decimal signed integer to an interpolation accumulator.
+/// # Safety
+/// The receiver is owned by the caller and the status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_i64_checked(
+    value: *mut HewString,
+    number: i64,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let mut buf = [0u8; 20];
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, render_decimal(&mut buf, number), out_status) }
+}
+
+/// Append a decimal unsigned integer to an interpolation accumulator.
+/// # Safety
+/// The receiver is owned by the caller and the status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_u64_checked(
+    value: *mut HewString,
+    number: u64,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let mut buf = [0u8; 20];
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, render_decimal(&mut buf, number), out_status) }
+}
+
+/// Append a float, rendered as `hew_float_to_string` renders it.
+/// # Safety
+/// The receiver is owned by the caller and the status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_f64_checked(
+    value: *mut HewString,
+    number: f64,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let mut buf = [0u8; 64];
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, render_f64(number, &mut buf), out_status) }
+}
+
+/// Append `true` or `false`.
+/// # Safety
+/// The receiver is owned by the caller and the status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_bool_checked(
+    value: *mut HewString,
+    flag: u8,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let text = if flag == 0 { "false" } else { "true" };
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, text, out_status) }
+}
+
+/// Append a compiler literal segment without materializing it.
+/// # Safety
+/// The receiver is owned by the caller, the status is writable and `data`
+/// holds `len` readable UTF-8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_literal_checked(
+    value: *mut HewString,
+    data: *const u8,
+    len: u32,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let text = if len == 0 {
+        ""
+    } else {
+        // SAFETY: compiler literals are valid UTF-8 and readable for their length.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len as usize)) }
+    };
+    // SAFETY: the caller transfers the receiver and lends the status.
+    unsafe { append_text_checked(value, text, out_status) }
+}
+
+fn render_decimal(buf: &mut [u8; 20], number: impl std::fmt::Display) -> &str {
+    use std::io::Write;
+    let mut cursor: &mut [u8] = buf;
+    let _ = write!(cursor, "{number}");
+    let len = 20 - cursor.len();
+    std::str::from_utf8(&buf[..len]).unwrap_or_default()
 }
 
 /// Consume the string's semantic owner and return the canonical empty handle.
@@ -1532,6 +1631,34 @@ mod tests {
         )]
         fn to_str(&self) -> Result<&'a str, core::str::Utf8Error> {
             Ok(self.0)
+        }
+    }
+
+    #[test]
+    fn literal_append_lends_exact_utf8_bytes() {
+        for (literal, len, expected) in [
+            ("é✓tail", 0, "left:"),
+            ("é✓tail", 2, "left:é"),
+            ("é✓tail", 5, "left:é✓"),
+            ("\u{feff}é", 3, "left:\u{feff}"),
+            ("é\0tail", 3, "left:é\0"),
+        ] {
+            let receiver = string_from_str("left:");
+            let mut status = -1;
+            let data = if len == 0 {
+                core::ptr::null()
+            } else {
+                literal.as_ptr()
+            };
+            // SAFETY: the receiver transfers one live owner; each prefix is
+            // valid UTF-8 and status remains writable throughout the call.
+            let result =
+                unsafe { hew_string_append_literal_checked(receiver, data, len, &raw mut status) };
+            assert_eq!(status, 0);
+            // SAFETY: a successful append returns the fixture's owner.
+            assert_eq!(unsafe { string_as_str(result) }, expected);
+            // SAFETY: the returned owner has not otherwise been released.
+            unsafe { string_release(result) };
         }
     }
 

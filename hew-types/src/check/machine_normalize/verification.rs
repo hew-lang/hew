@@ -269,24 +269,28 @@ impl Validator<'_> {
                 let value = Self::bool(self.expr(operand, path));
                 Value::Bool(self.term(not(&value)))
             }
-            Expr::Binary {
-                op: op @ (BinaryOp::And | BinaryOp::Or),
-                left,
-                right,
-            } => {
-                let left = Self::bool(self.expr(left, path));
-                let condition = if *op == BinaryOp::And {
-                    left.clone()
-                } else {
-                    not(&left)
-                };
-                let right_path = self.term(and([path.into(), condition]));
-                let right = Self::bool(self.expr(right, &right_path));
-                Value::Bool(self.term(if *op == BinaryOp::And {
-                    and([left, right])
-                } else {
-                    or([left, right])
-                }))
+            Expr::Binary { first, steps }
+                if steps
+                    .iter()
+                    .all(|step| matches!(step.op, BinaryOp::And | BinaryOp::Or)) =>
+            {
+                let mut left = Self::bool(self.expr(first, path));
+                for step in steps {
+                    let conjunction = step.op == BinaryOp::And;
+                    let condition = if conjunction {
+                        left.clone()
+                    } else {
+                        not(&left)
+                    };
+                    let right_path = self.term(and([path.into(), condition]));
+                    let right = Self::bool(self.expr(&step.right, &right_path));
+                    left = self.term(if conjunction {
+                        and([left, right])
+                    } else {
+                        or([left, right])
+                    });
+                }
+                Value::Bool(left)
             }
             Expr::Block(block) => {
                 for stmt in &block.stmts {
@@ -591,9 +595,10 @@ fn mutate_expr(expression: &mut Spanned<Expr>) {
                 mutate_expr(&mut arm.body);
             }
         }
-        Expr::Binary { left, right, .. } => {
-            mutate_expr(left);
-            mutate_expr(right);
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands_mut(first, steps) {
+                mutate_expr(operand);
+            }
         }
         _ => {}
     }
@@ -630,26 +635,19 @@ fn mutate(statements: &mut [Spanned<Stmt>], kind: usize) {
                 }
                 for (stmt, _) in &mut then_block.stmts {
                     if let Stmt::Assign { value, .. } = stmt {
-                        if let (
-                            6,
-                            Expr::Binary {
-                                op: BinaryOp::And,
-                                left,
-                                ..
-                            },
-                        ) = (kind, &mut value.0)
-                        {
+                        if let (6, Expr::Binary { first, steps }) = (kind, &mut value.0) {
                             // Completion is the left operand of the
                             // emitted complete && focused_guard expression.
-                            left.0 = Expr::Literal(Literal::Bool(true));
+                            if let [step] = steps.as_slice() {
+                                if step.op == BinaryOp::And {
+                                    first.0 = Expr::Literal(Literal::Bool(true));
+                                }
+                            }
                         }
                         if kind == 2 {
                             let right = (Expr::Literal(Literal::Bool(false)), 0..0);
-                            value.0 = Expr::Binary {
-                                op: BinaryOp::And,
-                                left: Box::new(value.clone()),
-                                right: Box::new(right),
-                            };
+                            value.0 =
+                                Expr::binary(value.clone(), BinaryOp::And, right, value.1.clone());
                         }
                         if kind == 3 {
                             mutate_expr(value);

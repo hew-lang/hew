@@ -109,9 +109,9 @@ fn fstring_span_binary_expression_inner_nodes() {
             );
 
             // Inner node spans must also point into the original source.
-            match expr {
-                Expr::Binary { op, left, right } => {
-                    assert_eq!(*op, BinaryOp::Add);
+            match expr.as_binary_pair() {
+                Some((left, op, right)) => {
+                    assert_eq!(op, BinaryOp::Add);
                     assert_eq!(
                         left.1.start, 23,
                         "'a' left-node span start should be 23, got {}",
@@ -134,7 +134,7 @@ fn fstring_span_binary_expression_inner_nodes() {
                         right.1.end
                     );
                 }
-                other => panic!("expected BinaryOp, got {other:?}"),
+                None => panic!("expected BinaryOp, got {expr:?}"),
             }
         }
         other => panic!("expected Expr part, got {other:?}"),

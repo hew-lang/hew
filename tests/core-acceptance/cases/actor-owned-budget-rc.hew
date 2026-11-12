@@ -42,14 +42,14 @@ fn main() -> i64 {
     stop(exact);
     stopped(exact);
     let small = spawn Small;
-    match small.run() { .Err(.Trapped) => println("rc limit"), _ => return 2, }
+    match small.run() { .Err(.Trapped(_)) => println("rc limit"), _ => return 2, }
     stopped(small);
     let copy = spawn ScalarExact;
     println(copy.run().expect("scalar replacement"));
     stop(copy);
     stopped(copy);
     let refused = spawn ScalarSmall;
-    match refused.run() { .Err(.Trapped) => println("scalar limit"), _ => return 3, }
+    match refused.run() { .Err(.Trapped(_)) => println("scalar limit"), _ => return 3, }
     stopped(refused);
     0
 }

@@ -379,9 +379,9 @@ impl Checker {
     /// binding, or an or-pattern with such a branch.
     fn head_admits_anything(&self, head: &Pattern, ty: &Ty) -> bool {
         match head {
-            Pattern::Or(left, right) => {
-                self.head_admits_anything(&left.0, ty) || self.head_admits_anything(&right.0, ty)
-            }
+            Pattern::Or(alternatives) => alternatives
+                .iter()
+                .any(|alternative| self.head_admits_anything(&alternative.0, ty)),
             _ => self.is_catch_all_for_scrutinee(head, ty),
         }
     }
@@ -401,11 +401,10 @@ impl Checker {
         };
         match head {
             Pattern::Wildcard => open(),
-            Pattern::Or(left, right) => {
-                let mut rows = self.specialize(&left.0, ty, info);
-                rows.extend(self.specialize(&right.0, ty, info));
-                rows
-            }
+            Pattern::Or(alternatives) => alternatives
+                .iter()
+                .flat_map(|alternative| self.specialize(&alternative.0, ty, info))
+                .collect(),
             Pattern::Identifier(name) => {
                 if self.is_catch_all_for_scrutinee(head, ty) {
                     return open();

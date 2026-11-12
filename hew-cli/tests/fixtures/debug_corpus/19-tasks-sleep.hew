@@ -1,0 +1,14 @@
+// Forked tasks that sleep, joined in a scope.
+fn slow_square(n: i64, ms: i64) -> i64 {
+    sleep(ms * 1ms);
+    n * n
+}
+
+fn main() {
+    let total = scope {
+        let a = fork slow_square(3, 20);
+        let b = fork slow_square(4, 5);
+        (await a) + (await b)
+    };
+    println(total);
+}

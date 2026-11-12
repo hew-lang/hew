@@ -127,7 +127,7 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         } if path.segments.len() == 1 => None,
         Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => Some("nested constructor"),
-        Pattern::Or(_, _) => Some("or-pattern"),
+        Pattern::Or(_) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
         // (scrutinee must be `string`). A regex in payload subpattern
         // position makes no semantic sense; reject as unsupported.
@@ -163,7 +163,7 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => Some("nested constructor"),
         Pattern::RecordShorthand { .. } => Some("record destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
-        Pattern::Or(_, _) => Some("or-pattern"),
+        Pattern::Or(_) => Some("or-pattern"),
         Pattern::Regex { .. } => Some("regex pattern"),
     }
 }
@@ -206,7 +206,7 @@ impl Checker {
             }
             Pattern::Literal(_) => return Some("literal"),
             Pattern::Regex { .. } => return Some("regex"),
-            Pattern::Or(_, _) => return Some("or-pattern"),
+            Pattern::Or(_) => return Some("or-pattern"),
             Pattern::Tuple(elements) => {
                 if let Ty::Tuple(types) = &ty {
                     return elements
@@ -405,6 +405,79 @@ impl Checker {
             ),
         );
         true
+    }
+
+    /// The diagnostic for an or-pattern alternative that binds different names,
+    /// types or mutability from the first alternative.
+    fn or_pattern_mismatch(
+        &self,
+        span: &Span,
+        (a, left_env, left_names): (&Spanned<Pattern>, &crate::env::TypeEnv, &HashSet<String>),
+        (b, right_env, right_names): (&Spanned<Pattern>, &crate::env::TypeEnv, &HashSet<String>),
+    ) -> TypeError {
+        let mut error = TypeError::or_pattern_binding_mismatch(
+            span.clone(),
+            a.1.clone(),
+            &sorted_pattern_bound_names(left_names),
+            b.1.clone(),
+            &sorted_pattern_bound_names(right_names),
+        );
+        if left_names == right_names {
+            for name in sorted_pattern_bound_names(left_names) {
+                let left_binding = left_env.lookup_ref(&name);
+                let right_binding = right_env.lookup_ref(&name);
+                if let (Some(left_binding), Some(right_binding)) = (left_binding, right_binding) {
+                    let left_ty = self.subst.resolve(&left_binding.ty);
+                    let right_ty = self.subst.resolve(&right_binding.ty);
+                    if left_ty != right_ty {
+                        error = error
+                            .with_note(
+                                a.1.clone(),
+                                format!(
+                                    "left branch binds `{name}` as `{}`",
+                                    left_ty.user_facing()
+                                ),
+                            )
+                            .with_note(
+                                b.1.clone(),
+                                format!(
+                                    "right branch binds `{name}` as `{}`",
+                                    right_ty.user_facing()
+                                ),
+                            );
+                    }
+                    if left_binding.is_mutable != right_binding.is_mutable {
+                        error = error
+                            .with_note(
+                                a.1.clone(),
+                                format!(
+                                    "left branch binds `{name}` as {}",
+                                    if left_binding.is_mutable {
+                                        "mutable"
+                                    } else {
+                                        "immutable"
+                                    }
+                                ),
+                            )
+                            .with_note(
+                                b.1.clone(),
+                                format!(
+                                    "right branch binds `{name}` as {}",
+                                    if right_binding.is_mutable {
+                                        "mutable"
+                                    } else {
+                                        "immutable"
+                                    }
+                                ),
+                            );
+                    }
+                }
+            }
+        }
+        if let Some(module_name) = &self.current_module {
+            error.source_module = Some(module_name.clone());
+        }
+        error
     }
 
     pub(super) fn or_pattern_bindings_match(
@@ -1620,103 +1693,46 @@ impl Checker {
                     }
                 }
             }
-            Pattern::Or(a, b) => {
+            Pattern::Or(alternatives) => {
                 let env_before = self.env.clone();
-
-                self.bind_pattern(&a.0, ty, is_mutable, &a.1);
-                let left_env = self.env.clone();
-                let left_names = or_branch_bound_names(&env_before, &left_env);
-
-                self.env = env_before.clone();
-                self.bind_pattern(&b.0, ty, is_mutable, &b.1);
-                let right_env = self.env.clone();
-                let right_names = or_branch_bound_names(&env_before, &right_env);
-
-                if matches!(ty, Ty::Var(_) | Ty::Error) {
-                    // The scrutinee type is unresolvable — an earlier error, or a
-                    // not-yet-inferred type variable. A bare identifier then cannot
-                    // be classified as constructor-or-binder (`resolve_variant_match`
-                    // has nothing to resolve against), so the branch binder sets are
-                    // unreliable and a consistency verdict would be a cascade off an
-                    // already-broken scrutinee. Bind the left branch for recovery and
-                    // emit nothing, matching the Constructor/Tuple/Struct arms which
-                    // already treat `Ty::Var | Ty::Error` as silent.
-                    self.env = left_env;
-                } else if self.or_pattern_bindings_match(
-                    &left_env,
-                    &right_env,
-                    &left_names,
-                    &right_names,
-                ) {
-                    self.env = left_env;
-                } else {
-                    self.env = env_before;
-                    let mut error = TypeError::or_pattern_binding_mismatch(
-                        span.clone(),
-                        a.1.clone(),
-                        &sorted_pattern_bound_names(&left_names),
-                        b.1.clone(),
-                        &sorted_pattern_bound_names(&right_names),
+                let Some((first, rest)) = alternatives.split_first() else {
+                    return;
+                };
+                self.bind_pattern(&first.0, ty, is_mutable, &first.1);
+                let first_env = self.env.clone();
+                let first_names = or_branch_bound_names(&env_before, &first_env);
+                // An unresolvable scrutinee type (an earlier error, or a
+                // not-yet-inferred variable) cannot classify a bare identifier
+                // as constructor or binder, so the branch binder sets are
+                // unreliable and a consistency verdict would be a cascade off an
+                // already-broken scrutinee. Every alternative still binds for
+                // recovery, the first one's names stay in scope, and nothing is
+                // reported, matching the Constructor/Tuple/Struct arms.
+                let unresolved = matches!(ty, Ty::Var(_) | Ty::Error);
+                let mut consistent = true;
+                for alternative in rest {
+                    self.env = env_before.clone();
+                    self.bind_pattern(&alternative.0, ty, is_mutable, &alternative.1);
+                    let names = or_branch_bound_names(&env_before, &self.env);
+                    if unresolved
+                        || self.or_pattern_bindings_match(
+                            &first_env,
+                            &self.env,
+                            &first_names,
+                            &names,
+                        )
+                    {
+                        continue;
+                    }
+                    consistent = false;
+                    let error = self.or_pattern_mismatch(
+                        span,
+                        (first, &first_env, &first_names),
+                        (alternative, &self.env, &names),
                     );
-                    if left_names == right_names {
-                        for name in sorted_pattern_bound_names(&left_names) {
-                            let left_binding = left_env.lookup_ref(&name);
-                            let right_binding = right_env.lookup_ref(&name);
-                            if let (Some(left_binding), Some(right_binding)) =
-                                (left_binding, right_binding)
-                            {
-                                let left_ty = self.subst.resolve(&left_binding.ty);
-                                let right_ty = self.subst.resolve(&right_binding.ty);
-                                if left_ty != right_ty {
-                                    error = error
-                                        .with_note(
-                                            a.1.clone(),
-                                            format!(
-                                                "left branch binds `{name}` as `{}`",
-                                                left_ty.user_facing()
-                                            ),
-                                        )
-                                        .with_note(
-                                            b.1.clone(),
-                                            format!(
-                                                "right branch binds `{name}` as `{}`",
-                                                right_ty.user_facing()
-                                            ),
-                                        );
-                                }
-                                if left_binding.is_mutable != right_binding.is_mutable {
-                                    error = error
-                                        .with_note(
-                                            a.1.clone(),
-                                            format!(
-                                                "left branch binds `{name}` as {}",
-                                                if left_binding.is_mutable {
-                                                    "mutable"
-                                                } else {
-                                                    "immutable"
-                                                }
-                                            ),
-                                        )
-                                        .with_note(
-                                            b.1.clone(),
-                                            format!(
-                                                "right branch binds `{name}` as {}",
-                                                if right_binding.is_mutable {
-                                                    "mutable"
-                                                } else {
-                                                    "immutable"
-                                                }
-                                            ),
-                                        );
-                                }
-                            }
-                        }
-                    }
-                    if let Some(module_name) = &self.current_module {
-                        error.source_module = Some(module_name.clone());
-                    }
                     self.errors.push(error);
                 }
+                self.env = if consistent { first_env } else { env_before };
             }
             Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
                 unreachable!("handled before checker dispatch")
@@ -2297,9 +2313,10 @@ impl Checker {
                     payload_variant_patterns,
                 }
             }
-            Pattern::Or(left, right) => {
-                self.record_arm_resolution(&left.0, &left.1, scrutinee_ty);
-                self.record_arm_resolution(&right.0, &right.1, scrutinee_ty);
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    self.record_arm_resolution(&alternative.0, &alternative.1, scrutinee_ty);
+                }
                 return;
             }
             // Regex patterns: derive named capture names from the pattern at
@@ -2664,7 +2681,7 @@ impl Checker {
                         } if path.segments.len() == 1 => unreachable!("handled above"),
                         Pattern::RecordShorthand { .. } => "record destructure",
                         Pattern::Tuple(_) => "tuple destructure",
-                        Pattern::Or(_, _) => "or-pattern",
+                        Pattern::Or(_) => "or-pattern",
                         Pattern::Regex { .. } => "regex pattern",
                         Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
                             "nested constructor"

@@ -77,10 +77,10 @@ fn inclusive_slice_a_eq_b_lowers_to_an_exclusive_bound_plus_one() {
         panic!("xs[a..=b] must lower to HirExprKind::Slice; got {kind:?}");
     };
     let end = end.as_ref().expect("inclusive end must lower to Some");
-    let HirExprKind::Binary { op, right, .. } = &end.kind else {
+    let Some((_, op, right)) = end.kind.as_binary_pair() else {
         panic!("inclusive end must lower to `b + 1`; got {:?}", end.kind);
     };
-    assert_eq!(*op, hew_parser::ast::BinaryOp::Add);
+    assert_eq!(op, hew_parser::ast::BinaryOp::Add);
     assert!(
         matches!(
             right.kind,

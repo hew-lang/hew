@@ -52,9 +52,10 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
                 walk_expr(a, f);
             }
         }
-        HirExprKind::Binary { left, right, .. } => {
-            walk_expr(left, f);
-            walk_expr(right, f);
+        HirExprKind::Binary { first, steps } => {
+            for operand in HirExprKind::binary_operands(first, steps) {
+                walk_expr(operand, f);
+            }
         }
         HirExprKind::Unary { operand, .. } => walk_expr(operand, f),
         HirExprKind::Block(block) => walk_block(block, f),
@@ -71,6 +72,14 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
         }
         HirExprKind::FieldAccess { object, .. } => walk_expr(object, f),
         HirExprKind::SubsumedValue { source, .. } => walk_expr(source, f),
+        HirExprKind::Interpolation { segments } => {
+            for value in segments
+                .iter()
+                .filter_map(hew_hir::HirInterpolationSegment::value)
+            {
+                walk_expr(value, f);
+            }
+        }
         HirExprKind::StructInit { fields, base, .. } => {
             for (_, v) in fields {
                 walk_expr(v, f);

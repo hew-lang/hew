@@ -195,10 +195,15 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Duration(*value),
             }),
-            SemOpKind::ConstStr(value) => one(PhysicalOp::Const {
-                dest: self.one_result(operation)?,
-                value: PhysicalConst::String(*value),
-            }),
+            SemOpKind::ConstStr(value) => {
+                let dest = self.one_result(operation)?;
+                let value = if self.storage[dest.0 as usize].ty == hew_sir::static_address_type() {
+                    PhysicalConst::LiteralBytes(*value)
+                } else {
+                    PhysicalConst::String(*value)
+                };
+                one(PhysicalOp::Const { dest, value })
+            }
             SemOpKind::ConstBytes(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Bytes(*value),

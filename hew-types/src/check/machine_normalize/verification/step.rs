@@ -36,7 +36,10 @@ fn gate(expr: &Spanned<Expr>) -> String {
             op: UnaryOp::Not,
             operand,
         } => not(&gate(operand)),
-        Expr::Binary { op, left, right } => {
+        Expr::Binary { .. } => {
+            let Some((left, op, right)) = expr.0.as_binary_pair() else {
+                panic!("machine step: unsupported limit predicate");
+            };
             let op = match op {
                 BinaryOp::LessEqual => "<=",
                 BinaryOp::Less => "<",
@@ -106,27 +109,31 @@ impl Iteration<'_> {
                 let value = self.expression(operand, path);
                 not(&value)
             }
-            Expr::Binary {
-                op: op @ (BinaryOp::And | BinaryOp::Or),
-                left,
-                right,
-            } => {
-                let left = self.expression(left, path);
-                let right_path = self.term(and([
-                    path.into(),
-                    self.alive.clone(),
-                    if *op == BinaryOp::And {
-                        left.clone()
+            Expr::Binary { first, steps }
+                if steps
+                    .iter()
+                    .all(|step| matches!(step.op, BinaryOp::And | BinaryOp::Or)) =>
+            {
+                let mut left = self.expression(first, path);
+                for step in steps {
+                    let conjunction = step.op == BinaryOp::And;
+                    let right_path = self.term(and([
+                        path.into(),
+                        self.alive.clone(),
+                        if conjunction {
+                            left.clone()
+                        } else {
+                            not(&left)
+                        },
+                    ]));
+                    let right = self.expression(&step.right, &right_path);
+                    left = if conjunction {
+                        and([left, right])
                     } else {
-                        not(&left)
-                    },
-                ]));
-                let right = self.expression(right, &right_path);
-                if *op == BinaryOp::And {
-                    and([left, right])
-                } else {
-                    or([left, right])
+                        or([left, right])
+                    };
                 }
+                left
             }
             _ => panic!(
                 "machine step: internal loop condition is not composed from a certified pass"

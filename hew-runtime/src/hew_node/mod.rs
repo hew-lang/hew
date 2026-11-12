@@ -967,6 +967,7 @@ impl ReplyRoutingTable {
         publication: u64,
         ask_error: AskError,
         status: ReplyStatus,
+        failure: Vec<u8>,
     ) -> bool {
         if let Some(pending) =
             self.remove_if_connection(request_id, expected, PendingReplyKind::Ask(publication))
@@ -975,7 +976,7 @@ impl ReplyRoutingTable {
                 &pending,
                 ReplyOutcome {
                     status,
-                    data: Vec::new(),
+                    data: failure,
                     ask_error,
                 },
             );
@@ -1213,11 +1214,28 @@ fn resolve_remote_failure(
 ) -> bool {
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
-    match decode_rejection_reason(reason_payload) {
+    let Some((&reason, detail)) = reason_payload.split_first() else {
+        return false;
+    };
+    match decode_rejection_reason(&[reason]) {
         Ok(reason) => {
+            if !detail.is_empty()
+                && (status != ReplyStatus::Failed
+                    || reason != AskError::HandlerTrapped
+                    || crate::failure_snapshot::FailureSnapshot::decode_wire(detail).is_none())
+            {
+                return false;
+            }
             let expected = ConnectionKey::new(conn_mgr, conn_id);
             reply_table_opt().is_some_and(|table| {
-                table.fail_from_connection(request_id, expected, publication, reason, status)
+                table.fail_from_connection(
+                    request_id,
+                    expected,
+                    publication,
+                    reason,
+                    status,
+                    detail.to_vec(),
+                )
             })
         }
         Err(_) => false,

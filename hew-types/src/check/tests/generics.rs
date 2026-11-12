@@ -2195,11 +2195,12 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
         pattern: (Pattern::Identifier(Ident::new("n")), 4..5),
         ty: None,
         value: Some((
-            Expr::Binary {
-                left: Box::new(make_int_literal(1, 8..9)),
-                op: BinaryOp::Add,
-                right: Box::new(make_int_literal(2, 12..13)),
-            },
+            Expr::binary(
+                make_int_literal(1, 8..9),
+                BinaryOp::Add,
+                make_int_literal(2, 12..13),
+                8..13,
+            ),
             8..13,
         )),
         else_block: None,

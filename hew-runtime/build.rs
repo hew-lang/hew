@@ -21,13 +21,32 @@ fn main() {
     #[cfg(windows)]
     let clang = clang.with_extension("exe");
     cc::Build::new()
-        .compiler(clang)
+        .compiler(clang.clone())
         .cpp(true)
         .cpp_link_stdlib(None)
         .std("c++20")
         .file("src/coro_llvm.cpp")
         .flag(if msvc { "/EHsc" } else { "-fexceptions" })
         .compile("hew_coro_llvm");
+
+    // Weak references to the compiler's debug tables.
+    println!("cargo:rerun-if-changed=src/debug_tables.c");
+    let mut debug_tables = cc::Build::new();
+    debug_tables
+        .compiler(clang.clone())
+        .file("src/debug_tables.c");
+    if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        // COFF archive processing can renumber symbols without rewriting
+        // address-significance indices or retaining section leaders. Keep
+        // this small fallback object intact through archive repackaging.
+        debug_tables.flag("-fno-addrsig");
+        if msvc {
+            debug_tables.flags(["/Gy-", "/Gw-"]);
+        } else {
+            debug_tables.flags(["-fno-function-sections", "-fno-data-sections"]);
+        }
+    }
+    debug_tables.compile("hew_debug_tables");
 
     // Build scripts run on the host, so use Cargo's target cfg env vars rather
     // than `#[cfg(unix)]`/`#[cfg(windows)]` to avoid leaking native link flags

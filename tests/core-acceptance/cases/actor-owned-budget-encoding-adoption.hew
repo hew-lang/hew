@@ -32,19 +32,19 @@ fn main() -> i64 {
     let large = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let json_reader = spawn JsonReader;
     match json_reader.read(json.from_string(large)) {
-        .Err(.Trapped) => println("json limit"),
+        .Err(.Trapped(_)) => println("json limit"),
         _ => return 2,
     }
     stopped(json_reader);
     let yaml_reader = spawn YamlReader;
     match yaml_reader.read(yaml.from_string(large)) {
-        .Err(.Trapped) => println("yaml limit"),
+        .Err(.Trapped(_)) => println("yaml limit"),
         _ => return 3,
     }
     stopped(yaml_reader);
     let toml_reader = spawn TomlReader;
     match toml_reader.read(toml.from_string(large)) {
-        .Err(.Trapped) => println("toml limit"),
+        .Err(.Trapped(_)) => println("toml limit"),
         _ => return 4,
     }
     stopped(toml_reader);

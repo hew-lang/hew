@@ -1,0 +1,11 @@
+// Two-module program: an imported module's function and a std generic monomorph.
+import "util.hew";
+
+fn main() {
+    let xs: Vec<i64> = [1, 2, 3];
+    var total: i64 = 0;
+    for x in xs {
+        total = total + util.triple(x);
+    }
+    println(total);
+}

@@ -72,18 +72,19 @@ impl Pass<'_, '_> {
     fn expression(&mut self, expression: &Spanned<Expr>, path: &str) -> Value {
         match &expression.0 {
             Expr::Literal(Literal::Integer { value, .. }) => Value::Int(value.to_string()),
-            Expr::Binary {
-                op: op @ (BinaryOp::GreaterEqual | BinaryOp::Add),
-                left,
-                right,
-            } => {
-                let a = int(self.expression(left, path));
-                let b = int(self.expression(right, path));
-                if *op == BinaryOp::GreaterEqual {
-                    Value::Bool(self.checker.term(format!("(>= {a} {b})")))
-                } else {
-                    Value::Int(format!("(+ {a} {b})"))
+            Expr::Binary { first, steps } if steps.iter().all(|step| step.op == BinaryOp::Add) => {
+                let mut sum = int(self.expression(first, path));
+                for step in steps {
+                    let addend = int(self.expression(&step.right, path));
+                    sum = format!("(+ {sum} {addend})");
                 }
+                Value::Int(sum)
+            }
+            Expr::Binary { first, steps } if matches!(steps.as_slice(), [step] if step.op == BinaryOp::GreaterEqual) =>
+            {
+                let a = int(self.expression(first, path));
+                let b = int(self.expression(&steps[0].right, path));
+                Value::Bool(self.checker.term(format!("(>= {a} {b})")))
             }
             _ => self.checker.expr(expression, path),
         }
@@ -537,8 +538,10 @@ fn mutate(statements: &mut [Spanned<Stmt>], effects: &[Effect], kind: usize) {
                     .iter()
                     .any(|stage| matches!(stage, Stage::Departure { .. }))
             {
-                if let Expr::Binary { right, .. } = &mut condition.0 {
-                    right.0 = Expr::Literal(Literal::Bool(true));
+                if let Expr::Binary { steps, .. } = &mut condition.0 {
+                    if let Some(last) = steps.last_mut() {
+                        last.right.0 = Expr::Literal(Literal::Bool(true));
+                    }
                 }
             }
             if kind == 3 {
@@ -552,8 +555,11 @@ fn mutate(statements: &mut [Spanned<Stmt>], effects: &[Effect], kind: usize) {
                 }
                 if let Stmt::Assign { target, value, .. } = stmt {
                     if kind == 2 && ident(target, "_$machine_used") {
-                        if let Expr::Binary { right, .. } = &mut value.0 {
-                            right.0 = Expr::Literal(Literal::Integer {
+                        if let Some(last) = match &mut value.0 {
+                            Expr::Binary { steps, .. } => steps.last_mut(),
+                            _ => None,
+                        } {
+                            last.right.0 = Expr::Literal(Literal::Integer {
                                 value: 2,
                                 radix: hew_parser::ast::IntRadix::Decimal,
                             });

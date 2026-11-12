@@ -15,8 +15,11 @@ ExclusiveArch:  x86_64 aarch64
 %endif
 
 Source0:        https://github.com/hew-lang/hew/releases/download/v%{version}/hew-v%{version}-linux-%{hew_arch}.tar.gz
+Source1:        https://github.com/hew-lang/hew/releases/download/v%{version}/hew-v%{version}-linux-%{hew_arch}-debug.tar.gz
 
-# Pre-built binaries — no compilation needed.
+# Pre-built, already-stripped binaries: rpmbuild's find-debuginfo has nothing
+# to extract. The compiler's DWARF ships in the release's debug archive, which
+# the explicit hew-debuginfo subpackage below installs.
 %global debug_package %{nil}
 
 # LLVM, libstdc++, zlib, and zstd are statically linked into hew.
@@ -36,8 +39,18 @@ This package provides:
   - hew          the compiler driver
   - libhew.a     the combined runtime + stdlib static library
 
+%package debuginfo
+Summary:        Debug symbols for the Hew compiler
+Requires:       %{name} = %{version}-%{release}
+AutoReqProv:    no
+
+%description debuginfo
+Separate DWARF for the hew compiler driver, installed under
+/usr/lib/debug/.build-id so gdb, lldb and eu-stack symbolize a compiler
+crash by the binary's build-id.
+
 %prep
-%autosetup -n hew-v%{version}-linux-%{hew_arch}
+%autosetup -n hew-v%{version}-linux-%{hew_arch} -a 1
 
 %install
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
@@ -77,6 +90,10 @@ cp -r include/. %{buildroot}%{_includedir}/
   find %{buildroot}%{_datadir}/fish -type f 2>/dev/null
 } | sed "s|^%{buildroot}||" > %{_builddir}/completions.lst || true
 
+# Compiler debug symbols, keyed by build-id
+install -dm755 %{buildroot}/usr/lib/debug
+cp -r hew-v%{version}-linux-%{hew_arch}-debug/.build-id %{buildroot}/usr/lib/debug/
+
 # Licenses
 install -Dm644 LICENSE-MIT    %{buildroot}%{_licensedir}/%{name}/LICENSE-MIT
 install -Dm644 LICENSE-APACHE %{buildroot}%{_licensedir}/%{name}/LICENSE-APACHE
@@ -89,6 +106,9 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_datadir}/hew/
 %{_includedir}/hew.h
 %{_includedir}/hew_host.h
+
+%files debuginfo
+/usr/lib/debug/.build-id/
 
 %changelog
 * Thu Feb 19 2026 The Hew Project Developers <hello@hew.sh> - 0.1.0-1

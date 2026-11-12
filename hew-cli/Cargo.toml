@@ -29,6 +29,7 @@ hew-runtime = { path = "../hew-runtime", default-features = false, features = [
 hew-cabi = { path = "../hew-cabi" }
 hew-lsp = { path = "../hew-lsp" }
 hew-observe = { path = "../hew-observe" }
+hew-symbolize = { path = "../hew-symbolize" }
 hew-analysis = { path = "../hew-analysis" }
 hew-codec = { path = "../hew-codec" }
 hew-compile = { path = "../hew-compile" }
@@ -51,7 +52,6 @@ toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify = "8"
-dirs.workspace = true
 wasmparser = "0.259.0"
 object = "0.40"
 proptest = { version = "1", default-features = false, features = ["std"] }

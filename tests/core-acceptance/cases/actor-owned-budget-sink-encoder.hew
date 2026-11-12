@@ -42,7 +42,7 @@ fn main() -> i64 {
     let (small_sink, small_input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("small pipe");
     let small = spawn Small { output: small_sink };
     match small.ready() {
-        .Err(.Trapped) => println("encoder limit"),
+        .Err(.Trapped(_)) => println("encoder limit"),
         _ => return 2,
     }
     stopped(small);

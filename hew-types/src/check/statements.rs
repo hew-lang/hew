@@ -602,6 +602,8 @@ impl Checker {
     fn numeric_update_reads_binding_inner(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Ident(name) => name.name.as_str() == binding,
+            Expr::Binary { first, steps } => Expr::binary_operands(first, steps)
+                .any(|operand| Self::numeric_update_reads_binding(&operand.0, binding)),
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
@@ -610,8 +612,7 @@ impl Checker {
                 Self::numeric_update_reads_binding(&left.0, binding)
                     || Self::numeric_update_reads_binding(&right.0, binding)
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Handle {
+            Expr::Handle {
                 operand: left,
                 body: right,
                 ..

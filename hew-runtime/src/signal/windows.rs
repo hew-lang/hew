@@ -32,9 +32,9 @@ use windows_sys::Win32::System::Threading::{
     SetThreadStackGuarantee, WaitForSingleObject, INFINITE,
 };
 
-use super::frames::Frames;
-use super::record::{FaultKind, FaultRecord};
+use super::record::{self, Fault};
 use super::stack::{self, StackBounds, ThreadLabel};
+use crate::failure_record::FailureRecord;
 
 /// Stack kept back for the handler when a thread's stack overflows. The
 /// handler formats into static storage, so this only has to hold its frames
@@ -45,7 +45,7 @@ const RECORD_BYTES: usize = 8 * 1024;
 const MINIDUMP_WAIT_MS: u32 = 60_000;
 
 struct ReportSlot {
-    record: UnsafeCell<FaultRecord>,
+    record: UnsafeCell<FailureRecord>,
     text: UnsafeCell<[u8; RECORD_BYTES]>,
 }
 
@@ -53,7 +53,7 @@ struct ReportSlot {
 unsafe impl Sync for ReportSlot {}
 
 static SLOT: ReportSlot = ReportSlot {
-    record: UnsafeCell::new(FaultRecord::EMPTY),
+    record: UnsafeCell::new(FailureRecord::EMPTY),
     text: UnsafeCell::new([0; RECORD_BYTES]),
 };
 static REPORTING: AtomicBool = AtomicBool::new(false);
@@ -83,17 +83,21 @@ const fn exception_name(code: i32) -> Option<&'static str> {
     })
 }
 
-/// The kind of a fatal exception. A coroutine or other non-OS stack overflow
-/// arrives as an access violation in the guard region, the same lookup the
-/// Unix handler makes.
-fn classify(code: i32, address: usize, bounds: StackBounds) -> FaultKind {
-    if code == EXCEPTION_STACK_OVERFLOW
-        || (code == EXCEPTION_ACCESS_VIOLATION && bounds.in_guard(address))
-    {
-        FaultKind::StackOverflow
-    } else {
-        FaultKind::Signal
+/// The name of a fatal exception, for the failure record's rendering. No
+/// exception is ever sent by another process.
+pub(crate) const fn describe_fault(code: i32, _si_code: i32) -> (&'static str, bool) {
+    match exception_name(code) {
+        Some(name) => (name, false),
+        None => ("exception", false),
     }
+}
+
+/// Whether a fatal exception is a stack overflow. A coroutine or other non-OS
+/// stack overflow arrives as an access violation in the guard region, the
+/// same lookup the Unix handler makes.
+fn is_overflow(code: i32, address: usize, bounds: StackBounds) -> bool {
+    code == EXCEPTION_STACK_OVERFLOW
+        || (code == EXCEPTION_ACCESS_VIOLATION && bounds.in_guard(address))
 }
 
 /// Walk the faulting thread's stack with the image unwind tables. x64 code
@@ -107,7 +111,7 @@ fn classify(code: i32, address: usize, bounds: StackBounds) -> FaultKind {
 unsafe fn capture_frames(
     context: *const windows_sys::Win32::System::Diagnostics::Debug::CONTEXT,
     bounds: StackBounds,
-    out: &mut Frames,
+    out: &mut FailureRecord,
 ) {
     use windows_sys::Win32::System::Diagnostics::Debug::{
         RtlLookupFunctionEntry, RtlVirtualUnwind, CONTEXT, UNW_FLAG_NHANDLER,
@@ -117,7 +121,7 @@ unsafe fn capture_frames(
     unsafe impl Sync for UnwindContext {}
     static UNWIND: UnwindContext = UnwindContext(UnsafeCell::new(MaybeUninit::uninit()));
 
-    out.clear();
+    out.clear_frames();
     if context.is_null() {
         return;
     }
@@ -125,7 +129,7 @@ unsafe fn capture_frames(
     // context is valid for the handler's duration.
     unsafe {
         let ctx = (*UNWIND.0.get()).write(*context);
-        out.push(ctx.Rip as usize);
+        out.push_frame(ctx.Rip as usize);
         for _ in 0..(1 << 20) {
             let previous_sp = ctx.Rsp;
             let mut image_base = 0_u64;
@@ -154,8 +158,9 @@ unsafe fn capture_frames(
             if ctx.Rip == 0 || ctx.Rsp <= previous_sp || !bounds.contains(ctx.Rsp as usize) {
                 return;
             }
-            // Report the call instruction, not the return address after it.
-            out.push(ctx.Rip as usize - 1);
+            // The record keeps return addresses; its readers look up the
+            // call before each one.
+            out.push_frame(ctx.Rip as usize);
         }
     }
 }
@@ -164,12 +169,12 @@ unsafe fn capture_frames(
 unsafe fn capture_frames(
     context: *const windows_sys::Win32::System::Diagnostics::Debug::CONTEXT,
     _bounds: StackBounds,
-    out: &mut Frames,
+    out: &mut FailureRecord,
 ) {
-    out.clear();
+    out.clear_frames();
     if !context.is_null() {
         // SAFETY: the exception context is valid for the handler's duration.
-        out.push(unsafe { (*context).Pc } as usize);
+        out.push_frame(unsafe { (*context).Pc } as usize);
     }
 }
 
@@ -177,9 +182,9 @@ unsafe extern "system" fn fatal_exception_handler(info: *mut EXCEPTION_POINTERS)
     // SAFETY: Windows provides valid exception records for the callback.
     let exception = unsafe { &*(*info).ExceptionRecord };
     let code = exception.ExceptionCode;
-    let Some(name) = exception_name(code) else {
+    if exception_name(code).is_none() {
         return EXCEPTION_CONTINUE_SEARCH;
-    };
+    }
     if REPORTING.swap(true, Ordering::AcqRel) {
         // One report per process; the first fault ends it.
         return EXCEPTION_CONTINUE_SEARCH;
@@ -196,15 +201,18 @@ unsafe extern "system" fn fatal_exception_handler(info: *mut EXCEPTION_POINTERS)
         } else {
             exception.ExceptionAddress as usize
         };
-        record.kind = classify(code, address, bounds);
-        record.signal = u32::from_ne_bytes(code.to_ne_bytes());
-        record.signal_name = name;
-        record.sent = false;
-        record.address = address;
-        record.thread = stack::current_label();
-        record.load_image_range();
-        capture_frames((*info).ContextRecord, bounds, &mut record.frames);
-        let text = record.format_into(&mut *SLOT.text.get());
+        record::begin(
+            record,
+            Fault {
+                signal: code,
+                si_code: 0,
+                address,
+                overflow: is_overflow(code, address, bounds),
+            },
+            stack::current_label(),
+        );
+        capture_frames((*info).ContextRecord, bounds, record);
+        let text = record::finish(record, &mut *SLOT.text.get());
         crate::trap_code::write_stderr(text);
         minidump::write_from_handler(info);
     }
@@ -345,29 +353,6 @@ mod minidump {
     }
 }
 
-/// Find the load range of the image this runtime is linked into from its PE
-/// header. Called at installation, never from the handler.
-fn record_image_range() {
-    use windows_sys::Win32::System::Diagnostics::Debug::RtlPcToFileHeader;
-    let mut base = std::ptr::null_mut();
-    // SAFETY: the handler's own address lies in this image.
-    unsafe { RtlPcToFileHeader(fatal_exception_handler as *const _, &raw mut base) };
-    let base = base as usize;
-    if base == 0 {
-        return;
-    }
-    // SAFETY: a loaded image starts with its DOS header; e_lfanew locates the
-    // NT headers, whose optional header holds SizeOfImage at offset 56.
-    let size = unsafe {
-        let nt = base + (base as *const u8).add(0x3C).cast::<u32>().read_unaligned() as usize;
-        (nt as *const u8)
-            .add(4 + 20 + 56)
-            .cast::<u32>()
-            .read_unaligned() as usize
-    };
-    super::record::set_image_range(base, base + size);
-}
-
 /// Prepare the calling thread to report its own faults.
 fn init_thread(label: ThreadLabel) {
     stack::register_current_thread(label);
@@ -382,7 +367,9 @@ pub(crate) fn init_crash_handling() {
     let mut installed_here = false;
     INSTALL.call_once(|| {
         installed_here = true;
-        record_image_range();
+        // The handler reads the backtrace policy and image facts; settle
+        // them now, since a program without actors never starts a scheduler.
+        crate::fault::configure_from_env();
         minidump::configure();
         // SAFETY: the callback remains resident for the process lifetime.
         if unsafe { AddVectoredExceptionHandler(1, Some(fatal_exception_handler)) }.is_null() {
@@ -420,18 +407,13 @@ mod tests {
             high: 0x7_0010_0000,
             guard: 0,
         };
-        assert_eq!(
-            classify(EXCEPTION_STACK_OVERFLOW, 0, bounds),
-            FaultKind::StackOverflow
-        );
-        assert_eq!(
-            classify(EXCEPTION_ACCESS_VIOLATION, 0x7_0000_0000 - 8, bounds),
-            FaultKind::StackOverflow
-        );
-        assert_eq!(
-            classify(EXCEPTION_ACCESS_VIOLATION, 8, bounds),
-            FaultKind::Signal
-        );
+        assert!(is_overflow(EXCEPTION_STACK_OVERFLOW, 0, bounds));
+        assert!(is_overflow(
+            EXCEPTION_ACCESS_VIOLATION,
+            0x7_0000_0000 - 8,
+            bounds
+        ));
+        assert!(!is_overflow(EXCEPTION_ACCESS_VIOLATION, 8, bounds));
         assert!(exception_name(EXCEPTION_STACK_OVERFLOW).is_some());
         // Rust panics and C++ exceptions are not faults.
         assert!(exception_name(0xE06D_7363_u32 as i32).is_none());

@@ -211,10 +211,18 @@ static void compiled_policy(void) {
 
   for (int attempt = 0; attempt < 2; ++attempt) {
     static const unsigned char rejected[] = "reject: caf\xc3\xa9\0tail";
+#ifdef _WIN32
+#define HOST_POLICY_SOURCE ".\\config_policy.hew"
+#else
+#define HOST_POLICY_SOURCE "./config_policy.hew"
+#endif
     static const unsigned char diagnostic[] =
-        "hew: failure: UserPanic (212): REJECT: CAF\xc3\x89\0TAIL\n";
+        "hew: failure: UserPanic (212) at " HOST_POLICY_SOURCE ":8:9: REJECT: "
+        "CAF\xc3\x89\0TAIL\n";
     static const unsigned char consumed_diagnostic[] =
-        "hew: failure: UserPanic (212): reject: caf\xc3\xa9\0tail\n";
+        "hew: failure: UserPanic (212) at " HOST_POLICY_SOURCE ":15:9: reject: "
+        "caf\xc3\xa9\0tail\n";
+#undef HOST_POLICY_SOURCE
     const unsigned char *expected_error =
         attempt ? consumed_diagnostic : diagnostic;
     const size_t expected_len =

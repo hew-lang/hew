@@ -429,7 +429,9 @@ fn main() {
             "a real actor panic must still fail the process: stdout={stdout:?} stderr={stderr}"
         );
         assert!(
-            stderr.contains("actor crash in Boom.detonate"),
+            stderr.contains("hew: failure: UserPanic (212) at ")
+                && stderr.contains("shutdown_drain_tcp.hew:4:15: boom")
+                && stderr.contains("handler Boom.detonate"),
             "a real fault must still be reported: {stderr}"
         );
     }

@@ -238,10 +238,13 @@ fn eval_inner_inner(
             }
         }
         Expr::Ident(name) => Err(ConstEvalError::UnknownConst(name.to_string())),
-        Expr::Binary { left, op, right } => {
-            let l = eval_inner(left, values, target)?;
-            let r = eval_inner(right, values, target)?;
-            eval_binary(*op, l, r, target)
+        Expr::Binary { first, steps } => {
+            let mut value = eval_inner(first, values, target)?;
+            for step in steps {
+                let right = eval_inner(&step.right, values, target)?;
+                value = eval_binary(step.op, value, right, target)?;
+            }
+            Ok(value)
         }
         // Every other Expr shape is rejected. The match is intentionally
         // exhaustive over the remaining variants so a future Expr variant
@@ -376,11 +379,7 @@ mod tests {
     }
 
     fn bin(op: BinaryOp, l: Spanned<Expr>, r: Spanned<Expr>) -> Spanned<Expr> {
-        span(Expr::Binary {
-            left: Box::new(l),
-            op,
-            right: Box::new(r),
-        })
+        span(Expr::binary(l, op, r, 0..0))
     }
 
     #[test]

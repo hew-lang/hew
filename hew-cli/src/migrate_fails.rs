@@ -1165,7 +1165,7 @@ impl Planner<'_> {
     fn led_by_block(mut expr: &Expr) -> bool {
         loop {
             let leftmost: &Spanned<Expr> = match expr {
-                Expr::Binary { left: inner, .. }
+                Expr::Binary { first: inner, .. }
                 | Expr::Is { lhs: inner, .. }
                 | Expr::Range {
                     start: Some(inner), ..

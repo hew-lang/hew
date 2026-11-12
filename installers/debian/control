@@ -15,3 +15,13 @@ Description: The Hew programming language compiler and package manager
  concurrent and distributed systems. This package includes the hew compiler
  driver with the built-in package manager, language server and actor observer
  TUI, and the standard library.
+
+Package: hew-dbgsym
+Architecture: amd64 arm64
+Section: debug
+Priority: optional
+Depends: hew (= ${binary:Version}), ${misc:Depends}
+Description: debug symbols for the Hew compiler
+ Separate DWARF for the hew compiler driver, installed under
+ /usr/lib/debug/.build-id so gdb, lldb and eu-stack symbolize a compiler
+ crash by the binary's build-id.

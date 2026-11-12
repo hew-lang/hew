@@ -2864,8 +2864,8 @@ impl Checker {
                 &cd.value,
                 &resolved,
                 self.pointer_width(),
-                &mut |expr| {
-                    let key = SpanKey::in_module(&expr.1, self.current_module_idx);
+                &mut |span, expr| {
+                    let key = SpanKey::in_module(span, self.current_module_idx);
                     let ty = self
                         .numeric_operand_coercions
                         .get(&key)
@@ -2873,7 +2873,7 @@ impl Checker {
                         .map(|ty| self.normalize_for_use(ty))
                         .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
                     let value = self.compile_time_values.get(&key).cloned().or_else(|| {
-                        self.constant_integer_value(expr)
+                        expr.and_then(|expr| self.constant_integer_value(expr))
                             .map(crate::compile_time::ConstantValue::Integer)
                     });
                     (ty, value)

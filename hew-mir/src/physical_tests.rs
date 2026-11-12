@@ -188,6 +188,14 @@ fn target() -> PhysicalTarget {
     target.insert_layout(ResolvedTy::I64, i64_layout());
     target.insert_layout(ResolvedTy::Duration, i64_layout());
     target.insert_layout(
+        ResolvedTy::U32,
+        PhysicalLayout {
+            size: 4,
+            align: 4,
+            repr: PhysicalRepr::Integer { bits: 32 },
+        },
+    );
+    target.insert_layout(
         ResolvedTy::Bool,
         PhysicalLayout {
             size: 1,
@@ -405,10 +413,9 @@ pub(super) fn target_for_inventory(module: &SemModule) -> PhysicalTarget {
         };
         target.insert_layout(resource.ty.clone(), layout);
     }
-    for ty in inventory
-        .types()
-        .filter(|ty| collection_type_arguments(ty).is_some())
-    {
+    for ty in inventory.types().filter(|ty| {
+        collection_type_arguments(ty).is_some() || **ty == hew_sir::static_address_type()
+    }) {
         target.insert_layout(
             ty.clone(),
             PhysicalLayout {

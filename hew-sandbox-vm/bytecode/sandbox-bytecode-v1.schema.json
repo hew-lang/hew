@@ -1376,6 +1376,13 @@
             "kind": {
               "const": "aggregate",
               "type": "string"
+            },
+            "shape": {
+              "description": "The canonical record shape when this layout represents a record.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
             }
           },
           "required": ["kind", "fields"],
@@ -5297,6 +5304,36 @@
               "type": "null"
             },
             "family": {
+              "const": "StringAppendU64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendF64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "StringFindFrom"
             }
           }
@@ -6177,6 +6214,26 @@
             },
             "family": {
               "const": "StreamPairSink"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendI64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppendLiteral"
             }
           }
         },

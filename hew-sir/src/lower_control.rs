@@ -111,104 +111,6 @@ impl Builder<'_, '_> {
         })
     }
 
-    /// Lower short-circuit `&&` as CFG rather than an eager binary operation.
-    ///
-    /// The false edge materialises the result while the true edge alone
-    /// evaluates the right-hand side. This keeps effectful future SIR
-    /// operations on the RHS structurally guarded from the outset.
-    pub(super) fn lower_logical_and(
-        &mut self,
-        whole: &HirExpr,
-        left: &HirExpr,
-        right: &HirExpr,
-    ) -> Result<ValueId, SirLoweringError> {
-        self.lower_short_circuit(whole, left, right, false)
-    }
-
-    /// Lower short-circuit `||` as CFG rather than an eager binary operation.
-    pub(super) fn lower_logical_or(
-        &mut self,
-        whole: &HirExpr,
-        left: &HirExpr,
-        right: &HirExpr,
-    ) -> Result<ValueId, SirLoweringError> {
-        self.lower_short_circuit(whole, left, right, true)
-    }
-
-    pub(super) fn lower_short_circuit(
-        &mut self,
-        whole: &HirExpr,
-        left: &HirExpr,
-        right: &HirExpr,
-        short_circuit_value: bool,
-    ) -> Result<ValueId, SirLoweringError> {
-        let result_ty = self.ty(&whole.ty);
-        if result_ty != ResolvedTy::Bool {
-            return Err(
-                "short-circuit logical expressions must have bool type in SIR"
-                    .to_string()
-                    .into(),
-            );
-        }
-        let condition = self.lower_read_operand(left, "logical condition")?;
-        let evaluate_right = self.new_block(Vec::new());
-        let short_circuit = self.new_block(Vec::new());
-        let (then_target, else_target) = if short_circuit_value {
-            (short_circuit, evaluate_right)
-        } else {
-            (evaluate_right, short_circuit)
-        };
-        self.set_terminator(SemTerminator::Branch {
-            condition,
-            then_target: Edge {
-                target: then_target,
-                args: Vec::new(),
-            },
-            else_target: Edge {
-                target: else_target,
-                args: Vec::new(),
-            },
-        })?;
-
-        let before = self.control_state();
-        let mut exits = Vec::new();
-        // Both operands are conditional paths: a loan may not end inside one.
-        self.branch_depth += 1;
-
-        self.current = evaluate_right;
-        let loan_floor = self.scope_loans.len();
-        let right_value = self.lower_read_operand(right, "logical right value")?;
-        if self.is_open() {
-            // The right operand runs on one edge only. Its temporaries and
-            // interior loans end on that edge, never after the join, where the
-            // short-circuit edge never created them.
-            if self.scope_loans.len() > loan_floor {
-                let loans = self.scope_loans.split_off(loan_floor);
-                self.end_call_loans(&loans)?;
-            }
-            self.destroy_live_since(&before.owned_live)?;
-            exits.push(MatchExit {
-                state: self.control_state(),
-                result: Some(right_value),
-            });
-        }
-
-        self.restore_control_state(&before);
-        self.current = short_circuit;
-        let constant = self.emit(whole, SemOpKind::ConstBool(short_circuit_value))?;
-        exits.push(MatchExit {
-            state: self.control_state(),
-            result: Some(Operand { value: constant }),
-        });
-
-        self.branch_depth -= 1;
-        self.merge_match_exits(exits, &result_ty)?.ok_or_else(|| {
-            SirLoweringError::from(
-                "short-circuit logical expression produced no SSA value".to_string(),
-            )
-        })
-    }
-
     pub(super) fn emit(
         &mut self,
         expr: &HirExpr,
@@ -231,7 +133,12 @@ impl Builder<'_, '_> {
             }
         }
         let value = self.fresh_value();
-        if matches!(kind, SemOpKind::ActorIngressAdapter(_)) {
+        if *result_ty == crate::static_address_type()
+            && matches!(
+                kind,
+                SemOpKind::ActorIngressAdapter(_) | SemOpKind::ConstStr(_)
+            )
+        {
             require_type_facts(&mut self.service.checked_facts, result_ty)?;
         } else {
             self.service.require_type_facts(result_ty)?;

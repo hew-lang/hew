@@ -2,21 +2,20 @@
 
 use super::*;
 
-/// Flatten a (potentially nested) `Pattern::Or` tree into its leaf patterns,
-/// preserving source spans. A pattern that is not an `Or` returns a
-/// single-element list containing itself.
-///
-/// Example: `1 | 2 | 3` parses as `Or(1, Or(2, 3))` and flattens to
-/// `[1, 2, 3]`.
+/// The leaf alternatives of an or-pattern in source order, preserving source
+/// spans. An alternative that is itself an `Or` (a substituted `$p:pat`
+/// fragment) contributes its own leaves. A pattern that is not an `Or`
+/// returns a single-element list containing itself.
 pub(super) fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Pattern>> {
-    match &pattern.0 {
-        Pattern::Or(left, right) => {
-            let mut leaves = flatten_or_pattern(left);
-            leaves.extend(flatten_or_pattern(right));
-            leaves
+    let mut leaves = Vec::new();
+    let mut pending = vec![pattern];
+    while let Some(pattern) = pending.pop() {
+        match &pattern.0 {
+            Pattern::Or(alternatives) => pending.extend(alternatives.iter().rev()),
+            _ => leaves.push(pattern.clone()),
         }
-        _ => vec![pattern.clone()],
     }
+    leaves
 }
 
 pub(super) fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
@@ -389,7 +388,7 @@ pub(super) fn collect_match_payload_predicates(
         Pattern::Wildcard
         | Pattern::Identifier(_)
         | Pattern::Literal(_)
-        | Pattern::Or(_, _)
+        | Pattern::Or(_)
         | Pattern::Regex { .. }
         | Pattern::RecordShorthand { .. } => Ok(Vec::new()),
     }
@@ -513,7 +512,7 @@ impl LowerCtx<'_> {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
             Pattern::Literal(_)
-            | Pattern::Or(_, _)
+            | Pattern::Or(_)
             | Pattern::Regex { .. }
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {
@@ -572,7 +571,7 @@ impl LowerCtx<'_> {
                 ..
             } => (format!("__destructure_{}", self.ids.binding().0), true),
             Pattern::Literal(_)
-            | Pattern::Or(_, _)
+            | Pattern::Or(_)
             | Pattern::Regex { .. }
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {

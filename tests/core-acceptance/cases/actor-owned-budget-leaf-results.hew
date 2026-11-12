@@ -84,7 +84,7 @@ fn main() -> i64 {
     stopped(number);
     let small_number = spawn NumberSmall;
     match small_number.format() {
-        .Err(.Trapped) => println("number limit"),
+        .Err(.Trapped(_)) => println("number limit"),
         _ => return 2,
     }
     stopped(small_number);
@@ -95,7 +95,7 @@ fn main() -> i64 {
     stopped(slice);
     let small_slice = spawn SliceSmall { text: "0123456789abcdef0123456789abcdef" };
     match small_slice.slice() {
-        .Err(.Trapped) => println("string slice limit"),
+        .Err(.Trapped(_)) => println("string slice limit"),
         _ => return 3,
     }
     stopped(small_slice);
@@ -106,7 +106,7 @@ fn main() -> i64 {
     stopped(optional);
     let small_optional = spawn OptionalSmall { text: "0123456789abcdef0123456789abcdef" };
     match small_optional.slice() {
-        .Err(.Trapped) => println("optional slice limit"),
+        .Err(.Trapped(_)) => println("optional slice limit"),
         _ => return 4,
     }
     stopped(small_optional);
@@ -117,7 +117,7 @@ fn main() -> i64 {
     stopped(decoder);
     let small_decoder = spawn DecodeSmall;
     match small_decoder.decode() {
-        .Err(.Trapped) => println("decode limit"),
+        .Err(.Trapped(_)) => println("decode limit"),
         _ => return 5,
     }
     stopped(small_decoder);

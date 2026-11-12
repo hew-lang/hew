@@ -3,6 +3,13 @@ actor Small {
     receive fn accept(values: Vec<i64>) -> i64 {
         values.len()
     }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind { .HeapExceeded => true, _ => false });
+        assert(match info.trap { .Some(.HeapExceeded) => true, _ => false });
+        assert(info.message == "HeapExceeded");
+        .GiveUp
+    }
 }
 
 fn main() -> i64 {
@@ -12,7 +19,14 @@ fn main() -> i64 {
     }
     let small = spawn Small;
     match small.accept(values) {
-        .Err(.Trapped) => println("admission limit"),
+        .Err(.Trapped(info)) => {
+            assert(match info.kind { .HeapExceeded => true, _ => false });
+            assert(match info.trap { .Some(.HeapExceeded) => true, _ => false });
+            assert(info.message == "HeapExceeded");
+            assert(match info.site { .None => true, _ => false });
+            assert(match info.trace { .None => true, _ => false });
+            println("admission limit");
+        }
         _ => return 2,
     }
     stopped(small);

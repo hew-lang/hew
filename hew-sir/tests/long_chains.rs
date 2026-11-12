@@ -1,4 +1,4 @@
-//! Flat postfix chains parse, check, lower to HIR and SIR, and verify on a
+//! Flat source chains parse, check, lower to HIR and SIR, and verify on a
 //! 1 MiB thread, including chains rewritten inside a machine transition.
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
@@ -198,5 +198,39 @@ fn a_machine_transition_rewrites_a_postfix_chain_on_a_small_stack() {
         fn f() -> i64 {{ 1 }}"#
         ),
         "f()",
+    );
+}
+
+#[test]
+fn a_long_sum_lowers_without_deep_recursion() {
+    let terms = " + x".repeat(3_000);
+    lowers_and_verifies_on(
+        SMALL_STACK,
+        &format!("fn f(x: i64) -> i64 {{ x{terms} }}"),
+        "f(1)",
+    );
+}
+
+#[test]
+fn a_long_conjunction_lowers_without_deep_recursion() {
+    // Each `&&` is its own short-circuit branch.
+    let terms = " && b".repeat(1_024);
+    lowers_and_verifies_on(
+        SMALL_STACK,
+        &format!("fn f(b: bool) -> bool {{ b{terms} }}"),
+        "f(true)",
+    );
+}
+
+#[test]
+fn a_long_or_pattern_lowers_without_deep_recursion() {
+    let alternatives = (0..2_000)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    lowers_and_verifies_on(
+        SMALL_STACK,
+        &format!("fn f(x: i64) -> i64 {{ match x {{ {alternatives} => 1, _ => 0 }} }}"),
+        "f(1_999)",
     );
 }

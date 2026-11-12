@@ -6,6 +6,20 @@ use super::{
 use std::ffi::CString;
 
 #[test]
+fn fallible_string_copy_preserves_unicode_and_empty_representation() {
+    assert!(super::string_try_from_str("").unwrap().is_null());
+    assert!(super::try_allocation_size(usize::MAX, true).is_none());
+    assert!(super::try_allocation_size(usize::MAX, false).is_none());
+    let value = super::string_try_from_str("é中🦊").unwrap();
+    // SAFETY: the fallible constructor returned one live owner.
+    unsafe {
+        assert_eq!(string_as_str(value), "é中🦊");
+        assert_eq!(string_scalar_len(value), 3);
+        string_release(value);
+    }
+}
+
+#[test]
 fn embedded_nul_round_trips_through_managed_string() {
     let value = string_from_str("a\0b");
 

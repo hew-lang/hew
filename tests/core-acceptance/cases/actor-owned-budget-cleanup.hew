@@ -28,7 +28,7 @@ fn main() -> i64 {
     }
     let holder = spawn Holder { ticket: Ticket { values: values } };
     match holder.replace() {
-        .Err(.Trapped) => println("cleanup limit"),
+        .Err(.Trapped(_)) => println("cleanup limit"),
         _ => return 2,
     }
     stopped(holder);

@@ -148,14 +148,16 @@ fn expr_contains_defer(expr: &Expr) -> bool {
 )]
 fn expr_contains_defer_inner(expr: &Expr) -> bool {
     match expr {
+        Expr::Binary { first, steps } => {
+            Expr::binary_operands(first, steps).any(|operand| expr_contains_defer(&operand.0))
+        }
         Expr::Coalesce { left, right } => {
             expr_contains_defer(&left.0) || expr_contains_defer(&right.0)
         }
         Expr::OptionalChain { receiver, body } => {
             expr_contains_defer(&receiver.0) || expr_contains_defer(&body.0)
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -401,9 +403,10 @@ fn mark_expr_inner(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut left.0, false);
             mark_expr(&mut right.0, is_tail_position);
         }
-        Expr::Binary { left, right, .. } => {
-            mark_expr(&mut left.0, false);
-            mark_expr(&mut right.0, false);
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands_mut(first, steps) {
+                mark_expr(&mut operand.0, false);
+            }
         }
         // `clone <operand>` wraps its operand's value, so no call inside the
         // operand is in tail position — same as the other unary forms.

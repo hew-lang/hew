@@ -71,10 +71,11 @@ unsafe fn complete<T>(out: *mut T, value: T, fault_out: *mut *mut c_void) -> i32
     0
 }
 
-/// Entry states.
-const EMPTY: u8 = 0;
-const OCCUPIED: u8 = 1;
-const TOMBSTONE: u8 = 2;
+/// Entry states, stored in each slot's first byte. Debug metadata names them,
+/// so a debugger selects occupied slots without knowing these values.
+pub const EMPTY: u8 = 0;
+pub const OCCUPIED: u8 = 1;
+pub const TOMBSTONE: u8 = 2;
 
 /// Load factor percentage threshold for resize (shared by the layout family).
 const LOAD_PCTG: usize = 75;
@@ -277,7 +278,11 @@ fn align_up(offset: usize, align: usize) -> Option<usize> {
 
 /// Compute `(key_offset, val_offset, stride, entries_align)` for a given key
 /// and value layout. Returns `None` on any overflow.
-fn compute_slot_layout(
+///
+/// The one slot layout: maps use it at construction and debug metadata uses it
+/// to describe each slot's members.
+#[must_use]
+pub fn compute_slot_layout(
     key_size: usize,
     key_align: usize,
     val_size: usize,

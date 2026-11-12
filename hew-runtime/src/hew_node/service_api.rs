@@ -247,6 +247,7 @@ pub unsafe extern "C" fn hew_service_acquire_new(
         dispatch: ptr::null(),
         msg_type: 0,
         reply_size: std::mem::size_of::<*mut c_void>(),
+        failure: None,
     }))
 }
 

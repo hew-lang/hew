@@ -106,6 +106,7 @@ pub fn compiler_record_layout_key(
         || !matches!(
             registration.shape,
             crate::builtin_type_classes::BuiltinTypeShape::Struct(_)
+                | crate::builtin_type_classes::BuiltinTypeShape::SourceStruct
         )
     {
         return None;

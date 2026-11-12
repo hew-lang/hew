@@ -125,12 +125,33 @@ pub(crate) fn run_module_pipeline(
         .map_err(|error| CodegenError::Llvm(format!("{pipeline} pass pipeline failed: {error}")))?;
     unsafe extern "C" {
         fn hewLLVMStabilizeDebugFrameLocations(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMHomeRampFrameAddresses(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMDescribeRampArguments(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMMarkCoroutineDestroyParts(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
-    // SAFETY: the shim only updates debug records and their pointer storage in
-    // this live module, after coroutine splitting has selected frame addresses.
-    unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
-    module.verify().map_err(|error| {
-        CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
+    // SAFETY: the shim replaces only the subprograms and debug locations of
+    // coroutine destroy parts in this live module.
+    unsafe { hewLLVMMarkCoroutineDestroyParts(module.as_mut_ptr()) };
+    // Only an unoptimized body keeps its frame addresses in memory, and the
+    // shim adds an alloca and a store per address a debug record reads.
+    // Optimized code is never changed by debug information (D2), so it keeps
+    // LLVM's own value locations.
+    if level == OptLevel::O0 {
+        // SAFETY: the shim only updates debug records and their pointer
+        // storage in this live module, after coroutine splitting has selected
+        // frame addresses.
+        unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
+        // SAFETY: as above; the shim adds one alloca and store per ramp frame
+        // address that a debug record reads.
+        unsafe { hewLLVMHomeRampFrameAddresses(module.as_mut_ptr()) };
+        // SAFETY: as above; the shim adds one record per ramp parameter home.
+        unsafe { hewLLVMDescribeRampArguments(module.as_mut_ptr()) };
+    }
+    crate::physical::verify_bounded(module).map_err(|error| match error {
+        CodegenError::LlvmVerify(message) => {
+            CodegenError::LlvmVerify(format!("module rejected after optimization: {message}"))
+        }
+        other => other,
     })
 }
 /// Link a freestanding `wasm32-unknown-unknown` object into a `.wasm` module.

@@ -386,9 +386,10 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     let invocation = a.checked_invocation.load(Ordering::Acquire);
     // Snapshot before driving the frame: completion clears and frees invocation
     // state before this activation reports its fault.
-    let (message_type, caller, request_deadline) = if invocation.is_null() {
+    let (message_type, link_target, caller, request_deadline) = if invocation.is_null() {
         (
             0,
+            None,
             crate::actor_caller::HewCallerStamp::default(),
             crate::request_deadline::RequestDeadline::default(),
         )
@@ -397,6 +398,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         let invocation = unsafe { &*invocation.cast::<crate::coro_state::HewCoroState>() };
         (
             invocation.execution().actor_message_type,
+            invocation.execution().actor_link_target,
             invocation.execution().actor_caller,
             invocation.execution().request_deadline,
         )
@@ -421,6 +423,8 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         caller,
         request_deadline,
         value_owner: std::ptr::null(),
+        actor_message_type: message_type,
+        actor_link_target: link_target,
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -868,7 +872,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     msgs_processed += 1;
                     continue;
                 }
-                let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
+                let observe_dispatch_ticket = crate::observe::observe_dispatch_begin(
+                    a.id,
+                    a.dispatch.map_or(0, |dispatch| dispatch as usize),
+                    msg_ref.msg_type,
+                );
                 // Check for injected crash fault (testing only).
                 if crate::deterministic::check_crash_fault(a.id) {
                     // Simulate a crash: use hew_actor_trap to trigger
@@ -943,6 +951,18 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 }
                 let (dispatch_data, dispatch_size) = (envelope.payload, envelope.payload_size);
 
+                let link_target = match dispatch {
+                    DispatchTarget::Sys(_, HewSysMsg::Exit)
+                        if !msg_ref.data.is_null()
+                            && msg_ref.data_size
+                                == std::mem::size_of::<crate::link::ExitMessage>() =>
+                    {
+                        // SAFETY: this typed system message owns the validated payload.
+                        Some(unsafe { (*msg_ref.data.cast::<crate::link::ExitMessage>()).target })
+                    }
+                    _ => None,
+                };
+
                 let mut execution_context = HewExecutionContext {
                     actor,
                     actor_id: a.id,
@@ -964,6 +984,8 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         crate::request_state::message_deadline(msg_ref.envelope)
                     },
                     value_owner: std::ptr::null(),
+                    actor_message_type: msg_ref.msg_type,
+                    actor_link_target: link_target,
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context
@@ -1158,20 +1180,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         let code =
                             unsafe { crate::actor_native::finish_dispatch_failure(actor, failure) };
                         set_last_error("actor dispatch failed");
-                        let link_target = match dispatch {
-                            DispatchTarget::Sys(_, HewSysMsg::Exit)
-                                if !msg_ref.data.is_null()
-                                    && msg_ref.data_size
-                                        == std::mem::size_of::<crate::link::ExitMessage>() =>
-                            {
-                                // SAFETY: the typed system lane owns this validated
-                                // EXIT payload until this activation frees its node.
-                                Some(unsafe {
-                                    (*msg_ref.data.cast::<crate::link::ExitMessage>()).target
-                                })
-                            }
-                            _ => None,
-                        };
                         crate::crash::record_logical_crash(
                             a.id,
                             code,
@@ -1193,8 +1201,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         if !reply_consumed && !crash_reply.is_null() {
                             // SAFETY: the message owns this live reply ref.
                             unsafe {
-                                crate::reply_channel::hew_reply_channel_publish_crash_fallback(
+                                crate::reply_channel::publish_crash_fallback_with_failure(
                                     crash_reply.cast(),
+                                    a.native_completion
+                                        .as_ref()
+                                        .and_then(|completion| completion.fault_snapshot()),
                                 );
                             }
                         }
@@ -1264,6 +1275,9 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                             (*invocation.cast::<crate::coro_state::HewCoroState>())
                                 .execution_mut()
                                 .actor_message_type = msg_ref.msg_type;
+                            (*invocation.cast::<crate::coro_state::HewCoroState>())
+                                .execution_mut()
+                                .actor_link_target = link_target;
                             (*invocation.cast::<crate::coro_state::HewCoroState>())
                                 .execution_mut()
                                 .actor_caller = msg_ref.caller;
@@ -1805,7 +1819,8 @@ unsafe fn finish_failed_resume(
             code,
             message_type,
             a.dispatch.map_or(0, |f| f as usize),
-            None,
+            // SAFETY: this context remains installed until teardown below.
+            unsafe { (*resume_context).actor_link_target },
         );
     }
 
@@ -1898,7 +1913,12 @@ unsafe fn finish_failed_resume(
         // Classified as a handler trap so the waiter's null reply is
         // status-bearing, never a bare null.
         unsafe {
-            crate::reply_channel::hew_reply_channel_publish_crash_fallback(crash_reply.cast());
+            crate::reply_channel::publish_crash_fallback_with_failure(
+                crash_reply.cast(),
+                a.native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.fault_snapshot()),
+            );
         }
     }
 

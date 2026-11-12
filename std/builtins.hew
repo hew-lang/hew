@@ -4,6 +4,8 @@
 //! types, machine interfaces, core traits, assertions, conversion, and program
 //! control functions. Focused operations also appear in their `std` modules.
 
+import std.failure.{CrashInfo};
+
 // ---------------------------------------------------------------------------
 // Actor references
 // ---------------------------------------------------------------------------
@@ -376,8 +378,8 @@ pub enum ActorError<E, Req> {
     Failed(E);
     /// An interceptor refused the delivery before the handler ran.
     Refused;
-    /// The handler faulted; its actor retains ownership of the fault.
-    Trapped;
+    /// The handler faulted; the result carries its owned diagnostic.
+    Trapped(CrashInfo);
     /// The destination actor is gone and will not come back.
     Dead;
     /// The caller's deadline elapsed before a reply arrived.
@@ -406,7 +408,7 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
             ActorError.Rejected(failure) => f"Rejected: {failure.reason}",
             ActorError.Failed(e) => f"Failed: {e}",
             ActorError.Refused => "Refused: an interceptor declined the delivery",
-            ActorError.Trapped => "Trapped: the handler faulted before replying",
+            ActorError.Trapped(_) => "Trapped: the handler faulted before replying",
             ActorError.Dead => "Dead: the destination actor is gone and will not come back",
             ActorError.TimedOut => "TimedOut: the deadline elapsed before a reply arrived",
             ActorError.NodeNotRunning => "NodeNotRunning: the local node is not running or is shutting down",

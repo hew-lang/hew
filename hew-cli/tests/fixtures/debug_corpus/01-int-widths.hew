@@ -1,0 +1,18 @@
+// Integer widths, casts and arithmetic.
+fn main() {
+    let a: i8 = 100;
+    let b: u8 = 200;
+    let c: i16 = -30000;
+    let d: u16 = 60000;
+    let e: i32 = 2000000000;
+    let f: u32 = 4000000000;
+    let g: i64 = 9000000000000000000;
+    let h: u64 = 18000000000000000000;
+    println(a as i64 + b as i64);
+    println(c as i64 + d as i64);
+    println(e as i64 + f as i64);
+    println(g / 1000);
+    println(h / 1000);
+    let w: i64 = (b as i64) * 3 - (a as i64);
+    println(w);
+}

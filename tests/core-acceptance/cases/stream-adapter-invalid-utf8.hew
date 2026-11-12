@@ -13,7 +13,7 @@ actor Reader {
 fn main() -> i64 {
     let reader = spawn Reader;
     match reader.read() {
-        .Err(.Trapped) => println("invalid UTF-8 trapped"),
+        .Err(.Trapped(_)) => println("invalid UTF-8 trapped"),
         _ => return 2,
     }
     stopped(reader);

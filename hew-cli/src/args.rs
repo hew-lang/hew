@@ -54,7 +54,7 @@ pub enum Command {
     Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
-    /// Build with debug info and launch under gdb/lldb.
+    /// Debug a program or attach to a running process.
     Debug(DebugArgs),
     /// Parse and typecheck only.
     Check(CheckArgs),
@@ -103,13 +103,15 @@ pub enum Command {
     /// Print shell completion script.
     Completions(CompletionsArgs),
     /// Print version info.
-    Version,
+    Version(VersionArgs),
     /// Print resolved package-manager environment (`HEW_HOME`,
     /// `HEW_REGISTRY`, `HEW_CC`), naming which are set and which fall back
     /// to their default.
     Env,
     /// Inspect running actors, messages and crashes in the terminal.
     Observe(ObserveArgs),
+    /// Name the function and source line of addresses in a built binary.
+    Symbolize(crate::symbolize::SymbolizeArgs),
     /// Serve the Language Server Protocol over stdin/stdout.
     Lsp(LspArgs),
     #[command(flatten)]
@@ -166,6 +168,15 @@ pub struct CompileArgs {
     /// Diagnostic output format: `text` (default) or `json`.
     #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
     pub format: DiagnosticFormat,
+}
+
+/// `hew version` / `hew --version`.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub struct VersionArgs {
+    /// Also print the build identity (ELF build-id, Mach-O UUID or PDB
+    /// GUID) that matches this binary to its shipped debug symbols.
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -462,22 +473,34 @@ impl RunArgs {
 
 #[derive(Debug, Args)]
 pub struct DebugArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file, unless attaching to a running process.
+    #[arg(required_unless_present = "attach", conflicts_with = "attach")]
+    pub input: Option<PathBuf>,
+    /// Attach a native debugger to an existing process.
+    #[arg(long, value_name = "PID", value_parser = clap::value_parser!(u32).range(1..))]
+    pub attach: Option<u32>,
     /// Accepted for compatibility (debug info is always enabled).
-    #[arg(long, short = 'g', hide = true)]
+    #[arg(long, short = 'g', hide = true, conflicts_with = "attach")]
     pub debug: bool,
     /// Pass an extra library or linker argument to the native link step.
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
-    #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
+    #[arg(
+        long = "link-lib",
+        value_name = "PATH",
+        allow_hyphen_values = true,
+        conflicts_with = "attach"
+    )]
     pub link_libs: Vec<String>,
     /// Target triple.
-    #[arg(long, value_name = "TRIPLE")]
+    #[arg(long, value_name = "TRIPLE", conflicts_with = "attach")]
     pub target: Option<String>,
+    /// Build a persistent executable and print an editor launch configuration as JSON.
+    #[arg(long, conflicts_with = "attach")]
+    pub print_config: bool,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Arguments to pass to the debugger/program (after --).
-    #[arg(last = true)]
+    #[arg(last = true, conflicts_with = "attach")]
     pub program_args: Vec<String>,
 }
 
@@ -595,26 +618,34 @@ pub struct BuildArgs {
     #[arg(long, short = 'r')]
     pub release: bool,
     /// Remove checkout prefixes from diagnostics and compiled source paths.
-    /// Enabled by default with --release.
+    /// Enabled by default with --release, unless -g is also given.
     #[arg(long, conflicts_with = "no_trim_paths")]
     pub trim_paths: bool,
     /// Retain original source paths, including in release builds.
     #[arg(long, conflicts_with = "trim_paths")]
     pub no_trim_paths: bool,
+    /// Rewrite source paths under FROM to start with TO instead, in debug
+    /// info and diagnostics. Repeatable; the longest matching FROM wins.
+    #[arg(long = "remap-path-prefix", value_name = "FROM=TO", value_parser = parse_path_remap)]
+    pub remap_path_prefix: Vec<PathRemap>,
     /// Build with debug info (no optimization, no stripping).
     ///
-    /// Emits DWARF debug info into the native object. gdb and lldb read this
-    /// faithfully on Linux (ELF), macOS, and FreeBSD. On `windows-msvc` the
-    /// output is COFF with `CodeView` plus a sidecar `.pdb`; `windows-gnu`
-    /// remains the PE/COFF GNU-target path with embedded DWARF, which no
-    /// debugger check currently proves (the live-debugger suite is excluded
-    /// on Windows and the PDB check covers only `windows-msvc`).
+    /// Linux and FreeBSD: DWARF in the ELF binary, found by its build-id.
+    /// macOS: DWARF gathered into `<out>.dSYM` beside the binary. Windows
+    /// (`windows-msvc`): `CodeView` in `<out>.pdb` beside the `.exe`, read
+    /// by cdb and `WinDbg`. Debugging on `windows-gnu` is not verified and
+    /// is unsupported. Source paths in the debug info are absolute unless
+    /// `--trim-paths` or `--remap-path-prefix` rewrites them.
     ///
     /// Rendering an enum local needs lldb 18 or newer, which is where lldb
     /// learned to read `DW_TAG_variant_part`; an older lldb prints the enum as
     /// an empty struct. gdb reads it at every version this project tests.
     #[arg(long, short = 'g')]
     pub debug: bool,
+    /// Move an ELF binary's debug info into `<out>.debug`, linked back by
+    /// `.gnu_debuglink` and the build-id, leaving a binary without DWARF.
+    #[arg(long = "split-debug", requires = "debug")]
+    pub split_debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or
     /// `2` (the `default<O2>` release pipeline). Independent of `-g`: `-g`
     /// remains O0 unless `--opt-level 2` is also passed (which produces
@@ -649,6 +680,54 @@ impl BuildArgs {
             ..self.common.base_compile_options()
         }
     }
+
+    /// Release builds trim checkout prefixes by default; a debug build keeps
+    /// absolute paths so a debugger finds the sources from any directory.
+    pub fn trims_paths(&self) -> bool {
+        self.trim_paths || (self.release && !self.debug && !self.no_trim_paths)
+    }
+
+    /// The source-path presentation this build compiles and reports with:
+    /// the trimmed prefixes, then each `--remap-path-prefix` on top.
+    ///
+    /// The image's file table always records trimmed paths, so a debug and
+    /// a release build lay out the same read-only data.
+    pub fn source_path_policy(&self) -> hew_compile::SourcePathPolicy {
+        let policy = |trim| {
+            let mut policy = crate::source_paths::build_policy(
+                self.input.as_deref(),
+                self.common.project_dir.as_deref(),
+                trim,
+            );
+            for remap in &self.remap_path_prefix {
+                policy.insert(&remap.from, &remap.to);
+            }
+            policy
+        };
+        if self.trims_paths() {
+            policy(true)
+        } else {
+            policy(false).with_table(policy(true))
+        }
+    }
+}
+
+/// One `--remap-path-prefix FROM=TO` rule.
+#[derive(Debug, Clone)]
+pub struct PathRemap {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+fn parse_path_remap(value: &str) -> Result<PathRemap, String> {
+    let (from, to) = value.split_once('=').ok_or("expected FROM=TO")?;
+    if from.is_empty() {
+        return Err("--remap-path-prefix requires a FROM path".into());
+    }
+    Ok(PathRemap {
+        from: PathBuf::from(from),
+        to: PathBuf::from(to),
+    })
 }
 
 // ---------------------------------------------------------------------------

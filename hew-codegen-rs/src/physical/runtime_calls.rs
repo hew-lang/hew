@@ -1258,34 +1258,54 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.concat.owned",
                 )?;
             }
-            RuntimeCallFamily::StringAppend | RuntimeCallFamily::StringPush => {
+            RuntimeCallFamily::StringAppend
+            | RuntimeCallFamily::StringPush
+            | RuntimeCallFamily::StringAppendI64
+            | RuntimeCallFamily::StringAppendU64
+            | RuntimeCallFamily::StringAppendF64
+            | RuntimeCallFamily::StringAppendBool
+            | RuntimeCallFamily::StringAppendLiteral => {
                 let receiver = source(0)?;
                 let value = self.load(receiver, "string.updated.receiver")?;
-                let extra = self.load(source(1)?, "string.append.input")?;
+                let mut inputs = vec![value];
+                for index in 1..transfers.len() {
+                    inputs.push(self.load(source(index)?, "string.append.input")?);
+                }
                 let status = self
                     .value_emitter()
                     .entry_scratch(self.ctx.i32_type().into(), "string.growth.status")?;
                 self.builder
                     .build_store(status, self.ctx.i32_type().const_zero())
                     .llvm_ctx("initialize string growth status")?;
-                let symbol = if action.family == RuntimeCallFamily::StringAppend {
-                    "hew_string_append_checked"
-                } else {
-                    "hew_string_push_checked"
+                let symbol = match action.family {
+                    RuntimeCallFamily::StringAppend => "hew_string_append_checked",
+                    RuntimeCallFamily::StringPush => "hew_string_push_checked",
+                    family => family.c_symbol(),
                 };
-                let function = get_or_declare_external(
+                let mut parameters = inputs
+                    .iter()
+                    .map(|input| input.get_type().into())
+                    .collect::<Vec<BasicMetadataTypeEnum<'ctx>>>();
+                parameters.push(ptr.into());
+                // A Hew `bool` reaches the runtime as a zero-extended byte.
+                let widen: &[(u32, Widen)] = if action.family == RuntimeCallFamily::StringAppendBool
+                {
+                    &[(1, Widen::Zero)]
+                } else {
+                    &[]
+                };
+                let function = get_or_declare_external_widened(
                     self.llvm,
                     symbol,
-                    ptr.fn_type(
-                        &[value.get_type().into(), extra.get_type().into(), ptr.into()],
-                        false,
-                    ),
+                    ptr.fn_type(&parameters, false),
+                    widen,
                 )?;
-                let updated = self.runtime_call_value(
-                    function,
-                    &[value.into(), extra.into(), status.into()],
-                    "string.updated",
-                )?;
+                let mut arguments = inputs
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<BasicMetadataValueEnum<'ctx>>>();
+                arguments.push(status.into());
+                let updated = self.runtime_call_value(function, &arguments, "string.updated")?;
                 let status = self
                     .builder
                     .build_load(self.ctx.i32_type(), status, "string.growth.status")

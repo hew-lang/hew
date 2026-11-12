@@ -1,0 +1,57 @@
+fn ready(value: bool) -> bool { value }
+
+fn delayed(tag: string, value: bool) -> bool {
+    println(tag);
+    scope {
+        let task = fork ready(value);
+        await task
+    }
+}
+
+fn fail() -> string { panic("right operand"); }
+
+const SAFE: bool = true || (1 / 0 == 0) || false;
+
+#[max_heap(8192)]
+actor Worker {
+    receive fn check() -> i64 {
+        var completed = 0;
+        for _ in 0..64 {
+            let failed = scope {
+                let _ = "prefix".repeat(80) + "middle" + fail() + "unreachable";
+                false
+            } handle failure {
+                match failure {
+                    .Fault { message } => message == "right operand",
+                    _ => false,
+                }
+            };
+            if failed { completed += 1; }
+        }
+        completed
+    }
+}
+
+fn main() {
+    let all = delayed("a1", true) && delayed("a2", false) && delayed("skipped", true);
+    let any = delayed("o1", false) || delayed("o2", true) || delayed("skipped", false);
+    assert(!all && any);
+    assert(SAFE);
+    // The final value would fit: the intermediate i8 prefix still overflows.
+    let prefix = scope {
+        let value: i8 = 127 + 1 - 1;
+        value
+    } handle failure { -1 };
+    assert(prefix == -1);
+    let narrow: i8 = 120;
+    let wide: i64 = 1;
+    assert(narrow + 1 + wide + 1000 == 1122);
+    let owner = "alias".to_upper();
+    let alias = owner;
+    assert(owner + "one" + owner + "two" == "ALIASoneALIAStwo");
+    assert(alias == "ALIAS");
+    let worker = spawn Worker;
+    assert(worker.check().expect("worker survived recovered operand failures") == 64);
+    stop(worker);
+    stopped(worker);
+}

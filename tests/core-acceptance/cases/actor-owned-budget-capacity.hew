@@ -49,7 +49,7 @@ fn main() -> i64 {
         .Err(_) => return 2,
     }
     match buffer.grow_fifth() {
-        .Err(.Trapped) => println("limit"),
+        .Err(.Trapped(_)) => println("limit"),
         _ => return 3,
     }
     stopped(buffer);

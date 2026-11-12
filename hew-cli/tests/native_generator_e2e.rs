@@ -34,9 +34,13 @@ fn run_generator(source: &str, expected: &str, status: i32, diagnostic: &str) {
             "{}",
             describe_output(&output)
         );
+        let expected_diagnostic = diagnostic.replace(
+            "./generators.hew",
+            &format!(".{}generators.hew", std::path::MAIN_SEPARATOR),
+        );
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            diagnostic,
+            expected_diagnostic,
             "{}",
             describe_output(&output)
         );
@@ -83,6 +87,9 @@ fn replacement_failure_drains_incoming_owner_and_preserves_first_fault() {
         include_str!("../../tests/core-acceptance/cases/generator-replacement-fault.hew"),
         "primary\nsecondary\nprimary cleaned\nsecondary cleaned\n",
         1,
-        "hew: failure: UserPanic (212): primary\nhew: secondary failure: UserPanic (212): secondary\n",
+        concat!(
+            "hew: failure: UserPanic (212) at ./generators.hew:8:9: primary\n",
+            "hew: secondary failure: UserPanic (212) at ./generators.hew:8:9: secondary\n",
+        ),
     );
 }

@@ -532,15 +532,26 @@ struct GeneralizationUses<'a> {
 impl super::lints::NodeVisitor for GeneralizationUses<'_> {
     fn visit_expr(&mut self, expression: &super::Expr, span: &Span) {
         use hew_parser::ast::{BinaryOp, Expr, UnaryOp};
-        let operands: Vec<&super::Spanned<Expr>> = match expression {
-            Expr::Binary { left, op, right }
-                if !matches!(
-                    op,
+        if let Expr::Binary { first, steps } = expression {
+            // Each step is one operation; report them outermost first, as
+            // the nested form visited them.
+            for (index, step) in steps.iter().enumerate().rev() {
+                if matches!(
+                    step.op,
                     BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::And | BinaryOp::Or
-                ) =>
-            {
-                vec![left, right]
+                ) {
+                    continue;
+                }
+                let left = index
+                    .checked_sub(1)
+                    .map_or(&first.1, |previous| &steps[previous].span);
+                if self.any_ambiguous([left, &step.right.1]) {
+                    self.ambiguous.push(step.span.clone());
+                }
             }
+            return;
+        }
+        let operands: Vec<&super::Spanned<Expr>> = match expression {
             Expr::Unary {
                 op: UnaryOp::Negate | UnaryOp::BitNot,
                 operand,
@@ -549,21 +560,24 @@ impl super::lints::NodeVisitor for GeneralizationUses<'_> {
             Expr::Is { lhs, rhs } => vec![lhs, rhs],
             _ => Vec::new(),
         };
-        if operands.iter().any(|operand| {
+        if self.any_ambiguous(operands.iter().map(|operand| &operand.1)) {
+            self.ambiguous.push(span.clone());
+        }
+    }
+}
+
+impl GeneralizationUses<'_> {
+    fn any_ambiguous<'a>(&self, spans: impl IntoIterator<Item = &'a Span>) -> bool {
+        spans.into_iter().any(|span| {
             self.checker
                 .expr_types
-                .get(&SpanKey::in_module(
-                    &operand.1,
-                    self.checker.current_module_idx,
-                ))
+                .get(&SpanKey::in_module(span, self.checker.current_module_idx))
                 .is_some_and(|ty| {
                     let ty = self.checker.subst.resolve(ty);
                     self.variables
                         .iter()
                         .any(|variable| ty.contains_var(*variable))
                 })
-        }) {
-            self.ambiguous.push(span.clone());
-        }
+        })
     }
 }

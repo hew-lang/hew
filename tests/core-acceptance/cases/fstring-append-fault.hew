@@ -1,0 +1,128 @@
+import std.stream;
+
+type Bomb {
+}
+
+impl Display for Bomb {
+    fn fmt(self) -> string {
+        panic("boom");
+    }
+}
+
+// The shared first segment must not copy or reserve growth before Display
+// runs. Its 24 bytes and the actor state seat fit; a speculative copy would not.
+#[max_heap(40)]
+actor First {
+    let prefix: string;
+    receive fn fail() -> string {
+        f"{prefix}{Bomb {}}"
+    }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        .Restart
+    }
+}
+
+#[max_heap(64)]
+actor Growth {
+    let prefix: string;
+    receive fn fail() -> string {
+        f"{prefix}:more"
+    }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        .Restart
+    }
+}
+
+actor Recoverable {
+    receive fn fail() -> string {
+        f"live={17}:{Bomb {}}"
+    }
+    receive fn fresh() -> string {
+        f"fresh={23}"
+    }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        .Restart
+    }
+}
+
+supervisor Group {
+    intensity: 5 within 60s;
+    child first: First { prefix: "x".repeat(24) };
+    child growth: Growth { prefix: "y".repeat(32) };
+    child worker: Recoverable;
+}
+
+fn waiting(gate: Stream<i64>) -> i64 {
+    gate.recv().expect("gate")
+}
+
+fn release(gate: Sink<i64>) {
+    gate.send(31).expect("release");
+}
+
+fn signalled(consume ready: Sink<i64>, consume input: Stream<i64>) -> i64 {
+    ready.send(1).expect("ready");
+    ready.close();
+    input.recv().expect("released")
+}
+
+fn blocked(consume ready: Sink<i64>, consume input: Stream<i64>) -> string {
+    defer err {
+        println("interpolation cancelled");
+    }
+    f"live={17}:{signalled(ready, input)}"
+}
+
+fn cancel_interpolation() {
+    let (ready, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ready pipe");
+    let (release, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("release pipe");
+    let cancelled = scope {
+        let _child = fork blocked(ready, input);
+        started.recv().expect("child is awaiting with a live accumulator");
+        panic("cancel interpolation");
+    } handle _ { true };
+    assert(cancelled);
+    started.close();
+    release.close();
+}
+
+fn main() {
+    let group = spawn Group;
+    match group.first.fail() {
+        .Err(.Trapped(info)) => {
+            assert(match info.trap {
+                .Some(.UserPanic) => true,
+                _ => false,
+            });
+            assert(info.message == "boom");
+        }
+        _ => panic("expected Display panic"),
+    }
+    restarted(group.first);
+    match group.growth.fail() {
+        .Err(.Trapped(info)) => assert(match info.trap {
+            .Some(.HeapExceeded) => true,
+            _ => false,
+        }),
+        _ => panic("expected checked growth refusal"),
+    }
+    restarted(group.growth);
+    match group.worker.fail() {
+        .Err(.Trapped(info)) => assert(info.message == "boom"),
+        _ => panic("expected owned interpolation failure"),
+    }
+    restarted(group.worker);
+    assert(group.worker.fresh().expect("replacement") == "fresh=23");
+    stop(group);
+    stopped(group);
+    let (sender, receiver): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    let pending = fork waiting(receiver);
+    let writer = fork release(sender);
+    assert(f"pending={await pending}:done" == "pending=31:done");
+    await writer;
+    cancel_interpolation();
+    println("interpolation recovered");
+}

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { staticOperations } from "../dist/interpreter/v1/package.js";
 import { runBytecode } from "../dist/interpreter/index.js";
 
 // Independently stored compiler output exercises the full loader, not a
@@ -64,7 +65,7 @@ test("invalid references, edge arguments and manifests fail before the first ste
     },
     (pkg) => {
       const op = pkg.functions[0].blocks
-        .flatMap((block) => block.ops)
+        .flatMap((block) => [...staticOperations(block)])
         .find((op) => op.op === "const.str");
       op.str = pkg.strings.length;
     },
@@ -152,6 +153,7 @@ test("actor heap limits reject before execution when accounting is unavailable",
     ),
   );
   counter.actors[0].max_heap_bytes = "1024";
+  delete counter.actors[0].state_type;
   const trace = await runBytecode(counter);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(
@@ -206,4 +208,32 @@ test("unknown actor and supervisor policies reject before execution", async () =
   );
   counter.actors[0].coalesce.fallback = "invent_fallback";
   await rejected(counter);
+});
+
+test("managed aggregate shape identities and field arity validate before execution", async () => {
+  const baseline = structuredClone(original);
+  const shape = baseline.aggregates.length;
+  baseline.aggregates.push({ id: shape, name: "ManagedRecord", fields: [] });
+  baseline.managed_types ??= [];
+  const type = baseline.managed_types.length;
+  baseline.managed_types.push({
+    id: type,
+    slot_bytes: "0",
+    kind: "aggregate",
+    fields: [],
+    shape,
+  });
+  assert.equal((await runBytecode(baseline)).result, "ok");
+  const missing = structuredClone(baseline);
+  missing.managed_types[type].shape = shape + 1;
+  await rejected(missing);
+  const wrongArity = structuredClone(baseline);
+  wrongArity.aggregates[shape].fields.push("i64");
+  await rejected(wrongArity);
+  delete wrongArity.managed_types[type].shape;
+  assert.equal(
+    (await runBytecode(wrongArity)).result,
+    "ok",
+    "older managed descriptors can omit aggregate identities",
+  );
 });

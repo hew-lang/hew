@@ -239,7 +239,9 @@ fn pattern_introduces_binding(pat: &Pattern) -> bool {
         Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(struct_field_introduces_binding)
         }
-        Pattern::Or(a, b) => pattern_introduces_binding(&a.0) || pattern_introduces_binding(&b.0),
+        Pattern::Or(alternatives) => alternatives
+            .iter()
+            .any(|alternative| pattern_introduces_binding(&alternative.0)),
         // Regex captures are named bindings.
         Pattern::Regex { captures, .. } => !captures.is_empty(),
     }

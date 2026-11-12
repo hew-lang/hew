@@ -300,6 +300,10 @@ pub struct HewExecutionContext {
     /// Borrowed explicit account during typed release. A null pointer leaves
     /// dispatch lookup active; a pointer to `None` is explicitly unbounded.
     pub value_owner: *const Option<crate::owned_value_budget::ValueOwner>,
+    /// Message identity of this actor turn, including after suspension.
+    pub actor_message_type: i32,
+    /// Linked peer whose exit is being delivered in this turn, if any.
+    pub actor_link_target: Option<crate::monitor::HewNotificationTarget>,
 }
 
 thread_local! {

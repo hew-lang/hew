@@ -354,6 +354,7 @@ pub(super) fn send_rejection_reply(
         conn_mgr,
         shutdown_started,
         crate::envelope::EnvelopeMessage::Rejected,
+        None,
     );
 }
 
@@ -374,9 +375,35 @@ pub(super) fn send_refusal_reply(
         conn_mgr,
         shutdown_started,
         crate::envelope::EnvelopeMessage::NotAdmitted,
+        None,
     );
 }
 
+/// Report an accepted handler trap with its immutable, wire-safe diagnostic.
+pub(super) fn send_trap_reply(
+    target_node_id: u16,
+    request_id: u64,
+    publication: u64,
+    failure: Option<&crate::failure_snapshot::FailureSnapshot>,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+) {
+    send_failure_reply(
+        target_node_id,
+        request_id,
+        publication,
+        AskError::HandlerTrapped,
+        conn_mgr,
+        shutdown_started,
+        crate::envelope::EnvelopeMessage::Rejected,
+        failure,
+    );
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a reply carries its routing, status and optional diagnostic"
+)]
 fn send_failure_reply(
     target_node_id: u16,
     request_id: u64,
@@ -385,6 +412,7 @@ fn send_failure_reply(
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
     message: crate::envelope::EnvelopeMessage,
+    failure: Option<&crate::failure_snapshot::FailureSnapshot>,
 ) {
     if conn_mgr.is_null() {
         return;
@@ -405,8 +433,13 @@ fn send_failure_reply(
             return;
         };
 
-        let reason_payload = [AskRejectionReasonCode::encode(reason)
+        let mut reason_payload = vec![AskRejectionReasonCode::encode(reason)
             .expect("remote ask rejection reason must use a supported rejection-reason code")];
+        if let Some(encoded) =
+            failure.and_then(crate::failure_snapshot::FailureSnapshot::encode_wire)
+        {
+            reason_payload.extend_from_slice(&encoded);
+        }
         // Encode the rejection envelope: request_id identifies the pending ask;
         // explicit rejection status distinguishes it from a successful reply.
         // SAFETY: `reason_payload` is a stack byte array valid for its length.

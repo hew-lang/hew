@@ -4,17 +4,22 @@
 //! from SIR ([`hew_mir::physical::PhysicalDebug`]). This module decides only
 //! how those facts are spelled as LLVM debug metadata.
 
-use super::{coro, CodegenResult, LlvmResultExt, StorageId};
-use std::cell::RefCell;
-use std::collections::HashMap;
+#[path = "physical_debug/types.rs"]
+mod types;
+
+use super::StorageId;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use hew_mir::physical::debug_names::DisplayName;
+use hew_mir::physical::CallableId;
 use hew_mir::physical::SemDebugScope;
 use hew_mir::physical::{
-    PhysicalDebug, PhysicalDebugField, PhysicalDebugFunction, PhysicalDebugLocal,
+    PhysicalCallable, PhysicalDebug, PhysicalDebugField, PhysicalDebugFunction, PhysicalDebugLocal,
     PhysicalDebugVariant, PhysicalTarget,
 };
-use hew_mir::{PhysicalFunction, PhysicalLayout, PhysicalRepr};
+use hew_mir::{PhysicalFunction, PhysicalLayout};
 use hew_types::ResolvedTy;
 use inkwell::context::Context;
 use inkwell::debug_info::{
@@ -23,18 +28,13 @@ use inkwell::debug_info::{
     DebugInfoBuilder,
 };
 use inkwell::module::{FlagBehavior, Module};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use inkwell::AddressSpace;
-
-const DW_ATE_BOOLEAN: u32 = 0x02;
-const DW_ATE_FLOAT: u32 = 0x04;
-const DW_ATE_SIGNED: u32 = 0x05;
-const DW_ATE_UNSIGNED: u32 = 0x07;
-const DW_ATE_UNSIGNED_CHAR: u32 = 0x08;
+use inkwell::values::{AsValueRef, FunctionValue, PointerValue};
 
 /// The source text a `-g` build attributes its metadata to.
 #[derive(Debug, Clone, Copy)]
 pub struct DebugSource<'a> {
+    /// The source path as it should appear in debug information, after any
+    /// caller-selected path remapping.
     pub path: &'a Path,
     pub text: &'a str,
 }
@@ -86,19 +86,23 @@ impl LineIndex {
 
 /// Per-module debug metadata state.
 pub(super) struct DebugEmitter<'ctx> {
-    ctx: &'ctx Context,
     builder: DebugInfoBuilder<'ctx>,
     file: DIFile<'ctx>,
     lines: LineIndex,
-    /// Whether this target's debug records are CodeView rather than DWARF.
-    codeview: bool,
     /// Root-unit lexical blocks, in HIR scope order.
     scopes: Vec<SemDebugScope>,
     /// Source field names of each concrete record, in declaration order.
     records: HashMap<ResolvedTy, Vec<PhysicalDebugField>>,
     /// Source variant names of each concrete enum, in tag order.
     enums: HashMap<ResolvedTy, Vec<PhysicalDebugVariant>>,
-    types: RefCell<HashMap<String, DIType<'ctx>>>,
+    /// The description of each storage type, built once per type.
+    types: RefCell<BTreeMap<ResolvedTy, DIType<'ctx>>>,
+    /// Composites created so far, numbering their unique identifiers.
+    composites: Cell<u64>,
+    /// Display name of every callable, from the display-name authority.
+    names: BTreeMap<CallableId, DisplayName>,
+    /// The module is compiled with optimization, so locations may be partial.
+    optimized: bool,
     _unit: DICompileUnit<'ctx>,
 }
 
@@ -109,48 +113,51 @@ pub(super) struct FunctionDebug<'ctx> {
     /// `(start, end, scope)` sorted innermost-first, so the first containing
     /// entry is the tightest scope around a byte.
     ranges: Vec<(u32, u32, u32)>,
-    locals: HashMap<StorageId, LocalValue<'ctx>>,
+    /// Locals of a resumable body, which a debugger sees only while their
+    /// slot holds a value; see [`DebugEmitter::bind_local`].
+    locals: RefCell<HashMap<StorageId, LocalSlot<'ctx>>>,
 }
 
-struct LocalValue<'ctx> {
+/// A source local whose location is a value range over its slot.
+struct LocalSlot<'ctx> {
     variable: DILocalVariable<'ctx>,
     location: DILocation<'ctx>,
-    anchor: PointerValue<'ctx>,
+    slot: PointerValue<'ctx>,
 }
 
 impl<'ctx> DebugEmitter<'ctx> {
     /// Create the compile unit and the module flags the backend needs.
+    ///
+    /// The unit names the source by its file name in its canonical absolute
+    /// directory, so a debugger started anywhere finds the text, and records
+    /// the text's MD5 so it can tell a stale copy from the one compiled.
     pub(super) fn new(
         ctx: &'ctx Context,
         llvm: &Module<'ctx>,
         triple: &str,
         source: DebugSource<'_>,
         debug: &PhysicalDebug,
+        optimized: bool,
     ) -> Self {
         let file_name = source.path.file_name().map_or_else(
             || "module.hew".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let directory = source
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map_or_else(
-                || ".".to_owned(),
-                |parent| parent.to_string_lossy().into_owned(),
-            );
+        let directory = source_directory(source.path);
         let (builder, unit) = llvm.create_debug_info_builder(
-            /* allow_unresolved */ true,
-            // Hew's algebraic enums use Rust's `DW_TAG_variant_part` shape and
-            // lldb only enables its active-variant renderer for a Rust compile
-            // unit. WHEN OBSOLETE: a registered `DW_LANG_Hew` that lldb and gdb
-            // recognize. WHAT THE REAL FIX IS: upstream that language code plus
-            // a Hew-aware formatter, then name it here.
-            DWARFSourceLanguage::Rust,
+            // Every type is complete when it is created; nothing is left for
+            // `finalize` to resolve.
+            /* allow_unresolved */
+            false,
+            // Hew has no registered DWARF language code. Every type here is a
+            // C shape (typedefs, tagged structs, unions, enumerations), so a C
+            // unit gives gdb, lldb and the Windows debuggers their full C
+            // expression evaluator and renders those shapes without a plugin.
+            DWARFSourceLanguage::C11,
             &file_name,
             &directory,
             concat!("hew ", env!("CARGO_PKG_VERSION")),
-            /* is_optimized */ false,
+            optimized,
             /* compiler flags */ "",
             /* runtime_ver */ 0,
             /* split_name */ "",
@@ -170,26 +177,31 @@ impl<'ctx> DebugEmitter<'ctx> {
         );
         // MSVC-environment targets need this flag for the backend to write
         // CodeView records (`.debug$S`/`.debug$T`) that the linker turns into a
-        // PDB.
+        // PDB. Every other target writes DWARF 5, whose line table carries the
+        // source checksum and column.
         let codeview = triple.contains("windows-msvc") || triple.ends_with("-msvc");
-        if codeview {
-            llvm.add_basic_value_flag(
-                "CodeView",
-                FlagBehavior::Warning,
-                ctx.i32_type().const_int(1, false),
-            );
-        }
-        let file = unit.get_file();
+        let (format, version) = if codeview {
+            ("CodeView", 1)
+        } else {
+            ("Dwarf Version", 5)
+        };
+        llvm.add_basic_value_flag(
+            format,
+            FlagBehavior::Warning,
+            ctx.i32_type().const_int(version, false),
+        );
+        let file = checksummed_file(&builder, unit, &file_name, &directory, source.text);
         Self {
-            ctx,
             builder,
             file,
             lines: LineIndex::new(source.text),
-            codeview,
             scopes: debug.scopes.clone(),
             records: debug.records.clone().into_iter().collect(),
             enums: debug.enums.clone().into_iter().collect(),
-            types: RefCell::new(HashMap::new()),
+            types: RefCell::new(BTreeMap::new()),
+            composites: Cell::new(0),
+            names: debug.names.clone(),
+            optimized,
             _unit: unit,
         }
     }
@@ -200,38 +212,110 @@ impl<'ctx> DebugEmitter<'ctx> {
     }
 
     /// Create the subprogram for one body and its lexical block tree.
+    ///
+    /// The subprogram carries the callable's display name and no linkage
+    /// name: lldb indexes a subprogram that has one by that name alone, and a
+    /// Hew symbol does not demangle to the name a person types. The
+    /// subroutine type lists the source parameters and result, so a debugger
+    /// can print a call's arguments.
     pub(super) fn function(
         &self,
         value: FunctionValue<'ctx>,
-        symbol: &str,
+        callable: &PhysicalCallable,
         attribution: &PhysicalDebugFunction,
+        target: &PhysicalTarget,
     ) -> FunctionDebug<'ctx> {
-        let line = self.lines.line(attribution.decl);
-        let subroutine = self
-            .builder
-            .create_subroutine_type(self.file, None, &[], DIFlags::ZERO);
+        let display = self.names.get(&callable.id);
+        let artificial = display.is_none_or(|name| name.artificial);
+        let line = if artificial {
+            0
+        } else {
+            self.lines.line(attribution.decl)
+        };
+        let params: Vec<DIType<'ctx>> = callable
+            .params
+            .iter()
+            .filter_map(|param| self.resolve_type(&param.ty, &param.layout, target))
+            .collect();
+        // No result type: a Hew body returns its fault status in the return
+        // register and its value through an out pointer, so a declared result
+        // would make `finish` print the status as the value.
+        let subroutine =
+            self.builder
+                .create_subroutine_type(self.file, None, &params, DIFlags::PROTOTYPED);
+        let flags = if artificial {
+            DIFlags::PROTOTYPED | DIFlags::ARTIFICIAL
+        } else {
+            DIFlags::PROTOTYPED
+        };
         let subprogram = self.builder.create_function(
             self.file.as_debug_info_scope(),
-            &attribution.name,
-            Some(symbol),
+            display.map_or(callable.symbol.as_str(), |name| name.text.as_str()),
+            Some(""),
             self.file,
             line,
             subroutine,
             /* is_local_to_unit */ false,
             /* is_definition */ true,
+            // The declaration line is the scope line, so the function's first
+            // row is its declaration, as in a compiled C function, and the
+            // argument spills sit on it. gdb, which analyses the frame setup
+            // itself for a producer it does not know, then skips to the next
+            // line row and stops with the parameters stored. LLVM ends the
+            // prologue on the first spill, so lldb stops there too.
             line,
-            DIFlags::ZERO,
-            /* is_optimized */ false,
+            flags,
+            self.optimized,
         );
         value.set_subprogram(subprogram);
         let mut function = FunctionDebug {
             subprogram,
             blocks: HashMap::new(),
             ranges: Vec::new(),
-            locals: HashMap::new(),
+            locals: RefCell::new(HashMap::new()),
         };
         self.build_lexical_blocks(&mut function, attribution);
         function
+    }
+
+    /// Describe a compiler-generated function with no source of its own.
+    ///
+    /// The subprogram is artificial and every instruction sits on line 0, so a
+    /// debugger steps through it without stopping and never resolves a source
+    /// name to it. `name` is a spelling from the display-name authority.
+    pub(super) fn shim(&self, ctx: &'ctx Context, value: FunctionValue<'ctx>, name: &str) {
+        let subroutine =
+            self.builder
+                .create_subroutine_type(self.file, None, &[], DIFlags::PROTOTYPED);
+        let subprogram = self.builder.create_function(
+            self.file.as_debug_info_scope(),
+            name,
+            Some(""),
+            self.file,
+            0,
+            subroutine,
+            /* is_local_to_unit */ false,
+            /* is_definition */ true,
+            0,
+            DIFlags::PROTOTYPED | DIFlags::ARTIFICIAL,
+            self.optimized,
+        );
+        value.set_subprogram(subprogram);
+        let location =
+            self.builder
+                .create_debug_location(ctx, 0, 0, subprogram.as_debug_info_scope(), None);
+        for block in value.get_basic_blocks() {
+            for instruction in block.get_instructions() {
+                // SAFETY: the instruction and location belong to this live
+                // context; the call only replaces the instruction's `!dbg`.
+                unsafe {
+                    inkwell::llvm_sys::debuginfo::LLVMInstructionSetDebugLoc(
+                        instruction.as_value_ref(),
+                        location.as_mut_ptr(),
+                    );
+                }
+            }
+        }
     }
 
     /// Build the `DILexicalBlock` tree for the scopes inside this body.
@@ -304,22 +388,32 @@ impl<'ctx> DebugEmitter<'ctx> {
         )
     }
 
+    /// Whether the unit describes optimized code.
+    pub(super) fn optimized(&self) -> bool {
+        self.optimized
+    }
+
     /// A debug location at an exact scope and line.
     fn location_in(&self, ctx: &'ctx Context, scope: DIScope<'ctx>, line: u32) -> DILocation<'ctx> {
         self.builder
             .create_debug_location(ctx, line, 0, scope, None)
     }
 
-    /// A debug location at the body's declaration, for prologue instructions.
-    pub(super) fn declaration_location(
+    /// Line 0 in the body's own scope: code no source line owns.
+    ///
+    /// The prologue (frame setup, parameter spills, storage zeroing), cleanup,
+    /// and fault exits carry it. A debugger then places `prologue_end` on the
+    /// first body statement, after every parameter is stored, and never
+    /// attributes compiler-generated code to a source line, so a line keeps
+    /// one statement address and `next` stops on it once.
+    pub(super) fn unattributed_location(
         &self,
         ctx: &'ctx Context,
         function: &FunctionDebug<'ctx>,
-        decl: u32,
     ) -> DILocation<'ctx> {
         self.builder.create_debug_location(
             ctx,
-            self.lines.line(decl),
+            0,
             0,
             function.subprogram.as_debug_info_scope(),
             None,
@@ -337,7 +431,6 @@ impl<'ctx> DebugEmitter<'ctx> {
         ty: &ResolvedTy,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
-        resumable: bool,
     ) -> Option<(DILocalVariable<'ctx>, DIScope<'ctx>, u32)> {
         let PhysicalDebugLocal {
             name,
@@ -346,8 +439,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         } = local;
         let (decl, parameter) = (*decl, *parameter);
         let di_type = self.resolve_type(ty, layout, target)?;
-        // A continuation body receives a frame pointer, not source parameters.
-        if let Some(index) = parameter.filter(|_| !resumable) {
+        if let Some(index) = parameter {
             let line = self.lines.line(decl);
             let scope = function.subprogram.as_debug_info_scope();
             let variable = self.builder.create_parameter_variable(
@@ -385,111 +477,120 @@ impl<'ctx> DebugEmitter<'ctx> {
         location: DILocation<'ctx>,
         block: inkwell::basic_block::BasicBlock<'ctx>,
     ) {
-        let expression = self.builder.create_expression(vec![]);
-        // WHY a raw call: on LLVM 19+ `LLVMDIBuilderInsertDeclareAtEnd` returns
-        // a `DbgRecord`, and inkwell 0.9's safe wrapper casts that to an
-        // `InstructionValue` whose `is_instruction()` assertion then panics even
-        // though the record was inserted. The record API inkwell itself wraps
-        // for this LLVM version is the correct one to call.
-        use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
-        use inkwell::values::AsValueRef;
-        // SAFETY: every pointer comes from a live inkwell wrapper bound to this
-        // module's context; the call inserts a record and returns a handle we
-        // discard.
-        unsafe {
-            LLVMDIBuilderInsertDeclareRecordAtEnd(
-                self.builder.as_mut_ptr(),
-                slot.as_value_ref(),
-                variable.as_mut_ptr(),
-                expression.as_mut_ptr(),
-                location.as_mut_ptr(),
-                block.as_mut_ptr(),
-            );
-        }
+        insert_declare(&self.builder, slot, variable, location, block);
     }
 
-    pub(super) fn local_value(
+    /// Say that `id` holds its value from here: its location is the slot's
+    /// memory until a later record ends it. The record names the slot, not a
+    /// copy, so the slot stays the one home of the value.
+    pub(super) fn bind_local(
         &self,
         function: &FunctionDebug<'ctx>,
         id: StorageId,
-        value: BasicValueEnum<'ctx>,
         block: inkwell::basic_block::BasicBlock<'ctx>,
-    ) -> CodegenResult<()> {
-        let Some(local) = function.locals.get(&id) else {
-            return Ok(());
-        };
-        let builder = self.ctx.create_builder();
-        if let Some(terminator) = block.get_terminator() {
-            builder.position_before(&terminator);
-        } else {
-            builder.position_at_end(block);
+    ) {
+        if let Some(local) = function.locals.borrow().get(&id) {
+            self.value_record(local.slot.into(), local, block, true);
         }
-        builder
-            .build_store(local.anchor, value)
-            .llvm_ctx("retain current source local value")?;
-        self.value_record(
-            local.anchor.into(),
-            local.variable,
-            local.location,
-            block,
-            true,
-        );
-        Ok(())
     }
 
-    fn value_record(
+    /// Say that `id` holds no value from here: a debugger reports it
+    /// unavailable instead of reading whatever the slot last held.
+    pub(super) fn kill_local(
         &self,
-        value: BasicValueEnum<'ctx>,
-        variable: DILocalVariable<'ctx>,
-        location: DILocation<'ctx>,
+        ctx: &'ctx Context,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
         block: inkwell::basic_block::BasicBlock<'ctx>,
-        indirect: bool,
     ) {
-        let expression = self
-            .builder
-            .create_expression(if indirect { vec![0x06] } else { vec![] });
+        if let Some(local) = function.locals.borrow().get(&id) {
+            self.value_record(ctx.i8_type().get_undef().into(), local, block, false);
+        }
+    }
+
+    /// Describe parameter `id` by its incoming argument from the first
+    /// instruction of the body. A coroutine ramp reaches its frame only after
+    /// the frame is allocated, so until the record that names the frame slot
+    /// the argument itself is the only place the value is.
+    pub(super) fn bind_argument(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        argument: inkwell::values::BasicValueEnum<'ctx>,
+        indirect: bool,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
         use inkwell::llvm_sys::debuginfo::{
             LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
         };
-        use inkwell::values::AsValueRef;
+        let Some(local) = function.locals.borrow().get(&id).map(|local| LocalSlot {
+            variable: local.variable,
+            location: local.location,
+            slot: local.slot,
+        }) else {
+            return;
+        };
+        let expression =
+            self.builder
+                .create_expression(if indirect { vec![DW_OP_DEREF] } else { vec![] });
         // SAFETY: the value, metadata and block belong to this live context.
         unsafe {
-            if let Some(terminator) = block.get_terminator() {
+            if let Some(first) = block.get_first_instruction() {
                 LLVMDIBuilderInsertDbgValueRecordBefore(
                     self.builder.as_mut_ptr(),
-                    value.as_value_ref(),
-                    variable.as_mut_ptr(),
+                    argument.as_value_ref(),
+                    local.variable.as_mut_ptr(),
                     expression.as_mut_ptr(),
-                    location.as_mut_ptr(),
-                    terminator.as_value_ref(),
+                    local.location.as_mut_ptr(),
+                    first.as_value_ref(),
                 );
             } else {
                 LLVMDIBuilderInsertDbgValueRecordAtEnd(
                     self.builder.as_mut_ptr(),
-                    value.as_value_ref(),
-                    variable.as_mut_ptr(),
+                    argument.as_value_ref(),
+                    local.variable.as_mut_ptr(),
                     expression.as_mut_ptr(),
-                    location.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
                     block.as_mut_ptr(),
                 );
             }
         }
     }
 
-    pub(super) fn local_unavailable(
+    fn value_record(
         &self,
-        function: &FunctionDebug<'ctx>,
-        id: StorageId,
+        value: inkwell::values::BasicValueEnum<'ctx>,
+        local: &LocalSlot<'ctx>,
         block: inkwell::basic_block::BasicBlock<'ctx>,
+        indirect: bool,
     ) {
-        if let Some(local) = function.locals.get(&id) {
-            self.value_record(
-                self.ctx.i8_type().get_undef().into(),
-                local.variable,
-                local.location,
-                block,
-                false,
-            );
+        use inkwell::llvm_sys::debuginfo::{
+            LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
+        };
+        let expression =
+            self.builder
+                .create_expression(if indirect { vec![DW_OP_DEREF] } else { vec![] });
+        // SAFETY: the value, metadata and block belong to this live context.
+        unsafe {
+            if let Some(terminator) = block.get_terminator() {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    terminator.as_value_ref(),
+                );
+            } else {
+                LLVMDIBuilderInsertDbgValueRecordAtEnd(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    block.as_mut_ptr(),
+                );
+            }
         }
     }
 
@@ -502,541 +603,136 @@ impl<'ctx> DebugEmitter<'ctx> {
                 candidate.start >= attribution.decl && candidate.start < attribution.end
             })
     }
+}
 
-    /// The DIE for one storage type, memoized by its structural key.
-    fn resolve_type(
-        &self,
-        ty: &ResolvedTy,
-        layout: &PhysicalLayout,
-        target: &PhysicalTarget,
-    ) -> Option<DIType<'ctx>> {
-        let key = format!("{ty:?}|{:?}", layout.repr);
-        if let Some(cached) = self.types.borrow().get(&key) {
-            return Some(*cached);
+/// The first source point execution reaches from `block`, following
+/// unconditional edges and safepoints' normal edges.
+pub(super) fn first_site_from(
+    function: &PhysicalFunction,
+    attribution: &PhysicalDebugFunction,
+    block: hew_mir::physical::BlockId,
+) -> Option<u32> {
+    use hew_mir::physical::PhysicalTerminator;
+    let mut target = block;
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(target) {
+        if let Some((_, offset)) = attribution
+            .sites
+            .range((target, 0)..=(target, u32::MAX))
+            .next()
+        {
+            return Some(*offset);
         }
-        let resolved = self.build_type(ty, layout, target)?;
-        self.types.borrow_mut().insert(key, resolved);
-        Some(resolved)
-    }
-
-    fn build_type(
-        &self,
-        ty: &ResolvedTy,
-        layout: &PhysicalLayout,
-        target: &PhysicalTarget,
-    ) -> Option<DIType<'ctx>> {
-        let bits = layout.size.checked_mul(8)?;
-        if let Some((name, encoding)) = named_scalar(ty) {
-            return self
-                .builder
-                .create_basic_type(name, bits, encoding, DIFlags::ZERO)
-                .ok()
-                .map(|basic| basic.as_type());
-        }
-        // An enum's own storage is a `{ tag, payload }` carrier, but describing
-        // it that way hands a debugger every variant's bytes at once. The
-        // variant part names the tag as the selector so only the active case
-        // renders. An indirect enum's local is a pointer and falls through.
-        //
-        // CodeView has no variant-part record. LLVM lowers the part to an
-        // unnamed `LF_NESTTYPE` it cannot resolve, so a `.debug$T` consumer
-        // sees `Status` with no members at all - strictly less than the tag
-        // and payload it can read from the carrier. Describe the carrier on
-        // those targets and leave the variant part to DWARF.
-        if !self.codeview {
-            if let Some(variants) = self.enums.get(ty) {
-                if let Some(described) = self.build_enum(ty, layout, variants, target) {
-                    return Some(described);
-                }
-            }
-        }
-        match &layout.repr {
-            PhysicalRepr::Unit => None,
-            PhysicalRepr::Integer { bits: width } => self
-                .builder
-                .create_basic_type(
-                    &format!("u{width}"),
-                    u64::from(*width),
-                    DW_ATE_UNSIGNED,
-                    DIFlags::ZERO,
-                )
-                .ok()
-                .map(|basic| basic.as_type()),
-            PhysicalRepr::Float { bits: width } => self
-                .builder
-                .create_basic_type(
-                    &format!("f{width}"),
-                    u64::from(*width),
-                    DW_ATE_FLOAT,
-                    DIFlags::ZERO,
-                )
-                .ok()
-                .map(|basic| basic.as_type()),
-            PhysicalRepr::Pointer if *ty == ResolvedTy::String => self.build_string(layout),
-            // Other reference handles remain opaque to the debugger.
-            PhysicalRepr::Pointer => {
-                let byte = self
-                    .builder
-                    .create_basic_type("u8", 8, DW_ATE_UNSIGNED_CHAR, DIFlags::ZERO)
-                    .unwrap_or_else(|_| unreachable!("a basic type named `u8` is never empty"));
-                Some(
-                    self.builder
-                        .create_pointer_type(
-                            "",
-                            byte.as_type(),
-                            bits,
-                            layout.align * 8,
-                            AddressSpace::default(),
-                        )
-                        .as_type(),
-                )
-            }
-            PhysicalRepr::Array { element, len } | PhysicalRepr::Vector { element, len } => {
-                let inner = self.build_type(&ResolvedTy::Unit, element, target)?;
-                Some(
-                    self.builder
-                        .create_array_type(
-                            inner,
-                            bits,
-                            layout.align * 8,
-                            &[std::ops::Range {
-                                start: 0,
-                                end: i64::from(*len),
-                            }],
-                        )
-                        .as_type(),
-                )
-            }
-            PhysicalRepr::Struct(fields) => self.build_struct(ty, layout, fields, target),
-        }
-    }
-
-    /// Describe the canonical managed allocation without turning its handle
-    /// into a C string. Debugger summaries read the length and trailing bytes.
-    fn build_string(&self, layout: &PhysicalLayout) -> Option<DIType<'ctx>> {
-        let header_size = hew_cabi::string::string_debug_header_size(layout.size)?;
-        let length = self
-            .builder
-            .create_basic_type("usize", layout.size * 8, DW_ATE_UNSIGNED, DIFlags::ZERO)
-            .unwrap_or_else(|_| unreachable!("a basic type named `usize` is never empty"))
-            .as_type();
-        let byte = self
-            .builder
-            .create_basic_type("u8", 8, DW_ATE_UNSIGNED_CHAR, DIFlags::ZERO)
-            .unwrap_or_else(|_| unreachable!("a basic type named `u8` is never empty"))
-            .as_type();
-        let data = self
-            .builder
-            .create_array_type(byte, 0, 8, &[std::ops::Range { start: 0, end: 0 }])
-            .as_type();
-        let members = [
-            self.builder
-                .create_member_type(
-                    self.file.as_debug_info_scope(),
-                    "byte_len",
-                    self.file,
-                    0,
-                    layout.size * 8,
-                    layout.align * 8,
-                    hew_cabi::string::STRING_DEBUG_BYTE_LEN_OFFSET as u64 * 8,
-                    DIFlags::ZERO,
-                    length,
-                )
-                .as_type(),
-            self.builder
-                .create_member_type(
-                    self.file.as_debug_info_scope(),
-                    "data",
-                    self.file,
-                    0,
-                    0,
-                    8,
-                    header_size * 8,
-                    DIFlags::ZERO,
-                    data,
-                )
-                .as_type(),
-        ];
-        let header = self.builder.create_struct_type(
-            self.file.as_debug_info_scope(),
-            "hew_string",
-            self.file,
-            0,
-            header_size * 8,
-            layout.align * 8,
-            DIFlags::ZERO,
-            None,
-            &members,
-            0,
-            None,
-            "hew_string",
-        );
-        Some(
-            self.builder
-                .create_pointer_type(
-                    "",
-                    header.as_type(),
-                    layout.size * 8,
-                    layout.align * 8,
-                    AddressSpace::default(),
-                )
-                .as_type(),
-        )
-    }
-
-    fn build_struct(
-        &self,
-        ty: &ResolvedTy,
-        layout: &PhysicalLayout,
-        fields: &[PhysicalLayout],
-        target: &PhysicalTarget,
-    ) -> Option<DIType<'ctx>> {
-        // A declared record names its members from source. Every other struct
-        // here is a carrier this stage synthesized - a tuple, a closure
-        // environment, an enum's tag-and-payload pair - and has no source name
-        // to give, so it keeps positional members.
-        let named = self
-            .records
-            .get(ty)
-            .filter(|rows| rows.len() == fields.len());
-        let mut offset = 0u64;
-        let mut members = Vec::with_capacity(fields.len());
-        for (index, field) in fields.iter().enumerate() {
-            let align = u64::from(field.align).max(1);
-            offset = offset.div_ceil(align) * align;
-            let (name, member_ty) = match named {
-                Some(rows) => (
-                    rows[index].name.clone(),
-                    self.resolve_type(&rows[index].ty, field, target)?,
-                ),
-                None => (
-                    if *ty == ResolvedTy::Bytes {
-                        ["ptr", "offset", "len"].get(index)?.to_string()
-                    } else {
-                        format!("f{index}")
-                    },
-                    self.build_type(&ResolvedTy::Unit, field, target)?,
-                ),
-            };
-            members.push(
-                self.builder
-                    .create_member_type(
-                        self.file.as_debug_info_scope(),
-                        &name,
-                        self.file,
-                        0,
-                        field.size.checked_mul(8)?,
-                        field.align * 8,
-                        offset * 8,
-                        DIFlags::ZERO,
-                        member_ty,
-                    )
-                    .as_type(),
-            );
-            offset += field.size;
-        }
-        Some(
-            self.builder
-                .create_struct_type(
-                    self.file.as_debug_info_scope(),
-                    &type_name(ty),
-                    self.file,
-                    0,
-                    layout.size.checked_mul(8)?,
-                    layout.align * 8,
-                    DIFlags::ZERO,
-                    None,
-                    &members,
-                    0,
-                    None,
-                    &type_name(ty),
-                )
-                .as_type(),
-        )
-    }
-
-    /// Describe one direct enum as a structure whose only element is a
-    /// `DW_TAG_variant_part`: the tag becomes the part's discriminant and each
-    /// case a `DW_TAG_variant` guarded by its tag value, so a debugger reads
-    /// only the active payload.
-    ///
-    /// Returns `None` for an indirect enum, whose local holds a pointer the
-    /// caller describes instead.
-    fn build_enum(
-        &self,
-        ty: &ResolvedTy,
-        layout: &PhysicalLayout,
-        variants: &[PhysicalDebugVariant],
-        target: &PhysicalTarget,
-    ) -> Option<DIType<'ctx>> {
-        let PhysicalRepr::Struct(carrier) = &layout.repr else {
-            return None;
-        };
-        let [tag, payload] = carrier.as_slice() else {
-            return None;
-        };
-        let cases = target.variant_layout(ty)?;
-        if cases.is_indirect || cases.variants.len() != variants.len() {
-            return None;
-        }
-        let bits = layout.size.checked_mul(8)?;
-        let align_bits = layout.align * 8;
-        let tag_bits = tag.size.checked_mul(8)?;
-        let tag_align = u64::from(payload.align).max(1);
-        let payload_offset_bits = tag.size.div_ceil(tag_align) * tag_align * 8;
-        let Ok(tag_width) = u32::try_from(tag_bits) else {
-            return None;
-        };
-        let Ok(tag_int) = self
-            .ctx
-            .custom_width_int_type(std::num::NonZeroU32::new(tag_width)?)
-        else {
-            return None;
-        };
-
-        let enumerators: Vec<_> = variants
+        target = match &function
+            .blocks
             .iter()
-            .enumerate()
-            .map(|(index, variant)| {
-                self.builder.create_enumerator(
-                    &variant.name,
-                    i64::try_from(index).unwrap_or(i64::MAX),
-                    true,
-                )
-            })
-            .collect();
-        let Ok(underlying) = self.builder.create_basic_type(
-            &format!("u{tag_bits}"),
-            tag_bits,
-            DW_ATE_UNSIGNED,
-            DIFlags::ZERO,
-        ) else {
-            return None;
+            .find(|candidate| candidate.id == target)?
+            .terminator
+        {
+            PhysicalTerminator::Goto(edge) | PhysicalTerminator::Safepoint { normal: edge, .. } => {
+                edge.target
+            }
+            _ => return None,
         };
-        let underlying = underlying.as_type();
-        let tag_di = self
-            .builder
-            .create_enumeration_type(
-                self.file.as_debug_info_scope(),
-                &format!("{}.Tag", type_name(ty)),
-                self.file,
-                0,
-                tag_bits,
-                tag.align * 8,
-                &enumerators,
-                underlying,
-            )
-            .as_type();
-        // Unnamed and artificial: this member exists to be pointed at by
-        // `DW_AT_discr`, not to be printed as a field of the enum.
-        let discriminator = self.builder.create_member_type(
-            self.file.as_debug_info_scope(),
-            "",
-            self.file,
-            0,
-            tag_bits,
-            tag.align * 8,
-            0,
-            DIFlags::ARTIFICIAL,
-            tag_di,
-        );
+    }
+    None
+}
 
-        let mut members = Vec::with_capacity(variants.len());
-        for (index, variant) in variants.iter().enumerate() {
-            let PhysicalRepr::Struct(field_layouts) = &cases.variants[index].repr else {
-                return None;
-            };
-            if field_layouts.len() != variant.fields.len() {
-                return None;
-            }
-            // A variant's payload members sit at their offset within the whole
-            // enum, so the case struct spans the enum and a debugger reads the
-            // payload where the tag left it.
-            let mut offset = 0u64;
-            let mut fields = Vec::with_capacity(field_layouts.len());
-            for (field, field_layout) in variant.fields.iter().zip(field_layouts) {
-                let align = u64::from(field_layout.align).max(1);
-                offset = offset.div_ceil(align) * align;
-                let member_ty = self.resolve_type(&field.ty, field_layout, target)?;
-                fields.push(
-                    self.builder
-                        .create_member_type(
-                            self.file.as_debug_info_scope(),
-                            &field.name,
-                            self.file,
-                            0,
-                            field_layout.size.checked_mul(8)?,
-                            field_layout.align * 8,
-                            payload_offset_bits + offset * 8,
-                            DIFlags::ZERO,
-                            member_ty,
-                        )
-                        .as_type(),
-                );
-                offset += field_layout.size;
-            }
-            let unique = format!("{}.{}", type_name(ty), variant.name);
-            let case = self
-                .builder
-                .create_struct_type(
-                    self.file.as_debug_info_scope(),
-                    &variant.name,
-                    self.file,
-                    0,
-                    bits,
-                    align_bits,
-                    DIFlags::ZERO,
-                    None,
-                    &fields,
-                    0,
-                    None,
-                    &unique,
-                )
-                .as_type();
-            let Ok(tag_value) = u64::try_from(index) else {
-                return None;
-            };
-            let discriminant = tag_int.const_int(tag_value, false);
-            members.push(create_variant_member(
-                &self.builder,
-                self.file,
-                &variant.name,
-                bits,
-                align_bits,
-                discriminant,
-                case,
-            )?);
-        }
+/// Whether `machine` generates optimized code, which the compile unit and
+/// subprograms state so a debugger expects partial variable locations.
+pub(super) fn optimizes(machine: &inkwell::targets::TargetMachine) -> bool {
+    unsafe extern "C" {
+        fn hewLLVMTargetMachineOptimizes(
+            machine: inkwell::llvm_sys::target_machine::LLVMTargetMachineRef,
+        ) -> bool;
+    }
+    // SAFETY: the machine is live for the call, which only reads its level.
+    unsafe { hewLLVMTargetMachineOptimizes(machine.as_mut_ptr()) }
+}
 
-        // Build the part before the placeholder: a placeholder left inside a
-        // composite with nothing to replace it is a dangling temporary at
-        // `finalize`.
-        let part = create_variant_part(
-            &self.builder,
-            self.file,
-            bits,
-            align_bits,
-            discriminator,
-            &members,
-        )?;
-        // SAFETY: the placeholder is replaced below, before `finalize` runs.
-        let placeholder = unsafe { self.builder.create_placeholder_derived_type(self.ctx) };
-        let composite = self.builder.create_struct_type(
-            self.file.as_debug_info_scope(),
-            &type_name(ty),
-            self.file,
-            0,
-            bits,
-            align_bits,
-            DIFlags::ZERO,
-            None,
-            &[placeholder.as_type()],
-            0,
-            None,
-            &type_name(ty),
+/// Insert a local's debug record without treating it as an LLVM instruction.
+pub(super) fn insert_declare<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    slot: PointerValue<'ctx>,
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    block: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    let expression = builder.create_expression(vec![]);
+    // LLVM 19+ returns a DbgRecord, but inkwell 0.9 casts it to an
+    // InstructionValue and can panic. The record API returns the right type.
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
+    // SAFETY: all handles belong to this live context, and the returned
+    // record is owned by the block.
+    unsafe {
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
+            builder.as_mut_ptr(),
+            slot.as_value_ref(),
+            variable.as_mut_ptr(),
+            expression.as_mut_ptr(),
+            location.as_mut_ptr(),
+            block.as_mut_ptr(),
         );
-        // SAFETY: both nodes belong to this builder's context, and the call
-        // deletes the temporary once its uses point at the variant part.
-        unsafe {
-            inkwell::llvm_sys::debuginfo::LLVMMetadataReplaceAllUsesWith(
-                placeholder.as_type().as_mut_ptr(),
-                part,
-            );
-        }
-        Some(composite.as_type())
     }
 }
 
-/// One `DW_TAG_variant`, guarded by the tag value that selects it.
-///
-/// LLVM's C API has no entry point for `DIBuilder::createVariantMemberType`;
-/// `physical_debug_shim.cpp` exposes exactly this one.
-fn create_variant_member<'ctx>(
-    builder: &DebugInfoBuilder<'ctx>,
-    file: DIFile<'ctx>,
-    name: &str,
-    size_in_bits: u64,
-    align_in_bits: u32,
-    discriminant: inkwell::values::IntValue<'ctx>,
-    ty: DIType<'ctx>,
-) -> Option<inkwell::llvm_sys::prelude::LLVMMetadataRef> {
-    use inkwell::values::AsValueRef;
+/// The source directory in the caller's presentation namespace.
+fn source_directory(path: &Path) -> String {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_string_lossy()
+        .into_owned()
+}
 
+/// The compile unit's file, carrying the MD5 of the text compiled. The shim
+/// installs it as the unit's own file, and every function and type uses the
+/// same node, so the line table has one checksummed file entry.
+///
+/// LLVM's C API creates a file without a checksum; `physical_debug_shim.cpp`
+/// provides that one step.
+fn checksummed_file<'ctx>(
+    builder: &DebugInfoBuilder<'ctx>,
+    unit: DICompileUnit<'ctx>,
+    name: &str,
+    directory: &str,
+    text: &str,
+) -> DIFile<'ctx> {
+    use inkwell::llvm_sys::prelude::{LLVMDIBuilderRef, LLVMMetadataRef};
     unsafe extern "C" {
-        fn hewLLVMDIBuilderCreateVariantMemberType(
-            builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
-            scope: inkwell::llvm_sys::prelude::LLVMMetadataRef,
+        fn hewLLVMDICompileUnitChecksumFile(
+            builder: LLVMDIBuilderRef,
+            unit: LLVMMetadataRef,
             name: *const std::ffi::c_char,
             name_len: usize,
-            file: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            size_in_bits: u64,
-            align_in_bits: u32,
-            offset_in_bits: u64,
-            discriminant: inkwell::llvm_sys::prelude::LLVMValueRef,
-            ty: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-        ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
+            directory: *const std::ffi::c_char,
+            directory_len: usize,
+            text: *const std::ffi::c_char,
+            text_len: usize,
+        ) -> LLVMMetadataRef;
     }
-
-    // SAFETY: every wrapper belongs to this builder's live context, and the
-    // shim borrows `name` only for the duration of the call.
-    let metadata = unsafe {
-        hewLLVMDIBuilderCreateVariantMemberType(
+    // SAFETY: the builder and unit belong to this live context; the shim
+    // borrows the strings only for the call.
+    let file = unsafe {
+        hewLLVMDICompileUnitChecksumFile(
             builder.as_mut_ptr(),
-            file.as_debug_info_scope().as_mut_ptr(),
+            unit.as_mut_ptr(),
             name.as_ptr().cast(),
             name.len(),
-            file.as_mut_ptr(),
-            size_in_bits,
-            align_in_bits,
-            0,
-            discriminant.as_value_ref(),
-            ty.as_mut_ptr(),
+            directory.as_ptr().cast(),
+            directory.len(),
+            text.as_ptr().cast(),
+            text.len(),
         )
     };
-    (!metadata.is_null()).then_some(metadata)
-}
-
-/// The `DW_TAG_variant_part` holding every case, with `discriminator` as its
-/// selector. The second entry point LLVM's C API does not provide.
-fn create_variant_part<'ctx>(
-    builder: &DebugInfoBuilder<'ctx>,
-    file: DIFile<'ctx>,
-    size_in_bits: u64,
-    align_in_bits: u32,
-    discriminator: inkwell::debug_info::DIDerivedType<'ctx>,
-    elements: &[inkwell::llvm_sys::prelude::LLVMMetadataRef],
-) -> Option<inkwell::llvm_sys::prelude::LLVMMetadataRef> {
-    unsafe extern "C" {
-        fn hewLLVMDIBuilderCreateVariantPart(
-            builder: inkwell::llvm_sys::prelude::LLVMDIBuilderRef,
-            scope: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            file: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            size_in_bits: u64,
-            align_in_bits: u32,
-            discriminator: inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            elements: *const inkwell::llvm_sys::prelude::LLVMMetadataRef,
-            element_count: u32,
-        ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
+    if file.is_null() {
+        return unit.get_file();
     }
-
-    let Ok(count) = u32::try_from(elements.len()) else {
-        return None;
-    };
-    // SAFETY: every metadata node belongs to this builder's context, and LLVM
-    // copies the pointer slice into an MDTuple during the call.
-    let metadata = unsafe {
-        hewLLVMDIBuilderCreateVariantPart(
-            builder.as_mut_ptr(),
-            file.as_debug_info_scope().as_mut_ptr(),
-            file.as_mut_ptr(),
-            size_in_bits,
-            align_in_bits,
-            discriminator.as_type().as_mut_ptr(),
-            elements.as_ptr(),
-            count,
-        )
-    };
-    (!metadata.is_null()).then_some(metadata)
+    // SAFETY: inkwell offers no constructor for a `DIFile` from a node made
+    // outside it. `DIFile` is a `Copy` wrapper whose only sized field is the
+    // metadata reference (the transmute checks the sizes), and `file` is a
+    // live `DIFile` node of this context.
+    unsafe { std::mem::transmute::<LLVMMetadataRef, DIFile<'ctx>>(file) }
 }
 
 impl<'ctx> FunctionDebug<'ctx> {
@@ -1053,157 +749,71 @@ impl<'ctx> FunctionDebug<'ctx> {
     }
 }
 
-/// The source spelling and DWARF encoding of a scalar Hew type.
-fn named_scalar(ty: &ResolvedTy) -> Option<(&'static str, u32)> {
-    Some(match ty {
-        ResolvedTy::I8 => ("i8", DW_ATE_SIGNED),
-        ResolvedTy::I16 => ("i16", DW_ATE_SIGNED),
-        ResolvedTy::I32 => ("i32", DW_ATE_SIGNED),
-        ResolvedTy::I64 => ("i64", DW_ATE_SIGNED),
-        ResolvedTy::Isize => ("isize", DW_ATE_SIGNED),
-        ResolvedTy::U8 => ("u8", DW_ATE_UNSIGNED),
-        ResolvedTy::U16 => ("u16", DW_ATE_UNSIGNED),
-        ResolvedTy::U32 => ("u32", DW_ATE_UNSIGNED),
-        ResolvedTy::U64 => ("u64", DW_ATE_UNSIGNED),
-        ResolvedTy::Usize => ("usize", DW_ATE_UNSIGNED),
-        ResolvedTy::F32 => ("f32", DW_ATE_FLOAT),
-        ResolvedTy::F64 => ("f64", DW_ATE_FLOAT),
-        ResolvedTy::Bool => ("bool", DW_ATE_BOOLEAN),
-        ResolvedTy::Char => ("char", DW_ATE_UNSIGNED_CHAR),
-        ResolvedTy::Duration => ("duration", DW_ATE_SIGNED),
-        _ => return None,
-    })
+/// `DW_OP_deref`: read the value at the address the record names.
+const DW_OP_DEREF: i64 = 0x06;
+
+/// The storage of one body whose locals are described.
+pub(super) struct BodyLocals<'a, 'ctx> {
+    pub attribution: &'a PhysicalDebugFunction,
+    pub function: &'a PhysicalFunction,
+    pub target: &'a PhysicalTarget,
+    /// One slot per storage entry, indexed by local id.
+    pub slots: &'a [PointerValue<'ctx>],
+    /// The entry block the declarations are placed in.
+    pub prologue: inkwell::basic_block::BasicBlock<'ctx>,
+    /// The body is a coroutine. Its slots are written on one side of a
+    /// suspension and read on the other, so a local is described only over
+    /// the stretches that follow a store to it.
+    pub resumable: bool,
 }
 
-fn type_name(ty: &ResolvedTy) -> String {
-    match ty {
-        ResolvedTy::Named { head, .. } => head.registry_key().to_string(),
-        ResolvedTy::Tuple(_) => "tuple".to_owned(),
-        ResolvedTy::Bytes => "bytes".to_owned(),
-        other => format!("{other:?}"),
-    }
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "debug emission consumes the explicit body attribution and storage"
-)]
+/// Describe every named local of one body by its storage slot.
+///
+/// The slot is the variable's single home on every path, so one
+/// `dbg.declare` covers the whole body: mem2reg and SROA turn it into value
+/// locations under optimization. A coroutine body is different: a local
+/// there is honest only after its store, so it gets value records over the
+/// slot instead, bound where the slot is written and ended where it is
+/// cleared; coroutine splitting rewrites them to the frame field the slot
+/// moves into.
 pub(super) fn declare_locals<'ctx>(
     ctx: &'ctx Context,
     emitter: &DebugEmitter<'ctx>,
-    function_debug: &mut FunctionDebug<'ctx>,
-    attribution: &PhysicalDebugFunction,
-    function: &PhysicalFunction,
-    target: &PhysicalTarget,
-    slots: &[PointerValue<'ctx>],
-    prologue: inkwell::basic_block::BasicBlock<'ctx>,
-    frame: Option<&coro::Frame<'ctx>>,
-) -> CodegenResult<()> {
+    function_debug: &FunctionDebug<'ctx>,
+    body: &BodyLocals<'_, 'ctx>,
+) {
+    let BodyLocals {
+        attribution,
+        function,
+        target,
+        slots,
+        prologue,
+        resumable,
+    } = *body;
     for (id, local) in &attribution.locals {
-        let Some(storage) = function.storage.get(id.0 as usize) else {
-            continue;
-        };
-        let Some(slot) = slots.get(id.0 as usize) else {
-            continue;
-        };
-        let Some((variable, scope, line)) = emitter.local_variable(
-            function_debug,
-            local,
-            &storage.ty,
-            &storage.layout,
-            target,
-            frame.is_some(),
+        let (Some(storage), Some(slot)) = (
+            function.storage.get(id.0 as usize),
+            slots.get(id.0 as usize),
         ) else {
             continue;
         };
+        let Some((variable, scope, line)) =
+            emitter.local_variable(function_debug, local, &storage.ty, &storage.layout, target)
+        else {
+            continue;
+        };
         let location = emitter.location_in(ctx, scope, line);
-        if let Some(frame) = frame {
-            let anchor = frame.storage(
-                ctx,
-                super::llvm_type(ctx, &storage.layout.repr)?,
-                "debug.local.value",
-            )?;
-            function_debug.locals.insert(
+        if resumable {
+            function_debug.locals.borrow_mut().insert(
                 *id,
-                LocalValue {
+                LocalSlot {
                     variable,
                     location,
-                    anchor,
+                    slot: *slot,
                 },
-            );
-            emitter.value_record(
-                ctx.i8_type().get_undef().into(),
-                variable,
-                location,
-                prologue,
-                false,
             );
         } else {
             emitter.declare(*slot, variable, location, prologue);
         }
-    }
-    Ok(())
-}
-
-pub(super) fn pin_for_inspection(ctx: &Context, value: FunctionValue<'_>) {
-    use inkwell::attributes::{Attribute, AttributeLoc};
-    for name in ["noinline", "optnone"] {
-        let kind = Attribute::get_named_enum_kind_id(name);
-        if kind != 0 {
-            value.add_attribute(AttributeLoc::Function, ctx.create_enum_attribute(kind, 0));
-        }
-    }
-}
-
-/// Lay a `-g` body's blocks out in execution order.
-///
-/// Physical block ids follow the order SIR created them, which puts a fault or
-/// cleanup block ahead of the normal continuation that shares its source line.
-/// A debugger resolving `file:line` takes the lowest address for that line in
-/// the function, so the breakpoint lands on a block the run never enters.
-/// Reverse postorder from the entry puts the executed path first.
-pub(super) fn order_blocks_for_inspection(value: FunctionValue<'_>) {
-    use inkwell::llvm_sys::core::{
-        LLVMGetBasicBlockTerminator, LLVMGetNumSuccessors, LLVMGetSuccessor,
-    };
-
-    let blocks = value.get_basic_blocks();
-    if blocks.len() < 2 {
-        return;
-    }
-    let address = |index: usize| blocks[index].as_mut_ptr() as usize;
-    let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
-    let mut visited = vec![false; blocks.len()];
-    let mut stack = vec![0usize];
-    while let Some(index) = stack.pop() {
-        if visited[index] {
-            continue;
-        }
-        visited[index] = true;
-        order.push(index);
-        // SAFETY: the block belongs to a fully built function, so its
-        // terminator and successor list are live for this read.
-        let successors: Vec<usize> = unsafe {
-            let terminator = LLVMGetBasicBlockTerminator(blocks[index].as_mut_ptr());
-            if terminator.is_null() {
-                Vec::new()
-            } else {
-                (0..LLVMGetNumSuccessors(terminator))
-                    .filter_map(|slot| {
-                        let successor = LLVMGetSuccessor(terminator, slot) as usize;
-                        (0..blocks.len()).find(|candidate| address(*candidate) == successor)
-                    })
-                    .collect()
-            }
-        };
-        // Pushed in reverse so the first successor is laid out first.
-        for successor in successors.into_iter().rev() {
-            stack.push(successor);
-        }
-    }
-    // Unreachable blocks keep their relative order at the end.
-    order.extend((0..blocks.len()).filter(|index| !visited[*index]));
-    for pair in order.windows(2) {
-        blocks[pair[1]].move_after(blocks[pair[0]]).ok();
     }
 }

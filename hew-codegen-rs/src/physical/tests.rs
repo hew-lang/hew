@@ -940,7 +940,12 @@ fn windows_uses_the_same_status_result_fault_abi() {
     let params = body.get_type().get_param_types();
     assert_eq!(params.len(), 2, "result-out and fault-out");
     assert!(params.iter().all(|parameter| parameter.is_pointer_type()));
-    assert!(module.get_function("main").is_some(), "process adapter");
+    assert!(
+        module
+            .get_function(hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME)
+            .is_some(),
+        "process adapter"
+    );
 }
 
 #[test]
@@ -1236,6 +1241,7 @@ fn physical_emit_option_instruments_generated_code_with_asan() {
             debug_source: None,
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .expect("emit ASan-instrumented physical module");
@@ -1362,6 +1368,7 @@ fn build_info_record_survives_optimization_only_when_requested() {
                     debug_source: None,
                     link_freestanding_wasm: false,
                     build_info,
+                    debug_script_dir: None,
                 },
             )
             .expect("emit build info object");
@@ -1700,6 +1707,7 @@ fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
             &verified,
             &PhysicalEmitOptions {
                 module_name: "loop_chunk_symbols",
+                debug_script_dir: None,
                 out_dir: dir.path(),
                 target_triple: Some(&triple),
                 opt_level,

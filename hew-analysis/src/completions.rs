@@ -903,9 +903,10 @@ fn collect_locals_from_expr_inner(expr: &Expr, offset: usize, locals: &mut Vec<C
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. } => {
-            collect_locals_from_spanned_expr(left, offset, locals);
-            collect_locals_from_spanned_expr(right, offset, locals);
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                collect_locals_from_spanned_expr(operand, offset, locals);
+            }
         }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
@@ -1054,9 +1055,10 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 }
             }
         }
-        Pattern::Or(left, right) => {
-            collect_pattern_names(&left.0, locals);
-            collect_pattern_names(&right.0, locals);
+        Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                collect_pattern_names(&alternative.0, locals);
+            }
         }
         Pattern::Regex { captures, .. } => {
             for name in captures {

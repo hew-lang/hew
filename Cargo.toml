@@ -2,6 +2,7 @@
 members = [
   "hew-cabi",
   "hew-codec",
+  "hew-debug-abi",
   "hew-calendar",
   "hew-expand",
   "hew-std",
@@ -18,6 +19,7 @@ members = [
   "hew-types",
   "hew-observe",
   "hew-observe-protocol",
+  "hew-symbolize",
   "hew-wasm",
   "hew-analysis",
   "hew-compile",
@@ -40,7 +42,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0-rc1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]
@@ -60,7 +62,6 @@ clap_complete = "4"
 base64 = "0.22"
 rmp-serde = "1"
 stacker = "0.1"
-dirs = "6"
 finl_unicode = "1"
 sha2 = "0.11"
 indexmap = "2"
@@ -105,12 +106,25 @@ inherits = "dev"
 debug = "full"
 split-debuginfo = "off"
 
+# The shipped compiler keeps line tables for the workspace's own crates so a
+# compiler crash symbolizes; third-party crates carry none. Packaging splits
+# them out of the binary into the per-target debug assets (`hew.debug` under
+# `.build-id/`, `hew.dSYM`, `hew.pdb`).
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
-strip = true
+debug = "line-tables-only"
+strip = "none"
 panic = "unwind"
+
+# `strip = "none"` keeps cargo from defaulting to `strip = "debuginfo"` for
+# crates without debug info: on macOS that strip leaves proc-macro dylibs that
+# rustc cannot load (E0463). Only linked artefacts are affected, and the
+# binaries that ship are workspace members.
+[profile.release.package."*"]
+debug = 0
+strip = "none"
 
 # Profile for the SHIPPED `libhew.a` (and other consumer-facing staticlibs).
 # Fat LTO folds prebuilt libstd into the archive's merged codegen unit, which
@@ -120,9 +134,22 @@ panic = "unwind"
 # archive without LTO keeps the prebuilt libstd members verbatim, so a package
 # built with the same pinned rustc dedupes naturally at link time (see
 # hew-cli/src/native_link.rs module docs). Binaries keep the LTO'd `release`.
+#
+# Debug info in the archive is the runtime's line tables and nothing else, so a
+# crashing program shows `hew-runtime` frames at file:line without carrying
+# DWARF for libstd, the C crypto dependencies or the other Rust crates.
+# `scripts/release-lib.py` builds this profile with frame pointers and remapped
+# toolchain paths, then strips debug sections from every archive member but
+# `hew-runtime`'s (the other workspace crates keep line tables for the
+# compiler binary this profile also builds; prebuilt libstd and
+# compiler_builtins carry their own).
 [profile.release-lib]
 inherits = "release"
 lto = "off"
+
+[profile.release-lib.package."*"]
+debug = 0
+strip = "none"
 
 [patch.crates-io]
 pulldown-cmark = { path = "vendor/pulldown-cmark" }

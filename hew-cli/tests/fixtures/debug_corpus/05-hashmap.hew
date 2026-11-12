@@ -1,0 +1,15 @@
+// HashMap insert/get/remove.
+fn main() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("one", 1);
+    m.insert("two", 2);
+    m.insert("three", 3);
+    println(m.len());
+    match m.get("two") {
+        .Some(v) => println(v),
+        .None => println("missing"),
+    }
+    let _ = m.remove("one");
+    println(m.contains_key("one"));
+    println(m.len());
+}

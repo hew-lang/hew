@@ -1,0 +1,9 @@
+// FAILURE: assert on a false condition.
+fn compute(a: i64, b: i64) -> i64 {
+    a * b + 1
+}
+
+fn main() {
+    assert(compute(2, 3) == 7);
+    assert(compute(3, 3) == 9);
+}

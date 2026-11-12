@@ -511,7 +511,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("finish rejected request")?;
             self.builder.position_at_end(replied);
         }
-        self.emit_ask_result(result, status, reply, &handler.return_ty)?;
+        let failure_fn = get_or_declare_external(
+            self.llvm,
+            "hew_actor_call_failure",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let failure = call_value(
+            &self.builder,
+            failure_fn,
+            &[operation.into()],
+            "ask.failure",
+        )?
+        .into_pointer_value();
+        self.emit_ask_result(result, status, reply, &handler.return_ty, Some(failure))?;
         self.builder
             .build_unconditional_branch(done)
             .llvm_ctx("finish selected completion")?;
@@ -645,6 +657,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         status: IntValue<'ctx>,
         reply: Option<PointerValue<'ctx>>,
         reply_ty: &ResolvedTy,
+        failure: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()> {
         let glue = self
             .module
@@ -671,6 +684,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.slots[result.0 as usize].into(),
                     status.into(),
                     reply.unwrap_or_else(|| pointer.const_null()).into(),
+                    failure.unwrap_or_else(|| pointer.const_null()).into(),
                 ],
                 "",
             )
@@ -704,7 +718,12 @@ fn ask_result_thunk<'ctx>(
     let function = llvm.add_function(
         &name,
         ctx.void_type().fn_type(
-            &[pointer.into(), ctx.i32_type().into(), pointer.into()],
+            &[
+                pointer.into(),
+                ctx.i32_type().into(),
+                pointer.into(),
+                pointer.into(),
+            ],
             false,
         ),
         Some(Linkage::Internal),
@@ -730,7 +749,8 @@ fn ask_result_thunk<'ctx>(
     let out = function.get_nth_param(0).unwrap().into_pointer_value();
     let status = function.get_nth_param(1).unwrap().into_int_value();
     let reply = has_reply.then(|| function.get_nth_param(2).unwrap().into_pointer_value());
-    values.write_ask_result(glue, reply_ty, out, status, reply)?;
+    let failure = function.get_nth_param(3).unwrap().into_pointer_value();
+    values.write_ask_result(glue, reply_ty, out, status, reply, failure)?;
     Ok(function)
 }
 
@@ -742,6 +762,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         out: PointerValue<'ctx>,
         status: IntValue<'ctx>,
         reply: Option<PointerValue<'ctx>>,
+        failure: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let error_ty = &glue.variants[1].fields[0].ty;
         let error = self.ctx.append_basic_block(self.value, "ask.error");
@@ -769,7 +790,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 .build_unconditional_branch(error)
                 .llvm_ctx("materialize admission error")?;
             self.builder.position_at_end(error);
-            self.emit_ask_status_error(status, out, error_ty, glue.id, done)?;
+            self.emit_ask_status_error(status, out, error_ty, glue.id, done, failure)?;
             self.builder.position_at_end(done);
             self.builder
                 .build_return(None)
@@ -820,7 +841,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 .llvm_ctx("finish completed call")?;
         }
         self.builder.position_at_end(error);
-        self.emit_ask_status_error(status, out, error_ty, glue.id, done)?;
+        self.emit_ask_status_error(status, out, error_ty, glue.id, done, failure)?;
         self.builder.position_at_end(done);
         self.builder
             .build_return(None)
@@ -839,6 +860,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         error_ty: &ResolvedTy,
         glue_id: hew_mir::physical::PhysicalVariantId,
         done: inkwell::basic_block::BasicBlock<'ctx>,
+        failure: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let error_glue = self
             .module
@@ -895,6 +917,60 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             .build_conditional_branch(assigned, known, unknown)
             .llvm_ctx("select the ActorError role")?;
         self.builder.position_at_end(known);
+        let trapped = self.ctx.append_basic_block(self.value, "ask.error.trapped");
+        let unit = self.ctx.append_basic_block(self.value, "ask.error.unit");
+        let is_trapped = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                i32_ty.const_int(
+                    hew_runtime::internal::types::AskError::HandlerTrapped as u64,
+                    false,
+                ),
+                "ask.error.is_trapped",
+            )
+            .llvm_ctx("identify a handler failure")?;
+        self.builder
+            .build_conditional_branch(is_trapped, trapped, unit)
+            .llvm_ctx("select trap payload")?;
+        self.builder.position_at_end(trapped);
+        let trapped_tag = error_glue
+            .runtime_tag(hew_mir::RuntimeVariantRole::ActorErrorTrapped)
+            .ok_or_else(|| CodegenError::FailClosed("ActorError lacks its trapped role".into()))?;
+        let info_ty = &error_glue.variants[trapped_tag as usize]
+            .fields
+            .first()
+            .ok_or_else(|| CodegenError::FailClosed("ActorError.Trapped lacks CrashInfo".into()))?
+            .ty;
+        let info_layout =
+            self.module.target.layout(info_ty).ok_or_else(|| {
+                CodegenError::FailClosed("trapped CrashInfo lacks its layout".into())
+            })?;
+        let info = self.entry_scratch(llvm_type(self.ctx, &info_layout.repr)?, "ask.crash.info")?;
+        let kind_fn = get_or_declare_external(
+            self.llvm,
+            "hew_failure_snapshot_kind",
+            i32_ty.fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+        )?;
+        let kind = call_value(self.builder, kind_fn, &[failure.into()], "ask.crash.kind")?
+            .into_int_value();
+        self.emit_failure_info(info_ty, info, failure, kind)?;
+        let info = self.load_value(info, info_layout, "ask.crash.value")?;
+        let error_layout = self
+            .module
+            .target
+            .layout(error_ty)
+            .ok_or_else(|| CodegenError::FailClosed("ActorError lacks its layout".into()))?;
+        let error_slot =
+            self.entry_scratch(llvm_type(self.ctx, &error_layout.repr)?, "ask.crash.error")?;
+        self.write_variant_value(error_slot, trapped_tag, &[info], error_glue.id)?;
+        let error_value = self.load_value(error_slot, error_layout, "ask.crash.error.value")?;
+        self.write_variant_value(out, 1, &[error_value], glue_id)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish trapped ask error")?;
+        self.builder.position_at_end(unit);
         let tag = self
             .builder
             .build_int_z_extend(tag, i32_ty, "ask.error.tag")

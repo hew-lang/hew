@@ -1,0 +1,29 @@
+// Labeled break/continue across nested loops, while and loop.
+fn main() {
+    var found = 0;
+    @outer: for i in 1..10 {
+        for j in 1..10 {
+            if j > i {
+                continue @outer;
+            }
+            if i * j == 42 {
+                found = i * 100 + j;
+                break @outer;
+            }
+        }
+    }
+    println(found);
+    var n = 0;
+    loop {
+        n = n + 1;
+        if n == 7 {
+            break;
+        }
+    }
+    println(n);
+    var k = 10;
+    while k > 0 {
+        k = k - 3;
+    }
+    println(k);
+}

@@ -33,7 +33,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use hew_runtime::actor::hew_actor_send;
-use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
+use hew_runtime::crash::{hew_crash_log_count, last_crash};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, test_wait_for_restart,
@@ -101,7 +101,7 @@ static DISPATCH_SIGNAL: DispatchSignal = DispatchSignal::new();
 ///
 /// # Safety
 ///
-/// `hew_crash_log_count` and `hew_crash_log_last` are lock-free reads from
+/// `hew_crash_log_count` and `last_crash` are lock-free reads from
 /// a global ring buffer. Safe to call from any thread.
 unsafe fn wait_for_crash_report_signal(log_before: i32, timeout: Duration) -> Option<i32> {
     let deadline = Instant::now() + timeout;
@@ -110,10 +110,8 @@ unsafe fn wait_for_crash_report_signal(log_before: i32, timeout: Duration) -> Op
         // ring buffer counter; safe from any thread.
         let count = unsafe { hew_crash_log_count() };
         if count > log_before {
-            // SAFETY: hew_crash_log_last reads the most-recent CrashReport
-            // from the ring buffer; safe from any thread.
-            let report = unsafe { hew_crash_log_last() };
-            return Some(report.signal);
+            let report = last_crash().expect("the ring holds the new crash");
+            return Some(report.code);
         }
         if Instant::now() >= deadline {
             return None;

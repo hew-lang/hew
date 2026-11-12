@@ -753,9 +753,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&base.0, &base.1, body);
                 }
             }
-            Expr::Binary { left, right, .. } => {
-                self.walk_expr(&left.0, &left.1, body);
-                self.walk_expr(&right.0, &right.1, body);
+            Expr::Binary { first, steps } => {
+                for operand in Expr::binary_operands(first, steps) {
+                    self.walk_expr(&operand.0, &operand.1, body);
+                }
             }
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {
@@ -1163,9 +1164,10 @@ fn collect_pattern_bindings<'ast>(
                 collect_pattern_field_bindings(source, span, field, bindings);
             }
         }
-        Pattern::Or(left, right) => {
-            collect_pattern_bindings(source, &left.0, &left.1, bindings);
-            collect_pattern_bindings(source, &right.0, &right.1, bindings);
+        Pattern::Or(alternatives) => {
+            for alternative in alternatives {
+                collect_pattern_bindings(source, &alternative.0, &alternative.1, bindings);
+            }
         }
         // Regex captures are named bindings in scope for the arm body.
         Pattern::Regex { captures, .. } => {

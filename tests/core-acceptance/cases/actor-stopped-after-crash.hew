@@ -32,7 +32,7 @@ actor ClosingReader {
 fn main() {
     let reader = spawn Reader;
     match reader.feed("boom") {
-        .Err(.Trapped) => println("trapped"),
+        .Err(.Trapped(_)) => println("trapped"),
         _ => panic("expected trapped handler"),
     }
     stopped(reader);
@@ -40,7 +40,7 @@ fn main() {
 
     let closing_reader = spawn ClosingReader;
     match closing_reader.feed("boom") {
-        .Err(.Trapped) => println("trapped"),
+        .Err(.Trapped(_)) => println("trapped"),
         _ => panic("expected trapped handler"),
     }
     assert(scope {

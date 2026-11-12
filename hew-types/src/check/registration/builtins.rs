@@ -265,6 +265,9 @@ impl Checker {
         // be visible without an explicit stdlib import: Display blanket impls
         // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
         // methods from `std/string.hew` and `std/io.hew`.
+        // ActorError carries the std.failure diagnostic, so its source owner
+        // must be registered before the builtins enum is resolved.
+        self.register_builtin_failure_surface();
         self.register_builtins_hew_impls();
         // Generic print/println/to_string require the prelude's Display,
         // whose declaration the compiled-in builtins source just registered.
@@ -319,7 +322,6 @@ impl Checker {
         // inline and on-disk programs. Register only their `CrashInfo` and
         // `CrashAction` declarations before module-graph discovery;
         // `CrashNotification` remains source-import-only for `#[on(exit)]`.
-        self.register_builtin_failure_surface();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_monitor_ref_surface();
         }
@@ -649,7 +651,16 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            // With a module graph, the real source walk owns function bodies
+            // and signatures. Registering them here as well would duplicate
+            // the same declaration; the embedded-only path still needs them.
+            let has_search_paths = self.module_registry.has_search_paths();
+            let items: Vec<_> = parsed
+                .program
+                .items
+                .into_iter()
+                .filter(|(item, _)| !has_search_paths || !matches!(item, Item::Function(_)))
+                .collect();
             self.register_stdlib_hew_items(
                 "failure",
                 "std.failure",

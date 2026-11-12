@@ -1,0 +1,17 @@
+// STUCK: a handler sleeps for an hour; the asking main waits forever (kill with SIGINT/timeout).
+actor Slow {
+    receive fn work() -> i64 {
+        println("slow: sleeping");
+        sleep(3600s);
+        1
+    }
+}
+
+fn main() {
+    let s = spawn Slow;
+    println("main: asking");
+    match s.work() {
+        .Ok(v) => println(v),
+        .Err(_) => println("failed"),
+    }
+}

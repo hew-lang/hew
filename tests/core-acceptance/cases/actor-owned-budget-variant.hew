@@ -30,7 +30,7 @@ fn main() -> i64 {
     stop(exact);
     stopped(exact);
     let small = spawn Small;
-    match small.run() { .Err(.Trapped) => println("variant limit"), _ => return 2, }
+    match small.run() { .Err(.Trapped(_)) => println("variant limit"), _ => return 2, }
     stopped(small);
     0
 }

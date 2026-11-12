@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hew_parser::ast::{Pattern as SyntaxPattern, Spanned, Symbol};
+use hew_parser::ast::{Pattern as SyntaxPattern, Symbol};
 use hew_parser::macro_syntax::{Delimiter, Fragment, FragmentKind, TokenTree};
 use hew_parser::parser::Parser;
 
@@ -425,12 +425,25 @@ fn match_sequence_inner(
                         return Some(end);
                     }
                     state.rewind(checkpoint);
-                    for (consumed, pattern) in prefixes {
+                    for (consumed, taken) in prefixes {
                         let checkpoint = state.checkpoint();
+                        let Fragment::Pat((SyntaxPattern::Or(alternatives), span)) =
+                            capture.syntax.as_ref()
+                        else {
+                            unreachable!("pattern prefixes come from an or-pattern");
+                        };
+                        let pattern = if taken == 1 {
+                            alternatives[0].clone()
+                        } else {
+                            (
+                                SyntaxPattern::Or(alternatives[..taken].to_vec()),
+                                span.start..alternatives[taken - 1].1.end,
+                            )
+                        };
                         state.captures.push((
                             *name,
                             Capture {
-                                syntax: Arc::new(Fragment::Pat(pattern.clone())),
+                                syntax: Arc::new(Fragment::Pat(pattern)),
                                 tokens: Arc::from(&remaining[..consumed]),
                             },
                         ));
@@ -526,20 +539,20 @@ fn parse_capture(
     ))
 }
 
-fn pattern_prefixes<'a>(
-    capture: &'a Capture,
-    trees: &[TokenTree],
-) -> Vec<(usize, &'a Spanned<SyntaxPattern>)> {
-    let Fragment::Pat(pattern) = capture.syntax.as_ref() else {
+/// Shorter readings of a captured or-pattern, longest first: each leading run
+/// of its alternatives, so a following literal `|` in the rule can match.
+fn pattern_prefixes(capture: &Capture, trees: &[TokenTree]) -> Vec<(usize, usize)> {
+    let Fragment::Pat((SyntaxPattern::Or(alternatives), _)) = capture.syntax.as_ref() else {
         return Vec::new();
     };
-    let mut pattern = pattern;
     let mut prefixes = Vec::new();
-    while let SyntaxPattern::Or(left, _) = &pattern.0 {
-        pattern = left;
-        let count = trees.partition_point(|tree| tree.span().end <= pattern.1.end);
+    for taken in (1..alternatives.len()).rev() {
+        let end = alternatives[taken - 1].1.end;
+        let count = trees.partition_point(|tree| tree.span().end <= end);
         if count > 0 && trees.get(count).and_then(spelling) == Some("|") {
-            prefixes.push((count, pattern));
+            // Clone only the prefixes actually tried by the matcher, after
+            // its full captured pattern has failed.
+            prefixes.push((count, taken));
         }
     }
     prefixes

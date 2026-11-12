@@ -39,6 +39,10 @@ actor Walker {
             .StackOverflow => true,
             _ => false,
         });
+        assert(match info.trap {
+            .Some(.StackOverflow) => true,
+            _ => false,
+        });
         CrashAction.Restart
     }
 }
@@ -53,7 +57,10 @@ fn main() {
     let group = spawn Group;
     println(group.walker.floor().expect("floor in a handler"));
     match group.walker.unbounded() {
-        .Err(.Trapped) => println("walker overflowed"),
+        .Err(.Trapped(info)) => {
+            assert(match info.trap { .Some(.StackOverflow) => true, _ => false });
+            println("walker overflowed");
+        }
         _ => panic("expected a stack overflow"),
     }
     restarted(group.walker);

@@ -308,7 +308,7 @@ impl Checker {
             Expr::QualifiedAssoc(path) => self.synthesize_qualified_assoc(path, span),
 
             // Binary ops
-            Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right, span),
+            Expr::Binary { first, steps } => self.synthesize_binary_steps(first, steps, None),
 
             // Unary ops
             Expr::Unary { op, operand } => self.synthesize_unary_op(*op, operand, span),

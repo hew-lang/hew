@@ -1,0 +1,40 @@
+// Option/Result with ? propagation.
+fn parse_digit(c: i64) -> Result<i64, string> {
+    if c >= 0 && c <= 9 {
+        .Ok(c)
+    } else {
+        .Err("not a digit")
+    }
+}
+
+fn add_digits(a: i64, b: i64) -> i64 fails string {
+    let x = parse_digit(a)?;
+    let y = parse_digit(b)?;
+    x + y
+}
+
+fn find_even(limit: i64) -> Option<i64> {
+    for i in 1..limit {
+        if i % 2 == 0 {
+            return .Some(i);
+        }
+    }
+    .None
+}
+
+fn main() {
+    match add_digits(3, 4) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e),
+    }
+    match add_digits(3, 40) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e),
+    }
+    for limit in [10, 2] {
+        match find_even(limit) {
+            .Some(v) => println(v),
+            .None => println("none"),
+        }
+    }
+}

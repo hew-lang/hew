@@ -812,24 +812,6 @@ impl Checker {
             }
             self.effect_graph.receivers.insert(key.clone(), receiver);
         }
-        if let Expr::Binary { left, op, .. } = expr {
-            use hew_parser::ast::BinaryOp;
-            let capability = match op {
-                BinaryOp::Equal | BinaryOp::NotEqual => Some(crate::ValueCapability::Eq),
-                BinaryOp::Less => Some(crate::ValueCapability::Less),
-                BinaryOp::LessEqual => Some(crate::ValueCapability::LessEqual),
-                BinaryOp::Greater => Some(crate::ValueCapability::Greater),
-                BinaryOp::GreaterEqual => Some(crate::ValueCapability::GreaterEqual),
-                _ => None,
-            };
-            if let Some(capability) = capability {
-                if let Some(ty) = self.callee_value_type(left) {
-                    self.effect_graph
-                        .value_operations
-                        .insert(key.clone(), (ty, capability));
-                }
-            }
-        }
         if let Expr::InterpolatedString(parts) = expr {
             for part in parts {
                 if let hew_parser::ast::StringPart::Expr(value)
@@ -841,6 +823,47 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// A comparison selects a value capability of its left operand's type.
+    pub(super) fn record_binary_value_operation(
+        &mut self,
+        key: &SpanKey,
+        op: hew_parser::ast::BinaryOp,
+        left_ty: Option<Ty>,
+    ) {
+        use hew_parser::ast::BinaryOp;
+        let capability = match op {
+            BinaryOp::Equal | BinaryOp::NotEqual => Some(crate::ValueCapability::Eq),
+            BinaryOp::Less => Some(crate::ValueCapability::Less),
+            BinaryOp::LessEqual => Some(crate::ValueCapability::LessEqual),
+            BinaryOp::Greater => Some(crate::ValueCapability::Greater),
+            BinaryOp::GreaterEqual => Some(crate::ValueCapability::GreaterEqual),
+            _ => None,
+        };
+        if let (Some(capability), Some(ty)) = (capability, left_ty) {
+            self.effect_graph
+                .value_operations
+                .insert(key.clone(), (ty, capability));
+        }
+    }
+
+    /// The effect graph's record of a binary operation's value at `span`:
+    /// the part of [`Self::record_expression_effect`] a binary form reaches.
+    pub(super) fn record_binary_expression_effect(
+        &mut self,
+        span: &Span,
+        op: hew_parser::ast::BinaryOp,
+        left_ty: Option<Ty>,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if let Some(owner) = &self.effect_graph.current_body {
+            self.effect_graph
+                .expression_owners
+                .insert(key.clone(), owner.clone());
+        }
+        self.record_binary_value_operation(&key, op, left_ty);
+        self.record_receiver_release_effect(&key);
     }
 
     pub(super) fn record_expression_effect(&mut self, expr: &Expr, span: &Span) {

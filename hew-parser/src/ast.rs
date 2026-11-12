@@ -455,10 +455,13 @@ impl CallArg {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
+    /// A left-associative run of binary operators at one precedence level:
+    /// `first op1 right1 op2 right2 …` evaluates as
+    /// `((first op1 right1) op2 right2) …`. A plain `a + b` is one step.
+    /// Range operators are never chained.
     Binary {
-        left: Box<Spanned<Expr>>,
-        op: BinaryOp,
-        right: Box<Spanned<Expr>>,
+        first: Box<Spanned<Expr>>,
+        steps: Vec<BinaryStep>,
     },
     Unary {
         op: UnaryOp,
@@ -959,7 +962,9 @@ pub enum Pattern {
         rest: Option<Span>,
     },
     Tuple(Vec<Spanned<Pattern>>),
-    Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// Two or more alternatives in source order, `a | b | c`. A flat list, so
+    /// a long alternation is one level of nesting rather than one per `|`.
+    Or(Vec<Spanned<Pattern>>),
     /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.
     ///
     /// `pattern` is the normalised regex string (delimiter escapes decoded,
@@ -993,6 +998,80 @@ pub struct ContextVariantPattern {
 pub struct Block {
     pub stmts: Vec<Spanned<Stmt>>,
     pub trailing_expr: Option<Box<Spanned<Expr>>>,
+}
+
+/// One step of an [`Expr::Binary`] chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BinaryStep {
+    pub op: BinaryOp,
+    pub right: Spanned<Expr>,
+    /// The span of the value this step produces: from the chain's first
+    /// operand through this step's right operand. Side tables keyed by the
+    /// span of an intermediate result use it.
+    pub span: Span,
+}
+
+impl Expr {
+    /// The operands of a binary chain, in evaluation order.
+    pub fn binary_operands<'a>(
+        first: &'a Spanned<Expr>,
+        steps: &'a [BinaryStep],
+    ) -> impl Iterator<Item = &'a Spanned<Expr>> {
+        std::iter::once(first).chain(steps.iter().map(|step| &step.right))
+    }
+
+    /// The operands of a binary chain, mutably, in evaluation order.
+    pub fn binary_operands_mut<'a>(
+        first: &'a mut Spanned<Expr>,
+        steps: &'a mut [BinaryStep],
+    ) -> impl Iterator<Item = &'a mut Spanned<Expr>> {
+        std::iter::once(first).chain(steps.iter_mut().map(|step| &mut step.right))
+    }
+
+    /// `(left, op, right)` when this is a one-step binary expression.
+    #[must_use]
+    pub fn as_binary_pair(&self) -> Option<(&Spanned<Expr>, BinaryOp, &Spanned<Expr>)> {
+        match self {
+            Expr::Binary { first, steps } => match steps.as_slice() {
+                [step] => Some((first, step.op, &step.right)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The last step of a binary chain as `(left span, op, right)`, where the
+    /// left span is that of the prefix the last operator applies to.
+    #[must_use]
+    pub fn binary_last(&self) -> Option<(&Span, BinaryOp, &Spanned<Expr>)> {
+        match self {
+            Expr::Binary { first, steps } => {
+                let (last, init) = steps.split_last()?;
+                let left = init.last().map_or(&first.1, |step| &step.span);
+                Some((left, last.op, &last.right))
+            }
+            _ => None,
+        }
+    }
+
+    /// A one-step binary expression.
+    #[must_use]
+    pub fn binary(left: Spanned<Expr>, op: BinaryOp, right: Spanned<Expr>, span: Span) -> Expr {
+        Expr::Binary {
+            first: Box::new(left),
+            steps: vec![BinaryStep { op, right, span }],
+        }
+    }
+
+    /// The operator of the last step of a binary chain: the operator that
+    /// produces the chain's value.
+    #[must_use]
+    pub fn binary_last_op(&self) -> Option<BinaryOp> {
+        match self {
+            Expr::Binary { steps, .. } => steps.last().map(|step| step.op),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

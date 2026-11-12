@@ -36,7 +36,7 @@ fn main() -> i64 {
     println(index.snapshots().expect("snapshots"));
     println(index.snapshots().expect("refunded snapshots"));
     match index.retain_two() {
-        .Err(.Trapped) => println("snapshot limit"),
+        .Err(.Trapped(_)) => println("snapshot limit"),
         _ => return 2,
     }
     stopped(index);

@@ -1,7 +1,7 @@
 //! Node-owned inbound asks driven by ordinary actor-call readiness.
 
 use super::inbound::{
-    send_refusal_reply, send_rejection_reply, send_reply_envelope, InboundAskGuard,
+    send_refusal_reply, send_rejection_reply, send_reply_envelope, send_trap_reply, InboundAskGuard,
 };
 use super::{AskError, InboundRequest, SendConnMgr};
 use crate::actor_call_native::{hew_actor_call_free, hew_actor_call_poll, HewActorCall};
@@ -351,6 +351,9 @@ impl PendingCall {
         self.state = PendingState::Done;
         // SAFETY: the ready operation remains exclusively owned until take below.
         let refused = unsafe { (*operation).unaccepted() };
+        // The call is freed by ask_take; retain the same owned fault first.
+        // SAFETY: this worker exclusively owns the live operation.
+        let failure = unsafe { (*operation).failure_snapshot() };
         // SAFETY: this ready operation is uniquely owned and consumed here.
         match unsafe {
             InboundRequest::ask_take(
@@ -364,6 +367,14 @@ impl PendingCall {
                 self.request_id,
                 self.publication,
                 &reply,
+                self.manager.0,
+                self.shutdown.as_ref(),
+            ),
+            Err(AskError::HandlerTrapped) if !refused => send_trap_reply(
+                self.source_node,
+                self.request_id,
+                self.publication,
+                failure.as_deref(),
                 self.manager.0,
                 self.shutdown.as_ref(),
             ),

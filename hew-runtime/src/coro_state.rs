@@ -56,6 +56,7 @@ pub(crate) struct InvocationContext {
     pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
     pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
     pub(crate) actor_message_type: i32,
+    pub(crate) actor_link_target: Option<crate::monitor::HewNotificationTarget>,
     pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     pub(crate) request_deadline: crate::request_deadline::RequestDeadline,
     budget: std::sync::Arc<AtomicU32>,
@@ -281,6 +282,7 @@ unsafe fn context_with_token(
         rc_owner: crate::rc::current_allocations(),
         value_owner: crate::owned_value_budget::current_owner(),
         actor_message_type: 0,
+        actor_link_target: None,
         actor_caller: crate::actor_caller::HewCallerStamp::default(),
         request_deadline: crate::request_deadline::RequestDeadline::current(),
         budget,
@@ -396,6 +398,7 @@ pub unsafe extern "C" fn hew_coro_state_init_construction(
     };
     context.actor_turn = crate::lifetime::live_actors::ActorIncarnation::NONE;
     context.actor_message_type = execution.actor_message_type;
+    context.actor_link_target = execution.actor_link_target;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
     context.rc_owner = Some(std::sync::Arc::default());
@@ -509,6 +512,7 @@ unsafe fn owned_child(
     context.rc_owner.clone_from(&execution.rc_owner);
     context.value_owner.clone_from(&execution.value_owner);
     context.actor_message_type = execution.actor_message_type;
+    context.actor_link_target = execution.actor_link_target;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = deadline;
     HewCoroState::with_context(
@@ -674,6 +678,7 @@ pub unsafe extern "C" fn hew_coro_state_enter_token(
     context.rc_owner.clone_from(&execution.rc_owner);
     context.value_owner.clone_from(&execution.value_owner);
     context.actor_message_type = execution.actor_message_type;
+    context.actor_link_target = execution.actor_link_target;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
     state.invocation.context = Box::into_raw(Box::new(context)).cast();

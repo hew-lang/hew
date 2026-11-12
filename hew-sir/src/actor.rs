@@ -45,13 +45,16 @@ impl ActorIngressAdapter {
         }
         Ok(handler)
     }
+}
 
-    #[must_use]
-    pub fn pointer_type() -> ResolvedTy {
-        ResolvedTy::Pointer {
-            is_mutable: false,
-            pointee: Box::new(ResolvedTy::U8),
-        }
+/// The type of a compiler-synthesized static address handed to the runtime:
+/// an actor ingress adapter or the bytes of a string literal. It is never a
+/// source-language raw-pointer value.
+#[must_use]
+pub fn static_address_type() -> ResolvedTy {
+    ResolvedTy::Pointer {
+        is_mutable: false,
+        pointee: Box::new(ResolvedTy::U8),
     }
 }
 

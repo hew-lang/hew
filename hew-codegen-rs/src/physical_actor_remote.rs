@@ -95,7 +95,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "remote.outcome",
         )?
         .into_int_value();
-        self.emit_ask_result(result, status, reply, reply_ty)?;
+        let failure_fn = get_or_declare_external(
+            self.llvm,
+            "hew_remote_call_failure",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let failure = call_value(
+            &self.builder,
+            failure_fn,
+            &[operation.into()],
+            "remote.failure",
+        )?
+        .into_pointer_value();
+        self.emit_ask_result(result, status, reply, reply_ty, Some(failure))?;
         // Both exits converge on one release of the call.
         let mut join = self.exit_join("remote.release");
         self.leave(&mut join, suspend::EXIT_NORMAL)?;

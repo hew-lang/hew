@@ -210,7 +210,7 @@ actor Worker {
 fn main() {
     let worker = spawn Worker;
     println(match worker.fail() {
-        .Err(.Trapped) => "contained",
+        .Err(.Trapped(_)) => "contained",
         _ => "wrong outcome",
     });
     println(match worker.fail() {

@@ -116,6 +116,21 @@ pub unsafe extern "C" fn hew_managed_visit_actor_call(
 }
 
 impl HewActorCall {
+    /// Read the immutable diagnostic while this operation retains its route.
+    pub(crate) fn failure_snapshot(&self) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
+        match &self.route {
+            // SAFETY: the operation retains its waiter-side channel until cleanup.
+            CallRoute::Local(local) => unsafe {
+                crate::reply_channel::published_failure(local.channel)
+            },
+            #[cfg(not(target_arch = "wasm32"))]
+            CallRoute::Imported { operation, .. } => {
+                // SAFETY: this operation owns its live remote call.
+                unsafe { operation.as_ref() }.and_then(|call| call.failure.clone())
+            }
+        }
+    }
+
     unsafe fn prepare_cleanup(&mut self) {
         if self.cleanup_started {
             return;
@@ -865,6 +880,21 @@ pub unsafe extern "C" fn hew_actor_call_take(
         }
         status
     }
+}
+
+/// Borrow the immutable diagnostic behind a selected local actor call.
+///
+/// # Safety
+/// `operation` is a live selected call, retained until the diagnostic has
+/// been materialized. The returned pointer is never a wire value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_call_failure(operation: *const HewActorCall) -> *const c_void {
+    // SAFETY: the selected caller retains its operation for this borrow.
+    let Some(operation) = (unsafe { operation.as_ref() }) else {
+        return ptr::null();
+    };
+    let snapshot = operation.failure_snapshot();
+    snapshot.map_or(ptr::null(), |snapshot| Arc::as_ptr(&snapshot).cast())
 }
 
 /// Drain owners abandoned by a completed or cancelled call before freeing it.

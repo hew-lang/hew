@@ -32,9 +32,10 @@ impl Checker {
         ty: &crate::Ty,
         source: &IndirectCallCandidates,
     ) {
-        if let Pattern::Or(left, right) = &pattern.0 {
-            self.record_pattern_candidate_sources(left, ty, source);
-            self.record_pattern_candidate_sources(right, ty, source);
+        if let Pattern::Or(alternatives) = &pattern.0 {
+            for alternative in alternatives {
+                self.record_pattern_candidate_sources(alternative, ty, source);
+            }
             return;
         }
         let key = SpanKey::in_module(&pattern.1, self.current_module_idx);

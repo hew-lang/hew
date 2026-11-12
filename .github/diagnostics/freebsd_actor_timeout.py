@@ -62,7 +62,7 @@ def measure(name, binary, count, expected):
     for log in logs:
         log.close()
 
-measure('original-single-1', out / 'original/actor_state_vec_seat', 1, '1800004\n')
-measure('original-single-2', out / 'original/actor_state_vec_seat', 1, '1800004\n')
-measure('progress-four', out / 'progress/actor_progress', 4, '1800004\n')
+measure('original-single', out / 'original/actor_state_vec_seat', 1, '1800004\n')
+for repeat in range(8):
+    measure(f'original-four-{repeat}', out / 'original/actor_state_vec_seat', 4, '1800004\n')
 print('Diagnostic completed; this is not the full platform gate.', flush=True)

@@ -96,6 +96,7 @@ def npm_verify(
                 code = None
             if deadline is None or code not in {
                 "E404",
+                "ETARGET",
                 "E502",
                 "E503",
                 "E504",

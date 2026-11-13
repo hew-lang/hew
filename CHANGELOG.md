@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-12
+
+- Add owned actor failure diagnostics, native debugger launch and symbolization.
+- Upgrade distributed failure replies to protocol version 13; communicating
+  nodes must be upgraded together.
+- Reduce string interpolation allocations and compile long flat expressions
+  reliably in the browser.
+- Improve formatter fidelity, completion suggestions and selected math imports.
+- Repair incomplete Unix and Windows installations.
+
+See the [0.11.0 release notes](docs/releases/v0.11.0.md) for behaviour,
+migration guidance and known limitations.
+
 ## [0.11.0-rc4] - 2026-11-12
 
 - Offer completions with valid source spelling and call context for free

@@ -1,0 +1,29 @@
+import std.math.{total_cmp as right};
+
+machine Facing {
+    events {
+        left;
+        right;
+    }
+
+    state North;
+    state West;
+
+    on left: North => West;
+    on right: West => North;
+
+    default { state }
+}
+
+fn turn(left: Facing.Event) -> Facing.Event {
+    left
+}
+
+fn main() {
+    var facing = Facing.North;
+    let _ = facing.step(turn(Facing.Event.left)).expect("turn left");
+    println(facing.state_name());
+    let _ = facing.step(.right).expect("turn right");
+    println(facing.state_name());
+    println(right(-1.0, 1.0));
+}

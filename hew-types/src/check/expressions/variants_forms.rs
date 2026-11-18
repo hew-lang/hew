@@ -362,16 +362,6 @@ else needs `impl Display for {rendered}`)"
         true
     }
 
-    /// Look up whether any user-declared enum type (in `local_type_defs` or
-    /// `source_type_defs`) has a variant named `variant_name`.  Returns the
-    /// resolved `Ty` for that variant if found (unit variant → the enum type;
-    /// tuple variant → a `Ty::Function` constructing that enum), or `None` if
-    /// no user type shadows the given bare name.
-    ///
-    /// Used by `check_identifier` to implement the local-shadows-global rule:
-    /// when `fn_sigs[variant_name].is_builtin_variant` is `true`, the builtin
-    /// won the bare-name slot but a user-declared variant with the same name
-    /// should take priority within this compilation unit.
     /// Construct an enum nominal from the declaration authority already chosen
     /// by the checker. An exact generated-enum owner retains the catalog's
     /// builtin discriminator; every other source declaration wins over builtin
@@ -385,72 +375,33 @@ else needs `impl Display for {rendered}`)"
         self.named_ty_for_key(type_name, type_args)
     }
 
-    pub(super) fn find_user_variant_shadow_ty(&self, variant_name: &str) -> Option<Ty> {
-        // Iterate over local types (user-declared in root or imported source modules).
-        // Two-set iteration: local first, then source.  In practice most programs
-        // won't have shadowing at all, so this is a short-circuit path.
-        for type_name in self
-            .local_type_defs
+    /// A bare variant is an error-recovery candidate only when its enum is
+    /// bound in this file. Generated companion types are nested members.
+    pub(in crate::check) fn bare_variant_owner(
+        &self,
+        name: &str,
+        accepts: impl Fn(&TypeDef, &VariantDef) -> bool,
+    ) -> Option<(crate::NominalId, &TypeDef, Symbol)> {
+        let file = self.current_declaration_module()?;
+        self.type_defs
             .iter()
-            .chain(self.source_type_defs.iter())
-        {
-            let Some(td) = self.type_def_at(type_name.as_str()) else {
-                continue;
-            };
-            if td.kind != TypeDefKind::Enum {
-                continue;
-            }
-            let Some(variant) = td.variants.get(variant_name) else {
-                continue;
-            };
-            // Build fresh inference variables for any type parameters on the
-            // user enum (e.g. `enum Outcome<T> { Found(T); NotFound; }`).
-            let type_args: Vec<Ty> = td
-                .type_params
-                .iter()
-                .map(|_| Ty::Var(TypeVar::fresh()))
-                .collect();
-            let return_type = self.variant_nominal_ty(type_name, type_args.clone());
-            return Some(match variant {
-                VariantDef::Tuple(payload_tys) => {
-                    // Substitute generic type params with their corresponding
-                    // fresh inference variables in each payload type.
-                    let params: Vec<Ty> = payload_tys
-                        .iter()
-                        .map(|ty| {
-                            td.type_params.iter().zip(&type_args).fold(
-                                ty.clone(),
-                                |acc, (tp_name, fresh_var)| {
-                                    acc.substitute_type_param(*tp_name, fresh_var)
-                                },
-                            )
-                        })
-                        .collect();
-                    Ty::Function {
-                        capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                        params: params
-                            .into_iter()
-                            .map(crate::CallableParameter::borrowed)
-                            .collect(),
-                        ret: Box::new(return_type),
-                    }
+            .filter_map(|(id, td)| {
+                let variant = td.variants.get(name)?;
+                if !accepts(td, variant) {
+                    return None;
                 }
-                // Unit variants are values (no call needed); struct variants
-                // are constructed via `Expr::StructInit`, not
-                // `Expr::Ident` — this path is not reached for them.
-                VariantDef::Unit | VariantDef::Struct(_) => return_type,
-            });
-        }
-        None
-    }
-
-    pub(in crate::check) fn type_decl_has_bare_variants(&self, id: crate::NominalId) -> bool {
-        matches!(
-            self.defs.kind(id.declaration()),
-            crate::DeclarationKind::Type
-                | crate::DeclarationKind::Machine
-                | crate::DeclarationKind::MachineEventType
-        )
+                let spelling =
+                    self.scopes
+                        .visible_type_name(file, self.defs.name(id.declaration()), *id)?;
+                Some((*id, td, spelling))
+            })
+            .min_by_key(|(id, _, _)| {
+                let module = self
+                    .defs
+                    .module(id.declaration())
+                    .map(|module| self.scopes.namespace_of(module));
+                (module != Some(self.scopes.namespace_of(file)), *id)
+            })
     }
 
     /// Look up an identifier as a unit enum variant or qualified variant name.
@@ -468,57 +419,19 @@ else needs `impl Display for {rendered}`)"
                 return Ty::Error;
             }
         }
-        // Two-pass scan: user-declared (local/source) types win over builtin/
-        // imported types when both declare a unit variant with the same bare name
-        // (local-shadows-global rule).  Pass 1 considers only types recorded in
-        // `local_type_defs` or `source_type_defs`; pass 2 considers the rest.
+        if let Some((id, td, spelling)) = self.bare_variant_owner(name, |td, variant| {
+            matches!(variant, VariantDef::Tuple(_)) || Self::variant_is_source_unit(td, name)
+        }) {
+            let owner = self.defs.path(id.declaration());
+            let recovery = if matches!(td.variants.get(name), Some(VariantDef::Tuple(_))) {
+                Ty::Error
+            } else {
+                self.instantiated_unit_variant_ty(owner, td)
+            };
+            self.report_bare_variant_expr(name, &format!("{spelling}.{name}"), span);
+            return recovery;
+        }
         let mut found = None;
-        // `type_defs` is a hash table; when several enums share the variant,
-        // the first declared one is chosen so recovery and help are stable.
-        let mut ordered_type_defs: Vec<_> = self.type_defs.iter().collect();
-        ordered_type_defs.sort_unstable_by_key(|(id, _)| **id);
-        // Pass 1: user-declared types.
-        for &(id, td) in &ordered_type_defs {
-            if !self.type_decl_has_bare_variants(*id) {
-                continue;
-            }
-            let type_name = self.defs.path(id.declaration());
-            if !self.local_type_defs.contains(td.name.as_str())
-                && !self.source_type_defs.contains(td.name.as_str())
-                && !self.is_current_module_type_def(type_name)
-            {
-                continue;
-            }
-            if let Some(_variant) = td.variants.get(name) {
-                if Self::variant_is_source_unit(td, name.rsplit("::").next().unwrap_or(name)) {
-                    let ty = self.instantiated_unit_variant_ty(type_name, td);
-                    found = Some(ty);
-                    break;
-                }
-            }
-        }
-        // Pass 2: builtin/imported types (only when no user type matched).
-        if found.is_none() {
-            for &(id, td) in &ordered_type_defs {
-                if !self.type_decl_has_bare_variants(*id) {
-                    continue;
-                }
-                let type_name = self.defs.path(id.declaration());
-                if self.local_type_defs.contains(td.name.as_str())
-                    || self.source_type_defs.contains(td.name.as_str())
-                    || self.is_current_module_type_def(type_name)
-                {
-                    continue; // already scanned in pass 1
-                }
-                if let Some(_variant) = td.variants.get(name) {
-                    if Self::variant_is_source_unit(td, name.rsplit("::").next().unwrap_or(name)) {
-                        let ty = self.instantiated_unit_variant_ty(type_name, td);
-                        found = Some(ty);
-                        break;
-                    }
-                }
-            }
-        }
         // Handle qualified variant names (e.g., Light::Off, LightEvent::Toggle)
         if found.is_none() {
             if let Some(pos) = name.rfind("::") {
@@ -614,13 +527,6 @@ else needs `impl Display for {rendered}`)"
                     &[],
                     span,
                 );
-            }
-            if !name.contains("::") {
-                let replacement = ty.type_name().map_or_else(
-                    || format!(".{name}"),
-                    |owner| format!("{}.{name}", super::calls::variant_owner_spelling(owner)),
-                );
-                self.report_bare_variant_expr(name, &replacement, span);
             }
             ty
         } else {

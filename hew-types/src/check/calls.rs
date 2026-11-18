@@ -59,11 +59,15 @@ pub(super) fn variant_owner_spelling(type_name: &str) -> &str {
         .map_or(type_name, |(_, leaf)| leaf)
 }
 
+pub(super) struct VariantConstructor {
+    pub(super) type_name: String,
+    pub(super) expected_params: Vec<Ty>,
+    pub(super) type_params: Vec<crate::ParamHead>,
+    bare_qualifier: Option<Symbol>,
+}
+
 impl Checker {
-    pub(super) fn lookup_variant_constructor(
-        &self,
-        func_name: &str,
-    ) -> Option<(String, Vec<Ty>, Vec<crate::ParamHead>)> {
+    pub(super) fn lookup_variant_constructor(&self, func_name: &str) -> Option<VariantConstructor> {
         if let Some(pos) = func_name.rfind("::") {
             let type_prefix = &func_name[..pos];
             let variant_name = &func_name[pos + 2..];
@@ -87,98 +91,50 @@ impl Checker {
                         .filter(|key| self.type_def_at(key).is_some())
                 })
                 .unwrap_or(type_prefix);
-            let direct = self.type_def_at(direct_key).and_then(|td| {
-                if !matches!(
-                    td.kind,
-                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
-                ) {
-                    return None;
-                }
-                td.variants.get(variant_name).and_then(|variant| {
-                    let params = match variant {
-                        VariantDef::Unit => Vec::new(),
-                        VariantDef::Tuple(p) => p.clone(),
-                        VariantDef::Struct(_) => return None,
-                    };
-                    Some((direct_key.to_string(), params, td.type_params.clone()))
+            let lookup = |key: &str| {
+                let td = self.type_def_at(key)?;
+                let expected_params = match td.variants.get(variant_name)? {
+                    VariantDef::Unit => Vec::new(),
+                    VariantDef::Tuple(params) => params.clone(),
+                    VariantDef::Struct(_) => return None,
+                };
+                Some(VariantConstructor {
+                    type_name: key.to_string(),
+                    expected_params,
+                    type_params: td.type_params.clone(),
+                    bare_qualifier: None,
                 })
-            });
-            if direct.is_some() {
-                return direct;
-            }
-            // Import-alias fallback: `Geo::Box` where "Geo" was bound as an
-            // alias for "shapes.Shape".  Resolve through `import_type_name_aliases`
-            // and retry the variant lookup under the canonical qualified name.
-            let canonical = self.import_type_name_aliases.get(&(
-                self.current_module.clone(),
-                self.current_module_idx,
-                type_prefix.to_string(),
-            ))?;
-            self.type_def_at(canonical.as_str()).and_then(|td| {
-                if !matches!(
-                    td.kind,
-                    TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
-                ) {
-                    return None;
-                }
-                td.variants.get(variant_name).and_then(|variant| {
-                    let params = match variant {
-                        VariantDef::Unit => Vec::new(),
-                        VariantDef::Tuple(p) => p.clone(),
-                        VariantDef::Struct(_) => return None,
-                    };
-                    // Return the canonical type name so HIR lowering resolves
-                    // the constructor against the right registered type.
-                    Some((canonical.clone(), params, td.type_params.clone()))
-                })
+            };
+            lookup(direct_key).or_else(|| {
+                let canonical = self.import_type_name_aliases.get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    type_prefix.to_string(),
+                ))?;
+                lookup(canonical)
             })
         } else {
-            // Two-pass scan: local/source types win over builtin/imported types
-            // (local-shadows-global rule).  Pass 1 scans only locally-declared
-            // types; pass 2 scans the remainder.  This prevents a builtin unit
-            // variant (e.g. `LookupError::NotFound`) from shadowing a user-
-            // declared tuple variant with the same bare name
-            // (e.g. `AppError::NotFound(string)`).
-            let find_in = |name: &str, check_local: bool| {
-                self.type_defs
-                    .iter()
-                    .filter(|(id, td)| {
-                        if crate::actor_protocol::is_interceptor_member(
-                            &self.defs,
-                            id.declaration(),
-                        ) {
-                            return false;
-                        }
-                        let type_name = self.defs.path(id.declaration());
-                        let is_local = self.local_type_defs.contains(td.name.as_str())
-                            || self.source_type_defs.contains(td.name.as_str())
-                            || self.is_current_module_type_def(type_name);
-                        let kind_ok =
-                            td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
-                        kind_ok && (is_local == check_local)
-                    })
-                    .filter_map(|(id, td)| {
-                        td.variants.get(name).and_then(|variant| {
-                            let params = match variant {
-                                VariantDef::Unit => Vec::new(),
-                                VariantDef::Tuple(p) => p.clone(),
-                                VariantDef::Struct(_) => return None,
-                            };
-                            Some((*id, params, td.type_params.clone()))
-                        })
-                    })
-                    // Hash-table scan: the first declared owner wins a shared variant.
-                    .min_by_key(|(id, _, _)| *id)
-                    .map(|(id, params, generics)| {
-                        (
-                            self.defs.path(id.declaration()).to_string(),
-                            params,
-                            generics,
-                        )
-                    })
+            if self.scope_site().is_some_and(|site| {
+                self.scopes
+                    .value_head(&self.env, site, hew_parser::ast::Ident::new(func_name))
+                    .is_some()
+            }) {
+                return None;
+            }
+            let (id, td, spelling) = self.bare_variant_owner(func_name, |_, variant| {
+                matches!(variant, VariantDef::Unit | VariantDef::Tuple(_))
+            })?;
+            let params = match &td.variants[func_name] {
+                VariantDef::Unit => Vec::new(),
+                VariantDef::Tuple(params) => params.clone(),
+                VariantDef::Struct(_) => unreachable!("named payloads use struct construction"),
             };
-            // Pass 1: user-declared types; pass 2: builtin/imported types.
-            find_in(func_name, true).or_else(|| find_in(func_name, false))
+            Some(VariantConstructor {
+                type_name: self.defs.path(id.declaration()).to_owned(),
+                expected_params: params,
+                type_params: td.type_params.clone(),
+                bare_qualifier: Some(spelling),
+            })
         }
     }
 
@@ -988,8 +944,12 @@ impl Checker {
             return Some(Ty::Error);
         };
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(func_name.as_str());
-        if let Some((type_name, expected_params, type_params)) =
-            self.lookup_variant_constructor(constructor_name)
+        if let Some(VariantConstructor {
+            type_name,
+            expected_params,
+            type_params,
+            ..
+        }) = self.lookup_variant_constructor(constructor_name)
         {
             if contextual_name.is_none() && !func_name.as_str().contains("::") {
                 self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
@@ -2045,7 +2005,13 @@ impl Checker {
         };
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
-        if let Some((type_name, expected_params, type_params)) = constructor_match {
+        if let Some(VariantConstructor {
+            type_name,
+            expected_params,
+            type_params,
+            bare_qualifier,
+        }) = constructor_match
+        {
             let member = constructor_name
                 .rsplit("::")
                 .next()
@@ -2062,12 +2028,8 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            if !func_name.contains("::") {
-                self.report_bare_variant_expr(
-                    &func_name,
-                    &format!("{}.{func_name}", variant_owner_spelling(&type_name)),
-                    span,
-                );
+            if let Some(owner) = bare_qualifier {
+                self.report_bare_variant_expr(&func_name, &format!("{owner}.{func_name}"), span);
             }
             // A selectively-imported enum/struct type used only as a variant
             // constructor (`Status::Ok(m)`) never reached the unused-import

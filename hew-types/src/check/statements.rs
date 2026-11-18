@@ -1101,51 +1101,6 @@ impl Checker {
         }
     }
 
-    /// Would a bare identifier `name` at a USE-site resolve to a known *unit*
-    /// enum variant / nullary constructor?
-    ///
-    /// This decides, on the let-side, whether a bare pattern identifier is a
-    /// refutable variant pattern (route to the refutability gate) or a fresh
-    /// binding. It must agree with how `synthesize`/`synthesize_identifier`
-    /// (expressions.rs) resolve the SAME bare name at a use-site: a
-    /// disagreement produces a half-built binding, where the let-side binds a
-    /// local that the use-side then shadows with the builtin/global variant,
-    /// leaving an unused-variable warning plus a `cannot infer type` at the use.
-    ///
-    /// Resolution is therefore by the GLOBAL/builtin namespace and is
-    /// independent of the value type, mirroring the use-side exactly:
-    ///   * `None` is special-cased at the use-site (expressions.rs, the
-    ///     `name == "None"` arm of `synthesize`) as `Option::None`
-    ///     *unconditionally*, ahead of any binding lookup — so a bare `None`
-    ///     is always a variant pattern here. A value type that is not `Option`
-    ///     then surfaces as a clean single type mismatch (`None` is
-    ///     `Option<_>`, the value is not), never a stray binding.
-    ///   * any user enum's unit variant is found by the use-side's
-    ///     `resolve_identifier_variant`, which scans every `type_defs` entry
-    ///     for a `VariantDef::Unit` of that name — so the let-side scans the
-    ///     same table the same way.
-    ///
-    /// Qualified paths (`E::A`) are handled by the caller and never reach here.
-    /// Mirrors Rust: a name that names a unit variant/const is always a
-    /// pattern, and a mismatched value type is a plain type error — not a
-    /// binding.
-    fn bare_identifier_resolves_to_unit_variant(&self, name: &str) -> bool {
-        // Builtin `None`: the use-side resolves a bare `None` to `Option::None`
-        // unconditionally and ahead of any binding, so the let-side treats it
-        // as a variant pattern regardless of the value type. (`Some`, `Ok`,
-        // `Err` carry payloads — never bare unit variants.)
-        if name == "None" {
-            return true;
-        }
-        // User enums: scan every type definition for a unit variant of this
-        // name, exactly as the use-side's `resolve_identifier_variant` does.
-        // A bare name that is a unit variant of *any* known enum is a pattern.
-        self.type_defs.iter().any(|(id, td)| {
-            self.type_decl_has_bare_variants(*id)
-                && matches!(td.variants.get(name), Some(VariantDef::Unit))
-        })
-    }
-
     /// Does an identifier in `let`/binding position name a unit variant — a
     /// refutable tag-test that binds NOTHING — rather than introduce a fresh
     /// binder? This is the single authority for the let-side binder-vs-tag-test
@@ -1156,7 +1111,11 @@ impl Checker {
     /// that did not actually bind. Detection is by resolution (a `::`-qualified
     /// path or a bare name resolving to a known unit variant), never by casing.
     pub(super) fn let_identifier_is_unit_variant(&self, name: &str) -> bool {
-        name.contains("::") || self.bare_identifier_resolves_to_unit_variant(name)
+        name.contains("::")
+            || name == "None"
+            || self
+                .bare_variant_owner(name, |_, variant| matches!(variant, VariantDef::Unit))
+                .is_some()
     }
 
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
@@ -1324,17 +1283,6 @@ impl Checker {
                 // refutability gate below so a let-else records its resolution
                 // and a plain `let` is rejected.
                 //
-                // Detection is by RESOLUTION, never by case, and must AGREE
-                // with the use-side: a `::`-qualified path is unambiguously a
-                // variant, and a bare identifier is a unit-variant pattern when
-                // the use-side would resolve it to a known unit variant in the
-                // global/builtin namespace (`None`, any user enum's unit
-                // variant) — independent of the value type. Any other bare
-                // identifier — even an uppercase one like `INF` or `Foo` — is a
-                // fresh binding. This mirrors Rust pattern resolution: a name
-                // that names a unit variant/const is always a pattern (a
-                // mismatched value type is then a clean type error); otherwise
-                // it binds.
                 let identifier_is_unit_variant = match &pattern.0 {
                     Pattern::Identifier(name) => {
                         self.let_identifier_is_unit_variant(name.name.as_str())

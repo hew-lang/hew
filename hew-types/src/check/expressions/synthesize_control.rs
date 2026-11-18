@@ -1635,7 +1635,9 @@ impl Checker {
                             .cloned()
                     })
                     .is_some_and(|v| matches!(v, VariantDef::Unit))
-                    && (variant_after_owner.is_some() || !name.name.as_str().contains("::"));
+                    && (variant_after_owner.is_some()
+                        || (!name.name.as_str().contains("::")
+                            && self.env.lookup_ref(*name).is_none()));
                 // A `machine`'s states are not enum variants in expression
                 // position (HEW-SPEC-2026 §3.11.3, "State names are not
                 // variants"): the target name after `=>` in a body-less

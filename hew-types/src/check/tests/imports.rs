@@ -3358,6 +3358,40 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
 }
 
 #[test]
+fn bare_variants_require_a_visible_owner_and_respect_value_bindings() {
+    let output = check_qualified_variant_root(
+        "import m.{ pick }; fn main() { let A = 42; let Present = |n: i64| n; println(Present(A) + pick(m.Mode.A)); }",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let hidden = check_qualified_variant_root("import m; fn main() { let _ = A; }");
+    assert!(
+        hidden
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedVariable),
+        "{:#?}",
+        hidden.errors
+    );
+    let visible = check_qualified_variant_root(
+        "import m.{ Mode as Local }; fn main() { let _ = A; let _ = Present(5); }",
+    );
+    let suggestions: Vec<_> = visible
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BareVariantExpr)
+        .flat_map(|error| &error.suggestions)
+        .collect();
+    for name in ["A", "Present"] {
+        assert!(
+            suggestions
+                .iter()
+                .any(|help| help.contains(&format!("Local.{name}"))),
+            "{suggestions:?}"
+        );
+    }
+}
+
+#[test]
 fn sibling_bare_and_selected_imports_credit_the_binding_used() {
     for imports in [
         "import m;\nimport m.{ Mode };",

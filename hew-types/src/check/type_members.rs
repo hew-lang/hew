@@ -328,12 +328,12 @@ impl Checker {
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
         let builtin = head.builtin?;
-        let variant = builtin.enum_variant(member)?;
-        let index = builtin
+        let (index, variant) = builtin
             .generic_enum()?
             .variants
             .iter()
-            .position(|candidate| std::ptr::eq(candidate, variant))?;
+            .enumerate()
+            .find(|(_, variant)| variant.name == member)?;
         let span = match usage {
             DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
                 *span

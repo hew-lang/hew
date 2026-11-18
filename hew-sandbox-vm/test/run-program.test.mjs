@@ -987,7 +987,8 @@ test("calendar extern results require their checked record descriptor", async ()
       .find(
         (term) =>
           term.op === "extern.call" &&
-          malformed.externs[term.extern].symbol === "hew_calendar_format_iso8601",
+          malformed.externs[term.extern].symbol ===
+            "hew_calendar_format_iso8601",
       );
     assert.ok(call);
     if (mismatch === "missing") delete call.aggregate_result_shape;

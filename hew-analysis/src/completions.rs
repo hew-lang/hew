@@ -481,7 +481,10 @@ fn type_member_completions(
     let (name, nominal, module_qualified) = type_head_at(source.get(..receiver_end)?, tc)?;
     let mut methods = Vec::new();
     if let Some(id) = nominal {
-        if !visible_from_root(tc, id.declaration()) {
+        if !visible_from_root(
+            tc,
+            tc.defs.owner(id.declaration()).unwrap_or(id.declaration()),
+        ) {
             return None;
         }
         if let Some(definition) = tc.type_defs.get(&id) {
@@ -525,6 +528,25 @@ fn type_member_completions(
     } else {
         Vec::new()
     };
+    if nominal.is_some_and(|id| {
+        tc.defs
+            .member_of_kind(
+                id.declaration(),
+                hew_parser::ast::sym::EVENT,
+                hew_types::DeclarationKind::MachineEventType,
+            )
+            .is_some()
+    }) {
+        items.push(CompletionItem {
+            label: "Event".into(),
+            kind: CompletionKind::Type,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        });
+    }
     if let Some(definition) = nominal.and_then(|id| tc.type_defs.get(&id)) {
         if definition.kind == TypeDefKind::Enum {
             items.extend(
@@ -556,6 +578,32 @@ fn type_member_completions(
 
 /// Resolve a root-scope type head using the checker's lexical import bindings.
 fn type_head_at<'a>(
+    source: &'a str,
+    tc: &TypeCheckOutput,
+) -> Option<(&'a str, Option<hew_types::NominalId>, bool)> {
+    let before = source.trim_end();
+    if let Some(owner) = before
+        .strip_suffix("Event")
+        .and_then(|prefix| prefix.trim_end().strip_suffix('.'))
+    {
+        if let Some((_, Some(machine), _)) = direct_type_head_at(owner, tc) {
+            if let Some(event) = tc.defs.member_of_kind(
+                machine.declaration(),
+                hew_parser::ast::sym::EVENT,
+                hew_types::DeclarationKind::MachineEventType,
+            ) {
+                return Some((
+                    "Event",
+                    Some(hew_types::NominalId::of_declaration(event)),
+                    true,
+                ));
+            }
+        }
+    }
+    direct_type_head_at(before, tc)
+}
+
+fn direct_type_head_at<'a>(
     source: &'a str,
     tc: &TypeCheckOutput,
 ) -> Option<(&'a str, Option<hew_types::NominalId>, bool)> {
@@ -2062,6 +2110,30 @@ fn example() {
             labels,
             vec!["Blue".to_string(), "Point".to_string(), "Rgb".to_string()]
         );
+    }
+
+    #[test]
+    fn machine_event_completions_follow_the_companion_type() {
+        let source = "machine Facing { events { left; right; } state North; default { state } }
+fn main() { let _ = Facing.Event.left; }";
+        let tc = type_check(source);
+        for (cursor, expected, hidden) in [
+            ("Facing.", &["Event", "North"][..], &["left", "right"][..]),
+            ("Facing.Event.", &["left", "right"][..], &["North"][..]),
+            ("fn main() { ", &["Facing"][..], &["left", "right"][..]),
+        ] {
+            let offset = source.rfind(cursor).unwrap() + cursor.len();
+            let items = complete(source, &hew_parser::parse(source), Some(&tc), offset);
+            let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+            assert!(
+                expected.iter().all(|name| labels.contains(name)),
+                "{cursor}: {labels:?}"
+            );
+            assert!(
+                hidden.iter().all(|name| !labels.contains(name)),
+                "{cursor}: {labels:?}"
+            );
+        }
     }
 
     #[test]

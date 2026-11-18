@@ -1574,43 +1574,7 @@ impl Checker {
                 self.note_import_use(name);
             }
             self.record_call_edge(&fn_sig_key);
-            let sig = self
-                .fn_sig(&fn_sig_key)
-                .cloned()
-                .unwrap_or_else(|| panic!("visible function `{fn_sig_key}` has a signature"));
-            // A bare enum variant used as a value (`let c = Red;`,
-            // `xs.map(Wrap)`) is refused like its call form; nothing here
-            // selects the enum, so the fix-it qualifies it.
-            // A machine's states are written bare only inside that machine
-            // (§3.11.3); elsewhere they follow the same rule (D550).
-            if !surface_name.contains("::") {
-                if let Some((owner, _, _)) =
-                    self.lookup_variant_constructor(name)
-                        .filter(|(owner, _, _)| {
-                            self.type_def_at(owner)
-                                .is_some_and(|td| td.kind == TypeDefKind::Enum)
-                                && !self.machine_state_is_bare_here(owner)
-                        })
-                {
-                    let replacement =
-                        format!("{}.{name}", super::calls::variant_owner_spelling(&owner));
-                    self.report_bare_variant_expr(name, &replacement, span);
-                }
-            }
-            // local-shadows-global: when the fn_sig slot was won by a builtin enum
-            // variant, prefer any user-declared enum that has a variant with the
-            // same name (e.g. user `enum AppError { NotFound(string); }` shadows
-            // the builtin `LookupError::NotFound` unit variant).
-            if sig.is_builtin_variant {
-                if let Some(user_ty) = self.find_user_variant_shadow_ty(name) {
-                    return user_ty;
-                }
-            }
-            if sig.params.is_empty() && self.let_identifier_is_unit_variant(name) {
-                sig.return_type
-            } else {
-                self.instantiate_function_value(&fn_sig_key, type_args, span)
-            }
+            self.instantiate_function_value(&fn_sig_key, type_args, span)
         } else if self.module_binding_in_current_file(surface_name) {
             self.report_error(
                 TypeErrorKind::ModuleUsedAsValue,

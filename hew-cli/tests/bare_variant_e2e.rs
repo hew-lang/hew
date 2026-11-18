@@ -436,3 +436,17 @@ fn dotted_builtin_variants_run_in_every_expression_position() {
         "1 0 2 2 3\nhalved\nlooking\ntrue true true 7\nAjar\nkept 9\n"
     );
 }
+
+#[test]
+fn machine_events_do_not_capture_other_bindings() {
+    let dir = tempdir();
+    let source = include_str!("fixtures/bare_variants/machine_event_scope.hew");
+    let path = write_source(dir.path(), "facing.hew", source);
+    let output = run_hew_in(dir.path(), &["run", path.to_str().expect("UTF-8 path")]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "West\nNorth\n-1\n");
+}

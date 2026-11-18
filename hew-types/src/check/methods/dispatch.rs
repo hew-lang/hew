@@ -410,7 +410,13 @@ impl Checker {
                     };
                     let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
                     let constructor_match = self.lookup_variant_constructor(constructor_surface);
-                    if let Some((type_name, expected_params, type_params)) = constructor_match {
+                    if let Some(crate::check::calls::VariantConstructor {
+                        type_name,
+                        expected_params,
+                        type_params,
+                        ..
+                    }) = constructor_match
+                    {
                         let type_param_count = type_params.len();
                         let mut inferred_args = Vec::new();
                         while inferred_args.len() < type_param_count {

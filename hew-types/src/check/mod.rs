@@ -1008,8 +1008,17 @@ impl Checker {
                 return self.has_fn_sig(source).then(|| source.clone());
             }
         }
+        // Variant signatures describe members. Their compatibility keys are
+        // shared between files and never introduce a free function.
         for key in [&canonical, name] {
-            if self.has_fn_sig(key) {
+            if self.has_fn_sig(key)
+                && !self.fn_sig_keys.get(key).is_some_and(|id| {
+                    matches!(
+                        self.defs.kind(*id),
+                        crate::DeclarationKind::Variant | crate::DeclarationKind::MachineState
+                    )
+                })
+            {
                 return Some(key.to_string());
             }
         }

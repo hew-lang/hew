@@ -364,6 +364,32 @@ impl Scopes {
         })
     }
 
+    /// The bare name of a type visible in this file. Whole-module imports
+    /// expose a module head. A selected type can be visible under an alias.
+    pub(super) fn visible_type_name(
+        &self,
+        file: ModuleId,
+        name: Symbol,
+        id: NominalId,
+    ) -> Option<Symbol> {
+        let binding = Binding::Type(id);
+        let resolves = |name| {
+            self.item_head(file, file, Ident::from_symbol(name))
+                .is_some_and(|(target, _)| target == binding)
+        };
+        if resolves(name) {
+            return Some(name);
+        }
+        self.files
+            .get(&file)?
+            .imports
+            .iter()
+            .filter_map(|(alias, (target, _))| {
+                (*target == binding && resolves(*alias)).then_some(*alias)
+            })
+            .min_by_key(|alias| alias.as_str())
+    }
+
     /// Bind a member row under its owner.
     pub fn declare_member(&mut self, owner: DefId, name: Symbol, member: Resolution) {
         self.members.entry((owner, name)).or_insert(member);
@@ -817,28 +843,7 @@ impl Scopes {
         span: &Span,
     ) -> Option<(Resolution, Option<ImportSite>)> {
         let module = self.contexts.def_module(head.ctx, site.file);
-        let file = self.files.get(&module);
-        let own = file.and_then(|file| file.namespace).unwrap_or(module);
-        let item = self
-            .items
-            .get(&self.namespace_of(site.file))
-            .and_then(|items| items.get(&head))
-            .or_else(|| {
-                self.items
-                    .get(&own)
-                    .and_then(|items| items.get(&Ident::from_symbol(head.name)))
-            })
-            .map(|binding| (*binding, None))
-            .or_else(|| {
-                file.filter(|file| !file.ambiguous.contains_key(&head.name))
-                    .and_then(|file| file.imports.get(&head.name))
-                    .map(|(binding, import)| (*binding, Some(*import)))
-            })
-            .or_else(|| {
-                (self.own_leaves.get(&own) == Some(&head.name))
-                    .then_some((Binding::Module(own), None))
-            })
-            .or_else(|| self.prelude.get(&head.name).map(|binding| (*binding, None)));
+        let item = self.item_head(site.file, module, head);
         match namespace {
             Namespace::Value => {
                 if let Some((depth, binding)) = env.lookup_ref_with_depth(head) {
@@ -860,6 +865,36 @@ impl Scopes {
             }
         }
         item.map(|(binding, import)| (binding.resolution(), import))
+    }
+
+    fn item_head(
+        &self,
+        file: ModuleId,
+        definition_module: ModuleId,
+        head: Ident,
+    ) -> Option<(Binding, Option<ImportSite>)> {
+        let scope = self.files.get(&definition_module);
+        let own = self.namespace_of(definition_module);
+        self.items
+            .get(&self.namespace_of(file))
+            .and_then(|items| items.get(&head))
+            .or_else(|| {
+                self.items
+                    .get(&own)
+                    .and_then(|items| items.get(&Ident::from_symbol(head.name)))
+            })
+            .map(|binding| (*binding, None))
+            .or_else(|| {
+                scope
+                    .filter(|file| !file.ambiguous.contains_key(&head.name))
+                    .and_then(|file| file.imports.get(&head.name))
+                    .map(|(binding, import)| (*binding, Some(*import)))
+            })
+            .or_else(|| {
+                (self.own_leaves.get(&own) == Some(&head.name))
+                    .then_some((Binding::Module(own), None))
+            })
+            .or_else(|| self.prelude.get(&head.name).map(|binding| (*binding, None)))
     }
 
     fn resolve_member(&self, current: Resolution, name: Symbol) -> Option<Resolution> {

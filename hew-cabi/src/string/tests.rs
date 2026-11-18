@@ -163,3 +163,25 @@ fn concat_copies_both_operands_into_one_exact_string() {
         string_release(left);
     }
 }
+
+#[test]
+fn indexed_strings_resolve_full_and_partial_ascii_groups() {
+    let text = format!("é{}雪{}", "a\0".repeat(35), "b".repeat(70));
+    for count in [32, 40, 64, 68, 72, 96, 128, 142] {
+        let prefix: String = text.chars().take(count).collect();
+        let value = string_from_str(&prefix);
+        // SAFETY: the prefix owns its string until the release below.
+        unsafe {
+            for (index, (offset, scalar)) in prefix.char_indices().enumerate() {
+                assert_eq!(super::string_scalar_byte_offset(value, index), Some(offset));
+                assert_eq!(string_scalar_at(value, index), Some(scalar));
+            }
+            assert_eq!(
+                super::string_scalar_byte_offset(value, count),
+                Some(prefix.len())
+            );
+            assert_eq!(super::string_scalar_byte_offset(value, count + 1), None);
+            string_release(value);
+        }
+    }
+}

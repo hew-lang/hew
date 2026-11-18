@@ -453,7 +453,7 @@ pub unsafe fn string_scalar_len(value: *const HewString) -> usize {
 }
 
 /// Byte offset of a scalar boundary, including the end boundary.
-/// At most 31 scalars are skipped, independent of string length.
+/// At most half an index group is scanned, independent of string length.
 ///
 /// # Safety
 /// `value` must be null or a live managed string handle.
@@ -475,13 +475,41 @@ pub unsafe fn string_scalar_byte_offset(value: *const HewString, index: usize) -
     if byte_len == scalar_len {
         return Some(index);
     }
-    // SAFETY: construction initialized an entry for each group of scalars.
-    let offset = unsafe { *index_table(value).add(index / INDEX_STRIDE) };
-    // SAFETY: both offsets name scalar boundaries within the live UTF-8 bytes.
-    (unsafe { string_as_str(value) })[offset..]
-        .char_indices()
-        .nth(index % INDEX_STRIDE)
-        .map(|(tail, _)| offset + tail)
+    // SAFETY: this is a live indexed string and index names a scalar.
+    unsafe { indexed_scalar_offset(value, index, scalar_len, string_as_str(value)) }
+}
+
+/// Resolve a scalar strictly inside a non-ASCII string.
+///
+/// # Safety
+/// `text` and `scalar_len` must describe this live allocation, and
+/// `index` must be less than `scalar_len`.
+unsafe fn indexed_scalar_offset(
+    value: *const HewString,
+    index: usize,
+    scalar_len: usize,
+    text: &str,
+) -> Option<usize> {
+    let group = index / INDEX_STRIDE;
+    let within = index % INDEX_STRIDE;
+    // SAFETY: each group has one initialized entry in this live string.
+    let table =
+        unsafe { slice::from_raw_parts(index_table(value), scalar_len.div_ceil(INDEX_STRIDE)) };
+    let start = table[group];
+    let end = table.get(group + 1).copied().unwrap_or(text.len());
+    let scalars = (scalar_len - group * INDEX_STRIDE).min(INDEX_STRIDE);
+    // A UTF-8 group with one byte per scalar contains only ASCII.
+    if end - start == scalars {
+        return Some(start + within);
+    }
+    let mut chars = text[start..end].char_indices();
+    let remaining = scalars - within - 1;
+    let (tail, _) = if within <= remaining {
+        chars.nth(within)?
+    } else {
+        chars.nth_back(remaining)?
+    };
+    Some(start + tail)
 }
 
 /// Read one Unicode scalar in constant time, or report an absent index.
@@ -490,14 +518,19 @@ pub unsafe fn string_scalar_byte_offset(value: *const HewString, index: usize) -
 /// `value` must be null or a live managed string handle.
 #[must_use]
 pub unsafe fn string_scalar_at(value: *const HewString, index: usize) -> Option<char> {
-    // SAFETY: all reads borrow the same live owner.
-    unsafe {
-        if index >= string_scalar_len(value) {
-            return None;
-        }
-        let offset = string_scalar_byte_offset(value, index)?;
-        string_as_str(value)[offset..].chars().next()
+    // SAFETY: the caller holds this owner throughout both reads.
+    let scalar_len = unsafe { string_scalar_len(value) };
+    if index >= scalar_len {
+        return None;
     }
+    // SAFETY: a nonempty string owns valid UTF-8.
+    let text = unsafe { string_as_str(value) };
+    if text.len() == scalar_len {
+        return Some(char::from(text.as_bytes()[index]));
+    }
+    // SAFETY: index names a scalar in this live indexed string.
+    let offset = unsafe { indexed_scalar_offset(value, index, scalar_len, text) }?;
+    text[offset..].chars().next()
 }
 
 /// Scalar offset of a byte boundary found by a UTF-8 substring search.

@@ -95,11 +95,15 @@ wire-cmd-body = wire-enum-unit / { 1 => wire-point-body }
 ; The values a struct field or enum payload element may take. The checker admits
 ; only data (`hew-types/src/data_shape.rs`), and a remote payload's records and
 ; enums must be `#[wire]`, so nothing else reaches the wire.
+; `Option<T>` adds `null` for `None`; `Some(v)` is exactly the inner value's
+; encoding. The checker rejects nested options because this encoding cannot
+; distinguish their two absent states. Only a per-field occurrence permits
+; an absent key.
 
 wire-value = wire-scalar
            / wire-text
            / wire-bytes
-           / wire-optional
+           / null
            / wire-vector
            / wire-map
            / wire-struct-body   ; nested `#[wire]` struct → nested map
@@ -114,13 +118,6 @@ wire-scalar = int / bool / float
 ; `string` → CBOR text string; `bytes` → CBOR byte string.
 wire-text  = tstr
 wire-bytes = bstr
-
-; `Option<T>` VALUE: `None` → CBOR `null`; `Some(v)` → the inner value's
-; encoding directly (no wrapper). This rule does not grant permission to omit
-; the enclosing field key; only the per-field map occurrence does that.
-; `Option<Option<_>>` is rejected at codegen as ambiguous under this null
-; encoding.
-wire-optional = null / wire-value
 
 ; `Vec<T>`, tuples and arrays → a CBOR array of element encodings; a `HashSet`
 ; is an array in canonical order.

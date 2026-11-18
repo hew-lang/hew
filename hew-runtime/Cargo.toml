@@ -190,16 +190,10 @@ harness = false
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 loom = "0.7"
 proptest = "1"
-# CDDL validator: the wire-body conformance test feeds the authored
-# `schemas/wire-body.cddl` text + the codegen-emitted CBOR bytes into a real
-# RFC 8610 validator so the schema is the authority, not a hand-mirrored
-# structural assertion that could silently drift from the CDDL. Test-only and
-# native-only (the crate pulls a full CDDL parser/AST it never needs in the
-# runtime binary, and is irrelevant on wasm where there is no internode wire).
-cddl = "0.10"
-# Avoid indexmap's sysroot probe with an instrumented std build. Remove once
-# abnf_to_pest enables indexmap/std itself.
-indexmap = { version = "1.9.3", features = ["std"] }
+# Validate emitted CBOR against the published wire schemas in native tests.
+cddl-cat = { version = "0.7.1", default-features = false, features = [
+  "ciborium",
+] }
 # Safe handle wrappers for integration tests (RAII over runtime FFI). Native
 # only: wraps FFI (e.g. hew_actor_trap) the runtime does not export on wasm32.
 hew-runtime-testkit = { path = "../hew-runtime-testkit" }

@@ -4,7 +4,7 @@
 //! emits for each `#[wire]` type. This test makes that claim *checked*: it
 //! drives the runtime's event ABI (`hew_ser_*` over a static tagged table) in
 //! the sequence the codegen walk calls it, then feeds the finished bytes
-//! through a real RFC 8610 CDDL validator (`cddl`) against the rules in
+//! through a real RFC 8610 CDDL validator (`cddl-cat`) against the rules in
 //! `wire-body.cddl`. The cross-process round-trip in
 //! `distributed_two_process_e2e.rs` proves the full compiled-binary path.
 //!
@@ -15,8 +15,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::ffi::c_void;
-use std::path::PathBuf;
 
+use cddl_cat::{ValidateError, ValidateResult};
 use hew_codec::{Member, Table};
 use hew_runtime::codec::{
     hew_de_failed, hew_de_free, hew_de_new_raw, hew_de_variant, hew_ser_field, hew_ser_finish_raw,
@@ -52,13 +52,6 @@ static CMD: Table<'static> = Table::new(&CMD_MEMBERS, true);
 static GREETING_MEMBERS: [Member<'static>; 1] = [Member::new("name", 1, 0)];
 static GREETING: Table<'static> = Table::new(&GREETING_MEMBERS, true);
 
-fn wire_body_cddl() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("schemas")
-        .join("wire-body.cddl");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 /// Run `walk` against a fresh CBOR sink and return the finished body.
 fn encode(walk: impl FnOnce(*mut c_void)) -> Vec<u8> {
     let sink = hew_ser_new(CBOR);
@@ -87,9 +80,20 @@ unsafe fn point(sink: *mut c_void, x: i64, y: i64) {
     }
 }
 
-fn validate_against_rule(rule: &str, bytes: &[u8]) -> Result<(), String> {
-    let schema = format!("start = {rule}\n\n{}", wire_body_cddl());
-    cddl::validate_cbor_from_slice(&schema, bytes, None).map_err(|e| format!("{e:?}"))
+fn validate_against_rule(rule: &str, bytes: &[u8]) -> ValidateResult {
+    cddl_cat::validate_cbor_bytes(rule, include_str!("../schemas/wire-body.cddl"), bytes)
+}
+
+#[track_caller]
+fn assert_rule_mismatch(rule: &str, bytes: &[u8]) {
+    let result = validate_against_rule(rule, bytes);
+    assert!(
+        matches!(
+            result,
+            Err(ValidateError::Mismatch(_) | ValidateError::MapCut(_))
+        ),
+        "expected {rule} to reject {bytes:?}: {result:?}"
+    );
 }
 
 #[test]
@@ -186,7 +190,7 @@ fn non_conforming_struct_body_is_rejected_by_cddl() {
     // `"not a struct"` as CBOR text.
     let mut bytes = vec![0x6c];
     bytes.extend_from_slice(b"not a struct");
-    assert!(validate_against_rule("wire-struct-body", &bytes).is_err());
+    assert_rule_mismatch("wire-struct-body", &bytes);
 }
 
 /// `{1: [], 2: []}` is not a map-of-one: the CDDL rejects it and so does the
@@ -194,7 +198,7 @@ fn non_conforming_struct_body_is_rejected_by_cddl() {
 #[test]
 fn multi_entry_enum_body_is_refused_by_cddl_and_decoder() {
     let multi = [0xa2, 0x01, 0x80, 0x02, 0x80];
-    assert!(validate_against_rule("wire-enum-payload", &multi).is_err());
+    assert_rule_mismatch("wire-enum-payload", &multi);
     // A tag the schema does not name is refused too.
     for body in [&multi[..], &[0x09][..]] {
         // SAFETY: `body` is a live slice; the table is static.

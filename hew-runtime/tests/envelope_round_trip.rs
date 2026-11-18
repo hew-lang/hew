@@ -224,12 +224,12 @@ fn envelope_frame(
 }
 
 fn assert_published_schema(rule: &str, bytes: &[u8]) {
-    let schema = format!(
-        "start = {rule}\n{}\n{}",
+    const SCHEMA: &str = concat!(
         include_str!("../schemas/envelope.cddl"),
+        "\n",
         include_str!("../schemas/node-controls.generated.cddl")
     );
-    cddl::validate_cbor_from_slice(&schema, bytes, None).unwrap_or_else(|error| {
+    cddl_cat::validate_cbor_bytes(rule, SCHEMA, bytes).unwrap_or_else(|error| {
         panic!("encoded {rule} does not conform to the published schema: {error:?}")
     });
 }

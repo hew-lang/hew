@@ -117,5 +117,5 @@ checked access, mutation and cleanup. The bridge preserves full-width JSON
 integers, YAML mapping keys and tags, and TOML datetimes using the native engines.
 
 UTC calendar operations also require the initialized `executeCalendar`
-export as `calendarBridge`. Both hosts use the shared Chrono calendar engine;
-the bridge preserves integer seconds and nanoseconds exactly.
+export as `calendarBridge`. Both hosts use the shared UTC calendar engine.
+The bridge preserves integer seconds and nanoseconds exactly.

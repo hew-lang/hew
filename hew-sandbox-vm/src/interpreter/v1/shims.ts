@@ -1499,11 +1499,35 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
     shim: (host, args, _variant, shape) =>
       executeCalendar(host.calendarBridge, "hew_calendar_format", args, shape),
   },
+
+  hew_calendar_format_iso8601: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(
+        host.calendarBridge,
+        "hew_calendar_format_iso8601",
+        args,
+        shape,
+      ),
+  },
   hew_calendar_parse: {
     kind: "ordinary",
     bridge: "calendarBridge",
     shim: (host, args, _variant, shape) =>
       executeCalendar(host.calendarBridge, "hew_calendar_parse", args, shape),
+  },
+
+  hew_calendar_parse_iso8601: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(
+        host.calendarBridge,
+        "hew_calendar_parse_iso8601",
+        args,
+        shape,
+      ),
   },
   hew_calendar_components: {
     kind: "ordinary",

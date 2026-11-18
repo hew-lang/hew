@@ -3,7 +3,7 @@
 UTC calendar views and scheduling over typed timestamps:
 
 - `std.time.datetime` — checked parsing, formatting and component extraction
-  through one Chrono engine shared by native and sandbox hosts.
+  through the shared UTC calendar engine.
 - `std.time.cron` — ordinary Hew expression values and field-advancing search.
 
 Use `timestamp.now()` for wall time and `instant.now()` for elapsed time.

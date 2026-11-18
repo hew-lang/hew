@@ -4483,20 +4483,19 @@ Use `timestamp.now()` for wall time and `instant.now()` for monotonic elapsed
 time. Neither converts implicitly to an integer or to the other clock.
 
 Calendar operations return checked `DateTimeError.Range`, `Format` or `Parse`
-errors. They use Chrono's proleptic Gregorian calendar, years -262143 through
-+262142; timestamps outside that range remain valid but cannot be converted
-to civil fields. `components` and the individual `year`, `month`, `day`,
+errors. The proleptic Gregorian calendar covers years −999999 through +999999.
+Converting a timestamp outside those years to civil fields returns a range error. `components` and the individual `year`, `month`, `day`,
 `hour`, `minute`, `second` and `weekday` accessors all use UTC. Monday is
 weekday zero. `from_parts` checks a UTC year, month, day, hour, minute, second
 and nanosecond fraction.
 
-`format(value, pattern)` and `parse(text, pattern)` use Chrono's strftime
-dialect. `%.f` preserves a nonzero fractional second; `%.9f` always prints
-nine fractional digits. Parsing requires enough fields to determine a full
-date and time. Missing offsets mean UTC; explicit numeric offsets normalize
-to UTC. `to_iso8601` preserves fractional precision and `parse_iso8601`
-accepts Z or a numeric offset. Unix time excludes leap seconds, so a parsed
-leap second returns an error.
+`format(value, pattern)` and `parse(text, pattern)` use the Rust `time` crate's
+strftime dialect. For example, `%F %T %z` writes a date, whole seconds and a
+numeric offset such as `+0000`. A custom format without an offset denotes UTC.
+Use `to_iso8601` and `parse_iso8601` to round-trip fractional seconds.
+ISO output uses UTC and zero, three, six or nine fractional digits. ISO input
+accepts `Z` or a numeric offset and normalizes the result to UTC. Unix time
+excludes leap seconds, so a seconds field of 60 returns a parse error.
 
 `add_days` adds elapsed 24-hour durations, `add_hours` adds elapsed hours,
 and `diff_secs` returns whole elapsed seconds truncated towards zero.

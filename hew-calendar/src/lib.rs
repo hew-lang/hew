@@ -101,23 +101,27 @@ pub fn parse(text: &str, pattern: &str) -> Result<(i64, u32), Error> {
 
 fn parse_fields(text: &str, items: &[BorrowedFormatItem<'_>]) -> Result<(i64, u32), Error> {
     let mut parsed = Parsed::new();
-    let remaining = parsed
-        .parse_items(text.as_bytes(), items)
-        .map_err(|err| Error::Parse(err.to_string()))?;
+    let mut remaining = text.as_bytes();
+    // Repeated directives can overwrite parsed fields. Check each item before
+    // a later value can hide a leap second or an invalid civil offset.
+    for item in items {
+        remaining = parsed
+            .parse_item(remaining, item)
+            .map_err(|err| Error::Parse(err.to_string()))?;
+        if parsed.second() == Some(60) {
+            return Err(Error::Parse(
+                "leap seconds cannot be represented by a timestamp".into(),
+            ));
+        }
+        if parsed
+            .offset_hour()
+            .is_some_and(|hour| hour.unsigned_abs() >= 24)
+        {
+            return Err(Error::Parse("UTC offset must be less than 24 hours".into()));
+        }
+    }
     if !remaining.is_empty() {
         return Err(Error::Parse("unexpected trailing date or time text".into()));
-    }
-    if parsed.second() == Some(60) {
-        return Err(Error::Parse(
-            "leap seconds cannot be represented by a timestamp".into(),
-        ));
-    }
-    // A civil UTC offset must be strictly less than one day.
-    if parsed
-        .offset_hour()
-        .is_some_and(|hour| hour.unsigned_abs() >= 24)
-    {
-        return Err(Error::Parse("UTC offset must be less than 24 hours".into()));
     }
     if parsed.offset_hour().is_none() {
         parsed.set_offset_hour(0);
@@ -279,6 +283,14 @@ mod tests {
         assert!(matches!(
             parse("2016-12-31T23:59:60Z", "%Y-%m-%dT%H:%M:%SZ"),
             Err(Error::Parse(message)) if message.contains("leap seconds")
+        ));
+        assert!(matches!(
+            parse("2016-12-31 23:59:60 00", "%F %T %S"),
+            Err(Error::Parse(_))
+        ));
+        assert!(matches!(
+            parse("1970-01-01 00:00:00 +2500 +0000", "%F %T %z %z"),
+            Err(Error::Parse(_))
         ));
         assert!(from_components(2025, 2, 29, 0, 0, 0, 0).is_err());
         assert!(from_components(2024, 2, 29, 0, 0, 60, 0).is_err());

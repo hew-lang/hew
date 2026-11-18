@@ -27,3 +27,8 @@ pub mod string;
 pub mod time;
 pub mod value;
 pub mod vec;
+
+/// wasm-ld arguments for an executable or component that calls Hew code.
+/// The shadow stack must leave room above the runtime's recovery reserve.
+/// Placing it first keeps a downward overflow away from static data.
+pub const WASM_SHADOW_STACK_LINK_ARGS: [&str; 3] = ["-z", "stack-size=1048576", "--stack-first"];

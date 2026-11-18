@@ -6461,7 +6461,7 @@ Apache License 2.0
   * rustc-demangle 0.1.28 — https://github.com/rust-lang/rustc-demangle
   * rustc_version 0.4.1 — https://github.com/djc/rustc-version-rs
   * rustix-linux-procfs 0.1.1 — https://github.com/sunfishcode/rustix-linux-procfs
-  * rustix 1.1.5 — https://github.com/bytecodealliance/rustix
+  * rustix 1.1.6 — https://github.com/bytecodealliance/rustix
   * rustls-native-certs 0.8.5 — https://github.com/rustls/rustls-native-certs
   * rustls 0.23.46 — https://github.com/rustls/rustls
   * rusty-fork 0.3.1 — https://github.com/altsysrq/rusty-fork
@@ -6501,7 +6501,7 @@ Apache License 2.0
   * wasm-bindgen-macro 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
   * wasm-bindgen-shared 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
   * wasm-bindgen 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen
-  * wasmparser 0.259.0 — https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
+  * wasmparser 0.262.0 — https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
   * web-sys 0.3.106 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
   * wit-bindgen 0.57.1 — https://github.com/bytecodealliance/wit-bindgen
   * xattr 1.6.1 — https://github.com/Stebalien/xattr

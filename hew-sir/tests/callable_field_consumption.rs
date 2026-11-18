@@ -104,16 +104,19 @@ fn temporary_record_and_tuple_fields_transfer_without_copying_siblings() {
     for value in ["42", "100 / 0"] {
         let source = format!(
             r#"
-            type Job {{ run: fn[once](i64) -> i64; label: string; }}
+            type Job {{ label: string; run: fn[once](i64) -> i64; }}
             fn make_job() -> Job {{
                 let text = "owned callback";
                 Job {{ run: move |value: i64| {{ println(text); value }}, label: "sibling owner" }}
             }}
-            fn make_pair() -> (Job, string) {{ (make_job(), "outer sibling") }}
+            fn make_pair(label: string) -> (string, Job) {{ (label, make_job()) }}
             fn invoke(consume run: fn[once](i64) -> i64, value: i64) -> i64 {{ run(value) }}
+            fn choose(flag: bool) -> i64 {{
+                invoke((if flag {{ make_pair("yes") }} else {{ make_pair("no") }}).1.run, {value})
+            }}
             fn main() -> i64 {{
                 println(make_job().run(42));
-                invoke(make_pair().0.run, {value})
+                choose(true)
             }}
         "#
         );

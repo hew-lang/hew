@@ -11,7 +11,7 @@ use crate::{
 };
 use hew_hir::HirExpr;
 use hew_types::ResolvedTy;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// An owner [`Builder::open_owner`] took apart around one field: its seat and
 /// the sibling fields of every level, outermost first.
@@ -434,13 +434,32 @@ pub(super) fn complete_edge_partitions(
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
 ) -> Result<(), SirLoweringError> {
-    if !function
-        .places
-        .iter()
-        .any(|place| matches!(place.origin, PlaceOrigin::Aggregate { .. }))
-    {
+    // Local partitions already have a stable place across every CFG edge.
+    // A projected SSA root necessarily has a direct value-based child.
+    if !function.places.iter().any(|place| {
+        matches!(
+            place.origin,
+            PlaceOrigin::Aggregate {
+                base: PlaceBase::Value(_),
+                ..
+            }
+        )
+    }) {
         return Ok(());
     }
+
+    // declare_path expands all siblings together. Field zero therefore names
+    // each declared expansion once, including those nested beneath a sibling.
+    let mut roots_by_path = BTreeMap::<_, BTreeSet<ValueId>>::new();
+    for place in &function.places {
+        if matches!(place.origin, PlaceOrigin::Aggregate { field: 0, .. }) {
+            let (root, path) = crate::projection::place_path(&function.places, place.id)?;
+            if let OwnerRoot::Value(root) = root {
+                roots_by_path.entry(path).or_default().insert(root);
+            }
+        }
+    }
+
     let mut types = BTreeMap::new();
     for param in &function.params {
         types.insert(param.value, (param.own, param.ty.clone()));
@@ -456,7 +475,7 @@ pub(super) fn complete_edge_partitions(
             types.insert(result.id, (result.own, result.ty.clone()));
         });
     }
-    let mut edges = BTreeSet::new();
+    let mut neighbours = BTreeMap::<_, Vec<ValueId>>::new();
     let targets = function
         .blocks
         .iter()
@@ -471,47 +490,42 @@ pub(super) fn complete_edge_partitions(
                         .is_some_and(|(own, _)| *own == OwnKind::Owned)
                         && destination.own == OwnKind::Owned
                     {
-                        edges.insert((source.value, destination.value));
-                        edges.insert((destination.value, source.value));
+                        neighbours
+                            .entry(source.value)
+                            .or_default()
+                            .push(destination.value);
+                        neighbours
+                            .entry(destination.value)
+                            .or_default()
+                            .push(source.value);
                     }
                 }
             }
         });
     }
-    loop {
-        let before = function.places.len();
-        for &(source, destination) in &edges {
-            let paths = function
-                .places
-                .iter()
-                .filter_map(|place| {
-                    if !matches!(place.origin, PlaceOrigin::Aggregate { .. }) {
-                        return None;
-                    }
-                    match crate::projection::place_path(&function.places, place.id) {
-                        Ok((OwnerRoot::Value(root), path)) if root == source => Some(Ok(path
-                            .into_iter()
-                            .map(|step| (step.shape, step.field))
-                            .collect::<Vec<_>>())),
-                        Ok(_) => None,
-                        Err(error) => Some(Err(error.into())),
-                    }
-                })
-                .collect::<Result<Vec<_>, SirLoweringError>>()?;
-            let (_, ty) = &types[&destination];
-            for path in paths {
-                declare_path(
-                    &mut function.places,
-                    PlaceBase::Value(destination),
-                    ty,
-                    &path,
-                    shapes,
-                    facts,
-                )?;
+    // Every owned edge transfers the same partition in both directions.
+    // Visit a value once per expansion, even across joins and loop backedges.
+    for (path, mut declared) in roots_by_path {
+        let path: Vec<_> = path
+            .into_iter()
+            .map(|step| (step.shape, step.field))
+            .collect();
+        let mut pending: VecDeque<_> = declared.iter().copied().collect();
+        while let Some(source) = pending.pop_front() {
+            for &destination in neighbours.get(&source).into_iter().flatten() {
+                if declared.insert(destination) {
+                    declare_path(
+                        &mut function.places,
+                        PlaceBase::Value(destination),
+                        &types[&destination].1,
+                        &path,
+                        shapes,
+                        facts,
+                    )?;
+                    pending.push_back(destination);
+                }
             }
         }
-        if function.places.len() == before {
-            return Ok(());
-        }
     }
+    Ok(())
 }

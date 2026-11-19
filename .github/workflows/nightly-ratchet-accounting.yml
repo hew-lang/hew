@@ -13,7 +13,6 @@ permissions:
   checks: write
 
 env:
-  LLVM_VERSION: "22.1.5"
   WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
@@ -45,10 +44,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -109,10 +106,8 @@ jobs:
           tools: nextest@0.9.120
           cache-shared-key: nightly-ratchet-accounting-macos
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Set macOS deployment target
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
@@ -167,10 +162,8 @@ jobs:
       - name: Setup MSVC environment
         uses: ./.github/actions/setup-msvc
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -255,10 +248,8 @@ jobs:
           components: clippy
           cache-shared-key: ${{ matrix.cache-key }}
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Set macOS deployment target
         if: runner.os == 'macOS'

@@ -1,0 +1,46 @@
+name: LLVM version
+description: >
+  Read the repository's LLVM pin from llvm-version.env and export it to later
+  steps: LLVM_MAJOR, LLVM_SERIES, LLVM_VERSION and the LLVM_SHA256_* digests,
+  plus LLVM_SYS_PREFIX_VAR, the name of the LLVM_SYS_<ver>_PREFIX variable the
+  pinned llvm-sys reads. Workflows that install LLVM from distro packages use
+  this instead of restating the version.
+
+outputs:
+  major:
+    description: LLVM major version (e.g. 23).
+    value: ${{ steps.read.outputs.major }}
+  series:
+    description: LLVM release series (e.g. 23.1).
+    value: ${{ steps.read.outputs.series }}
+  version:
+    description: Pinned upstream LLVM release (e.g. 23.1.6).
+    value: ${{ steps.read.outputs.version }}
+  prefix-var:
+    description: Name of the llvm-sys prefix variable (e.g. LLVM_SYS_231_PREFIX).
+    value: ${{ steps.read.outputs.prefix-var }}
+
+runs:
+  using: composite
+  steps:
+    - id: read
+      shell: bash
+      run: |
+        set -euo pipefail
+        file="${GITHUB_ACTION_PATH}/../../../llvm-version.env"
+        # shellcheck source=/dev/null
+        . "${file}"
+        for name in LLVM_MAJOR LLVM_SERIES LLVM_VERSION; do
+          [ -n "${!name:-}" ] || { echo "::error::${name} missing from llvm-version.env"; exit 1; }
+        done
+        prefix_var="LLVM_SYS_${LLVM_SERIES//./}_PREFIX"
+        {
+          grep -E '^[A-Z0-9_]+=' "${file}"
+          echo "LLVM_SYS_PREFIX_VAR=${prefix_var}"
+        } >> "$GITHUB_ENV"
+        {
+          echo "major=${LLVM_MAJOR}"
+          echo "series=${LLVM_SERIES}"
+          echo "version=${LLVM_VERSION}"
+          echo "prefix-var=${prefix_var}"
+        } >> "$GITHUB_OUTPUT"

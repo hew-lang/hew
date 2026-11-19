@@ -115,6 +115,21 @@ export class IndexedString {
     return byte;
   }
 
+  cursorStep(byte: number): [string, number] {
+    const storage = this.live();
+    const first = storage.bytes[byte];
+    if (
+      !Number.isSafeInteger(byte) ||
+      byte < 0 ||
+      byte >= storage.byteLength ||
+      first === undefined ||
+      (first & 0xc0) === 0x80
+    )
+      return ["\0", -1];
+    const next = byte + scalarWidth(first);
+    return [DECODER.decode(storage.bytes.subarray(byte, next)), next];
+  }
+
   at(index: number): string | undefined {
     if (index === this.scalarLength) return undefined;
     const byte = this.scalarOffset(index);

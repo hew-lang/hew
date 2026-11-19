@@ -20,6 +20,26 @@ CHANNEL_JOBS = {"linux-packages", "docker-image", "build-docs"}
 PRIMARY = {"linux-x86_64", "linux-aarch64"}
 
 
+def linux_package_names(version):
+    # The final-release matrix builds Debian and Fedora packages on both
+    # architectures, with split debug symbols and versioned shared runtimes.
+    # Arch ships both runtime forms in the x86_64 compiler package.
+    # installers/build-packages.sh uses revision 1 and builds RPMs on Fedora 41.
+    return {
+        *(
+            f"{name}_{version}-1_{arch}.deb"
+            for name in ("hew", "hew-dbgsym", f"libhew{version}")
+            for arch in ("amd64", "arm64")
+        ),
+        *(
+            f"{name}-{version}-1.fc41.{arch}.rpm"
+            for name in ("hew", "hew-debuginfo", f"libhew{version}")
+            for arch in ("x86_64", "aarch64")
+        ),
+        f"hew-bin-{version}-1-x86_64.pkg.tar.zst",
+    }
+
+
 def assemble(directory, version, source, run, jobs, deferrals):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version):
         raise ValueError("invalid release version")
@@ -45,27 +65,22 @@ def assemble(directory, version, source, run, jobs, deferrals):
         # Distro packages are not produced for prereleases.
         expected = target != "linux-packages" or "-" not in version
         missing = []
+        unexpected = []
         if expected and target == "linux-packages":
-            missing = [
-                pattern
-                for pattern in (
-                    *(f"hew_{version}-*_{arch}.deb" for arch in ("amd64", "arm64")),
-                    *(
-                        f"libhew{version}_{version}-*_{arch}.deb"
-                        for arch in ("amd64", "arm64")
-                    ),
-                    *(f"hew-{version}-*.{arch}.rpm" for arch in ("x86_64", "aarch64")),
-                    *(
-                        f"libhew{version}-{version}-*.{arch}.rpm"
-                        for arch in ("x86_64", "aarch64")
-                    ),
-                    f"hew-bin-{version}-*-x86_64.pkg.tar.zst",
-                )
-                if not any(
-                    path.is_file() and path.stat().st_size
-                    for path in directory.glob(pattern)
-                )
-            ]
+            names = linux_package_names(version)
+            actual = {
+                entry.name: entry
+                for entry in directory.iterdir()
+                if entry.name.endswith((".deb", ".rpm", ".pkg.tar.zst"))
+            }
+            missing = sorted(
+                name
+                for name in names
+                if name not in actual
+                or not actual[name].is_file()
+                or not actual[name].stat().st_size
+            )
+            unexpected = sorted(actual.keys() - names)
         if target == "build-docs":
             docs_asset = f"hew-v{version}-reference-docs.tar.gz"
             if (
@@ -73,7 +88,7 @@ def assemble(directory, version, source, run, jobs, deferrals):
                 or not (directory / docs_asset).stat().st_size
             ):
                 missing = [docs_asset]
-        available = result == "success" and not missing
+        available = result == "success" and not missing and not unexpected
         if expected and not available and (target == "build-docs" or not patch):
             raise ValueError(f"missing required channel outputs: {target}")
         states[target] = {
@@ -86,6 +101,8 @@ def assemble(directory, version, source, run, jobs, deferrals):
         }
         if missing:
             states[target]["missing"] = missing
+        if unexpected:
+            states[target]["unexpected"] = unexpected
         if target == "build-docs":
             states[target]["asset"] = docs_asset
     required = [f"hew-lang-{name}-{version}.tgz" for name in ("wasm", "sandbox-vm")]

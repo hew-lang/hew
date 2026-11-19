@@ -117,8 +117,6 @@ flate2 = { version = "1", optional = true }
 hyper = { version = "1.10.1", optional = true, features = ["http1", "server"] }
 hyper-util = { version = "0.1", optional = true, features = ["tokio", "http1"] }
 http-body-util = { version = "0.1", optional = true }
-# Sync HTTP client for the OTel OTLP/HTTP exporter (no async runtime needed).
-# TLS is opt-in — most OTel endpoints (Jaeger, Tempo) run on plain HTTP locally.
 reqwest = { workspace = true, optional = true }
 
 # QUIC transport dependencies (optional, behind "quic" feature)

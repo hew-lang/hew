@@ -7,7 +7,7 @@ mod support;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -178,7 +178,12 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
         assert_eq!(unsafe { libc::kill(run.cli.id().cast_signed(), signal) }, 0);
     }
     let status = run.wait();
-    assert_eq!(status.code(), Some(1), "signal exit policy: {status}");
+    let terminating_signal = if ignore { libc::SIGKILL } else { signal };
+    assert_eq!(
+        status.signal(),
+        Some(terminating_signal),
+        "signal exit policy: {status}"
+    );
     // ESRCH proves both termination and reaping; a zombie still passes kill(0).
     // SAFETY: signal zero only queries the fixture PID without changing it.
     let child_liveness = unsafe { libc::kill(pid, 0) };

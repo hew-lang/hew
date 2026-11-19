@@ -27,15 +27,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        file="${GITHUB_ACTION_PATH}/../../../llvm-version.env"
-        # shellcheck source=/dev/null
-        . "${file}"
+        # .gitattributes pins LF; strip CR anyway so a CRLF checkout cannot
+        # leak "\r" into exported values.
+        pin="$(tr -d '\r' < "${GITHUB_ACTION_PATH}/../../../llvm-version.env")"
+        eval "$(grep -E '^[A-Z0-9_]+=[^[:space:]]*$' <<< "${pin}")"
         for name in LLVM_MAJOR LLVM_SERIES LLVM_VERSION; do
           [ -n "${!name:-}" ] || { echo "::error::${name} missing from llvm-version.env"; exit 1; }
         done
         prefix_var="LLVM_SYS_${LLVM_SERIES//./}_PREFIX"
         {
-          grep -E '^[A-Z0-9_]+=' "${file}"
+          grep -E '^[A-Z0-9_]+=' <<< "${pin}"
           echo "LLVM_SYS_PREFIX_VAR=${prefix_var}"
         } >> "$GITHUB_ENV"
         {

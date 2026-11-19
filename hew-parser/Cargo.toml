@@ -13,6 +13,7 @@ categories = ["compilers", "parser-implementations"]
 workspace = true
 
 [dependencies]
+regex-syntax = "0.8"
 hew-lexer = { path = "../hew-lexer" }
 serde.workspace = true
 serde_json.workspace = true

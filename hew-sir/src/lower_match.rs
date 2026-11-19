@@ -504,8 +504,7 @@ impl Builder<'_, '_> {
                     failures.push(self.branch_candidate_test(condition)?);
                 }
                 HirMatchArmPredicate::Regex { literal_id, .. } => {
-                    let condition = self.regex_match_test(plan, *literal_id)?;
-                    failures.push(self.branch_candidate_test(condition)?);
+                    self.probe_regex_arm(plan, arm, *literal_id, fields, failures)?;
                 }
                 _ => {}
             },
@@ -847,7 +846,8 @@ impl Builder<'_, '_> {
             return Err("scalar match has no source arms".to_string().into());
         }
         for arm in arms {
-            if !arm.bindings.is_empty()
+            if (!arm.bindings.is_empty()
+                && !matches!(arm.predicate, HirMatchArmPredicate::Regex { .. }))
                 || !arm.payload_predicates.is_empty()
                 || !arm.payload_variant_predicates.is_empty()
             {
@@ -865,15 +865,7 @@ impl Builder<'_, '_> {
                 HirMatchArmPredicate::Binding { ty, .. } => {
                     self.check_whole_scrutinee_binding(arm, ty, scrutinee_ty)?;
                 }
-                HirMatchArmPredicate::Regex { captures, .. }
-                    if *scrutinee_ty == ResolvedTy::String =>
-                {
-                    if !captures.is_empty() {
-                        return Err(
-                            "regex match-arm capture bindings are outside the SIR contract"
-                                .to_string().into(),);
-                    }
-                }
+                HirMatchArmPredicate::Regex { .. } if *scrutinee_ty == ResolvedTy::String => {}
                 _ => {
                     return Err(
                         "scalar match requires a matching scalar literal, binding or wildcard predicate"
@@ -1145,58 +1137,178 @@ impl Builder<'_, '_> {
         Ok(fields)
     }
 
-    /// Test the borrowed scrutinee against one compiled regex literal.
-    ///
-    /// The literal's index selects its module-owned handle, so each pattern is
-    /// compiled once at module load rather than per arm
-    /// evaluation. The scrutinee is borrowed; the call produces only a bool.
-    fn regex_match_test(
+    fn probe_regex_arm(
         &mut self,
         plan: &MatchPlan,
+        arm: &HirMatchArm,
         literal_id: u32,
-    ) -> Result<ValueId, SirLoweringError> {
-        let index = self.emit_typed(
+        fields: &mut Vec<Option<BlockArg>>,
+        failures: &mut Vec<ControlState>,
+    ) -> Result<(), SirLoweringError> {
+        use crate::BoundaryDecision::{Borrow, Copy};
+        use hew_types::RuntimeCallFamily as F;
+        let text = plan.scrutinee()?;
+        let integer = |value| SemOpKind::ConstInteger(i128::from(value));
+        let literal = self.emit_typed(
             plan.provenance.clone(),
             &ResolvedTy::I64,
-            SemOpKind::ConstInteger(i128::from(literal_id)),
+            integer(literal_id),
         )?;
+        let args = [(literal, Copy), (text, Borrow)];
+        if arm.bindings.is_empty() {
+            let matched = self.regex_call(F::RegexMatch, &args, &ResolvedTy::Bool)?;
+            failures.push(self.branch_candidate_test(matched.value)?);
+            return Ok(());
+        }
+        // One search supplies group zero and every named group. The owned
+        // offsets and copied strings follow ordinary candidate cleanup on a
+        // declined guard, unwind, or successful arm exit.
+        let spans_ty =
+            ResolvedTy::named_builtin(hew_types::BuiltinType::Vec, vec![ResolvedTy::I64]);
+        let spans = self
+            .regex_call(F::RegexCaptureSpans, &args, &spans_ty)?
+            .value;
+        let whole = self.emit_typed(plan.provenance.clone(), &ResolvedTy::I64, integer(0))?;
+        let matched = self.regex_call(
+            F::RegexGroupPresent,
+            &[(spans, Borrow), (whole, Copy)],
+            &ResolvedTy::Bool,
+        )?;
+        failures.push(self.branch_candidate_test(matched.value)?);
+        for binding in &arm.bindings {
+            let index = self.emit_typed(
+                plan.provenance.clone(),
+                &ResolvedTy::I64,
+                integer(binding.field_idx),
+            )?;
+            let ty = self.ty(&binding.ty);
+            let value = if ty == ResolvedTy::String {
+                self.regex_call(
+                    F::RegexGroupText,
+                    &[(spans, Borrow), (index, Copy), (text, Borrow)],
+                    &ty,
+                )?
+            } else {
+                self.optional_regex_group(spans, index, text, &ty)?
+            };
+            let slot = binding.field_idx as usize;
+            fields.resize_with(slot + 1, || None);
+            fields[slot] = Some(value);
+        }
+        Ok(())
+    }
+
+    fn optional_regex_group(
+        &mut self,
+        spans: ValueId,
+        index: ValueId,
+        text: ValueId,
+        ty: &ResolvedTy,
+    ) -> Result<BlockArg, SirLoweringError> {
+        use crate::BoundaryDecision::{Borrow, Copy};
+        use hew_types::RuntimeCallFamily as F;
+        let shape = self.service.require_variant_shape(ty)?;
+        let variant = &self.service.variant_shapes[shape.0 as usize];
+        let some = variant
+            .runtime_tag(crate::RuntimeVariantRole::OptionSome)
+            .ok_or(SirLoweringError::from("regex capture lacks Option.Some"))?;
+        let none = variant
+            .runtime_tag(crate::RuntimeVariantRole::OptionNone)
+            .ok_or(SirLoweringError::from("regex capture lacks Option.None"))?;
+        let present = self.regex_call(
+            F::RegexGroupPresent,
+            &[(spans, Borrow), (index, Copy)],
+            &ResolvedTy::Bool,
+        )?;
+        let absent = self.branch_candidate_test(present.value)?;
+        let capture = self.regex_call(
+            F::RegexGroupText,
+            &[(spans, Borrow), (index, Copy), (text, Borrow)],
+            &ResolvedTy::String,
+        )?;
+        let some = self.emit_variant_make(shape, some, ty, &[capture])?;
+        self.owned_live.remove(&some);
+        let found = MatchExit {
+            state: self.control_state(),
+            result: Some(Operand { value: some }),
+        };
+        self.restore_control_state(&absent);
+        let none = self.emit_variant_make(shape, none, ty, &[])?;
+        self.owned_live.remove(&none);
+        let missing = MatchExit {
+            state: self.control_state(),
+            result: Some(Operand { value: none }),
+        };
+        let value = self
+            .merge_match_exits(vec![found, missing], ty)?
+            .ok_or(SirLoweringError::from("regex capture join lost its result"))?;
+        Ok(BlockArg {
+            value,
+            ty: ty.clone(),
+            own: OwnKind::Owned,
+        })
+    }
+
+    fn regex_call(
+        &mut self,
+        family: hew_types::RuntimeCallFamily,
+        args: &[(ValueId, crate::BoundaryDecision)],
+        ty: &ResolvedTy,
+    ) -> Result<BlockArg, SirLoweringError> {
+        self.service.require_type_facts(ty)?;
+        let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
         let raw = self.fresh_value();
-        let continuation = self.fresh_value();
-        let normal = self.new_block(vec![BlockArg {
-            value: continuation,
-            ty: ResolvedTy::Bool,
-            own: OwnKind::None,
-        }]);
+        let output = BlockArg {
+            value: self.fresh_value(),
+            ty: ty.clone(),
+            own,
+        };
+        let normal = self.new_block(vec![output.clone()]);
+        let failure = match family.semantic_contract() {
+            Some(contract) if contract.failures.is_empty() => None,
+            Some(contract) if contract.propagates_fault() => Some(self.new_block(Vec::new())),
+            _ => return Err("regex call has no supported failure contract".into()),
+        };
+        let unwind = failure.map_or(crate::CallUnwind::NotApplicable, |target| {
+            crate::CallUnwind::Cleanup(crate::Edge {
+                target,
+                args: Vec::new(),
+            })
+        });
         let id = crate::OpId(self.ops);
         self.ops += 1;
         self.set_terminator(SemTerminator::RtCall {
             id,
-            family: hew_types::RuntimeCallFamily::RegexMatch,
-            args: vec![
-                crate::BoundaryOperand {
-                    operand: Operand { value: index },
-                    decision: crate::BoundaryDecision::Copy,
-                },
-                crate::BoundaryOperand {
-                    operand: Operand {
-                        value: plan.scrutinee()?,
-                    },
-                    decision: crate::BoundaryDecision::Borrow,
-                },
-            ],
+            family,
+            args: args
+                .iter()
+                .map(|&(value, decision)| crate::BoundaryOperand {
+                    operand: Operand { value },
+                    decision,
+                })
+                .collect(),
             result: crate::CallResult::Value(ValueDef {
                 id: raw,
-                ty: ResolvedTy::Bool,
-                own: OwnKind::None,
+                ty: ty.clone(),
+                own,
             }),
             normal: crate::Edge {
                 target: normal,
                 args: vec![Operand { value: raw }],
             },
-            unwind: crate::CallUnwind::NotApplicable,
+            unwind,
         })?;
         self.current = normal;
-        Ok(continuation)
+        if let Some(block) = failure {
+            let success = self.control_state();
+            self.current = block;
+            self.finish_fault_exit()?;
+            self.restore_control_state(&success);
+        }
+        if own == OwnKind::Owned {
+            self.owned_live.insert(output.value, ty.clone());
+        }
+        Ok(output)
     }
 
     fn scalar_match_literal_test(

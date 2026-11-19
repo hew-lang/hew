@@ -524,7 +524,7 @@ impl<'checked> LowerCtx<'checked> {
     /// Deduplicates by raw pattern string equality. Returns the stable
     /// `literal_id` (0-based index into `HirModule::regex_literals`) for
     /// use in `HirMatchArmPredicate::Regex` and `HirExprKind::RegexLiteralRef`.
-    pub(super) fn alloc_regex_literal(&mut self, pattern: &str, captures: &[(String, u32)]) -> u32 {
+    pub(super) fn alloc_regex_literal(&mut self, pattern: &str) -> u32 {
         if let Some(&id) = self.regex_literal_index.get(pattern) {
             return id;
         }
@@ -534,7 +534,6 @@ impl<'checked> LowerCtx<'checked> {
         self.regex_literals.push(HirRegexLiteral {
             literal_id: id,
             pattern: pattern.to_string(),
-            captures: captures.to_vec(),
         });
         id
     }

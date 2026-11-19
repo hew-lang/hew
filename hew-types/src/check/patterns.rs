@@ -1643,55 +1643,8 @@ impl Checker {
                     }
                 }
             },
-            // Regex patterns bind named captures as `string` in the arm body.
-            // The scrutinee must be `string`; any other type is a hard error.
-            // Invalid regex syntax is reported here via InvalidRegexLiteral;
-            // Expr::RegexLiteral nodes have an independent validation site in
-            // synthesize_inner, but match-arm Pattern::Regex nodes bypass that
-            // path entirely and must be validated here.
-            Pattern::Regex { pattern, .. } => {
-                // Enforce: regex patterns require a `string` scrutinee.
-                // `Ty::String` is the canonical string type; `Ty::Var` / `Ty::Error`
-                // are in-flight inference variables or already-reported errors — skip
-                // the duplicate diagnostic in those cases.
-                if !matches!(ty, Ty::String | Ty::Var(_) | Ty::Error) {
-                    self.report_error(
-                        TypeErrorKind::RegexPatternNotString {
-                            actual_ty: ty.user_facing().to_string(),
-                        },
-                        span,
-                        format!(
-                            "regex pattern can only match `string` scrutinees, got `{}`",
-                            ty.user_facing()
-                        ),
-                    );
-                }
-                match regex::Regex::new(pattern) {
-                    Ok(compiled) => {
-                        for capture_name in compiled.capture_names().flatten() {
-                            self.check_shadowing(capture_name, span);
-                            self.env.define_with_span(
-                                capture_name.to_string(),
-                                self.named_ty_for_key("string", vec![]),
-                                false,
-                                span.clone(),
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        // Validate the regex pattern; emit InvalidRegexLiteral for
-                        // patterns that appear directly in match arms (not via an
-                        // Expr::RegexLiteral, which is validated in synthesize_inner).
-                        self.report_error(
-                            TypeErrorKind::InvalidRegexLiteral {
-                                pattern: pattern.clone(),
-                                error: err.to_string(),
-                            },
-                            span,
-                            format!("invalid regex pattern `re\"{pattern}\"`: {err}"),
-                        );
-                    }
-                }
+            Pattern::Regex { pattern, captures } => {
+                self.bind_regex_pattern(pattern, captures, ty, span);
             }
             Pattern::Or(alternatives) => {
                 let env_before = self.env.clone();
@@ -2319,48 +2272,8 @@ impl Checker {
                 }
                 return;
             }
-            // Regex patterns: derive named capture names from the pattern at
-            // check time using the same `regex` engine as the runtime. The
-            // AST `captures` field is initialised to `vec![]` by the parser;
-            // we re-derive the list here so the side table carries authoritative
-            // names that HIR lowering will consume. Re-validating the pattern is
-            // cheap (small patterns, once per arm at check time).
-            Pattern::Regex { pattern, .. } => {
-                let captures = if let Ok(compiled) = regex::Regex::new(pattern) {
-                    // Enumerate all group positions (0-based enumeration; group 0 is
-                    // the whole match, so the first real group is capture_names()[1]).
-                    // We want the 1-based regex group index alongside each name so MIR
-                    // can pass the real group position to `hew_regex_capture` rather
-                    // than a flattened named-only ordinal. Using the real group index
-                    // corrects the lookup when unnamed positional groups precede named
-                    // ones — e.g. `re"(foo)(?P<bar>bar)"` has group 1=(foo) (unnamed)
-                    // and group 2=bar (named); the old code would pass 0+1=1 which is
-                    // wrong.
-                    compiled
-                        .capture_names()
-                        .enumerate()
-                        .filter_map(|(group_idx, name)| {
-                            name.map(|n| {
-                                (
-                                    n.to_owned(),
-                                    u32::try_from(group_idx).expect("group index overflows u32"),
-                                )
-                            })
-                        })
-                        .collect()
-                } else {
-                    // Syntactically invalid; `bind_pattern` / expression synthesis
-                    // already reported the error; produce empty captures so
-                    // downstream stages see a safe no-capture resolution.
-                    vec![]
-                };
-                ArmResolution {
-                    pattern_kind: PatternKind::Regex { captures },
-                    variant_match: None,
-                    payload_bindings: vec![],
-                    payload_variant_patterns: vec![],
-                }
-            }
+            // Binding the pattern records its checked captures and their types.
+            Pattern::Regex { .. } => return,
             Pattern::ContextVariant(context) => match context.payload.as_ref() {
                 None => ArmResolution {
                     pattern_kind: PatternKind::VariantCtor,

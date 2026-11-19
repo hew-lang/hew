@@ -4967,6 +4967,23 @@ there is no expression timeout combinator.
 
 `std.text.regex` is shipped. It compiles patterns and supports matching,
 replacement, indexed and named captures, and multi-match capture tables.
+In a match arm a regex can bind its named groups. The bindings are in scope
+in the guard and the arm body. A group that participates on every path binds
+a `string`. A group inside an alternative or a possibly empty repetition
+binds an `Option<string>`. A participating group can capture an empty string.
+
+```hew
+fn greet(line: string) -> string {
+    match line {
+        re"^hello (?P<name>[A-Za-z]+)$" => f"Hello, {name}!",
+        _ => "Hello!",
+    }
+}
+```
+
+Capture names must be valid Hew binding names and must be distinct from names
+already in scope. Capture strings can be returned or passed to other functions.
+
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
 `regex.new(pattern)` returns a checked `Result<Pattern, RegexError>`. Invalid

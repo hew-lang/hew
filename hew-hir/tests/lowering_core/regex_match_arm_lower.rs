@@ -1,7 +1,7 @@
 /// HIR lowering tests for regex literal match arm patterns.
 ///
 /// Exercises the `HirMatchArmPredicate::Regex` variant produced by
-/// `lower_match_expr` when a `PatternKind::Regex { captures }` arm is
+/// `lower_match_expr` when a `PatternKind::Regex` arm is
 /// resolved by the type checker and presented to HIR lowering.
 ///
 /// Verifies the HIR shape — `HirMatchArmPredicate`, the `HirRegexLiteral`
@@ -96,16 +96,8 @@ fn regex_arm_no_captures_lowers_to_predicate_regex() {
     assert_eq!(arms.len(), 2, "expected 2 arms; got {}", arms.len());
 
     match &arms[0].predicate {
-        HirMatchArmPredicate::Regex {
-            literal_id,
-            pattern,
-            captures,
-        } => {
-            assert_eq!(pattern, "^hello", "pattern mismatch");
-            assert!(
-                captures.is_empty(),
-                "expected no captures; got {captures:?}"
-            );
+        HirMatchArmPredicate::Regex { literal_id, .. } => {
+            assert!(arms[0].bindings.is_empty());
             // The literal_id must index into the module's regex_literals table.
             let entry = output
                 .module

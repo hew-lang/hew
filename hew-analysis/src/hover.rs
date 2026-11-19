@@ -870,11 +870,17 @@ fn find_pattern_binding_type(
             find_pattern_binding_type(alternative, source_ty, types, word, offset)
         }),
         Pattern::Regex { captures, .. } => {
-            // Named captures are bound as `string` in the arm body.
+            // A group the expression can skip has an optional string result.
             captures
                 .iter()
-                .find(|c| c.as_str() == word)
-                .map(|_| Ty::String)
+                .find(|c| c.name.name.as_str() == word)
+                .map(|group| {
+                    if group.required {
+                        Ty::String
+                    } else {
+                        Ty::option(Ty::String)
+                    }
+                })
         }
         Pattern::NominalPath { path, payload } => match payload.as_ref() {
             None => None,
@@ -950,7 +956,10 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Or(alternatives) => alternatives
             .iter()
             .find_map(|alternative| find_binding_name(alternative, word, offset)),
-        Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
+        Pattern::Regex { captures, .. } => captures
+            .iter()
+            .find(|c| c.name.name.as_str() == word)
+            .map(|_| ()),
         Pattern::NominalPath { payload, .. } => match payload.as_ref() {
             None => None,
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => patterns

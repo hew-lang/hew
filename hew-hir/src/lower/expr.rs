@@ -529,7 +529,7 @@ impl LowerCtx<'_> {
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
-                let literal_id = self.alloc_regex_literal(pattern, &[]);
+                let literal_id = self.alloc_regex_literal(pattern);
                 (
                     HirExprKind::RegexLiteralRef {
                         literal_id,

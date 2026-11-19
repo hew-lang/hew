@@ -91,6 +91,7 @@ export interface ShimHost {
   arenaInstanceId(): bigint;
   /// The package's regex literal pool.
   regexPatterns: readonly string[];
+  regexLiteral?: (index: number) => import("../types.js").CompiledRegex;
   /// Build a value of the enum descriptor the call demands. The tag comes from
   /// that descriptor's declaration order, never from a guess.
   enumValue(
@@ -112,9 +113,9 @@ export type RuntimeShim = (
 
 export type HostBridges = Pick<
   import("../types.js").RunOptions,
-  "codecBridge" | "calendarBridge" | "directoryRoots"
+  "codecBridge" | "calendarBridge" | "regexBridge" | "directoryRoots"
 >;
-type BridgeRequirement = "codecBridge" | "calendarBridge";
+type BridgeRequirement = "codecBridge" | "calendarBridge" | "regexBridge";
 export type DirectoryRegistration = {
   kind: "directory";
   operation: DirectoryOperation;
@@ -928,7 +929,31 @@ const UNIT_FAMILIES = {
   RegexCompile: refused("RegexCompile"),
   RegexFreeCapture: refused("RegexFreeCapture"),
   RegexHandle: refused("RegexHandle"),
-  RegexMatch: refused("RegexMatch"),
+  RegexMatch: {
+    kind: "ordinary",
+    bridge: "regexBridge",
+    shim: (host, args) =>
+      bool(host.regexLiteral!(Number(integer(args, 0))).isMatch(text(args, 1))),
+  },
+  RegexCaptureSpans: {
+    kind: "ordinary",
+    bridge: "regexBridge",
+    shim: (host, args) => ({
+      kind: "vector",
+      elementType: "i64",
+      items: Array.from(
+        host.regexLiteral!(Number(integer(args, 0))).captureSpans(
+          text(args, 1),
+        ),
+        int,
+      ),
+    }),
+  },
+  RegexGroupPresent: (_host, args) => bool(regexGroup(args) !== undefined),
+  RegexGroupText: (_host, args) => {
+    const range = regexGroup(args);
+    return str(range ? text(args, 2).slice(range[0], range[1]) : "");
+  },
   ReplyChannelCancel: refused("ReplyChannelCancel"),
   ReplyChannelFree: refused("ReplyChannelFree"),
   ReplyChannelNew: refused("ReplyChannelNew"),
@@ -1702,6 +1727,17 @@ function compileRegex(host: ShimHost, args: VmValue[]): VmValue {
 
 /// A regex extern names its pattern either as a literal-pool index or as a
 /// string value; both reach the same compiled handle.
+function regexGroup(args: VmValue[]): [number, number] | undefined {
+  const ranges = vec(args, 0);
+  const first = Number(integer(args, 1)) * 2;
+  if (first < 0 || first + 1 >= vectorLength(ranges)) return undefined;
+  const start = vectorElement(ranges, first),
+    end = vectorElement(ranges, first + 1);
+  return start?.kind === "i64" && end?.kind === "i64" && start.value >= 0n
+    ? [Number(start.value), Number(end.value)]
+    : undefined;
+}
+
 function pattern(host: ShimHost, value: VmValue): string {
   if (value.kind === "i64") {
     return host.regexPatterns[Number(value.value)] ?? "";

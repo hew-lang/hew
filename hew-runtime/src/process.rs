@@ -1094,25 +1094,19 @@ mod tests {
             rlim_max: 0,
         };
         // SAFETY: saved is writable and the limit affects only this subprocess.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut saved) },
-            0
-        );
+        let got_limit = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut saved) };
+        assert_eq!(got_limit, 0);
         let reduced = libc::rlimit {
             rlim_cur: 0,
             rlim_max: saved.rlim_max,
         };
         // SAFETY: reduced leaves the hard limit intact, so we can restore it.
-        assert_eq!(
-            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const reduced) },
-            0
-        );
+        let lowered_limit = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const reduced) };
+        assert_eq!(lowered_limit, 0);
         let exited = watch.exited();
         // SAFETY: saved holds this process's original limits.
-        assert_eq!(
-            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const saved) },
-            0
-        );
+        let restored_limit = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const saved) };
+        assert_eq!(restored_limit, 0);
         // EOF releases the child so we can observe and reap its actual exit.
         drop(child.stdin.take());
         let mut event = libc::pollfd {

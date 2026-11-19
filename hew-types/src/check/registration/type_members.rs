@@ -1060,6 +1060,9 @@ impl Checker {
         if td.resource_marker == hew_parser::ast::ResourceMarker::Linear {
             self.registry.register_linear_type(declaration);
         }
+        if td.repr_c {
+            self.c_abi.records.insert(declaration);
+        }
         if td.is_opaque {
             self.opaque_type_ids.insert(declaration);
         }
@@ -1382,6 +1385,9 @@ impl Checker {
                 self.registry.register_linear_type(declaration);
             }
             hew_parser::ast::ResourceMarker::None => {}
+        }
+        if td.repr_c {
+            self.c_abi.records.insert(declaration);
         }
         if td.is_opaque {
             self.opaque_type_ids.insert(declaration);

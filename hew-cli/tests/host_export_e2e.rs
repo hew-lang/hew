@@ -202,3 +202,67 @@ fn ambient() { let file = fs.open_read("orders.csv").expect("open"); }
         "initializer proof was lost: {stderr}"
     );
 }
+
+#[test]
+fn raw_c_exports_require_explicit_representations_and_unique_symbols() {
+    let directory = tempdir();
+    for (name, source, message) in [
+        (
+            "generic",
+            "#[export] fn id<T>(value: T) -> T { value }",
+            "monomorphic",
+        ),
+        (
+            "duplicate",
+            "#[export(\"read_value\")] fn a() {} #[export(\"read_value\")] fn b() {}",
+            "already declared",
+        ),
+        (
+            "import",
+            "extern \"C\" { fn read_value(); } #[export(\"read_value\")] fn a() {}",
+            "already declared",
+        ),
+        ("reserved", "#[export(\"main\")] fn a() {}", "non-reserved"),
+        (
+            "managed",
+            "#[export] fn echo(value: string) -> string { value }",
+            "cannot represent",
+        ),
+        (
+            "record",
+            "type Value { n: i64; } #[export] fn echo(value: Value) -> Value { value }",
+            "cannot represent",
+        ),
+        (
+            "field",
+            "#[repr(C)] type Bad { text: string; }",
+            "has no explicit C representation",
+        ),
+        (
+            "nested",
+            "type Inner { n: i64; } #[repr(C)] type Bad { inner: Inner; }",
+            "has no explicit C representation",
+        ),
+        (
+            "packed",
+            "#[repr(C, packed)] type Bad { n: i64; }",
+            "E_ATTRIBUTE_ARGUMENT",
+        ),
+        (
+            "symbol",
+            "#[export(unquoted)] fn echo() {}",
+            "E_ATTRIBUTE_ARGUMENT",
+        ),
+    ] {
+        let input = directory.path().join(format!("{name}.hew"));
+        std::fs::write(&input, source).unwrap();
+        let mut command = Command::new(hew_binary());
+        command.arg("check").arg(&input);
+        let output = run_bounded_command(command, name);
+        assert!(
+            !output.status.success() && String::from_utf8_lossy(&output.stderr).contains(message),
+            "{name}: {}",
+            describe_output(&output)
+        );
+    }
+}

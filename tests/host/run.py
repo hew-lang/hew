@@ -137,6 +137,71 @@ def sanitized_failure_symbols(args, root, output, env):
     print("PASS stripped ASan failure symbols")
 
 
+def raw_c_client(args, root, directory, opt, env):
+    component = directory / "c_records.o"
+    host = directory / "c_records_client.o"
+    executable = directory / ("weather.exe" if sys.platform == "win32" else "weather")
+    flags = ["-fsanitize=address", "-fno-omit-frame-pointer"] if args.sanitize else []
+    run(
+        [
+            args.hew_bin,
+            "build",
+            root / "tests/host/c_records.hew",
+            "--emit-obj",
+            "--opt-level",
+            opt,
+            "-o",
+            component,
+        ],
+        env=env,
+    )
+    run(
+        [
+            args.cc,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-O" + opt,
+            *flags,
+            "-c",
+            root / "tests/host/c_records.c",
+            "-o",
+            host,
+        ],
+        env=env,
+    )
+    run(
+        [
+            args.cc,
+            *flags,
+            host,
+            component,
+            args.hew_lib,
+            *platform_flags(),
+            "-o",
+            executable,
+        ],
+        env=env,
+    )
+    passed = run([executable], env=env)
+    fault = subprocess.run(
+        [executable, "fault"], env=env, capture_output=True, timeout=30
+    )
+    if passed.stderr.splitlines() != [b"ratio cleanup"] or fault.returncode == 0:
+        raise RuntimeError(
+            f"unexpected C export outcome: {passed.stderr!r}, {fault.returncode}"
+        )
+    if (
+        fault.stderr.splitlines().count(b"ratio cleanup") != 1
+        or b"zero" not in fault.stderr.lower()
+    ):
+        raise RuntimeError(
+            f"C export fault skipped cleanup or reporting: {fault.stderr!r}"
+        )
+    print(f"PASS raw C records and terminal fault / Hew O{opt}")
+
+
 def asynchronous_clients(args, root, directory, opt, env):
     include = args.include_dir or root / "hew-cabi/include"
     fixture = directory / "async_component.o"
@@ -435,6 +500,7 @@ def main():
                 f"PASS {standard} / Hew O{opt}"
                 + (" / ASan+LSan" if args.sanitize else "")
             )
+        raw_c_client(args, root, directory, opt, env)
         asynchronous_clients(args, root, directory, opt, env)
     if args.sanitize:
         sanitized_failure_symbols(args, root, output, env)

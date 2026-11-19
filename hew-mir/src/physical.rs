@@ -46,7 +46,7 @@ mod extern_abi;
 mod loops;
 #[path = "physical_storage_uses.rs"]
 mod storage_uses;
-pub use extern_abi::PhysicalExternResultAbi;
+pub use extern_abi::{CParameterAbi, PhysicalExternResultAbi};
 pub use loops::PhysicalLoopChunk;
 #[cfg(test)]
 #[path = "physical_defer_tests.rs"]

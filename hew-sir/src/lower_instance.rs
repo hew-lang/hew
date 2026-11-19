@@ -2066,6 +2066,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         SemModule {
+            c_abi: callable_facts.checked.c_abi.clone(),
             coverage: crate::CoveragePlan::new(),
             structural_display,
             debug,

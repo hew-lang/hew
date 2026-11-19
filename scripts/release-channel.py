@@ -257,6 +257,115 @@ def verify_formula(text: str, version: str, checksums: dict[str, str]) -> None:
         )
 
 
+def verified_release_checksums(
+    manifest: Path, attestations: list[dict]
+) -> dict[str, str]:
+    entries = {}
+    for line in manifest.read_text().splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)", line)
+        if not match or match[2] in entries:
+            raise RuntimeError("Invalid release checksum manifest")
+        entries[match[2]] = match[1]
+
+    # The release workflow attests the receipt and every asset in one statement.
+    # Match one complete statement, since retries can yield multiple attestations.
+    expected = sorted(entries.items())
+    if not entries or not any(
+        sorted(
+            (subject["name"], subject["digest"]["sha256"])
+            for subject in result["verificationResult"]["statement"]["subject"]
+        )
+        == expected
+        for result in attestations
+    ):
+        raise RuntimeError("Release checksums do not match the producer attestation")
+    return entries
+
+
+def defer_distro(reason: str) -> None:
+    print(f"::notice::{reason}")
+    with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+        output.write("SKIP=1\n")
+
+
+def download_distro() -> None:
+    tag, repo, ref = (os.environ[name] for name in ("TAG", "GH_REPO", "GITHUB_REF"))
+    if ref != f"refs/tags/{tag}":
+        raise RuntimeError(
+            "Select the same release tag for the workflow ref and package input"
+        )
+    if "-" in tag:
+        defer_distro(f"{tag} is a prerelease and carries no distro packages")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="hew-distro-receipt-") as temp:
+        receipt = Path(temp) / f"hew-{tag}-platforms.json"
+        checksums = Path(temp) / f"hew-{tag}-checksums.txt"
+        download = ("gh", "release", "download", tag, "--repo", repo)
+        command(
+            *download,
+            "--dir",
+            temp,
+            "--pattern",
+            receipt.name,
+            "--pattern",
+            checksums.name,
+        )
+        inventory = json.loads(receipt.read_text())
+        if inventory["version"] != tag.removeprefix("v"):
+            raise RuntimeError("Distro release receipt version differs")
+        attestations = json.loads(
+            command(
+                "gh",
+                "attestation",
+                "verify",
+                str(receipt),
+                "--repo",
+                repo,
+                "--signer-workflow",
+                f"{repo}/.github/workflows/release.yml",
+                "--source-ref",
+                ref,
+                "--source-digest",
+                inventory["source"],
+                "--format",
+                "json",
+            ).stdout
+        )
+        entries = verified_release_checksums(checksums, attestations)
+
+    state = inventory["platforms"]["linux-packages"]["state"]
+    if state == "unavailable":
+        defer_distro(
+            f"{tag} has no qualified Linux package set; keeping the existing stable repository"
+        )
+        return
+    if state != "available":
+        raise RuntimeError(f"Unexpected Linux package state: {state}")
+    packages = {
+        name: checksum
+        for name, checksum in entries.items()
+        if name.endswith((".deb", ".rpm", ".pkg.tar.zst"))
+        and not name.endswith(".src.rpm")
+    }
+    if not packages:
+        raise RuntimeError("The qualified release has no distro package checksums")
+
+    directory = Path("pkgs")
+    directory.mkdir()
+    patterns = [argument for name in packages for argument in ("--pattern", name)]
+    command(*download, "--dir", str(directory), *patterns)
+    if {path.name for path in directory.iterdir()} != packages.keys():
+        raise RuntimeError(
+            "Downloaded distro package names differ from the qualified set"
+        )
+    for name, checksum in packages.items():
+        with (directory / name).open("rb") as payload:
+            if hashlib.file_digest(payload, "sha256").hexdigest() != checksum:
+                raise RuntimeError(f"Downloaded distro package differs: {name}")
+    print(f"Verified {len(packages)} distro packages for {tag}")
+
+
 def publish_homebrew() -> None:
     version = os.environ["VERSION"]
     repo = "hew-lang/homebrew-hew"
@@ -458,9 +567,12 @@ def publish_homebrew() -> None:
 
 if __name__ == "__main__":
     try:
-        {"npm": publish_npm, "ghcr": publish_ghcr, "homebrew": publish_homebrew}[
-            sys.argv[1]
-        ]()
+        {
+            "npm": publish_npm,
+            "ghcr": publish_ghcr,
+            "homebrew": publish_homebrew,
+            "distro": download_distro,
+        }[sys.argv[1]]()
     except (RuntimeError, ValueError, KeyError, OSError, tarfile.TarError) as error:
         print(f"::error::{error}", file=sys.stderr)
         sys.exit(1)

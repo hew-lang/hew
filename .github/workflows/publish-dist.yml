@@ -39,44 +39,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Checkout apt-push
+      - name: Checkout release tools
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           sparse-checkout: |
             .github/scripts
             .github/actions/setup-ubuntu-dns
+            scripts
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
-      - name: Download the release's distro packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" != "refs/tags/$TAG" ]]; then
-            echo "::error::Select the same release tag for the workflow ref and package input."
-            exit 1
-          fi
-          if [[ "${TAG}" == *-* ]]; then
-            echo "::notice::${TAG} is a prerelease; distro packages ship with final releases"
-            echo "SKIP=1" >>"${GITHUB_ENV}"
-            exit 0
-          fi
-          receipt="hew-${TAG}-platforms.json"
-          gh release download "${TAG}" --pattern "${receipt}"
-          channel=$(jq -er '.platforms["linux-packages"].state' "${receipt}")
-          case "$channel" in
-            available) ;;
-            unavailable)
-              echo "::notice::${TAG} has no qualified Linux package set; keeping the existing stable repository"
-              echo "SKIP=1" >>"$GITHUB_ENV"
-              exit 0 ;;
-            *) echo "::error::Unexpected Linux package state: $channel"; exit 1 ;;
-          esac
-          mkdir pkgs
-          gh release download "${TAG}" --dir pkgs \
-            --pattern '*.deb' --pattern '*.rpm' --pattern '*.pkg.tar.zst'
-          rm -f pkgs/*.src.rpm
-          ls -l pkgs
+      - name: Download and verify the qualified distro packages
+        run: python3 scripts/release-channel.py distro
 
       - name: Install the Arch package reader
         if: env.SKIP != '1'

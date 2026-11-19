@@ -100,6 +100,13 @@ impl HostFamily {
 
     /// How to install clang, which a cross-target link needs (GCC's `cc`
     /// cannot take a `-target`).
+    #[cfg_attr(
+        target_os = "windows",
+        allow(
+            dead_code,
+            reason = "Windows links only with clang.exe; cross-link advice is unit-tested everywhere"
+        )
+    )]
     pub(crate) fn clang_advice(self) -> &'static str {
         match self {
             Self::Debian => "install it with `sudo apt install clang lld`",
@@ -137,6 +144,13 @@ pub(crate) fn missing_c_driver(tried: &str, family: HostFamily) -> String {
 }
 
 /// The diagnostic for a cross-target link on a host without clang.
+#[cfg_attr(
+    target_os = "windows",
+    allow(
+        dead_code,
+        reason = "Windows links only with clang.exe; cross-link advice is unit-tested everywhere"
+    )
+)]
 pub(crate) fn missing_cross_clang(triple: &str, family: HostFamily) -> String {
     format!(
         "Error: clang not found. Linking for target {triple} from this host needs clang; \

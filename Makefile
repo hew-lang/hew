@@ -301,19 +301,21 @@ WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 target_root_slashes := $(subst \,/,$(CARGO_TARGET_ROOT))
 CARGO_TARGET_ROOT_ABSOLUTE := $(or $(filter /%,$(target_root_slashes)),$(and $(findstring :/,$(target_root_slashes)),$(filter %:,$(firstword $(subst /, ,$(target_root_slashes))))))
 # The `../` hops assume the default build/ directory; any other BUILD_DIR
-# (out of tree, or nested) links into the checkout by absolute path.
+# (out of tree, or nested) links into the checkout by absolute path. Staged
+# inputs and the source-identity checks below use the caller's checkout
+# ($(CURDIR)), not MAKEFILE_ROOT, which only locates helper scripts.
 ifeq ($(BUILD_DIR),build)
 STD_LINK_TARGET := ../std
 else
-STD_LINK_TARGET := $(MAKEFILE_ROOT)/std
+STD_LINK_TARGET := $(CURDIR)/std
 endif
 ifeq ($(CARGO_TARGET_ROOT_ABSOLUTE),)
 ifeq ($(BUILD_DIR),build)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../
 else
-LINK_UP2 := $(MAKEFILE_ROOT)/
-LINK_UP3 := $(MAKEFILE_ROOT)/
+LINK_UP2 := $(CURDIR)/
+LINK_UP3 := $(CURDIR)/
 endif
 else
 LINK_UP2 :=
@@ -335,7 +337,7 @@ define STAGE_CHECK_DEST
 		/|/[A-Za-z]|[A-Za-z]:|[A-Za-z]:/) return 0;; \
 		//*) unc=$${1#//}; unc=$${unc%/}; case "$$unc" in */*/*) return 1;; esac; return 0;; \
 		esac; return 1; }; \
-	has_sources() { [ -n "$$(git -C "$(MAKEFILE_ROOT)" ls-files -- "$$1" 2>/dev/null | head -n 1)" ]; }; \
+	has_sources() { [ -n "$$(git -C "$(CURDIR)" ls-files -- "$$1" 2>/dev/null | head -n 1)" ]; }; \
 	refuse() { echo "error: BUILD_DIR='$(BUILD_DIR)' $$1" >&2; exit 1; }; \
 	[ -n "$(strip $(BUILD_DIR))" ] || refuse "is empty"; \
 	if [ -d "$(BUILD_DIR)" ]; then \
@@ -351,7 +353,7 @@ define STAGE_CHECK_DEST
 	std="$(BUILD_DIR)/std"; \
 	if [ -d "$$std" ] && [ ! -L "$$std" ]; then \
 		physical=$$(cd "$$std" && pwd -P) || exit 1; \
-		if test "$$std" -ef "$(MAKEFILE_ROOT)/std" || has_sources "$$physical"; then \
+		if test "$$std" -ef "$(CURDIR)/std" || has_sources "$$physical"; then \
 			refuse "would stage over checkout sources in $$physical"; \
 		fi; \
 	fi
@@ -362,7 +364,7 @@ endef
 # copy is replaced rather than relinked over; a link that already resolves to
 # the source is left alone. Run after STAGE_CHECK_DEST.
 define STAGE_STD
-	@if ! test "$(BUILD_DIR)/std" -ef "$(MAKEFILE_ROOT)/std"; then \
+	@if ! test "$(BUILD_DIR)/std" -ef "$(CURDIR)/std"; then \
 		rm -rf "$(BUILD_DIR)/std" && ln -sfn "$(STD_LINK_TARGET)" "$(BUILD_DIR)/std"; \
 	fi
 endef

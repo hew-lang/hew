@@ -1,6 +1,6 @@
 ## Hew syntax highlighting for GNU nano
 ## Generated from syntax-data.json — do not edit by hand.
-## syntax-data.json version: 0.7.2
+## syntax-data.json version: 0.11.1
 
 syntax "hew" "\.hew$"
 
@@ -15,7 +15,7 @@ color yellow "'([^'\\]|\\.)*'"
 color yellow "r\"([^\"])*\""
 
 # Regex literals
-color yellow "re\"([^\"])*\""
+color yellow "re\"([^"\\]|\\.)*\""
 
 # F-strings
 color yellow "f\"([^"\\]|\\.)*\""

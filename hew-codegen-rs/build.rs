@@ -57,12 +57,15 @@ fn main() {
 /// the `DEP_LLVM_<major>_CONFIG_PATH` metadata its build script exports.
 fn llvm_sys_config() -> (u32, std::ffi::OsString) {
     let mut found = env::vars_os().filter_map(|(key, value)| {
-        let major = key
-            .to_str()?
+        let name = key.to_str()?;
+        let major = name
             .strip_prefix("DEP_LLVM_")?
-            .strip_suffix("_CONFIG_PATH")?
+            .strip_suffix("_CONFIG_PATH")?;
+        // A llvm-sys metadata key always names its LLVM major; anything else
+        // is a toolchain fault, not a variable to skip.
+        let major = major
             .parse::<u32>()
-            .ok()?;
+            .unwrap_or_else(|_| panic!("llvm-sys exported {name}, which names no LLVM major"));
         Some((major, value))
     });
     let selected = found

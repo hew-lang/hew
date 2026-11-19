@@ -1,7 +1,7 @@
 [[case]]
 id = "associated-function-values"
-intent = "Associated function values infer or specialize the owner and method type arguments independently."
-source = "cases/associated-function-values.hew"
+intent = "Imported associated function values retain inferred returns and infer or specialize the owner and method type arguments independently."
+source = "fixtures/associated-function-values/main.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 

@@ -216,6 +216,9 @@ impl Checker {
             );
             let method_name = method.name.clone();
             let receiver_name = method.receiver.map(|id| self.defs.path(id).to_string());
+            // An inferred return may still be stored as the declaration's
+            // inference variable when the owner becomes concrete.
+            sig.return_type = self.subst.resolve(&sig.return_type);
             sig = crate::method_resolution::apply_method_receiver_substitution(sig, &owner);
             if let Some(receiver_name) = receiver_name {
                 self.enforce_receiver_obligations(&sig, &method_name, &receiver_name, span);

@@ -144,13 +144,13 @@ impl Command {
     /// The byte budget bounds retained raw output. Operating-system pipes,
     /// backend read buffers, the current chunk, allocation capacity and UTF-8
     /// conversion have separate memory costs.
-    fn output(self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
+    pub fn output(self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
         self.output_with_options(limits, inherited_options())?
     }
 
     /// Capture output with a per-child environment and working directory.
     /// Limits, stdio, cancellation and cleanup follow `output`.
-    fn output_with_options(self, limits: CaptureLimits, options: SpawnOptions) -> CommandOutput fails ProcessError {
+    pub fn output_with_options(self, limits: CaptureLimits, options: SpawnOptions) -> CommandOutput fails ProcessError {
         if limits.timeout <= 0ns {
             return error ProcessError.InvalidArguments("process output: timeout must be positive");
         }
@@ -212,7 +212,7 @@ pub type Child {
 
 impl Child {
     /// The child's operating-system process ID.
-    fn id(self) -> i64 {
+    pub fn id(self) -> i64 {
         unsafe {
             hew_process_id(self.handle)
         }
@@ -220,7 +220,7 @@ impl Child {
 
     /// Take the write end of the child's stdin pipe. Finishing the sink
     /// closes the pipe, so the child reads end of input.
-    fn stdin(self) -> Result<stream.Sink<bytes>, ProcessError> {
+    pub fn stdin(self) -> Result<stream.Sink<bytes>, ProcessError> {
         unsafe {
             let pair = hew_process_take_pipe(self.handle, 0);
             if !hew_stream_pair_is_valid(pair) {
@@ -233,19 +233,19 @@ impl Child {
     }
 
     /// Take the read end of the child's stdout pipe.
-    fn stdout(self) -> Result<stream.Stream<bytes>, ProcessError> {
+    pub fn stdout(self) -> Result<stream.Stream<bytes>, ProcessError> {
         take_output(self.handle, 1)
     }
 
     /// Take the read end of the child's stderr pipe.
-    fn stderr(self) -> Result<stream.Stream<bytes>, ProcessError> {
+    pub fn stderr(self) -> Result<stream.Stream<bytes>, ProcessError> {
         take_output(self.handle, 2)
     }
 
     /// Wait for the child to exit and reap it. The task suspends and holds
     /// no thread; a wait cancelled by `scope within` releases its watch and
     /// leaves the child running and unreaped.
-    fn wait(self) -> ExitStatus fails ProcessError {
+    pub fn wait(self) -> ExitStatus fails ProcessError {
         loop {
             match self.try_wait()? {
                 .Some(status) => return status,
@@ -270,7 +270,7 @@ impl Child {
     }
 
     /// Reap the child if it has exited, without waiting.
-    fn try_wait(self) -> Result<Option<ExitStatus>, ProcessError> {
+    pub fn try_wait(self) -> Result<Option<ExitStatus>, ProcessError> {
         let state = unsafe {
             hew_process_poll(self.handle)
         };
@@ -295,7 +295,7 @@ impl Child {
     /// Ask the child to stop: SIGTERM on Unix. Windows has no request to
     /// stop, so this terminates the child like `kill`. A reaped child is not
     /// signalled.
-    fn terminate(self) -> Result<(), ProcessError> {
+    pub fn terminate(self) -> Result<(), ProcessError> {
         signal_result(unsafe {
             hew_process_signal(self.handle, false)
         })
@@ -303,7 +303,7 @@ impl Child {
 
     /// Stop the child at once: SIGKILL on Unix, `TerminateProcess` on
     /// Windows. A reaped child is not signalled.
-    fn kill(self) -> Result<(), ProcessError> {
+    pub fn kill(self) -> Result<(), ProcessError> {
         signal_result(unsafe {
             hew_process_signal(self.handle, true)
         })
@@ -311,7 +311,7 @@ impl Child {
 
     /// Release the child at scope exit, killing and reaping it first if it
     /// is still running.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_process_drop(self.handle)
         };

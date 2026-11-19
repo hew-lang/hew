@@ -516,6 +516,9 @@ impl Checker {
         record_call_type_args: bool,
         callee: Option<GenericCallee<'_>>,
     ) -> AppliedCallSignature {
+        if let Some(method) = &sig.impl_method {
+            self.check_declaration_visible(method.declaration, span);
+        }
         let receiver_type_args = match &callee {
             Some(GenericCallee::Method {
                 owner_type_args, ..

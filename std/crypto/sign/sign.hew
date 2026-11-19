@@ -70,14 +70,14 @@ pub type SigningKey {
 
 impl SigningKey {
     /// Sign `message`, returning the 64-byte signature.
-    fn sign(self, message: bytes) -> bytes {
+    pub fn sign(self, message: bytes) -> bytes {
         unsafe {
             hew_ed25519_key_sign(self.handle, message)
         }
     }
 
     /// The 32-byte public key that verifies this key's signatures.
-    fn public_key(self) -> bytes {
+    pub fn public_key(self) -> bytes {
         unsafe {
             hew_ed25519_key_public(self.handle)
         }
@@ -85,14 +85,14 @@ impl SigningKey {
 
     /// The 64-byte expanded secret material, for storing the key; load it
     /// again with `from_expanded`.
-    fn expanded(self) -> bytes {
+    pub fn expanded(self) -> bytes {
         unsafe {
             hew_ed25519_key_expanded(self.handle)
         }
     }
 
     /// Release the key, zeroing its secret material.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_ed25519_key_free(self.handle)
         };

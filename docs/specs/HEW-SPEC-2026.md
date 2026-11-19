@@ -2065,11 +2065,13 @@ Three-tier model — written as a prefix keyword before the item keyword:
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
-> **Implementation note:** top-level item boundaries are enforced across
-> modules: a private item referenced from outside its module is rejected with
-> `E_VISIBILITY_PRIVATE`, and a `package` item referenced from outside its
-> package is rejected with `E_VISIBILITY_PACKAGE`. The compiler does not yet
-> fully enforce private or package visibility for authored inherent methods.
+Inherent methods, including associated functions, follow the visibility of their
+own declaration. A bare `fn` is callable inside its declaring module, including
+from peer files. `package fn` also admits other modules in the same package.
+Mark a method `pub fn` to expose it through a public type to other packages.
+Selecting a private or package method from outside that boundary produces
+`E_VISIBILITY_PRIVATE` or `E_VISIBILITY_PACKAGE`. Trait methods keep the
+visibility of the trait contract.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 

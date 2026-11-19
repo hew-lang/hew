@@ -44,6 +44,7 @@ pub(crate) fn collect_method_sigs_for_receiver(
     );
     let methods: Vec<_> = methods
         .into_iter()
+        .filter(|(_, sig)| method_visible_from_root(tc, sig))
         .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
         .collect();
     let Ty::Named {
@@ -90,7 +91,14 @@ pub(crate) fn lookup_method_sig(
         }
     }
     method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
+        .filter(|sig| method_visible_from_root(tc, sig))
         .map(|sig| instantiate_receiver_projections(tc, sig))
+}
+
+fn method_visible_from_root(tc: &TypeCheckOutput, sig: &FnSig) -> bool {
+    sig.impl_method
+        .as_ref()
+        .is_none_or(|method| crate::visible_from_root(tc, method.declaration))
 }
 
 fn instantiate_receiver_projections(tc: &TypeCheckOutput, mut sig: FnSig) -> FnSig {

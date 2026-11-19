@@ -1,0 +1,9 @@
+import cards.model;
+import cards.reader;
+
+fn main() {
+    let card = model.Card.issue();
+    println(card.label());
+    println(reader.read(card));
+    println(model.score(card));
+}

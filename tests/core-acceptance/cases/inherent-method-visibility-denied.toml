@@ -1,0 +1,27 @@
+[[case]]
+id = "inherent-method-visibility-denied"
+intent = "An external package cannot select private or package instance methods or a private constructor through a public type."
+source = "fixtures/inherent-method-visibility/denied.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 5
+column = 13
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPackage"
+line = 6
+column = 13
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 7
+column = 17
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 9
+column = 19

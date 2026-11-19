@@ -172,7 +172,7 @@ impl PatternMethods for Pattern {
 
 impl Pattern {
     /// Release this compiled pattern early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_regex_free(self.handle)
         };

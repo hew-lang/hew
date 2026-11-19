@@ -12,6 +12,7 @@ use crate::hover::format_fn_signature_inline;
 use crate::method_lookup::{
     collect_method_sigs_for_receiver, find_receiver_type, lookup_type_def_for_receiver,
 };
+use crate::visible_from_root;
 use crate::{CompletionItem, CompletionKind};
 
 /// Hew language keywords for completion.
@@ -199,16 +200,6 @@ fn visible_type_labels(tc: &TypeCheckOutput, path: &str) -> Vec<String> {
         }
     }
     labels
-}
-
-fn visible_from_root(tc: &TypeCheckOutput, declaration: hew_types::DefId) -> bool {
-    let owner = tc.defs.module(declaration);
-    owner.is_none()
-        || tc.defs.visibility_access_allowed(
-            owner,
-            tc.defs.root_module(),
-            tc.defs.visibility(declaration),
-        )
 }
 
 fn try_is_type_pattern_completions(
@@ -1611,13 +1602,21 @@ fn main() {
     #[test]
     fn imported_type_associated_completion_uses_the_module_binding() {
         let root = "fn main() { let value = ledger.Boxed.new(3); println(value.get()); }";
-        let module = "pub type Boxed<T> { value: T; } impl<T> Boxed<T> { pub fn new(value: T) -> Boxed<T> { Boxed { value } } pub fn get(self) -> T { self.value } }";
+        let module = "pub type Boxed<T> { value: T; } impl<T> Boxed<T> { pub fn new(value: T) -> Boxed<T> { Boxed { value } } pub fn get(self) -> T { self.value } fn hidden(self) -> T { self.value } fn empty() -> i64 { 0 } }";
         let tc = type_check_with_modules(root, &[(&["hew", "models"], Some("ledger"), module)]);
         assert!(tc.errors.is_empty(), "{:?}", tc.errors);
         let offset = root.find("ledger.Boxed.new").unwrap() + "ledger.Boxed.".len();
         let items = complete(root, &hew_parser::parse(root), Some(&tc), offset);
         assert!(items.iter().any(|item| item.label == "new"), "{items:?}");
         assert!(!items.iter().any(|item| item.label == "get"), "{items:?}");
+        assert!(!items.iter().any(|item| item.label == "empty"), "{items:?}");
+        let offset = root.find("value.get").unwrap() + "value.".len();
+        let items = complete(root, &hew_parser::parse(root), Some(&tc), offset);
+        assert!(items.iter().any(|item| item.label == "get"), "{items:?}");
+        assert!(
+            !items.iter().any(|item| item.label == "hidden"),
+            "{items:?}"
+        );
     }
 
     #[test]

@@ -179,47 +179,47 @@ pub fn watch_readable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
 // the bytes ABI directly.
 impl bytes {
     #[extern_symbol(hew_bytes_push)]
-    fn push(self, byte: u8) {}
+    pub fn push(self, byte: u8) {}
     /// Remove and return the last byte, or `None` when the buffer is empty.
     #[extern_symbol(hew_bytes_pop)]
-    fn pop(self) -> Option<u8> {
+    pub fn pop(self) -> Option<u8> {
         .None
     }
     #[runtime(authority = Value, family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
     #[extern_symbol(hew_bytes_len)]
-    fn len(self) -> i64 {
+    pub fn len(self) -> i64 {
         0
     }
     #[extern_symbol(hew_bytes_get)]
-    fn get(self, index: i64) -> Option<u8> {
+    pub fn get(self, index: i64) -> Option<u8> {
         .None
     }
     #[extern_symbol(hew_bytes_set)]
-    fn set(self, index: i64, byte: u8) {}
+    pub fn set(self, index: i64, byte: u8) {}
     #[runtime(authority = Value, family = BytesIsEmpty, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_is_empty)]
-    fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         false
     }
     #[extern_symbol(hew_bytes_clear)]
-    fn clear(self) {}
+    pub fn clear(self) {}
     #[runtime(authority = Value, family = BytesContains, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_contains)]
-    fn contains(self, byte: u8) -> bool {
+    pub fn contains(self, byte: u8) -> bool {
         false
     }
     #[extern_symbol(hew_bytes_append)]
-    fn append(self, other: bytes) {}
+    pub fn append(self, other: bytes) {}
     /// Whether the buffer begins with the run `prefix`.
     #[runtime(authority = Value, family = BytesStartsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_starts_with)]
-    fn starts_with(self, prefix: bytes) -> bool {
+    pub fn starts_with(self, prefix: bytes) -> bool {
         false
     }
     /// Whether the buffer ends with the run `suffix`.
     #[runtime(authority = Value, family = BytesEndsWith, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_ends_with)]
-    fn ends_with(self, suffix: bytes) -> bool {
+    pub fn ends_with(self, suffix: bytes) -> bool {
         false
     }
 }

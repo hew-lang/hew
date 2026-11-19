@@ -397,7 +397,7 @@ impl ListenerMethods for Listener {
 // authority; the trait above remains intentionally borrowing-only.
 impl Listener {
     /// Close the listener and release the listening socket.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_tcp_listener_close(self)
         };
@@ -433,7 +433,7 @@ impl Listener {
     ///     println(accepted);
     /// }
     /// ```
-    fn incoming(consume self) -> Stream<Connection> {
+    pub fn incoming(consume self) -> Stream<Connection> {
         unsafe {
             let pair = hew_tcp_incoming(self);
             if !hew_stream_pair_is_valid(pair) {
@@ -568,7 +568,7 @@ impl ConnectionMethods for Connection {
 // cancellation, and suspended-frame exits.
 impl Connection {
     /// Close the connection and release resources.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_tcp_close(self)
         };
@@ -576,7 +576,7 @@ impl Connection {
     /// Consume the connection and give its two directions separate owners:
     /// a `Stream<bytes>` for inbound data and a `Sink<bytes>` for outbound.
     /// Either half may move to another actor; `Sink.finish()` sends FIN.
-    fn split(consume self) -> (Stream<bytes>, Sink<bytes>) {
+    pub fn split(consume self) -> (Stream<bytes>, Sink<bytes>) {
         unsafe {
             let pair = hew_tcp_stream_from_conn(self);
             let input: Stream<bytes> = stream.pair_stream(pair);
@@ -753,17 +753,17 @@ pub type Export<A> {
 impl PeerSession {
     /// Offer this local actor's portable interface and wait for admission.
     #[extern_symbol(hew_service_export)]
-    fn export<A>(self, target: A) -> Result<Export<A>, ActorError<Never, Never>> {
+    pub fn export<A>(self, target: A) -> Result<Export<A>, ActorError<Never, Never>> {
         panic("service export requires native lowering")
     }
 
     /// Wait cancellably for this peer to supply the requested actor interface.
     #[extern_symbol(hew_service_receive)]
-    fn receive_service<A>(self) -> Result<A, ActorError<Never, Never>> {
+    pub fn receive_service<A>(self) -> Result<A, ActorError<Never, Never>> {
         panic("service import requires native lowering")
     }
 
-    fn close(consume self) {
+    pub fn close(consume self) {
         self.release();
     }
 
@@ -772,7 +772,7 @@ impl PeerSession {
 }
 
 impl<A> Export<A> {
-    fn close(consume self) {
+    pub fn close(consume self) {
         self.release();
     }
 

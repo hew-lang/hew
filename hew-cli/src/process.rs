@@ -1465,8 +1465,23 @@ mod tests {
 
     #[cfg(unix)]
     fn status_of_signalled_shell(signal: &str) -> ExitStatus {
+        use std::os::unix::process::CommandExt;
         let mut command = Command::new("sh");
         command.args(["-c", &format!("ulimit -c 0; kill -{signal} $$")]);
+        // A harness that ignores a signal (nohup ignores SIGHUP and, run in
+        // the background, SIGINT) passes that to the shell, and a
+        // non-interactive shell cannot un-ignore it. Give the shell the
+        // default dispositions so it dies by the signal it sends itself.
+        // SAFETY: `pre_exec` runs in the forked child before exec, and
+        // `signal` is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+                Ok(())
+            });
+        }
         BoundedChild::spawn(&mut command)
             .unwrap()
             .child

@@ -59,7 +59,9 @@ pub(crate) fn reserve_main_stack() {
     {
         return;
     }
-    let wanted = HEW_STACK_BYTES as libc::rlim_t;
+    // `rlim_t` is unsigned on Linux and macOS but signed on FreeBSD; the
+    // constant fits either, and saturating keeps a fault-free fallback.
+    let wanted = libc::rlim_t::try_from(HEW_STACK_BYTES).unwrap_or(libc::RLIM_INFINITY);
     let target = if limit.rlim_max == libc::RLIM_INFINITY {
         wanted
     } else {

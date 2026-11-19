@@ -74,7 +74,22 @@ pub unsafe extern "C" fn hew_calendar_format(
     pattern: *const HewString,
 ) -> HewCalendarTextResult {
     // SAFETY: the caller supplies a borrowed managed string.
-    match hew_calendar::format(seconds, nanoseconds, unsafe { string_as_str(pattern) }) {
+    text_result(hew_calendar::format(seconds, nanoseconds, unsafe {
+        string_as_str(pattern)
+    }))
+}
+
+/// Format normalized Unix parts as an exact UTC ISO timestamp.
+#[no_mangle]
+pub extern "C" fn hew_calendar_format_iso8601(
+    seconds: i64,
+    nanoseconds: u32,
+) -> HewCalendarTextResult {
+    text_result(hew_calendar::format_iso8601(seconds, nanoseconds))
+}
+
+fn text_result(result: Result<String, Error>) -> HewCalendarTextResult {
+    match result {
         Ok(text) => HewCalendarTextResult {
             status: 0,
             text: string_from_str(&text),
@@ -105,6 +120,18 @@ pub unsafe extern "C" fn hew_calendar_parse(
         unsafe { string_as_str(text) },
         unsafe { string_as_str(pattern) },
     ))
+}
+
+/// Parse an ISO timestamp into normalized Unix parts.
+///
+/// # Safety
+/// `text` is a live borrowed managed string, or canonical empty.
+#[no_mangle]
+pub unsafe extern "C" fn hew_calendar_parse_iso8601(
+    text: *const HewString,
+) -> HewCalendarTimeResult {
+    // SAFETY: the caller supplies a borrowed managed string.
+    time_result(hew_calendar::parse_iso8601(unsafe { string_as_str(text) }))
 }
 
 /// Extract UTC components, returning a checked error outside the calendar.

@@ -1236,7 +1236,7 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
         // fail a call that would pass the stack's lower end with
         // `StackOverflow` (HEW-SPEC-2026 §2.2), and placing the stack first
         // keeps any underflow away from static data.
-        .args(["-z", "stack-size=1048576", "--stack-first"])
+        .args(hew_cabi::WASM_SHADOW_STACK_LINK_ARGS)
         // We provide `_start` in the runtime, not via WASI CRT1.
         .arg("--no-entry")
         .arg("--export=_start");

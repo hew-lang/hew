@@ -10,7 +10,12 @@ readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
 
 [dependencies]
-chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+time = { version = "0.3.55", default-features = false, features = [
+  "formatting",
+  "parsing",
+  "macros",
+  "large-dates",
+] }
 
 [lints]
 workspace = true

@@ -11,7 +11,12 @@ fn main() {
     assert(fields.year == 2400 && fields.month == 2 && fields.day == 29);
     assert(fields.hour == 12 && fields.minute == 34 && fields.second == 56);
     assert(fields.nanosecond == 123456789 && fields.days_in_month == 29);
-    assert(datetime.parse(datetime.format(leap_day, "%Y/%m/%d %H:%M:%S%.9f").expect("format"), "%Y/%m/%d %H:%M:%S%.9f").expect("parse") == leap_day);
+    let journal = "%Y-%m-%dT%H:%M:%SZ";
+    let whole = datetime.from_parts(2400, 2, 29, 12, 34, 56, 0).expect("whole second");
+    assert(datetime.format(leap_day, journal).expect("journal text") == "2400-02-29T12:34:56Z");
+    assert(datetime.parse("2400-02-29T12:34:56Z", journal).expect("journal parse") == whole);
+    assert(datetime.parse("2400-02-29 13:34:56 +0100", "%F %T %z").expect("numeric offset") == whole);
+    assert(datetime.parse_iso8601("1970-01-01T00:00:00").is_err());
     let wide = datetime.from_parts(12000, 1, 1, 0, 0, 0, 1).expect("wide year");
     assert(datetime.parse_iso8601(datetime.to_iso8601(wide).expect("wide text")).expect("wide parse") == wide);
     match datetime.components(timestamp.from_unix_secs(9223372036854775807)) {

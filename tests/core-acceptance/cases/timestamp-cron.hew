@@ -21,12 +21,12 @@ fn main() {
     assert(cron.parse("@yearly").expect("valid schedule").next(moment("1959-12-31T23:59:59.999999999Z")).expect("future occurrence") == moment("1960-01-01T00:00:00Z"));
     assert(cron.parse("0 0 0 ? Jan-Mar/2 Mon-Fri").expect("valid schedule").next(start).expect("future occurrence") == moment("2024-01-02T00:00:00Z"));
     assert(cron.parse("@yearly").expect("valid schedule").next(moment("-0002-12-31T23:59:59Z")).expect("future occurrence") == moment("-0001-01-01T00:00:00Z"));
-    let last = datetime.from_parts(262142, 12, 31, 23, 59, 59, 999999999).expect("last calendar second");
+    let last = datetime.from_parts(999999, 12, 31, 23, 59, 59, 999999999).expect("last calendar second");
     match cron.parse("* * * * * *").expect("valid schedule").next(last) {
         .Err(.CalendarRange(_)) => {}
         _ => panic("expected calendar boundary"),
     }
-    match cron.parse("0 0 0 1 1 * 262142").expect("valid schedule").next(last) {
+    match cron.parse("0 0 0 1 1 * 999999").expect("valid schedule").next(last) {
         .Err(.NoNextOccurrence(_)) => {}
         _ => panic("expected finite boundary exhaustion"),
     }
@@ -51,7 +51,7 @@ fn main() {
         .Err(.CalendarRange(_)) => {}
         _ => panic("expected input calendar range error"),
     }
-    match cron.parse("0 0 0 1 1 * 300000").expect("valid schedule").next(start) {
+    match cron.parse("0 0 0 1 1 * 1000000").expect("valid schedule").next(start) {
         .Err(.CalendarRange(_)) => {}
         _ => panic("expected future calendar range error"),
     }

@@ -49,6 +49,11 @@ fn execute(request: &Request) -> Result<Value, Error> {
             "status": 0, "message": "",
             "text": hew_calendar::format(integer(0)?, nanos(1)?, arg(2)?)?,
         })),
+        "format_iso8601" => Ok(json!({
+            "status": 0, "message": "",
+            "text": hew_calendar::format_iso8601(integer(0)?, nanos(1)?)?,
+        })),
+        "parse_iso8601" => hew_calendar::parse_iso8601(arg(0)?).map(time_value),
         "parse" => hew_calendar::parse(arg(0)?, arg(1)?).map(time_value),
         "from_parts" => hew_calendar::from_parts(
             integer(0)?,

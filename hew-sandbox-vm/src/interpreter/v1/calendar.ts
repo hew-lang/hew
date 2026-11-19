@@ -4,7 +4,9 @@ import type { AggregateShape } from "./package.js";
 const TIME_FIELDS = ["status", "seconds", "nanoseconds", "message"];
 const CALENDAR_FIELDS: Record<string, readonly string[] | undefined> = {
   hew_calendar_format: ["status", "text", "message"],
+  hew_calendar_format_iso8601: ["status", "text", "message"],
   hew_calendar_parse: TIME_FIELDS,
+  hew_calendar_parse_iso8601: TIME_FIELDS,
   hew_calendar_from_parts: TIME_FIELDS,
   hew_calendar_components: [
     "status",

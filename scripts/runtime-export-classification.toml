@@ -904,8 +904,10 @@ stable-stdlib = [
   "hew_constant_time_eq_hew",
   "hew_calendar_components",
   "hew_calendar_format",
+  "hew_calendar_format_iso8601",
   "hew_calendar_from_parts",
   "hew_calendar_parse",
+  "hew_calendar_parse_iso8601",
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
@@ -7578,6 +7580,14 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
+symbol = "hew_calendar_format_iso8601"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_calendar_from_parts"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
@@ -7589,6 +7599,14 @@ result-retention = "transferred"
 symbol = "hew_calendar_parse"
 result = "fresh"
 params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_parse_iso8601"
+result = "fresh"
+params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- `hew run`, `hew debug` and `hew eval` build into a directory each
+  invocation creates for itself, `$TMPDIR/hew-run-XXXXXX` (also
+  `hew-debug-` and `hew-eval-`). The directory is owner-only and is removed
+  when the program finishes, whether it exits normally, fails, is stopped by
+  a timeout, or Ctrl-C or SIGTERM ends it. No invocation sweeps directories
+  that earlier ones left behind. A `hew run` killed outright (SIGKILL) cannot
+  remove its directory, as with `go run`. On Linux, FreeBSD and Windows its
+  program now dies with it instead of running on. Directories left in
+  `$TMPDIR/hew-run-v2` by earlier releases are no longer used and can be
+  deleted.
+- Interactive programs work under `hew run` in a terminal. The program
+  shares the terminal as it would run on its own, so it reads input and
+  receives Ctrl-C and Ctrl-\ directly; previously a terminal read hung. Run
+  without a terminal, the program keeps its own process group, which a
+  timeout or termination request stops as a whole. The program is named
+  after its source file (`argv[0]`) rather than `hew_run_bin`.
+
 - `std.time.datetime` supports proleptic Gregorian years −999999 through
   +999999 on native and sandbox targets. Custom `format` and `parse`
   patterns use the Rust `time` crate's strftime dialect. Use `%z` for a

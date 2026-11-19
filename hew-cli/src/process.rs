@@ -112,6 +112,19 @@ impl BoundedChild {
     fn spawn_with_group(command: &mut Command, isolated_group: bool) -> Result<Self, String> {
         use std::os::unix::process::CommandExt;
 
+        // The child dies with this process where the platform can arrange it,
+        // so a runner killed outright (SIGKILL) leaves no program behind.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            // SAFETY: getpid has no preconditions.
+            let parent = unsafe { libc::getpid() };
+            // SAFETY: `pre_exec` runs in the child between `fork` and `exec`
+            // and calls only async-signal-safe functions.
+            unsafe {
+                command.pre_exec(move || die_with_parent(parent));
+            }
+        }
+
         if isolated_group {
             // SAFETY: `pre_exec` runs in the child process after `fork` and
             // before `exec`; it changes only that child's process group.
@@ -296,10 +309,23 @@ impl BoundedChild {
         let started = Instant::now();
         let mut interrupted = None;
         loop {
-            if interrupted.is_none() {
-                if let Some(signal) = signals.requested() {
-                    let pid = self.child.id().cast_signed();
-                    let target = if self.isolated_group { -pid } else { pid };
+            if let Some(signal) = signals.take() {
+                let pid = self.child.id().cast_signed();
+                // An isolated group hears nothing from the terminal, so every
+                // request is forwarded to the whole group, once, and the group
+                // is cleaned after a grace period. A child sharing this
+                // process's group (a terminal session) already received the
+                // terminal's SIGINT, SIGQUIT and SIGHUP itself; forwarding them
+                // would deliver each twice. Only SIGTERM, which is addressed to
+                // this process alone, is passed on, and the run then waits for
+                // the program to finish however long its shutdown takes, as
+                // it would without a runner.
+                let target = match (self.isolated_group, interrupted) {
+                    (true, None) => Some(-pid),
+                    (false, _) if signal == libc::SIGTERM => Some(pid),
+                    _ => None,
+                };
+                if let Some(target) = target {
                     // SAFETY: the unreaped child reserves this identity. A
                     // negative target selects only its isolated group; an
                     // inherited group is never signalled as a whole.
@@ -312,7 +338,9 @@ impl BoundedChild {
                             ));
                         }
                     }
-                    interrupted = Some(Instant::now());
+                    if self.isolated_group {
+                        interrupted = Some(Instant::now());
+                    }
                 }
             }
             // Clean the group before reaping its leader so the group ID still
@@ -366,6 +394,80 @@ impl BoundedChild {
     }
 }
 
+/// While installed, console Ctrl-C and Ctrl-Break leave this process running:
+/// the console delivers them to the program too, which decides what they
+/// mean, and the runner then waits for it and cleans up. Removed on drop, and
+/// a handler, unlike an ignored disposition, is not inherited by children.
+#[cfg(windows)]
+pub(crate) struct ConsoleInterrupts;
+
+#[cfg(windows)]
+impl ConsoleInterrupts {
+    pub(crate) fn install() -> Self {
+        // SAFETY: registers a handler with the signature the console expects.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(outlive_console_interrupt),
+                1,
+            );
+        }
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConsoleInterrupts {
+    fn drop(&mut self) {
+        // SAFETY: removes the handler `install` registered.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(outlive_console_interrupt),
+                0,
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn outlive_console_interrupt(kind: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    i32::from(kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT)
+}
+
+/// Ask the kernel to kill this (forked, not yet exec'd) child when `parent`
+/// exits. A parent that already died before the request took effect leaves
+/// the child reparented, so that case fails the spawn instead of running an
+/// unowned program.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn die_with_parent(parent: libc::pid_t) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: PR_SET_PDEATHSIG takes a signal number and changes only this
+    // process's own attribute.
+    let set = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+    #[cfg(target_os = "freebsd")]
+    // SAFETY: PROC_PDEATHSIG_CTL reads one int naming the signal, for this
+    // process (P_PID 0).
+    let set = unsafe {
+        let mut signal: libc::c_int = libc::SIGKILL;
+        libc::procctl(
+            libc::P_PID,
+            0,
+            libc::PROC_PDEATHSIG_CTL,
+            (&raw mut signal).cast(),
+        )
+    };
+    if set != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: getppid has no preconditions.
+    if unsafe { libc::getppid() } != parent {
+        return Err(std::io::Error::other(
+            "the runner exited before its program started",
+        ));
+    }
+    Ok(())
+}
+
 /// Own the complete interactive child lifetime, including errors. Callers may
 /// exit the CLI immediately after this returns: no child cleanup relies on
 /// destructors running after `process::exit`. Inherited groups preserve terminal
@@ -384,6 +486,10 @@ pub(crate) fn run_command_interactive(
     }
     #[cfg(not(unix))]
     {
+        // The console delivers Ctrl-C to every process attached to it; the
+        // program handles its own, and this runner outlives it to clean up.
+        #[cfg(windows)]
+        let _console = ConsoleInterrupts::install();
         match timeout {
             Some(timeout) => child.wait_with_timeout(timeout),
             None => child
@@ -995,6 +1101,31 @@ mod windows_job {
         }
     }
 
+    /// Kill every process in the job when its last handle closes, which is
+    /// when this process exits, however it exits. A runner killed outright
+    /// then leaves no program behind. Best effort: without the limit the job
+    /// still terminates the tree on timeout.
+    fn kill_on_close(job: Handle) {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        // SAFETY: an all-zero limit structure is a valid "no limits" value.
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { core::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = u32::try_from(core::mem::size_of_val(&limits)).expect("limit size fits u32");
+        // SAFETY: `job` is a live job handle and `limits` is the structure
+        // this information class reads, of exactly `size` bytes.
+        unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size,
+            );
+        }
+    }
+
     pub(super) struct WindowsJob(Handle);
 
     // SAFETY: The handle is valid until `CloseHandle` is called in `Drop`.
@@ -1013,6 +1144,7 @@ mod windows_job {
                 let code = unsafe { GetLastError() };
                 Err(format!("CreateJobObjectW failed: error {code}"))
             } else {
+                kill_on_close(handle);
                 Ok(Self(handle))
             }
         }

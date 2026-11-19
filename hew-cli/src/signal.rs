@@ -3,14 +3,18 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-const RUN_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+/// Requests the runner outlives so it can clean up after its program. SIGQUIT
+/// is included: a terminal's Ctrl-\\ must not kill the runner and orphan its
+/// program and temporary directory.
+const RUN_SIGNALS: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT];
 static RUN_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
-/// Record the first termination request. Child ownership and forwarding belong
-/// to the wait loop, which can safely report errors, enforce a grace period and
-/// reap the child. The handler never retains a PID that could be reused.
+/// Record a termination request for the wait loop to take. Child ownership and
+/// forwarding belong to the wait loop, which can safely report errors, enforce
+/// a grace period and reap the child. The handler never retains a PID that
+/// could be reused.
 extern "C" fn request_termination(signal: libc::c_int) {
-    let _ = RUN_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
+    RUN_SIGNAL.store(signal, Ordering::SeqCst);
 }
 
 /// Install before spawning so a termination request cannot orphan a child in
@@ -47,12 +51,14 @@ impl RunSignals {
         Ok(guard)
     }
 
+    /// Take the latest request, so a later one (SIGTERM after a Ctrl-C) is
+    /// seen too.
     #[expect(
         clippy::unused_self,
         reason = "request reads require an installed signal guard"
     )]
-    pub(crate) fn requested(&self) -> Option<libc::c_int> {
-        match RUN_SIGNAL.load(Ordering::SeqCst) {
+    pub(crate) fn take(&self) -> Option<libc::c_int> {
+        match RUN_SIGNAL.swap(0, Ordering::SeqCst) {
             0 => None,
             signal => Some(signal),
         }

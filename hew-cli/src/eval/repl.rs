@@ -1426,7 +1426,7 @@ fn run_native_eval_compiled(
     project_dir: Option<PathBuf>,
     target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
-    let tmp_dir = tempfile::tempdir()
+    let tmp_dir = crate::run_temp::create("eval")
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
@@ -1494,7 +1494,7 @@ fn run_wasm_eval_compiled(
     project_dir: Option<PathBuf>,
     target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
-    let tmp_dir = tempfile::tempdir()
+    let tmp_dir = crate::run_temp::create("eval")
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
 
     let module_path = tmp_dir.path().join("eval_module.wasm");

@@ -198,23 +198,43 @@ impl TryFrom<Parsed> for Value {
     }
 }
 
-impl From<&Value> for Parsed {
-    fn from(value: &Value) -> Self {
-        match value {
+impl TryFrom<&Value> for Parsed {
+    type Error = Error;
+
+    fn try_from(value: &Value) -> Result<Self, Error> {
+        value.for_emitter(&ayaml::Limits::default(), 0)
+    }
+}
+
+impl Value {
+    // Values built with array.push or object.set can exceed the parser's depth.
+    // Check before descending or allocating the emitter's representation.
+    fn for_emitter(&self, limits: &ayaml::Limits, depth: usize) -> Result<Parsed, Error> {
+        limits.check_depth(depth)?;
+        Ok(match self {
             Value::Null => Parsed::Null,
             Value::Bool(v) => Parsed::Bool(*v),
             Value::Number(v) => Parsed::Number(*v),
             Value::String(v) => Parsed::String(v.clone()),
-            Value::Sequence(v) => Parsed::Sequence(v.iter().map(Parsed::from).collect()),
+            Value::Sequence(v) => Parsed::Sequence(
+                v.iter()
+                    .map(|node| node.for_emitter(limits, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
             Value::Mapping(v) => Parsed::Mapping(
                 v.iter()
-                    .map(|(key, value)| (Parsed::from(key), Parsed::from(value)))
-                    .collect(),
+                    .map(|(key, value)| {
+                        Ok((
+                            key.for_emitter(limits, depth + 1)?,
+                            value.for_emitter(limits, depth + 1)?,
+                        ))
+                    })
+                    .collect::<Result<_, Error>>()?,
             ),
             Value::Tagged(v) => Parsed::Tagged(Box::new(ayaml::TaggedValue {
                 tag: ayaml::Tag::new("", v.tag.as_ref()),
-                value: Parsed::from(&v.value),
+                value: v.value.for_emitter(limits, depth + 1)?,
             })),
-        }
+        })
     }
 }

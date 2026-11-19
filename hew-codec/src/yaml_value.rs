@@ -31,7 +31,7 @@ pub fn parse(input: &str) -> Result<Value, String> {
 ///
 /// Returns the emitter diagnostic for an unsupported value or size limit.
 pub fn to_string(value: &Value) -> Result<String, Error> {
-    ayaml::to_string_value(&ayaml::Value::from(value))
+    ayaml::to_string_value(&ayaml::Value::try_from(value)?)
 }
 
 /// Expansion units any one document may use. Each expanded node costs at
@@ -197,6 +197,17 @@ fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+
+    #[test]
+    fn encoding_constructed_values_checks_depth_before_copying() {
+        let bound = ayaml::Limits::default().max_depth;
+        let at_limit = (0..bound).fold(Value::Null, |child, _| Value::Sequence(vec![child]));
+        assert!(ayaml::Value::try_from(&at_limit).is_ok());
+        let above_limit = Value::Sequence(vec![at_limit]);
+        let error =
+            to_string(&above_limit).expect_err("constructed value exceeds the emitter depth");
+        assert_eq!(error.limit().unwrap().kind(), ayaml::LimitKind::Depth);
+    }
 
     /// `c` holds `refs` copies of `b`, which holds `refs` copies of the
     /// `items`-element anchor `a`: about `items * refs * refs` nodes from a

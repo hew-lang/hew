@@ -328,7 +328,24 @@ endif
 # BUILD_DIR, one overlapping the caller's std/, and a bin/, lib/ or real std/
 # that resolves to tracked sources of any checkout; it documents each rule
 # and scripts/tests/test_check_stage_dest.py holds them under test.
-STAGE_CHECK_DEST = @$(PYTHON) "$(MAKEFILE_ROOT)/scripts/check-stage-dest.py" "$(BUILD_DIR)"
+#
+# The shell first refuses a BUILD_DIR whose physical path is a root as the
+# recipe shell sees it: under Git Bash, `/` (the MSYS root) or a drive mount
+# such as `/c`. Git Bash rewrites such an argument to a Windows path before a
+# native Python sees it, so only the shell can recognise these roots.
+define STAGE_CHECK_DEST
+	@if [ -d "$(BUILD_DIR)" ]; then \
+		build_physical=$$(cd "$(BUILD_DIR)" && pwd -P) || exit 1; \
+		case "$$build_physical" in /|/[A-Za-z]|/cygdrive/[A-Za-z]) \
+			echo "error: BUILD_DIR='$(BUILD_DIR)' is the filesystem root $$build_physical" >&2; exit 1;; \
+		esac; \
+	fi
+	@$(PYTHON) "$(MAKEFILE_ROOT)/scripts/check-stage-dest.py" "$(BUILD_DIR)"
+endef
+
+.PHONY: check-stage-dest
+check-stage-dest: ## Check: refuse a BUILD_DIR that staging would turn against sources
+	$(STAGE_CHECK_DEST)
 
 # Point BUILD_DIR/std at the standard library. Git Bash's ln copies
 # directories, and a later `ln -sfn` would then link inside that copy, so a

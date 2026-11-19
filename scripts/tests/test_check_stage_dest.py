@@ -8,6 +8,7 @@ the validator from the caller's checkout, as the Makefile does.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -136,8 +137,54 @@ def test_staging_destinations() -> None:
             assert status == "", f"{checkout.name} changed: {status}"
 
 
+def _make_check(build_dir: str, python: str, label: str) -> tuple[int, str]:
+    result = subprocess.run(
+        ["make", "-s", "-C", str(ROOT), "check-stage-dest", f"BUILD_DIR={build_dir}", f"PYTHON={python}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stderr.splitlines():
+        print(f"{COUNTERFACTUAL_MARKER}[{label}] {line}")
+    return result.returncode, result.stderr
+
+
+def test_make_entry_point_refuses_shell_roots() -> None:
+    """The recipe shell refuses its own roots before Python sees them.
+
+    Under Git Bash, `/` (the MSYS root) and `/c` reach a native Python
+    rewritten as Windows paths, so only the shell can recognise them. A stub
+    that accepts every destination stands in for that rewritten view here; on
+    a Git Bash host the real validator below exercises the same path.
+    """
+    # The recipe shell sees `/` as its root on every host, Git Bash included.
+    root = "/"
+    python = sys.executable.replace("\\", "/")
+    with tempfile.TemporaryDirectory() as stub_dir:
+        stub = Path(stub_dir) / "python-accepting-every-destination"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in */check-stage-dest.py) exit 0;; esac\n'
+            f'exec "{python}" "$@"\n'
+        )
+        stub.chmod(0o755)
+        stub_path = str(stub).replace("\\", "/")
+        code, stderr = _make_check(root, stub_path, "make: shell root, stub python")
+        assert code != 0 and "filesystem root" in stderr, (code, stderr)
+        code, stderr = _make_check("build", stub_path, "make: build/, stub python")
+        assert code == 0, (code, stderr)
+    code, stderr = _make_check(root, python, "make: root, real python")
+    assert code != 0 and "filesystem root" in stderr, (code, stderr)
+    code, stderr = _make_check("", python, "make: empty, real python")
+    assert code != 0 and "is empty" in stderr, (code, stderr)
+
+
 def main() -> int:
     test_staging_destinations()
+    # Through the Make entry point wherever Make runs: on a Windows host this
+    # is the Git Bash path, where only the shell sees `/` as a root.
+    if shutil.which("make"):
+        test_make_entry_point_refuses_shell_roots()
     print("check-stage-dest: all staging destination cases pass")
     return 0
 

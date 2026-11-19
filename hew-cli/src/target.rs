@@ -226,7 +226,7 @@ impl TargetSpec {
                 gc_flags: &["-Wl,-dead_strip"],
                 strip_flags: &["-Wl,-x", "-Wl,-S"],
                 build_id_flags: &[],
-                // CoreFoundation and Security are pulled in by the Hew runtime.
+                // Native TLS and system proxy discovery use Apple frameworks.
                 // `-lpthread` and `-lm` satisfy runtime math and threading
                 // references; clang implicitly links libc++ for C++ TLS support.
                 platform_libs: &[
@@ -236,6 +236,8 @@ impl TargetSpec {
                     "CoreFoundation",
                     "-framework",
                     "Security",
+                    "-framework",
+                    "SystemConfiguration",
                 ],
                 cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: true,

@@ -241,6 +241,8 @@ struct HttpResponse {
 /// socket misconfiguration or server-side issues.
 #[derive(Debug)]
 pub enum ClientError {
+    /// Invalid HTTP or HTTPS profiler endpoint.
+    Endpoint(String),
     /// Failed to build the TCP HTTP client with the configured timeout/proxy settings.
     Build {
         base_url: String,
@@ -271,6 +273,7 @@ pub enum ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Endpoint(message) => write!(f, "invalid profiler endpoint: {message}"),
             Self::Build { base_url, source } => {
                 write!(f, "http client build failed for {base_url}: {source}")
             }
@@ -362,7 +365,23 @@ pub struct ProfilerClient {
 
 impl ProfilerClient {
     /// Create a client that connects over TCP.
-    pub fn new_tcp(base_url: &str) -> Result<Self, ClientError> {
+    pub fn new_tcp(address: &str) -> Result<Self, ClientError> {
+        let base = if address.contains("://") {
+            address.to_owned()
+        } else {
+            format!("http://{address}")
+        };
+        let url =
+            reqwest::Url::parse(&base).map_err(|error| ClientError::Endpoint(error.to_string()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(ClientError::Endpoint(
+                "expected an HTTP or HTTPS base address without a query or fragment".to_string(),
+            ));
+        }
+        let base_url = url.as_str().trim_end_matches('/');
         let http = build_tcp_http_client(base_url)?;
         Ok(Self {
             transport: Transport::Tcp {
@@ -720,9 +739,8 @@ impl ClusterClient {
         let nodes = addrs
             .iter()
             .map(|addr| -> Result<NodeClient, ClientError> {
-                let base_url = format!("http://{addr}");
                 Ok(NodeClient {
-                    client: ProfilerClient::new_tcp(&base_url)?,
+                    client: ProfilerClient::new_tcp(addr)?,
                     addr: addr.clone(),
                     node_id: None,
                 })

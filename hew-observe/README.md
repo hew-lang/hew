@@ -94,6 +94,7 @@ hew observe
 
 # Or target a specific TCP address
 hew observe --addr localhost:6060
+hew observe --addr https://profiler.example.com
 
 # List all discovered profiler processes (Unix only)
 hew observe --list

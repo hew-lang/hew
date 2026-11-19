@@ -48,6 +48,11 @@ license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]
 
 [workspace.dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "blocking",
+  "default-tls",
+  "system-proxy",
+] }
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` reads every number back to the f64 it was printed from;
 # the default fast path can land one unit in the last place away.

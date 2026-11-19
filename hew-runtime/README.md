@@ -89,7 +89,7 @@ HEW_SERVICE_NAME=my-service \
 
 - Uses a dedicated OS thread (`hew-otel-exporter`) — same pattern as the built-in profiler.
 - Sends OTLP/HTTP JSON (`Content-Type: application/json`, path `/v1/traces`).
-- Uses [`ureq`](https://crates.io/crates/ureq) for synchronous HTTP — **no `tokio` or async runtime**.
+- Uses the shared HTTP client on a dedicated exporter thread. HTTPS collector endpoints use platform certificate verification.
 - When `HEW_OTEL_ENDPOINT` is unset, the exporter thread is not spawned.
 - Each span carries `hew.actor_id` and `hew.msg_type` attributes for per-actor analysis.
 

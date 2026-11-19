@@ -273,3 +273,17 @@ pub struct ParameterInfo {
     pub label_start: u32,
     pub label_end: u32,
 }
+
+/// Whether a declaration may be named from the active editor buffer.
+pub(crate) fn visible_from_root(
+    tc: &hew_types::TypeCheckOutput,
+    declaration: hew_types::DefId,
+) -> bool {
+    let owner = tc.defs.module(declaration);
+    owner.is_none()
+        || tc.defs.visibility_access_allowed(
+            owner,
+            tc.defs.root_module(),
+            tc.defs.visibility(declaration),
+        )
+}

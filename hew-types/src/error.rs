@@ -424,7 +424,11 @@ impl TypeError {
                  not accessible from `{acc_module}`"
             ),
         )
-        .with_note(decl_span, "declared private here");
+        .with_note_source(
+            decl_span,
+            "declared private here",
+            Some(decl_module.to_owned()),
+        );
         if let Some(m) = source_module {
             err = err.with_source_module(m);
         }
@@ -463,7 +467,11 @@ impl TypeError {
                  not accessible from `{acc_module}`"
             ),
         )
-        .with_note(decl_span, "declared package-visible here");
+        .with_note_source(
+            decl_span,
+            "declared package-visible here",
+            Some(decl_module.to_owned()),
+        );
         if let Some(m) = source_module {
             err = err.with_source_module(m);
         }

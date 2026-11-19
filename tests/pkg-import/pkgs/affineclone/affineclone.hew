@@ -13,7 +13,7 @@ pub type LinearTicket {
 }
 
 impl LinearTicket {
-    fn redeem(consume self) -> i64 {
+    pub fn redeem(consume self) -> i64 {
         self.id
     }
 }

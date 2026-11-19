@@ -50,7 +50,7 @@ pub type Snapshot {
 
 impl Snapshot {
     /// Restrict the registration view to this node's own stable identity.
-    fn local_registrations(self) -> Vec<Registration> {
+    pub fn local_registrations(self) -> Vec<Registration> {
         var result: Vec<Registration> = [];
         for item in self.registrations {
             if item.location.node_id() == self.local.id {
@@ -147,7 +147,7 @@ pub type Subscription {
 
 impl Subscription {
     /// Read the subscribed instance, or NotRunning once its admission closes.
-    fn snapshot(self) -> Snapshot fails ObserveError {
+    pub fn snapshot(self) -> Snapshot fails ObserveError {
         read_snapshot(unsafe {
             hew_node_watch_snapshot(self.handle)
         })?
@@ -155,11 +155,11 @@ impl Subscription {
 
     /// Wait for this instance's teardown to finish. Ordinary scope cancellation
     /// releases the wait; it does not request node shutdown.
-    fn wait_shutdown(self) {
+    pub fn wait_shutdown(self) {
         while self.changes.recv().is_some() {}
     }
 
-    fn close(consume self) {}
+    pub fn close(consume self) {}
 }
 
 /// Copy current canonical metadata. Both registration views are local knowledge,

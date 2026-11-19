@@ -1,0 +1,10 @@
+[[case]]
+id = "inherent-method-visibility"
+intent = "Public constructors and trait methods may call a private helper, and another module in the same package may select a package-visible method."
+source = "fixtures/inherent-method-visibility/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "card 7\n7\n7\n"
+exit = 0

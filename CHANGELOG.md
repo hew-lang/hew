@@ -19,6 +19,10 @@
   `xcode-select --install` on macOS). Windows advice no longer pins an LLVM
   download.
 
+- Inherent methods and associated functions now enforce the same module and
+  package visibility as free functions. Use `package fn` for calls from other
+  modules in the same package and `pub fn` for callers in other packages.
+
 - `std.time.datetime` supports proleptic Gregorian years −999999 through
   +999999 on native and sandbox targets. Custom `format` and `parse`
   patterns use the Rust `time` crate's strftime dialect. Use `%z` for a

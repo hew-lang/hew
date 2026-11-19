@@ -100,7 +100,7 @@ impl<T> Arena<T> {
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
     /// Every insertion receives a fresh monotonic generation. O(1).
-    fn insert(var self, consume value: T) -> Key<T> {
+    pub fn insert(var self, consume value: T) -> Key<T> {
         let generation = self.generation_counter[0];
         if generation == 9223372036854775807 {
             panic("arena.insert: key generation space exhausted");
@@ -116,7 +116,7 @@ impl<T> Arena<T> {
         }
     }
     /// The number of live values in the arena.
-    fn len(self) -> i64 {
+    pub fn len(self) -> i64 {
         self.slots.len() - self.free.len()
     }
 }
@@ -131,7 +131,7 @@ impl<T: Clone> Arena<T> {
     /// Fails closed: a key whose slot was removed (or whose generation no
     /// longer matches after slot reuse) returns `None`, as does an
     /// out-of-range key.
-    fn get(self, key: Key<T>) -> Option<T> where T: Clone {
+    pub fn get(self, key: Key<T>) -> Option<T> where T: Clone {
         if key.arena_id != self.arena_id {
             return .None;
         }
@@ -149,7 +149,7 @@ impl<T: Clone> Arena<T> {
     /// insertion mints a fresh generation. On a stale, already-removed, or
     /// out-of-range key: returns `None`. Double-remove is idempotent — the
     /// second call returns `None`.
-    fn remove(var self, key: Key<T>) -> Option<T> {
+    pub fn remove(var self, key: Key<T>) -> Option<T> {
         if key.arena_id != self.arena_id {
             return .None;
         }
@@ -168,7 +168,7 @@ impl<T: Clone> Arena<T> {
         }
     }
     /// Return `true` if `key` still names a live value.
-    fn contains(self, key: Key<T>) -> bool {
+    pub fn contains(self, key: Key<T>) -> bool {
         self.get(key).is_some()
     }
 }

@@ -222,11 +222,11 @@ BUILD_DIR  := build
 COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
 # Resolve helper scripts relative to the selected Makefile while package inputs
 # remain relative to the caller's source checkout.
-MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
+MAKEFILE_ROOT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
 
 # Cargo does not track its own CARGO_MANIFEST_DIR as a build-script rerun
 # input. Keep shared targets tied to the checkout selected by this invocation.
-include $(MAKEFILE_ROOT)/scripts/build-source-identity.mk
+include $(dir $(firstword $(MAKEFILE_LIST)))scripts/build-source-identity.mk
 
 # Cargo profile directory names.
 #

@@ -1,0 +1,30 @@
+indirect enum Tree {
+    Leaf;
+    Node(Tree, i64, Tree);
+}
+
+fn sum(tree: Tree) -> i64 {
+    match tree {
+        .Leaf => 0,
+        .Node(left, value, right) => sum(left) + value + sum(right),
+    }
+}
+
+#[max_heap(240)]
+actor Reader {
+    receive fn total(tree: Tree) -> i64 {
+        sum(tree) + sum(tree)
+    }
+}
+
+fn main() {
+    let tree = Tree.Node(
+        Tree.Node(Tree.Leaf, 1, Tree.Leaf),
+        2,
+        Tree.Node(Tree.Leaf, 3, Tree.Leaf),
+    );
+    let reader = spawn Reader;
+    println(reader.total(tree).expect("read both traversals within the receiver's heap limit"));
+    stop(reader);
+    stopped(reader);
+}

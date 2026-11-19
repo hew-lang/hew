@@ -8,10 +8,7 @@ use crate::coro_sleep::{
 use crate::internal::types::AskError;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::local_handles::HewLocalPidId;
-use crate::mailbox::native::{
-    hew_actor_ask_wait_free, hew_actor_ask_wait_take_request, poll_request_admission,
-    request_wait_resume, HewNativeAsk,
-};
+use crate::mailbox::native::{poll_request_admission, request_wait_resume, HewNativeAsk};
 use crate::mailbox::{hew_msg_envelope_new, HewMsgEnvelope, HewMsgEnvelopeDropFn};
 use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 use crate::reply_channel::native::{
@@ -38,10 +35,18 @@ enum CallState {
 
 #[derive(Debug)]
 struct LocalCall {
-    admission: *mut HewNativeAsk,
+    admission: Option<HewNativeAsk>,
     channel: *mut HewReplyChannel,
     timer: *mut HewCoroSleep,
     request: Arc<RequestState>,
+}
+
+impl LocalCall {
+    fn take_request(&mut self) -> *mut HewMsgEnvelope {
+        self.admission
+            .as_mut()
+            .map_or(ptr::null_mut(), HewNativeAsk::take_request)
+    }
 }
 
 #[derive(Debug)]
@@ -94,8 +99,10 @@ pub unsafe extern "C" fn hew_managed_visit_actor_call(
         }
         match &call.route {
             CallRoute::Local(local) => {
-                let status =
-                    crate::mailbox::native::visit_managed_request(local.admission, visitor);
+                let status = crate::mailbox::native::visit_managed_request(
+                    local.admission.as_ref(),
+                    visitor,
+                );
                 if status != 0 {
                     return status;
                 }
@@ -146,7 +153,7 @@ impl HewActorCall {
                         local.request.withdraw();
                     }
                     let reply = crate::reply_channel::native::cancel_take_release(local.channel);
-                    (hew_actor_ask_wait_take_request(local.admission), reply)
+                    (local.take_request(), reply)
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 CallRoute::Imported { operation, request } => {
@@ -209,7 +216,10 @@ impl HewActorCall {
                     return deadline;
                 }
                 // SAFETY: this operation exclusively owns the admission.
-                let result = unsafe { self.local().admission.as_mut() }
+                let result = self
+                    .local()
+                    .admission
+                    .as_mut()
                     .map_or(Err(AskError::SendFailed), |admission| unsafe {
                         poll_request_admission(admission)
                     });
@@ -217,7 +227,7 @@ impl HewActorCall {
                     Ok(SendOutcome::Failed)
                         // SAFETY: this operation exclusively owns the same pending admission.
                         if unsafe {
-                            crate::mailbox::native::request_transfer_pending(self.local().admission)
+                            crate::mailbox::native::request_transfer_pending(self.local().admission.as_ref())
                         } =>
                     {
                         return self.poll_deadline()
@@ -252,9 +262,8 @@ impl HewActorCall {
                     self.state = CallState::Ready(RequestOutcome::Submitted { discarded });
                     return 0;
                 }
-                // SAFETY: admission transferred its request and sender reference.
-                unsafe { hew_actor_ask_wait_free(self.local().admission) };
-                self.local().admission = ptr::null_mut();
+                // Admission transferred its request and sender reference.
+                self.local().admission = None;
                 self.state = CallState::Waiting;
             }
             CallState::Waiting => {}
@@ -361,10 +370,9 @@ impl HewActorCall {
         outcome
     }
 
-    unsafe fn detach_request(&mut self) -> *mut HewMsgEnvelope {
+    fn detach_request(&mut self) -> *mut HewMsgEnvelope {
         match &mut self.route {
-            // SAFETY: this operation exclusively owns the unaccepted request.
-            CallRoute::Local(local) => unsafe { hew_actor_ask_wait_take_request(local.admission) },
+            CallRoute::Local(local) => local.take_request(),
             #[cfg(not(target_arch = "wasm32"))]
             CallRoute::Imported { request, .. } => std::mem::replace(request, ptr::null_mut()),
         }
@@ -388,10 +396,10 @@ impl Drop for HewActorCall {
             if let Some(target) = self.owned_target.take() {
                 crate::lifetime::local_handles::hew_actor_handle_release(target);
             }
-            match &self.route {
+            match &mut self.route {
                 CallRoute::Local(local) => {
                     hew_reply_channel_cancel(local.channel);
-                    hew_actor_ask_wait_free(local.admission);
+                    local.admission = None;
                     hew_coro_sleep_free(local.timer);
                     hew_reply_channel_free(local.channel);
                 }
@@ -1016,7 +1024,7 @@ mod tests {
                 );
                 let operation = Box::into_raw(Box::new(HewActorCall {
                     route: CallRoute::Local(LocalCall {
-                        admission: ptr::null_mut(),
+                        admission: None,
                         channel,
                         timer: ptr::null_mut(),
                         request: crate::reply_channel::native_request_state(channel).unwrap(),
@@ -1106,7 +1114,7 @@ mod tests {
             );
             let operation = Box::into_raw(Box::new(HewActorCall {
                 route: CallRoute::Local(LocalCall {
-                    admission: ptr::null_mut(),
+                    admission: None,
                     channel,
                     timer: ptr::null_mut(),
                     request: crate::reply_channel::native_request_state(channel).unwrap(),

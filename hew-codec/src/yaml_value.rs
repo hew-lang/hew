@@ -1,9 +1,12 @@
 //! Ordinary YAML Value parsing, distinct from the strict typed wire codec.
 //! Native and sandbox values share the same input limits and parser diagnostics.
 
+mod tree;
+pub use ayaml::{Error, Number};
+pub use tree::{Mapping, TaggedValue, Value};
+
 use core::cell::Cell;
 use core::fmt;
-
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 
 /// Reject YAML inputs larger than 1 MiB before parsing to avoid memory abuse.
@@ -15,38 +18,72 @@ pub const YAML_PARSE_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
 ///
 /// Returns the input-limit, expansion-limit or serde YAML diagnostic without
 /// rewriting it.
-pub fn parse(input: &str) -> Result<serde_yaml::Value, String> {
+pub fn parse(input: &str) -> Result<Value, String> {
     validate_yaml_input_limits(input)?;
-    check_alias_expansion(input).map_err(|error| error.to_string())?;
-    serde_yaml::from_str(input).map_err(|error| error.to_string())
+    decode::<ayaml::Value>(input)
+        .and_then(Value::try_from)
+        .map_err(|error| error.to_string())
 }
 
-/// Expansion units any one document may use. A node costs
-/// [`YAML_NODE_COST`] units plus one per scalar byte, so every alias-free
-/// document within [`YAML_PARSE_SIZE_LIMIT_BYTES`] fits, and no document,
-/// aliases replayed, builds more than about a million nodes.
-pub const YAML_EXPANSION_BUDGET_UNITS: usize = 16 * YAML_PARSE_SIZE_LIMIT_BYTES;
-/// Units one node costs before its scalar text.
-const YAML_NODE_COST: usize = 16;
-
-/// Refuse a document whose aliases expand it beyond the expansion budget.
-///
-/// Counting anchors and aliases does not bound the parsed tree: an anchor
-/// over a large node, or one that itself holds aliases, is copied in full at
-/// every alias, so a few hundred aliases grow a few kilobytes into gigabytes.
-/// This pass walks the document as `serde_yaml` delivers it, aliases
-/// replayed, keeps nothing, and stops as soon as the walk exceeds the
-/// budget, before any tree is built. Any failed walk must stop the parse:
-/// replaying a recursive alias into a tree can retain large partial copies
-/// before the parser reaches the same nesting or repetition error again.
+/// Encode an ordinary YAML value.
 ///
 /// # Errors
 ///
-/// Returns the expansion-limit or parser diagnostic at the position the walk
-/// stopped.
-pub fn check_alias_expansion(input: &str) -> Result<(), serde_yaml::Error> {
+/// Returns the emitter diagnostic for an unsupported value or size limit.
+pub fn to_string(value: &Value) -> Result<String, Error> {
+    ayaml::to_string_value(&ayaml::Value::from(value))
+}
+
+/// Expansion units any one document may use. Each expanded node costs at
+/// least sixteen units in addition to its scalar or tag text.
+pub const YAML_EXPANSION_BUDGET_UNITS: usize = 16 * YAML_PARSE_SIZE_LIMIT_BYTES;
+const YAML_NODE_COST: usize = 16;
+
+fn limits() -> ayaml::Limits {
+    ayaml::Limits::default()
+        .with_node_cost_bytes(YAML_NODE_COST)
+        .with_max_events(3 * YAML_PARSE_SIZE_LIMIT_BYTES + 4)
+        .with_max_alias_expansion_bytes(YAML_EXPANSION_BUDGET_UNITS)
+        .with_alias_bytes_per_input_byte(0)
+        .with_max_collection_entries(YAML_EXPANSION_BUDGET_UNITS / YAML_NODE_COST)
+        .with_max_alias_dereferences(YAML_EXPANSION_BUDGET_UNITS / YAML_NODE_COST)
+}
+
+pub(crate) fn decode<'de, T: serde::Deserialize<'de>>(input: &'de str) -> Result<T, Error> {
+    // A document inside the input cap fits the expansion budget on its own.
+    // Every YAML alias starts with a literal asterisk.
+    if input.len() > YAML_PARSE_SIZE_LIMIT_BYTES || input.as_bytes().contains(&b'*') {
+        check_alias_expansion(input)?;
+    }
+    ayaml::compat::from_str_with_limits(input, &limits()).map_err(expansion_error)
+}
+
+fn expansion_error(error: Error) -> Error {
+    if error
+        .limit()
+        .is_some_and(|limit| limit.kind() == ayaml::LimitKind::AliasExpansion)
+    {
+        let normalized = Error::new(
+            ayaml::ErrorKind::Limit,
+            "invalid YAML input: alias expansion limit exceeded",
+        );
+        return match error.span() {
+            Some(span) => normalized.with_span(span),
+            None => normalized,
+        };
+    }
+    error
+}
+
+/// Validate the syntax and alias expansion budget of a single document.
+///
+/// # Errors
+///
+/// Returns the parser diagnostic or the exceeded resource limit.
+pub fn check_alias_expansion(input: &str) -> Result<(), Error> {
     let left = Cell::new(YAML_EXPANSION_BUDGET_UNITS);
-    Walk { left: &left }.deserialize(serde_yaml::Deserializer::from_str(input))
+    ayaml::compat::from_str_seed_with_limits(input, &limits(), Walk { left: &left })
+        .map_err(expansion_error)
 }
 
 /// A visitor that keeps nothing and charges every node it is shown.
@@ -201,7 +238,7 @@ mod tests {
             writeln!(doc, "svc{i}: {{<<: *base, name: svc{i}}}").unwrap();
         }
         let value = parse(&doc).expect("modest reuse is within budget");
-        assert_eq!(value["svc7"]["name"], serde_yaml::Value::from("svc7"));
+        assert_eq!(value["svc7"]["name"], Value::from("svc7"));
     }
 
     #[test]
@@ -233,7 +270,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse(doc).expect("ordinary aliases remain supported"),
-                serde_yaml::from_str::<serde_yaml::Value>(doc).unwrap(),
+                Value::try_from(ayaml::compat::from_str::<ayaml::Value>(doc).unwrap()).unwrap(),
                 "{doc:?}"
             );
         }
@@ -276,10 +313,7 @@ mod tests {
             writeln!(doc, "  svc{i}:\n    <<: *defaults\n    name: svc{i}").unwrap();
         }
         let value = parse(&doc).expect("ordinary merge-key reuse is within budget");
-        assert_eq!(
-            value["services"]["svc199"]["name"],
-            serde_yaml::Value::from("svc199")
-        );
+        assert_eq!(value["services"]["svc199"]["name"], Value::from("svc199"));
     }
 
     #[test]

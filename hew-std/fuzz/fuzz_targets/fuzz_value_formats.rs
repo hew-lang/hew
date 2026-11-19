@@ -25,8 +25,7 @@ macro_rules! round_trip {
             let printed = $module::$stringify(value);
             let error = take($module::$last());
             if printed.is_null() && !error.is_empty() {
-                // serde_yaml's emitter refuses some tagged mapping keys its
-                // parser accepts; that reports an error rather than failing.
+                // YAML reports representation and emission limits through EncodeError.
                 assert!(
                     stringify!($module) == "yaml" && error.starts_with("yaml stringify failed"),
                     "{} cannot print a value it parsed: {error}",
@@ -38,15 +37,6 @@ macro_rules! round_trip {
             let printed = Managed::adopt(printed);
             let reparsed = $module::$parse(printed.ptr());
             let error = take($module::$last());
-            if reparsed.is_null()
-                && stringify!($module) == "yaml"
-                && error.contains("scanning a tag")
-            {
-                // serde_yaml writes a local tag such as `!0]` verbatim, flow
-                // indicators included, and its scanner then refuses it.
-                $module::$free(value);
-                return;
-            }
             assert!(
                 !reparsed.is_null(),
                 "{} refuses its own output ({error}): {:?}",

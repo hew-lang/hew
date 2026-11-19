@@ -1060,6 +1060,69 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn failed_probe_does_not_report_child_exit() {
+        const PROBE_CHILD: &str = "HEW_TEST_FAILED_EXIT_PROBE";
+        const PROBE_PASSED: &str = "observed the actual child exit";
+        if std::env::var_os(PROBE_CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "process::tests::failed_probe_does_not_report_child_exit",
+                    "--nocapture",
+                ])
+                .env(PROBE_CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(PROBE_PASSED),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "read -r gate; exit 7"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let watch = ExitWatch::open(child.id()).unwrap();
+        let mut saved = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: saved is writable and the limit affects only this subprocess.
+        let got_limit = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut saved) };
+        assert_eq!(got_limit, 0);
+        let reduced = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: saved.rlim_max,
+        };
+        // SAFETY: reduced leaves the hard limit intact, so we can restore it.
+        let lowered_limit = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const reduced) };
+        assert_eq!(lowered_limit, 0);
+        let exited = watch.exited();
+        // SAFETY: saved holds this process's original limits.
+        let restored_limit = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const saved) };
+        assert_eq!(restored_limit, 0);
+        // EOF releases the child so we can observe and reap its actual exit.
+        drop(child.stdin.take());
+        let mut event = libc::pollfd {
+            fd: watch.fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live descriptor with a bounded wait.
+        assert_eq!(unsafe { libc::poll(&raw mut event, 1, 10_000) }, 1);
+        assert!(watch.exited());
+        assert_eq!(child.wait().unwrap().code(), Some(7));
+        assert!(!exited);
+        println!("{PROBE_PASSED}");
+    }
+
+    #[test]
     #[cfg(unix)]
     fn terminate_and_kill_report_their_signals() {
         for (force, signal) in [(false, libc::SIGTERM), (true, libc::SIGKILL)] {

@@ -472,8 +472,11 @@ hew: require-host-cargo-target ## Build: build the release-lib compiler and nati
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@# Git Bash's ln copies directories, and a later `ln -sfn` would then
 	@# link inside that copy, so replace build/std rather than relink over it.
-	@rm -rf "$(BUILD_DIR)/std"
-	@ln -sfn ../std "$(BUILD_DIR)/std"
+	@# Skip both steps when build/std already is the source tree (a correct
+	@# symlink, or BUILD_DIR=.), so the source is never removed.
+	@if ! test "$(BUILD_DIR)/std" -ef "$(MAKEFILE_ROOT)/std"; then \
+		rm -rf "$(BUILD_DIR)/std" && ln -sfn ../std "$(BUILD_DIR)/std"; \
+	fi
 
 hew-debug: hew-native ## Build: build and stage the debug compiler
 	@mkdir -p $(BUILD_DIR)/bin

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- `std.time.datetime` supports proleptic Gregorian years −999999 through
+  +999999 on native and sandbox targets. Custom `format` and `parse`
+  patterns use the Rust `time` crate's strftime dialect. Use `%z` for a
+  numeric offset such as `+0000`. Migrate patterns using Chrono's fractional
+  directives (`%f`, `%.f`, `%.9f`) or colonized offsets (`%:z`) to
+  `to_iso8601` and `parse_iso8601` for lossless timestamp text.
+
 ## [0.11.0] - 2026-11-12
 
 - Add owned actor failure diagnostics, native debugger launch and symbolization.

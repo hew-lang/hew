@@ -1,13 +1,15 @@
 //! Pure UTC calendar operations shared by native and sandbox bindings.
 
-use chrono::format::{parse as parse_fields, Item, Parsed, StrftimeItems};
-use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
-use std::fmt::Write as _;
+use time::error::TryFromParsed;
+use time::format_description::{parse_strftime_borrowed, BorrowedFormatItem};
+use time::macros::format_description;
+use time::parsing::Parsed;
+use time::{Date, Month, OffsetDateTime, Time, UtcDateTime};
 
 /// Checked calendar failures, independent of the host's string representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// The timestamp or civil year is outside Chrono's supported calendar.
+    /// The timestamp or civil year is outside the supported UTC calendar.
     Range,
     /// Invalid date/time text or civil components.
     Parse(String),
@@ -30,7 +32,12 @@ impl Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Range => f.write_str("timestamp is outside the calendar range -262143..=262142"),
+            Self::Range => write!(
+                f,
+                "timestamp is outside the calendar range {}..={}",
+                Date::MIN.year(),
+                Date::MAX.year()
+            ),
             Self::Parse(message) | Self::Format(message) => f.write_str(message),
         }
     }
@@ -53,69 +60,123 @@ pub struct Components {
     pub days_in_month: u32,
 }
 
-fn datetime(seconds: i64, nanoseconds: u32) -> Result<DateTime<Utc>, Error> {
+fn datetime(seconds: i64, nanoseconds: u32) -> Result<UtcDateTime, Error> {
     if nanoseconds >= 1_000_000_000 {
         return Err(Error::Parse(
             "timestamp nanoseconds must be normalized".into(),
         ));
     }
-    DateTime::from_timestamp(seconds, nanoseconds).ok_or(Error::Range)
+    UtcDateTime::from_unix_timestamp_nanos(
+        i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds),
+    )
+    .map_err(|_| Error::Range)
 }
 
-fn parts(value: DateTime<Utc>) -> Result<(i64, u32), Error> {
-    let nanos = value.timestamp_subsec_nanos();
-    if nanos >= 1_000_000_000 {
-        return Err(Error::Parse(
-            "leap seconds cannot be represented by a timestamp".into(),
-        ));
-    }
-    Ok((value.timestamp(), nanos))
+fn parts(value: UtcDateTime) -> (i64, u32) {
+    (value.unix_timestamp(), value.nanosecond())
 }
 
-/// Format normalized Unix parts using Chrono's strftime dialect.
+/// Format normalized Unix parts using the time crate's strftime dialect.
 ///
 /// # Errors
 /// Returns a range error outside the calendar, or a format error for an
 /// unsupported directive.
 pub fn format(seconds: i64, nanoseconds: u32, pattern: &str) -> Result<String, Error> {
     let value = datetime(seconds, nanoseconds)?;
-    let items = StrftimeItems::new(pattern);
-    if items.clone().any(|item| matches!(item, Item::Error)) {
-        return Err(Error::Format("invalid datetime format directive".into()));
+    let items = parse_strftime_borrowed(pattern).map_err(|err| Error::Format(err.to_string()))?;
+    value
+        .format(&items)
+        .map_err(|err| Error::Format(err.to_string()))
+}
+
+/// Parse strftime fields into an absolute timestamp. A missing offset means UTC.
+///
+/// # Errors
+/// Returns a parse error for invalid fields or directives, and a range error
+/// if the resolved instant is outside the calendar.
+pub fn parse(text: &str, pattern: &str) -> Result<(i64, u32), Error> {
+    let items = parse_strftime_borrowed(pattern).map_err(|err| Error::Parse(err.to_string()))?;
+    parse_fields(text, &items)
+}
+
+fn parse_fields(text: &str, items: &[BorrowedFormatItem<'_>]) -> Result<(i64, u32), Error> {
+    let mut parsed = Parsed::new();
+    let mut remaining = text.as_bytes();
+    // Repeated directives can overwrite parsed fields. Check each item before
+    // a later value can hide a leap second or an invalid civil offset.
+    for item in items {
+        remaining = parsed
+            .parse_item(remaining, item)
+            .map_err(|err| Error::Parse(err.to_string()))?;
+        if parsed.second() == Some(60) {
+            return Err(Error::Parse(
+                "leap seconds cannot be represented by a timestamp".into(),
+            ));
+        }
+        if parsed
+            .offset_hour()
+            .is_some_and(|hour| hour.unsigned_abs() >= 24)
+        {
+            return Err(Error::Parse("UTC offset must be less than 24 hours".into()));
+        }
     }
-    let mut text = String::new();
-    write!(text, "{}", value.format_with_items(items))
-        .map_err(|_| Error::Format("datetime directive cannot be formatted".into()))?;
+    if !remaining.is_empty() {
+        return Err(Error::Parse("unexpected trailing date or time text".into()));
+    }
+    if parsed.offset_hour().is_none() {
+        parsed.set_offset_hour(0);
+    }
+    let value = OffsetDateTime::try_from(parsed).map_err(|err| match err {
+        TryFromParsed::ComponentRange(range) if matches!(range.name(), "year" | "timestamp") => {
+            Error::Range
+        }
+        _ => Error::Parse(err.to_string()),
+    })?;
+    Ok(parts(value.checked_to_utc().ok_or(Error::Range)?))
+}
+
+const ISO_DATE_TIME: &[BorrowedFormatItem<'_>] = format_description!(
+    version = 2,
+    "[year range:extended]-[month]-[day]T[hour]:[minute]:[second]"
+);
+const ISO_INPUT: &[BorrowedFormatItem<'_>] = format_description!(
+    version = 2,
+    "[year range:extended]-[month]-[day]T[hour]:[minute]:[second]\
+     [optional [.[subsecond]]]\
+     [first [Z][z][[offset_hour sign:mandatory]:[offset_minute]]\
+     [[offset_hour sign:mandatory][offset_minute]][[offset_hour sign:mandatory]]]"
+);
+
+/// Format UTC ISO 8601 with zero, three, six or nine fractional digits.
+///
+/// # Errors
+/// Returns a range error outside the calendar or a parse error for unnormalized parts.
+pub fn format_iso8601(seconds: i64, nanoseconds: u32) -> Result<String, Error> {
+    use std::fmt::Write as _;
+    let date = datetime(seconds, nanoseconds)?;
+    let mut text = date
+        .format(ISO_DATE_TIME)
+        .map_err(|err| Error::Format(err.to_string()))?;
+    if nanoseconds != 0 {
+        let (fraction, width) = if nanoseconds.is_multiple_of(1_000_000) {
+            (nanoseconds / 1_000_000, 3)
+        } else if nanoseconds.is_multiple_of(1_000) {
+            (nanoseconds / 1_000, 6)
+        } else {
+            (nanoseconds, 9)
+        };
+        write!(text, ".{fraction:0width$}").expect("writing to a String is infallible");
+    }
+    text.push('Z');
     Ok(text)
 }
 
-/// Parse a datetime with Chrono's strftime dialect. Absent offsets mean UTC;
-/// explicit offsets are preserved while resolving the absolute timestamp.
+/// Parse an ISO date, time, optional fraction and required UTC designator or numeric offset.
 ///
 /// # Errors
-/// Returns a parse error for invalid or inconsistent fields, including leap
-/// seconds, and a range error for dates beyond the supported calendar.
-pub fn parse(text: &str, pattern: &str) -> Result<(i64, u32), Error> {
-    let mut parsed = Parsed::new();
-    parse_fields(&mut parsed, text, StrftimeItems::new(pattern)).map_err(parse_error)?;
-    if parsed
-        .year()
-        .is_some_and(|year| year < NaiveDate::MIN.year() || year > NaiveDate::MAX.year())
-    {
-        return Err(Error::Range);
-    }
-    if parsed.offset().is_none() {
-        parsed.set_offset(0).map_err(parse_error)?;
-    }
-    let value = parsed
-        .to_datetime()
-        .map_err(parse_error)?
-        .with_timezone(&Utc);
-    parts(value)
-}
-
-fn parse_error(error: chrono::ParseError) -> Error {
-    Error::Parse(error.to_string())
+/// Returns a parse error for malformed input, or a range error outside the UTC calendar.
+pub fn parse_iso8601(text: &str) -> Result<(i64, u32), Error> {
+    parse_fields(text, ISO_INPUT)
 }
 
 /// Extract UTC components from normalized Unix parts.
@@ -124,17 +185,16 @@ fn parse_error(error: chrono::ParseError) -> Error {
 /// Returns a range error for moments outside the supported calendar.
 pub fn components(seconds: i64, nanoseconds: u32) -> Result<Components, Error> {
     let value = datetime(seconds, nanoseconds)?;
-    let days_in_month = u32::from(value.num_days_in_month());
     Ok(Components {
         year: i64::from(value.year()),
-        month: value.month(),
-        day: value.day(),
-        hour: value.hour(),
-        minute: value.minute(),
-        second: value.second(),
+        month: u32::from(u8::from(value.month())),
+        day: u32::from(value.day()),
+        hour: u32::from(value.hour()),
+        minute: u32::from(value.minute()),
+        second: u32::from(value.second()),
         nanosecond: value.nanosecond(),
-        weekday: value.weekday().num_days_from_monday(),
-        days_in_month,
+        weekday: u32::from(value.weekday().number_days_from_monday()),
+        days_in_month: u32::from(value.month().length(value.year())),
     })
 }
 
@@ -153,18 +213,17 @@ pub fn from_components(
     nanosecond: u32,
 ) -> Result<(i64, u32), Error> {
     let year = i32::try_from(year).map_err(|_| Error::Range)?;
-    if year < NaiveDate::MIN.year() || year > NaiveDate::MAX.year() {
+    if !(Date::MIN.year()..=Date::MAX.year()).contains(&year) {
         return Err(Error::Range);
     }
-    let date = NaiveDate::from_ymd_opt(year, month, day)
-        .ok_or_else(|| Error::Parse("invalid calendar date".into()))?;
-    if nanosecond >= 1_000_000_000 {
-        return Err(Error::Parse("nanoseconds must be in 0..1000000000".into()));
-    }
-    let value = date
-        .and_hms_nano_opt(hour, minute, second, nanosecond)
-        .ok_or_else(|| Error::Parse("invalid time of day".into()))?;
-    parts(value.and_utc())
+    let field =
+        |value| u8::try_from(value).map_err(|_| Error::Parse("invalid calendar component".into()));
+    let invalid = |err: time::error::ComponentRange| Error::Parse(err.to_string());
+    let month = Month::try_from(field(month)?).map_err(invalid)?;
+    let date = Date::from_calendar_date(year, month, field(day)?).map_err(invalid)?;
+    let clock = Time::from_hms_nano(field(hour)?, field(minute)?, field(second)?, nanosecond)
+        .map_err(invalid)?;
+    Ok(parts(UtcDateTime::new(date, clock)))
 }
 
 /// Construct UTC Unix parts from signed civil fields.
@@ -199,20 +258,24 @@ mod tests {
 
     #[test]
     fn fractional_offsets_and_negative_instants_round_trip() {
-        let (seconds, nanos) = parse(
+        for text in [
             "1970-01-01T01:29:59.999999999+01:30",
-            "%Y-%m-%dT%H:%M:%S%.f%:z",
-        )
-        .unwrap();
-        assert_eq!((seconds, nanos), (-1, 999_999_999));
-        assert_eq!(
-            format(seconds, nanos, "%Y-%m-%dT%H:%M:%S%.fZ").unwrap(),
-            "1969-12-31T23:59:59.999999999Z",
-        );
-        assert_eq!(
-            parse("1969-12-31 23:59:59.999999999", "%Y-%m-%d %H:%M:%S%.f").unwrap(),
-            (seconds, nanos),
-        );
+            "1969-12-31T23:29:59.999999999-0030",
+        ] {
+            assert_eq!(parse_iso8601(text), Ok((-1, 999_999_999)));
+        }
+        for (nanos, fraction) in [
+            (0, ""),
+            (100_000_000, ".100"),
+            (100_000, ".000100"),
+            (1, ".000000001"),
+        ] {
+            let text = format_iso8601(-1, nanos).unwrap();
+            assert_eq!(text, format!("1969-12-31T23:59:59{fraction}Z"));
+            assert_eq!(parse_iso8601(&text), Ok((-1, nanos)));
+        }
+        assert_eq!(parse("1970-01-01 01:29:59 +0130", "%F %T %z"), Ok((-1, 0)));
+        assert_eq!(parse("1969-12-31 23:59:59", "%F %T"), Ok((-1, 0)));
     }
 
     #[test]
@@ -220,6 +283,14 @@ mod tests {
         assert!(matches!(
             parse("2016-12-31T23:59:60Z", "%Y-%m-%dT%H:%M:%SZ"),
             Err(Error::Parse(message)) if message.contains("leap seconds")
+        ));
+        assert!(matches!(
+            parse("2016-12-31 23:59:60 00", "%F %T %S"),
+            Err(Error::Parse(_))
+        ));
+        assert!(matches!(
+            parse("1970-01-01 00:00:00 +2500 +0000", "%F %T %z %z"),
+            Err(Error::Parse(_))
         ));
         assert!(from_components(2025, 2, 29, 0, 0, 0, 0).is_err());
         assert!(from_components(2024, 2, 29, 0, 0, 60, 0).is_err());
@@ -233,11 +304,52 @@ mod tests {
     }
 
     #[test]
+    fn iso_offsets_and_fractional_seconds_are_checked_at_the_input() {
+        for text in [
+            "2016-12-31T18:59:60-05:00",
+            "2026-01-01T12:00:00+24:00",
+            "2026-01-01T12:00:00",
+            "2026-01-01T12:00:00Zextra",
+        ] {
+            assert!(
+                matches!(parse_iso8601(text), Err(Error::Parse(_))),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            parse_iso8601("+999999-12-31T23:59:59-01:00"),
+            Err(Error::Range)
+        );
+        assert_eq!(
+            parse_iso8601("-999999-01-01T00:00:00+01:00"),
+            Err(Error::Range)
+        );
+        let parts = from_components(12000, 1, 1, 12, 0, 0, 1).unwrap();
+        assert_eq!(
+            format_iso8601(parts.0, parts.1).unwrap(),
+            "+12000-01-01T12:00:00.000000001Z"
+        );
+        assert_eq!(parse_iso8601("+12000-01-01T12:00:00.000000001Z"), Ok(parts));
+        assert_eq!(
+            format(-1, 9, "%F %T %z %s").unwrap(),
+            "1969-12-31 23:59:59 +0000 -1"
+        );
+        assert_eq!(parse("-1", "%s"), Ok((-1, 0)));
+    }
+
+    #[test]
     fn calendar_boundaries_are_distinct_from_timestamp_boundaries() {
-        for date in [NaiveDate::MIN, NaiveDate::MAX] {
-            let (seconds, nanos) =
-                from_components(i64::from(date.year()), date.month(), date.day(), 0, 0, 0, 0)
-                    .unwrap();
+        for date in [Date::MIN, Date::MAX] {
+            let (seconds, nanos) = from_components(
+                i64::from(date.year()),
+                u32::from(u8::from(date.month())),
+                u32::from(date.day()),
+                0,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
             assert_eq!(
                 components(seconds, nanos).unwrap().year,
                 i64::from(date.year())
@@ -246,7 +358,7 @@ mod tests {
         assert_eq!(components(i64::MIN, 0), Err(Error::Range));
         assert_eq!(components(i64::MAX, 0), Err(Error::Range));
         assert_eq!(
-            from_components(262_143, 1, 1, 0, 0, 0, 0),
+            from_components(1_000_000, 1, 1, 0, 0, 0, 0),
             Err(Error::Range)
         );
         assert!(matches!(format(0, 0, "%Q"), Err(Error::Format(_))));

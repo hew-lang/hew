@@ -10,8 +10,6 @@ use libfuzzer_sys::fuzz_target;
 
 mod support;
 
-const LOSSLESS: &str = "%Y-%m-%dT%H:%M:%S%.9f%:z";
-
 fuzz_target!(|data: &[u8]| {
     let Some((stamp, rest)) = data.split_first_chunk::<12>() else {
         return;
@@ -25,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
 
     let _ = hew_calendar::parse(text, pattern);
     let _ = hew_calendar::format(seconds, nanos, pattern);
-    let _ = hew_calendar::parse(text, LOSSLESS);
+    let _ = hew_calendar::parse_iso8601(text);
 
     let Ok(parts) = hew_calendar::components(seconds, nanos) else {
         return;
@@ -44,10 +42,10 @@ fuzz_target!(|data: &[u8]| {
         Ok((seconds, nanos)),
         "components do not rebuild {parts:?}"
     );
-    let printed = hew_calendar::format(seconds, nanos, LOSSLESS)
+    let printed = hew_calendar::format_iso8601(seconds, nanos)
         .expect("an in-range instant formats losslessly");
     assert_eq!(
-        hew_calendar::parse(&printed, LOSSLESS),
+        hew_calendar::parse_iso8601(&printed),
         Ok((seconds, nanos)),
         "{printed:?} does not parse back"
     );

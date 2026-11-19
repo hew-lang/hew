@@ -96,7 +96,7 @@ timestamps and timestamp arithmetic retain nanosecond precision. Native programs
 read the operating system wall clock. Neither clock is a monotonic `instant`.
 
 
-Calendar operations use the same pure Chrono engine on native and sandbox
+Calendar operations use the same UTC calendar engine on native and sandbox
 hosts. Hosts supply the initialized `executeCalendar` export from
 `@hew-lang/wasm` as `calendarBridge`. Decimal-string integer transport
 preserves normalized Unix seconds and nanoseconds. Calendar results and owned

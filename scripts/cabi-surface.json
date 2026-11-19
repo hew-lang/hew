@@ -3409,6 +3409,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_calendar_format_iso8601( i64, u32, ) -> HewCalendarTextResult"
+      },
+      "symbol": "hew_calendar_format_iso8601"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_calendar_from_parts( i64, i64, i64, i64, i64, i64, u32, ) -> HewCalendarTimeResult"
       },
       "symbol": "hew_calendar_from_parts"
@@ -3425,6 +3438,19 @@
         "native": "fn hew_calendar_parse( *const HewString, *const HewString, ) -> HewCalendarTimeResult"
       },
       "symbol": "hew_calendar_parse"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_parse_iso8601( *const HewString, ) -> HewCalendarTimeResult"
+      },
+      "symbol": "hew_calendar_parse_iso8601"
     },
     {
       "availability": [

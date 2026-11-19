@@ -1,7 +1,7 @@
 //! UTC calendar views of precise wall-clock timestamps.
 //!
-//! Calendar conversion uses Chrono's proleptic Gregorian range, years -262143
-//! through +262142. A timestamp outside that range remains a valid timestamp
+//! Calendar conversion uses proleptic Gregorian years -999999 through +999999.
+//! A timestamp outside that range remains a valid timestamp
 //! but calendar operations fail with Range. Unix time does not represent leap
 //! seconds; parsing rejects them. Explicit offsets normalize to UTC.
 //!
@@ -86,8 +86,8 @@ fn checked_time(result: CalendarTimeResult) -> timestamp fails DateTimeError {
     timestamp.from_unix_parts(result.seconds, result.nanoseconds).expect("normalized calendar result")
 }
 
-/// Format a timestamp using Chrono's strftime directives, including fractional
-/// seconds with %.f or %.9f. Calendar output uses UTC.
+/// Format UTC using the time crate's strftime directives. Use to_iso8601 for
+/// a timestamp with a lossless fractional second.
 pub fn format(value: timestamp, pattern: string) -> string fails DateTimeError {
     let (seconds, nanos) = value.unix_parts();
     let result = unsafe {
@@ -98,7 +98,7 @@ pub fn format(value: timestamp, pattern: string) -> string fails DateTimeError {
 }
 
 /// Parse strftime-formatted text. A missing offset means UTC; an explicit
-/// offset is converted to UTC. Fractional seconds retain nanosecond precision.
+/// numeric offset is converted to UTC. Use parse_iso8601 for fractional seconds.
 pub fn parse(text: string, pattern: string) -> timestamp fails DateTimeError {
     checked_time(unsafe {
         hew_calendar_parse(text, pattern)
@@ -166,17 +166,26 @@ pub fn diff_secs(a: timestamp, b: timestamp) -> i64 {
 
 /// Format UTC ISO 8601, preserving the nonzero nanosecond fraction.
 pub fn to_iso8601(value: timestamp) -> string fails DateTimeError {
-    format(value, "%Y-%m-%dT%H:%M:%S%.fZ")?
+    let (seconds, nanos) = value.unix_parts();
+    let result = unsafe {
+        hew_calendar_format_iso8601(seconds, nanos)
+    };
+    checked(result.status, result.message)?;
+    result.text
 }
 
 /// Parse ISO 8601 with Z or a numeric offset, preserving fractional seconds.
 pub fn parse_iso8601(text: string) -> timestamp fails DateTimeError {
-    parse(text, "%Y-%m-%dT%H:%M:%S%.f%#z")?
+    checked_time(unsafe {
+        hew_calendar_parse_iso8601(text)
+    })?
 }
 
 extern "C" {
     fn hew_calendar_format(seconds: i64, nanoseconds: u32, pattern: string) -> CalendarTextResult;
     fn hew_calendar_parse(text: string, pattern: string) -> CalendarTimeResult;
+    fn hew_calendar_format_iso8601(seconds: i64, nanoseconds: u32) -> CalendarTextResult;
+    fn hew_calendar_parse_iso8601(text: string) -> CalendarTimeResult;
     fn hew_calendar_components(seconds: i64, nanoseconds: u32) -> CalendarPartsResult;
     fn hew_calendar_from_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, nanosecond: u32) -> CalendarTimeResult;
 }

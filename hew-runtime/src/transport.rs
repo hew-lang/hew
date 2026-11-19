@@ -809,12 +809,14 @@ pub(crate) unsafe fn hew_transport_cancel_io(transport: *mut HewTransport) {
         unsafe { &*transport.r#impl.cast::<TcpTransport>() }
             .slots
             .cancel_all();
-        return;
+    } else {
+        // Whichever of these is compiled in recognises its own transport; on
+        // a build with neither, only TCP transports exist.
+        #[cfg(unix)]
+        unix_transport::cancel_io(transport);
+        #[cfg(feature = "quic")]
+        crate::quic_mesh::cancel_io(transport);
     }
-    #[cfg(unix)]
-    unix_transport::cancel_io(transport);
-    #[cfg(feature = "quic")]
-    crate::quic_mesh::cancel_io(transport);
 }
 
 /// Classify a connection's remote endpoint for per-connection posture

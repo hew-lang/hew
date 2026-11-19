@@ -47,9 +47,14 @@ class ReleaseInventory(unittest.TestCase):
             b"reference docs"
         )
         for name in [
-            "hew_0.6.3_amd64.deb",
-            "hew-0.6.3.x86_64.rpm",
-            "hew-bin-0.6.3.pkg.tar.zst",
+            *(f"hew_{VERSION}-1_{arch}.deb" for arch in ("amd64", "arm64")),
+            *(f"libhew{VERSION}_{VERSION}-1_{arch}.deb" for arch in ("amd64", "arm64")),
+            *(f"hew-{VERSION}-1.fc41.{arch}.rpm" for arch in ("x86_64", "aarch64")),
+            *(
+                f"libhew{VERSION}-{VERSION}-1.fc41.{arch}.rpm"
+                for arch in ("x86_64", "aarch64")
+            ),
+            f"hew-bin-{VERSION}-1-x86_64.pkg.tar.zst",
         ]:
             (self.directory / name).write_bytes(b"package")
 
@@ -151,11 +156,15 @@ class ReleaseInventory(unittest.TestCase):
             self.assemble(notes, version="0.7.0")
 
     def test_missing_optional_package_output_records_actual_success(self):
-        (self.directory / "hew_0.6.3_amd64.deb").unlink()
+        (self.directory / f"libhew{VERSION}_{VERSION}-1_arm64.deb").unlink()
         receipt = self.assemble()
         self.assertEqual(
             receipt["platforms"]["linux-packages"],
-            {"state": "unavailable", "result": "success", "missing": ["hew_*.deb"]},
+            {
+                "state": "unavailable",
+                "result": "success",
+                "missing": [f"libhew{VERSION}_{VERSION}-*_arm64.deb"],
+            },
         )
 
     def test_prerelease_records_unproduced_distro_packages_even_when_note_step_succeeds(

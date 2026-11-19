@@ -1793,7 +1793,6 @@ non-declarable = [
   "hew_coro_state_resume_yield",
   "hew_fault_finish_cleanup",
   "hew_vec_make_unique",
-  "_start",
   "hew_actor_drain_outcome_free",
   # `hew_actor_free` is the actor-side twin of `hew_mailbox_free`: it destroys
   # the private system queue, four calls down, on an actor pointer the caller

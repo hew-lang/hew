@@ -6,7 +6,7 @@ use hew_types::{CallableCandidate, IndirectCallCandidates, SpanKey};
 use std::collections::HashSet;
 
 pub(super) struct CallableFacts<'a> {
-    checked: &'a TypeCheckOutput,
+    pub(super) checked: &'a TypeCheckOutput,
     calls: HashMap<(CallableId, SpanKey), Vec<CallableId>>,
     values: HashMap<(CallableId, DefId), Vec<CallableId>>,
     pub(super) opaque_entries: HashSet<CallableId>,

@@ -57,20 +57,7 @@ impl<'a> HostExport<'a> {
             .map(|&(id, name)| (id, name, false))
             .chain(asynchronous.iter().map(|&(id, name)| (id, name, true)))
         {
-            if symbol.is_empty()
-                || !symbol.as_bytes()[0].is_ascii_alphabetic()
-                || !symbol
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                || symbol.starts_with("hew_")
-                || symbol.starts_with("HEW_")
-                || ["HewText", "HewJson", "HewError", "HewRuntime", "HewWaker"].contains(&symbol)
-                || ["HewLiveCodeOwner", "HewLiveInitialize", "HewLiveFinalize"].contains(&symbol)
-                || symbol == "main"
-                || C_KEYWORDS
-                    .split_ascii_whitespace()
-                    .any(|word| word == symbol)
-            {
+            if !hew_types::c_abi::is_c_export_identifier(symbol) || symbol.starts_with("hew_") {
                 return Err(fail("C export requires a non-reserved ASCII C identifier"));
             }
             if functions.iter().any(|export| export.symbol == symbol)
@@ -148,10 +135,20 @@ impl<'a> HostExport<'a> {
     }
 
     fn validate_public_symbols(&self) -> CodegenResult<()> {
-        let mut names = std::collections::BTreeSet::new();
+        let mut names: std::collections::BTreeSet<_> = self
+            .verified
+            .module()
+            .c_abi
+            .exports
+            .values()
+            .cloned()
+            .collect();
         for (_, name) in &self.types {
-            names.insert(name.clone());
-            names.insert(format!("{name}_release"));
+            if !names.insert(name.clone()) || !names.insert(format!("{name}_release")) {
+                return Err(CodegenError::FailClosed(
+                    "generated C owner collides with a source export".into(),
+                ));
+            }
         }
         for export in &self.functions {
             let symbols = if export.asynchronous {
@@ -282,8 +279,6 @@ impl<'a> HostExport<'a> {
         header
     }
 }
-
-const C_KEYWORDS: &str = "alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept auto bitand bitor bool break case catch char char8_t char16_t char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected public register reinterpret_cast requires restrict return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename typeof typeof_unqual union unsigned using virtual void volatile wchar_t while xor xor_eq";
 
 fn scalar(ty: &ResolvedTy) -> Option<&'static str> {
     Some(match ty {

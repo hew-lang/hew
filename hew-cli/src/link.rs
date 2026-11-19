@@ -1237,7 +1237,7 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
         // `StackOverflow` (HEW-SPEC-2026 §2.2), and placing the stack first
         // keeps any underflow away from static data.
         .args(hew_cabi::WASM_SHADOW_STACK_LINK_ARGS)
-        // We provide `_start` in the runtime, not via WASI CRT1.
+        // The compiled Hew command supplies its WASI entry.
         .arg("--no-entry")
         .arg("--export=_start");
 

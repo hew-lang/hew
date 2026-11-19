@@ -1631,6 +1631,10 @@ impl<'a> Formatter<'a> {
                 self.write("#[linear]\n");
             }
         }
+        if decl.repr_c {
+            self.write_indent();
+            self.write("#[repr(C)]\n");
+        }
         if decl.is_opaque {
             self.write_indent();
             self.write("#[opaque]\n");
@@ -2815,7 +2819,8 @@ impl<'a> Formatter<'a> {
                             // If the value contains characters that are not valid
                             // in a bare identifier (e.g. `.` in `"math.sqrt"`),
                             // re-quote it as a string literal so the output round-trips.
-                            let needs_quotes = s.chars().any(|c| !c.is_alphanumeric() && c != '_');
+                            let needs_quotes = attr.name == "export"
+                                || s.chars().any(|c| !c.is_alphanumeric() && c != '_');
                             if needs_quotes {
                                 self.write("\"");
                                 self.write(s);

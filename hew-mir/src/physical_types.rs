@@ -1531,6 +1531,7 @@ pub struct PhysicalFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalModule {
+    pub c_abi: hew_types::c_abi::SourceCAbi,
     pub coverage: hew_sir::CoveragePlan,
     pub actors: Vec<hew_sir::SemActor>,
     pub supervisors: Vec<hew_sir::SemSupervisor>,

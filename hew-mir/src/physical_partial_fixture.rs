@@ -177,6 +177,11 @@ pub fn module(case: Case) -> sir::SemModule {
         Case::ZeroSized => zero_sized_blocks(),
     };
     let declaration = hew_types::DefId::for_test("partial_storage");
+    let consumed = sir::SemAbiParam {
+        ty: root_ty(),
+        passing: sir::SemParamPassing::Consume,
+        caller_visible_projection: false,
+    };
     let callable = sir::SemCallable {
         id: sir::CallableId(0),
         function: hew_hir::ItemId(0),
@@ -187,16 +192,8 @@ pub fn module(case: Case) -> sir::SemModule {
         signature: sir::SemSignature {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![
-                sir::SemAbiParam {
-                    ty: root_ty(),
-                    passing: sir::SemParamPassing::Consume,
-                    caller_visible_projection: false,
-                },
-                sir::SemAbiParam {
-                    ty: root_ty(),
-                    passing: sir::SemParamPassing::Consume,
-                    caller_visible_projection: false,
-                },
+                consumed.clone(),
+                consumed,
                 sir::SemAbiParam {
                     ty: ResolvedTy::Bool,
                     passing: sir::SemParamPassing::ReadOnly,
@@ -239,6 +236,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),

@@ -57,7 +57,7 @@ impl Widen {
     }
 
     /// The attribute, in the context that owns `function`.
-    fn attribute(self, function: FunctionValue<'_>) -> Attribute {
+    pub(super) fn attribute(self, function: FunctionValue<'_>) -> Attribute {
         function
             .get_type()
             .get_context()

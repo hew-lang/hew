@@ -952,6 +952,7 @@ fn module_with_return() -> SemModule {
         },
     );
     SemModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
@@ -2513,6 +2514,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),

@@ -59,6 +59,7 @@ mod expressions;
 mod generic_callables;
 mod generic_schema;
 pub use generic_schema::AssociatedTypeSchemas;
+mod c_abi;
 mod generator_send;
 mod generics;
 mod items;
@@ -3203,6 +3204,7 @@ impl Checker {
             consuming_inherent_methods: self.consuming_inherent_methods.clone(),
             root_value_bindings: self.root_value_bindings.clone(),
             handle_bearing_structs: self.handle_bearing_structs.clone(),
+            c_abi: self.c_abi.clone(),
             opaque_type_ids: self.opaque_type_ids.clone(),
             handle_bearing_dirty: self.handle_bearing_dirty.clone(),
             refresh_call_count: self.refresh_call_count.clone(),
@@ -4368,6 +4370,7 @@ impl Checker {
             resolutions,
             shorthand_field_labels,
             contexts,
+            c_abi: std::mem::take(&mut self.c_abi),
             entry_exit_plan,
             test_entry_plans,
             extern_contracts: std::mem::take(&mut self.extern_table),

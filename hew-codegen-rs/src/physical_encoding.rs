@@ -3,8 +3,7 @@
 use super::*;
 use hew_mir::physical::PhysicalExternResultAbi;
 use hew_types::{RuntimeCReturn, RuntimeCallFamily};
-use inkwell::attributes::{Attribute, AttributeLoc};
-use inkwell::types::AnyType;
+use inkwell::attributes::AttributeLoc;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     /// A checked synchronous container allocation publishes its typed result
@@ -119,6 +118,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &format!("{}_checked", row.symbol),
             &values,
             &self.argument_widening(transfers)?,
+            &[],
             foreign_result,
             &result_abi,
         )?;
@@ -354,6 +354,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             symbol,
             values,
             &self.argument_widening(transfers)?,
+            &transfers
+                .iter()
+                .map(|arg| self.storage(argument_source(arg)).map(|slot| &slot.ty))
+                .collect::<CodegenResult<Vec<_>>>()?,
             destination,
             result_abi,
         )?;
@@ -405,14 +409,14 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         symbol: &str,
         values: &[BasicValueEnum<'ctx>],
         widen: &[(u32, Widen)],
+        source_types: &[&ResolvedTy],
         result: Option<ForeignResult<'ctx>>,
         result_abi: &PhysicalExternResultAbi,
     ) -> CodegenResult<()> {
-        let mut parameters = values
-            .iter()
-            .map(|value| value.get_type().into())
-            .collect::<Vec<_>>();
-        let mut widen = widen.to_vec();
+        let (values, mut widen, mut attrs) =
+            self.c_arguments(values, widen, source_types, result_abi)?;
+        let mut parameters: Vec<BasicMetadataTypeEnum> =
+            values.iter().map(|v| v.get_type().into()).collect();
         let return_type = match result_abi {
             PhysicalExternResultAbi::Direct => result.as_ref().map(|result| result.storage),
             PhysicalExternResultAbi::Coerce(repr) => Some(llvm_type(self.ctx, repr)?),
@@ -429,99 +433,45 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             |ty| ty.fn_type(&parameters, false),
         );
         let function = get_or_declare_external_widened(self.llvm, symbol, signature, &widen)?;
-        let mut arguments = values.iter().copied().map(Into::into).collect::<Vec<_>>();
-        let call_value = |arguments: &[BasicMetadataValueEnum<'ctx>]| {
-            self.builder
-                .build_call(function, arguments, "extern.result")
-                .llvm_ctx("emit extern call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("extern call returned no value".into()))
-        };
-        match (result, result_abi) {
-            (Some(result), PhysicalExternResultAbi::Indirect) => {
-                let sret = self.ctx.create_type_attribute(
-                    Attribute::get_named_enum_kind_id("sret"),
-                    result.storage.as_any_type_enum(),
-                );
-                let align = self.ctx.create_enum_attribute(
-                    Attribute::get_named_enum_kind_id("align"),
-                    u64::from(result.align),
-                );
-                function.add_attribute(AttributeLoc::Param(0), sret);
-                function.add_attribute(AttributeLoc::Param(0), align);
-                arguments.insert(0, result.destination.into());
-                let call = self
-                    .builder
-                    .build_call(function, &arguments, "extern.call")
-                    .llvm_ctx("emit indirect extern result call")?;
-                call.add_attribute(AttributeLoc::Param(0), sret);
-                call.add_attribute(AttributeLoc::Param(0), align);
+        let mut arguments: Vec<BasicMetadataValueEnum> =
+            values.iter().copied().map(Into::into).collect();
+        if matches!(result_abi, PhysicalExternResultAbi::Indirect) {
+            for (idx, _) in &mut attrs {
+                *idx += 1;
             }
-            (None, PhysicalExternResultAbi::Indirect) => {
-                return Err(CodegenError::FailClosed(
-                    "indirect extern result lacks storage".into(),
-                ));
-            }
-            (Some(result), PhysicalExternResultAbi::Coerce(_)) => {
-                let value = call_value(&arguments)?;
-                if let (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(storage)) =
-                    (value, result.storage)
-                {
-                    if value.get_type().get_bit_width() == 1 {
-                        let value = self
-                            .builder
-                            .build_int_z_extend(value, storage, "extern.boolean")
-                            .llvm_ctx("convert C truth to Boolean storage")?;
-                        self.builder
-                            .build_store(result.destination, value)
-                            .llvm_ctx("store extern Boolean")?;
-                        return Ok(());
-                    }
+            let dest = result.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("indirect extern result lacks storage".into())
+            })?;
+            attrs.extend(c_export::memory_attributes(
+                0,
+                self.ctx,
+                dest.storage,
+                "sret",
+                dest.align,
+            ));
+            arguments.insert(0, dest.destination.into());
+        }
+        let call = self
+            .builder
+            .build_call(function, &arguments, "extern.call")
+            .llvm_ctx("emit C call")?;
+        for (idx, attr) in attrs {
+            function.add_attribute(AttributeLoc::Param(idx), attr);
+            call.add_attribute(AttributeLoc::Param(idx), attr);
+        }
+        if !matches!(result_abi, PhysicalExternResultAbi::Indirect) {
+            match (result, call.try_as_basic_value().basic()) {
+                (Some(dest), Some(value)) => {
+                    let value = self.c_reinterpret(value, dest.storage)?;
+                    self.builder
+                        .build_store(dest.destination, value)
+                        .llvm_ctx("store C result")?;
                 }
-                // The ABI carrier may include tail padding absent from storage
-                // (AAPCS64's two integer registers for a 12-byte record), or vice
-                // versa. Allocate enough space and alignment for both views.
-                let data = self.target_data;
-                let (storage_size, storage_align) = measure_layout(data, result.storage);
-                let (carrier_size, carrier_align) = measure_layout(data, value.get_type());
-                let scratch_type = if storage_size >= carrier_size {
-                    result.storage
-                } else {
-                    value.get_type()
-                };
-                let scratch = self.entry_scratch(scratch_type, "extern.result.slot")?;
-                scratch
-                    .as_instruction()
-                    .expect("entry allocation")
-                    .set_alignment(storage_align.max(carrier_align))
-                    .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-                self.builder
-                    .build_store(scratch, value)
-                    .llvm_ctx("store extern result register carrier")?;
-                let value = self
-                    .builder
-                    .build_load(result.storage, scratch, "extern.aggregate")
-                    .llvm_ctx("load extern aggregate result")?;
-                self.builder
-                    .build_store(result.destination, value)
-                    .llvm_ctx("store extern aggregate result")?;
-            }
-            (Some(result), PhysicalExternResultAbi::Direct) => {
-                let value = call_value(&arguments)?;
-                self.builder
-                    .build_store(result.destination, value)
-                    .llvm_ctx("store extern result")?;
-            }
-            (None, _) => {
-                let call = self
-                    .builder
-                    .build_call(function, &arguments, "")
-                    .llvm_ctx("emit extern call")?;
-                if call.try_as_basic_value().basic().is_some() {
+                (None, None) => {}
+                _ => {
                     return Err(CodegenError::FailClosed(
-                        "unit extern call unexpectedly returned a value".into(),
-                    ));
+                        "C result disagrees with destination".into(),
+                    ))
                 }
             }
         }

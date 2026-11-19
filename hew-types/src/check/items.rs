@@ -73,6 +73,7 @@ impl Checker {
                     self.check_trait_defaults(td);
                 }
             }
+            Item::TypeDecl(record) if record.repr_c => self.check_c_record(record, span),
             Item::ExternBlock(block) => {
                 for function in &block.functions {
                     self.check_boundary_resource_params(
@@ -982,6 +983,9 @@ impl Checker {
             .checking_declaration
             .or_else(|| self.lookup_declaration(fn_name))
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied());
+        if let Some(id) = declaration {
+            self.check_c_export(fd, id);
+        }
         if fd.attributes.iter().any(|attr| attr.name == "confined") {
             if let Some(id) = declaration {
                 self.effect_graph.confined.insert(id);

@@ -27,11 +27,11 @@ already-built program needs neither.
 Common signs:
 
 - `Error: no C compiler found (tried clang, cc). Hew links native programs
-with the system C compiler driver; install one with ...`
+  with the system C compiler driver; install one with ...`
 - `hint: the C compiler driver ran, but the C library's development files are
-missing; ...` (the linker reported `cannot find crt1.o`, `crti.o` or `-lc`)
+  missing; ...` (the linker reported `cannot find crt1.o`, `crti.o` or `-lc`)
 - `Error: clang not found. Linking for target <triple> from this host needs
-clang; ...` (cross-target builds)
+  clang; ...` (cross-target builds)
 - `Error: clang.exe not found on PATH.` (Windows)
 - `Error: cannot find libhew.a. Build with: make stdlib`
 - raw linker output after `hew build <file.hew>`
@@ -40,7 +40,7 @@ clang; ...` (cross-target builds)
 What to check:
 
 - The missing-compiler errors name the install command for the machine you
-  are on. On Linux, install the compiler _and_ the C library development
+  are on. On Linux, install the compiler *and* the C library development
   files (`gcc libc6-dev` on Debian/Ubuntu, `gcc glibc-devel` on Fedora/RHEL).
   On macOS, run `xcode-select --install`. FreeBSD's base system already
   provides `cc`. On Windows, install LLVM (`winget install LLVM.LLVM`) for

@@ -488,10 +488,10 @@ def main():
         # The shared runtime ships under its release-versioned name on the
         # platforms that support --link=dynamic, and a relocated SDK links
         # against it in place.
-        shared = sorted([*sdk.glob("lib/libhew.so.*"), *sdk.glob("lib/libhew.*.dylib")])
-        glibc_linux = (
-            sys.platform.startswith("linux") and platform.libc_ver()[0] == "glibc"
+        shared = sorted(
+            [*sdk.glob("lib/libhew.so.*"), *sdk.glob("lib/libhew.*.dylib")]
         )
+        glibc_linux = sys.platform.startswith("linux") and platform.libc_ver()[0] == "glibc"
         if glibc_linux or sys.platform.startswith(("freebsd", "darwin")):
             require(len(shared) == 1, f"expected one shared runtime, found {shared}")
             dynamic = output / "pkg-smoke-dynamic"

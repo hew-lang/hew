@@ -9,22 +9,22 @@ dynamically linked programs find their runtime.
 
 ## What you need installed
 
-| Task                                 | Needs                                                                 |
-| ------------------------------------ | --------------------------------------------------------------------- |
-| `hew check`, `hew fmt`, `hew doc`    | Only `hew`. LLVM is built into the compiler.                          |
-| `hew build`, `hew run`, `hew test`   | A C compiler driver and the C library development files.              |
-| Running a statically linked program  | Nothing from Hew; only the system C library (glibc on Linux).         |
-| Running a dynamically linked program | The Hew runtime of the release that built it (`libhew.so.<version>`). |
+| Task                             | Needs                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `hew check`, `hew fmt`, `hew doc` | Only `hew`. LLVM is built into the compiler.                                                    |
+| `hew build`, `hew run`, `hew test` | A C compiler driver and the C library development files.                                       |
+| Running a statically linked program | Nothing from Hew; only the system C library (glibc on Linux).                                 |
+| Running a dynamically linked program | The Hew runtime of the release that built it (`libhew.so.<version>`).                       |
 
 The C compiler driver comes from the system package manager:
 
-| System          | Command                                 |
-| --------------- | --------------------------------------- |
-| Debian / Ubuntu | `sudo apt install gcc libc6-dev`        |
-| Fedora / RHEL   | `sudo dnf install gcc glibc-devel`      |
-| openSUSE        | `sudo zypper install gcc glibc-devel`   |
-| Arch Linux      | `sudo pacman -S gcc`                    |
-| macOS           | `xcode-select --install`                |
+| System          | Command                              |
+| --------------- | ------------------------------------ |
+| Debian / Ubuntu | `sudo apt install gcc libc6-dev`     |
+| Fedora / RHEL   | `sudo dnf install gcc glibc-devel`   |
+| openSUSE        | `sudo zypper install gcc glibc-devel` |
+| Arch Linux      | `sudo pacman -S gcc`                 |
+| macOS           | `xcode-select --install`             |
 | FreeBSD         | Nothing: the base system provides `cc`. |
 
 The Linux `.deb`, `.rpm` and Arch packages install these as dependencies.
@@ -49,13 +49,13 @@ hew build main.hew                  # --link=static, the default
 hew build --link=dynamic main.hew
 ```
 
-|                     | `--link=static` (default)               | `--link=dynamic`                                           |
-| ------------------- | --------------------------------------- | ---------------------------------------------------------- |
-| Runtime             | Copied into the program from `libhew.a` | Loaded at start-up from `libhew.so.<version>`              |
-| Program size        | About 1 MB for hello-world              | A few KB, plus one shared runtime per release              |
-| Runs where          | Any system with a compatible C library  | Systems with that release's Hew runtime                    |
-| Hew upgrade/removal | Never affects the program               | Keeps working while that release's runtime stays installed |
-| Platforms           | All                                     | Linux (glibc), FreeBSD, macOS                              |
+|                    | `--link=static` (default)                         | `--link=dynamic`                                                      |
+| ------------------ | ------------------------------------------------- | --------------------------------------------------------------------- |
+| Runtime            | Copied into the program from `libhew.a`           | Loaded at start-up from `libhew.so.<version>`                         |
+| Program size       | About 1 MB for hello-world                         | A few KB, plus one shared runtime per release                         |
+| Runs where         | Any system with a compatible C library             | Systems with that release's Hew runtime                               |
+| Hew upgrade/removal | Never affects the program                         | Keeps working while that release's runtime stays installed            |
+| Platforms          | All                                                | Linux (glibc), FreeBSD, macOS                                         |
 
 In both modes the C library, `libm`, `libpthread` and the macOS system
 frameworks are linked dynamically, as each platform expects. Static linking
@@ -77,10 +77,10 @@ The runtime's ABI is not stable from one Hew release to the next. A
 dynamically linked program therefore records the **exact release** in the
 runtime it loads:
 
-| Platform       | Runtime file          | Name recorded in the program       |
-| -------------- | --------------------- | ---------------------------------- |
-| Linux, FreeBSD | `libhew.so.0.11.1`    | `NEEDED libhew.so.0.11.1` (SONAME) |
-| macOS          | `libhew.0.11.1.dylib` | `@rpath/libhew.0.11.1.dylib`       |
+| Platform      | Runtime file                    | Name recorded in the program        |
+| ------------- | ------------------------------- | ----------------------------------- |
+| Linux, FreeBSD | `libhew.so.0.11.1`             | `NEEDED libhew.so.0.11.1` (SONAME)  |
+| macOS         | `libhew.0.11.1.dylib`           | `@rpath/libhew.0.11.1.dylib`        |
 
 Each release's runtime has its own file name, so several releases install
 side by side. Upgrading Hew adds the new runtime without replacing the old
@@ -89,7 +89,7 @@ program never runs against a runtime from another release:
 
 - If its runtime is not installed, the system loader refuses to start it
   and names the missing file, for example `libhew.so.0.11.1: cannot open
-shared object file`. Install that Hew release, ship the runtime with the
+  shared object file`. Install that Hew release, ship the runtime with the
   program (below), or rebuild the program with the Hew you have.
 - If a runtime from another release is substituted (a renamed file, an
   `LD_LIBRARY_PATH` override), the program stops at start-up with exit status
@@ -138,14 +138,14 @@ On Linux and FreeBSD the search path is a `DT_RUNPATH`, so
 
 ### Where the runtime is installed
 
-| Install method          | Runtime location                                                      |
-| ----------------------- | --------------------------------------------------------------------- |
-| `install.sh` / tarball  | `$HEW_HOME/lib/libhew.so.<version>` (default `~/.hew/lib`)            |
-| `.deb` (Debian, Ubuntu) | `/usr/lib/<multiarch>/libhew.so.<version>`, package `libhew<version>` |
-| `.rpm` (Fedora, RHEL)   | `/usr/lib64/libhew.so.<version>`, package `libhew<version>`           |
-| Arch package            | `/usr/lib/libhew.so.<version>`                                        |
-| Docker image            | `/usr/local/lib/libhew.so.<version>`                                  |
-| macOS tarball           | `$HEW_HOME/lib/libhew.<version>.dylib`                                |
+| Install method              | Runtime location                                                 |
+| --------------------------- | ---------------------------------------------------------------- |
+| `install.sh` / tarball      | `$HEW_HOME/lib/libhew.so.<version>` (default `~/.hew/lib`)       |
+| `.deb` (Debian, Ubuntu)     | `/usr/lib/<multiarch>/libhew.so.<version>`, package `libhew<version>` |
+| `.rpm` (Fedora, RHEL)       | `/usr/lib64/libhew.so.<version>`, package `libhew<version>`       |
+| Arch package                | `/usr/lib/libhew.so.<version>`                                   |
+| Docker image                | `/usr/local/lib/libhew.so.<version>`                             |
+| macOS tarball               | `$HEW_HOME/lib/libhew.<version>.dylib`                           |
 
 Upgrades never delete a previous release's runtime from an `install.sh`
 installation. Re-installing a release replaces its runtime by renaming the
@@ -192,7 +192,7 @@ These notes are for Hew maintainers.
   at link time. That cannot cross a shared library boundary: rustc exports
   only `#[no_mangle]` symbols from a cdylib, and macOS binds with a two-level
   namespace. Every native entry therefore calls `hew_image_register(version,
-files, sites, symtab, has_debug_info)` first. The call also carries the
+  files, sites, symtab, has_debug_info)` first. The call also carries the
   release check. ELF symbol versioning was rejected: rustc already passes an
   anonymous version script for cdylibs, and the mechanism does not exist on
   Mach-O.

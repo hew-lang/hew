@@ -102,15 +102,15 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 
 ## Package Managers
 
-| Platform                 | Command                                                                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Platform                 | Command                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
 | macOS / Linux (Homebrew) | `brew install hew-lang/hew/hew` (newest release, rc included) or `brew install hew-lang/hew/hew-stable` (final releases only) |
-| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                                                                     |
-| Arch Linux (AUR)         | `yay -S hew-bin`                                                                                                              |
-| Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                                              |
-| Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                                                                            |
-| Alpine Linux             | See `alpine/APKBUILD`                                                                                                         |
-| Docker                   | `docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew`                                                   |
+| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                                           |
+| Arch Linux (AUR)         | `yay -S hew-bin`                                                                                    |
+| Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                    |
+| Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                                                  |
+| Alpine Linux             | See `alpine/APKBUILD`                                                                               |
+| Docker                   | `docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew`                         |
 
 ## Docker Usage
 

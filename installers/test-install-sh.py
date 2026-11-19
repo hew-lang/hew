@@ -15,10 +15,7 @@ import unittest
 INSTALLER = Path(__file__).with_name("install.sh")
 
 
-@unittest.skipUnless(
-    platform.system() == "Linux" and platform.machine() == "x86_64",
-    "Linux x86-64 fixture",
-)
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64", "Linux x86-64 fixture")
 class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="hew-installer-test-")
@@ -30,7 +27,7 @@ class InstallerTest(unittest.TestCase):
         bin_dir = self.root / "mock-bin"
         bin_dir.mkdir()
         curl = bin_dir / "curl"
-        curl.write_text("""#!/bin/sh
+        curl.write_text('''#!/bin/sh
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) destination=$2; shift 2 ;;
@@ -39,14 +36,10 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 cp "$HEW_FIXTURE/${url##*/}" "$destination"
-""")
+''')
         curl.chmod(0o755)
-        self.env = dict(
-            os.environ,
-            PATH=f"{bin_dir}:{os.environ['PATH']}",
-            HEW_FIXTURE=str(self.fixture),
-            TMPDIR=str(self.root),
-        )
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+                        HEW_FIXTURE=str(self.fixture), TMPDIR=str(self.root))
 
     def archive(self, compiler=True, optional=False, shared_runtime=None):
         name = "hew-v0.10.0-linux-x86_64.tar.gz"
@@ -68,21 +61,9 @@ cp "$HEW_FIXTURE/${url##*/}" "$destination"
         (self.fixture / "hew-v0.10.0-checksums.txt").write_text(f"{digest}  {name}\n")
 
     def run_installer(self, *args):
-        return subprocess.run(
-            [
-                "sh",
-                str(INSTALLER),
-                "--version",
-                "0.10.0",
-                "--prefix",
-                str(self.prefix),
-                *args,
-            ],
-            env=self.env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        return subprocess.run(["sh", str(INSTALLER), "--version", "0.10.0", "--prefix",
+                               str(self.prefix), *args], env=self.env, text=True,
+                              capture_output=True, check=False)
 
     def test_missing_compiler_is_repaired_and_optional_tools_are_installed(self):
         self.archive(optional=True)

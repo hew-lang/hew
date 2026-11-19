@@ -1784,9 +1784,9 @@ fn cmd_run(a: &args::RunArgs) {
 /// the compile finished ends the run here. Either way the build directory is
 /// removed before this process exits.
 fn write_run_deps(a: &args::RunArgs, artifact: CompiledTempExecutable) -> CompiledTempExecutable {
-    if let Some(code) = process::take_pending_interrupt() {
+    if let Some(end) = process::take_pending_interrupt() {
         drop(artifact);
-        std::process::exit(code);
+        process::exit_as_program(end);
     }
     if let Some(path) = a.emit_deps.as_deref() {
         let code = write_deps(Some(path), path, &artifact.prerequisites);
@@ -1889,10 +1889,7 @@ fn cmd_run_native(
         };
 
     drop(artifact);
-    std::process::exit(crate::process::native_run_exit_code(
-        status,
-        &mut std::io::stderr().lock(),
-    ));
+    crate::process::exit_as_program(crate::process::ProgramEnd::of(status));
 }
 
 fn default_profile_endpoint() -> &'static str {
@@ -2153,9 +2150,9 @@ fn cmd_debug(a: &args::DebugArgs) {
     }
     let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
-    if let Some(code) = process::take_pending_interrupt() {
+    if let Some(end) = process::take_pending_interrupt() {
         drop(artifact);
-        std::process::exit(code);
+        process::exit_as_program(end);
     }
     let (debugger, debugger_args) =
         match resolve_debugger_invocation(artifact.path(), &a.program_args) {

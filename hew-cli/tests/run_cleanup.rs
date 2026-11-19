@@ -198,7 +198,11 @@ fn a_terminated_run_stops_its_program_and_removes_its_directory() {
     let sent = unsafe { libc::kill(runner.id().cast_signed(), libc::SIGTERM) };
     assert_eq!(sent, 0);
     let status = runner.wait().expect("wait for hew run");
-    assert!(!status.success(), "{status}");
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGTERM),
+        "the runner ends as its program did: {status}"
+    );
     wait_until("the program exits", Duration::from_secs(10), || exited(pid));
     assert_eq!(fixture.leftovers(), Vec::<String>::new());
 }
@@ -327,13 +331,15 @@ fn an_interrupt_during_the_compile_removes_the_build() {
     // Enough code that the debug compiler spends a visible while on it.
     let mut text = String::new();
     for index in 0..4000 {
-        text.push_str(&format!(
-            "fn step{index}(x: i64) -> i64 {{\n    if x > {index} {{ x - 1 }} else {{ x + {index} }}\n}}\n"
-        ));
+        use std::fmt::Write as _;
+        let _ = writeln!(
+            text,
+            "fn step{index}(x: i64) -> i64 {{\n    if x > {index} {{ x - 1 }} else {{ x + {index} }}\n}}"
+        );
     }
     text.push_str("fn main() {\n    println(\"program ran\");\n    println(step0(1));\n}\n");
     let source = fixture.source("large.hew", &text);
-    let mut runner = fixture
+    let runner = fixture
         .hew_run(&source, &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -348,12 +354,14 @@ fn an_interrupt_during_the_compile_removes_the_build() {
     let sent = unsafe { libc::kill(runner.id().cast_signed(), libc::SIGINT) };
     assert_eq!(sent, 0);
     let output = runner.wait_with_output().expect("wait for hew run");
+    // The runner ends by the interrupt itself, as the program would have.
     assert_eq!(
-        output.status.code(),
-        Some(128 + libc::SIGINT),
+        std::os::unix::process::ExitStatusExt::signal(&output.status),
+        Some(libc::SIGINT),
         "{}",
         describe_output(&output)
     );
+    assert!(output.stderr.is_empty(), "{}", describe_output(&output));
     assert!(
         !String::from_utf8_lossy(&output.stdout).contains("program ran"),
         "{}",

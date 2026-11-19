@@ -19,6 +19,13 @@
   without a terminal, the program keeps its own process group, which a
   timeout or termination request stops as a whole. The program is named
   after its source file (`argv[0]`) rather than `hew_run_bin`.
+- `hew run` ends the way its program ends, and adds nothing. A program
+  stopped by a signal, such as Ctrl-C's SIGINT, SIGTERM, or SIGPIPE from a
+  closed pipe, ends `hew run` by the same signal. Previously `hew run`
+  printed `hew: failure: UnknownFault (2): native program terminated by
+  signal 2 (SIGINT)` and exited 1. A shell now sees what it would see from
+  the program itself, so a loop over `hew run` stops on Ctrl-C. Faults the
+  runtime reports keep that report, unchanged.
 
 - `std.time.datetime` supports proleptic Gregorian years −999999 through
   +999999 on native and sandbox targets. Custom `format` and `parse`

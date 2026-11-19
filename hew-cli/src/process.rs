@@ -463,20 +463,20 @@ unsafe extern "system" fn outlive_console_interrupt(kind: u32) -> i32 {
     i32::from(interrupt)
 }
 
-/// The exit status of a runner a pending interrupt or termination request
-/// stops, if one arrived: `128 + signal` on Unix, as a shell reports it, and
-/// `STATUS_CONTROL_C_EXIT` on Windows.
-pub(crate) fn take_pending_interrupt() -> Option<i32> {
+/// How a runner a pending interrupt or termination request stops must end, if
+/// one arrived: by that signal on Unix, and with `STATUS_CONTROL_C_EXIT`, as
+/// a console interrupt ends a process, on Windows.
+pub(crate) fn take_pending_interrupt() -> Option<ProgramEnd> {
     #[cfg(unix)]
     {
-        crate::signal::take_pending().map(|signal| 128 + signal)
+        crate::signal::take_pending().map(ProgramEnd::Signalled)
     }
     #[cfg(windows)]
     {
         const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
         CONSOLE_INTERRUPTED
             .swap(false, std::sync::atomic::Ordering::SeqCst)
-            .then_some(STATUS_CONTROL_C_EXIT.cast_signed())
+            .then_some(ProgramEnd::Exited(STATUS_CONTROL_C_EXIT.cast_signed()))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -484,32 +484,36 @@ pub(crate) fn take_pending_interrupt() -> Option<i32> {
     }
 }
 
-/// End this process at once with `code`, without running exit handlers: a
-/// compile may be in progress on another thread.
-fn exit_immediately(code: i32) -> ! {
+/// End this process at once as `end` describes, without running exit
+/// handlers: a compile may be in progress on another thread.
+fn end_immediately(end: ProgramEnd) -> ! {
     use std::io::Write as _;
     let _ = std::io::stderr().flush();
-    #[cfg(unix)]
-    // SAFETY: `_exit` ends the process without touching shared state.
-    unsafe {
-        libc::_exit(code)
+    match end {
+        #[cfg(unix)]
+        ProgramEnd::Signalled(signal) => die_by_signal(signal),
+        #[cfg(unix)]
+        // SAFETY: `_exit` ends the process without touching shared state.
+        ProgramEnd::Exited(code) => unsafe { libc::_exit(code) },
+        #[cfg(windows)]
+        ProgramEnd::Exited(code) | ProgramEnd::Signalled(code) => {
+            // SAFETY: terminating the current process with an exit code.
+            unsafe {
+                use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                TerminateProcess(GetCurrentProcess(), code.cast_unsigned());
+            }
+            std::process::abort()
+        }
+        #[cfg(not(any(unix, windows)))]
+        ProgramEnd::Exited(code) | ProgramEnd::Signalled(code) => std::process::exit(code),
     }
-    #[cfg(windows)]
-    // SAFETY: terminating the current process with an exit code.
-    unsafe {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
-        TerminateProcess(GetCurrentProcess(), code.cast_unsigned());
-        std::process::abort()
-    }
-    #[cfg(not(any(unix, windows)))]
-    std::process::exit(code)
 }
 
 /// Interrupts and termination requests while a runner owns a temporary build.
 ///
 /// While the build compiles, a request removes the build directory and ends
-/// the runner at once, rather than leaving the directory behind (the default
-/// disposition) or making Ctrl-C wait for a slow compile. Once the build is
+/// the runner at once, by the same signal, rather than leaving the directory
+/// behind (the default disposition) or making Ctrl-C wait for a slow compile. Once the build is
 /// done ([`BuildInterrupts::finish`]) the dispositions stay installed and
 /// requests stay pending, so nothing reverts to the default before the run
 /// of the program, whose own wait loop takes them, begins.
@@ -536,9 +540,9 @@ impl BuildInterrupts {
                 .name("hew-build-interrupts".into())
                 .spawn(move || {
                     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                        if let Some(code) = take_pending_interrupt() {
+                        if let Some(end) = take_pending_interrupt() {
                             let _ = std::fs::remove_dir_all(&directory);
-                            exit_immediately(code);
+                            end_immediately(end);
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
@@ -659,58 +663,71 @@ fn terminating_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
-/// Synchronous fault signals the Hew runtime reports itself before the program
-/// dies by them; see `hew-runtime/src/signal/unix.rs`.
-#[cfg(unix)]
-const RUNTIME_REPORTED_SIGNALS: [i32; 5] = [
-    libc::SIGSEGV,
-    libc::SIGBUS,
-    libc::SIGFPE,
-    libc::SIGILL,
-    libc::SIGTRAP,
-];
+/// How a program a runner started ended, as the runner must end in turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgramEnd {
+    /// It exited with this status (on Windows, also how exceptions and
+    /// console interrupts end a process).
+    Exited(i32),
+    /// It was killed by this signal.
+    Signalled(i32),
+}
 
-/// Preserve explicit program exits and report abnormal native termination.
-///
-/// A synchronous fault signal was already reported by the runtime's fault
-/// boundary, which then let the program die by that signal; the wrapper adds
-/// no second record and exits as a shell reports the death, `128 + signal`.
-/// Any other signal (`SIGKILL`, `SIGABRT`, `SIGTERM`, ...) reached the program
-/// from outside or from `abort`, so no Hew record exists: report it as
-/// `UnknownFault` and exit 1. Windows reports exceptions and explicit exits
-/// through the same integer; preserve that integer because the two cannot be
-/// distinguished here.
-pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io::Write) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
-    }
-    #[cfg(unix)]
-    if let Some(signal) = terminating_signal(status) {
-        if RUNTIME_REPORTED_SIGNALS.contains(&signal) {
-            return 128 + signal;
+impl ProgramEnd {
+    pub(crate) fn of(status: ExitStatus) -> Self {
+        match (status.code(), terminating_signal(status)) {
+            (Some(code), _) => Self::Exited(code),
+            (None, Some(signal)) => Self::Signalled(signal),
+            // Neither is possible on supported platforms; fail, quietly.
+            (None, None) => Self::Exited(1),
         }
-        let name = match signal {
-            libc::SIGABRT => "SIGABRT",
-            libc::SIGINT => "SIGINT",
-            libc::SIGHUP => "SIGHUP",
-            libc::SIGKILL => "SIGKILL",
-            libc::SIGPIPE => "SIGPIPE",
-            libc::SIGQUIT => "SIGQUIT",
-            libc::SIGTERM => "SIGTERM",
-            _ => "unknown signal",
-        };
-        // An unavailable stderr must not turn a child failure into a CLI panic.
-        let _ = writeln!(
-            stderr,
-            "hew: failure: UnknownFault ({signal}): native program terminated by signal {signal} ({name})"
-        );
-        return 1;
     }
-    let _ = writeln!(
-        stderr,
-        "hew: failure: UnknownFault: native program terminated abnormally ({status})"
-    );
-    1
+}
+
+/// End this runner the way its program ended, adding nothing, as `go run`
+/// relays a program's end. A program that exited ends the runner with the same
+/// status. A program killed by a signal (Ctrl-C's SIGINT, SIGTERM, SIGPIPE
+/// from a closed pipe, a fault the runtime has already reported) ends the
+/// runner by the same signal, so a shell or script sees exactly what it would
+/// had it run the program itself: no message from the runner, the shell's own
+/// report if it makes one, and a loop over `hew run` stops on Ctrl-C.
+///
+/// Call this only once the runner's own cleanup is done.
+pub(crate) fn exit_as_program(end: ProgramEnd) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    match end {
+        ProgramEnd::Exited(code) => std::process::exit(code),
+        #[cfg(unix)]
+        ProgramEnd::Signalled(signal) => die_by_signal(signal),
+        #[cfg(not(unix))]
+        ProgramEnd::Signalled(signal) => std::process::exit(128 + signal),
+    }
+}
+
+/// Die by `signal` with its default action, without a core file of the
+/// runner: the program's own core, if any, is the one that matters.
+#[cfg(unix)]
+pub(crate) fn die_by_signal(signal: i32) -> ! {
+    // SAFETY: plain process-attribute calls on this process. The default
+    // disposition is restored and the signal unblocked before it is raised,
+    // so it takes effect; `_exit` covers a signal whose default is to
+    // continue.
+    unsafe {
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core);
+        libc::signal(signal, libc::SIG_DFL);
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut set);
+        libc::sigaddset(&raw mut set, signal);
+        libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut());
+        libc::raise(signal);
+        libc::_exit(128 + signal)
+    }
 }
 
 #[cfg(not(unix))]
@@ -1459,40 +1476,28 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn native_run_adds_nothing_to_a_runtime_reported_fault() {
-        // The runtime already wrote the fault record; the wrapper exits as a
-        // shell reports the death and writes nothing more.
-        for (name, signal) in [("SEGV", libc::SIGSEGV), ("BUS", libc::SIGBUS)] {
-            let mut stderr = Vec::new();
-            let code = native_run_exit_code(status_of_signalled_shell(name), &mut stderr);
-            assert_eq!(code, 128 + signal);
-            assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+    fn a_signalled_program_ends_its_runner_by_the_same_signal() {
+        for (name, signal) in [
+            ("INT", libc::SIGINT),
+            ("TERM", libc::SIGTERM),
+            ("SEGV", libc::SIGSEGV),
+            ("KILL", libc::SIGKILL),
+        ] {
+            assert_eq!(
+                ProgramEnd::of(status_of_signalled_shell(name)),
+                ProgramEnd::Signalled(signal)
+            );
         }
     }
 
     #[test]
-    #[cfg(unix)]
-    fn native_run_reports_an_unreported_signal_once() {
-        let mut stderr = Vec::new();
-        let code = native_run_exit_code(status_of_signalled_shell("TERM"), &mut stderr);
-        assert_eq!(code, 1);
-        let stderr = String::from_utf8(stderr).unwrap();
-        assert_eq!(
-            stderr,
-            "hew: failure: UnknownFault (15): native program terminated by signal 15 (SIGTERM)\n"
-        );
-    }
-
-    #[test]
-    fn native_run_preserves_explicit_child_exits() {
+    fn an_exiting_program_ends_its_runner_with_the_same_status() {
         for code in [0, 1, 37, 124, 212] {
             let status = Command::new("sh")
                 .args(["-c", &format!("exit {code}")])
                 .status()
                 .unwrap();
-            let mut stderr = Vec::new();
-            assert_eq!(native_run_exit_code(status, &mut stderr), code);
-            assert!(stderr.is_empty());
+            assert_eq!(ProgramEnd::of(status), ProgramEnd::Exited(code));
         }
     }
 

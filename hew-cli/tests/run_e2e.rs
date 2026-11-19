@@ -98,35 +98,36 @@ fn run_native_compile_error_exits_one() {
     );
 }
 
+/// A program killed by a signal ends `hew run` by the same signal, and
+/// `hew run` adds nothing: the caller sees exactly what running the program
+/// itself would show.
 #[cfg(unix)]
 #[test]
-fn run_native_signal_prints_typed_failure() {
+fn run_native_signal_ends_the_runner_by_the_same_signal_silently() {
+    use std::os::unix::process::ExitStatusExt;
     require_codegen();
     let dir = support::tempdir();
-    let path = dir.path().join("signal_run.hew");
-    // SIGKILL cannot be intercepted by the runtime's fault handlers. This
-    // exercises the parent CLI's diagnostic without invalid memory access.
-    std::fs::write(
-        &path,
-        format!(
-            "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({}); }} }}\n",
-            libc::SIGKILL
-        ),
-    )
-    .unwrap();
-    for timeout in [false, true] {
-        let mut command = Command::new(hew_binary());
-        command.arg("run");
-        if timeout {
-            command.args(["--timeout", "10s"]);
+    for signal in [libc::SIGKILL, libc::SIGINT, libc::SIGTERM] {
+        let path = dir.path().join(format!("signal_run_{signal}.hew"));
+        std::fs::write(
+            &path,
+            format!(
+                "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({signal}); }} }}\n"
+            ),
+        )
+        .unwrap();
+        for timeout in [false, true] {
+            let mut command = Command::new(hew_binary());
+            command.arg("run");
+            if timeout {
+                command.args(["--timeout", "10s"]);
+            }
+            command.arg(&path).current_dir(dir.path());
+            let output = support::run_bounded_command(command, "native signal end");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.signal(), Some(signal), "{stderr}");
+            assert!(stderr.is_empty(), "hew run must add nothing: {stderr}");
         }
-        command.arg(&path).current_dir(dir.path());
-        let output = support::run_bounded_command(command, "native signal diagnostic");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{stderr}");
-        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
-        assert!(stderr.contains("SIGKILL"), "{stderr}");
-        assert!(!stderr.contains("timed out"), "{stderr}");
     }
 }
 

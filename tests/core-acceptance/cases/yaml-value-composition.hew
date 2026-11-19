@@ -28,7 +28,21 @@ fn parse_selected() -> yaml.Value {
     steps.array_get(0).expect("array_get succeeds").expect("step exists")
 }
 
+fn check_scalar_resolution() {
+    assert(yaml.parse("0755").expect("mode text").get_string().expect("string") == "0755");
+    assert(yaml.parse("1_000").expect("identifier").get_string().expect("string") == "1_000");
+    assert(yaml.parse("0b101").expect("binary number").get_int().expect("integer") == 5);
+    assert(yaml.parse("!!str 7").expect("explicit string").get_string().expect("string") == "7");
+    let largest: u64 = 18446744073709551615;
+    assert(yaml.parse("18446744073709551615").expect("unsigned number").get_u64().expect("u64") == largest);
+    assert(yaml.parse("18446744073709551616").is_err());
+    let tagged = yaml.parse("!Colour blue").expect("local tag");
+    assert(tagged.type_of() == Kind.Tagged);
+    assert(yaml.parse(tagged.stringify().expect("encode local tag")).expect("decode local tag") == tagged);
+}
+
 fn main() -> i64 {
+    check_scalar_resolution();
     var values = retained();
     let snapshot = values;
     let captured = capture_value(values);

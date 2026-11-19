@@ -35,7 +35,6 @@ hew-runtime = { path = "../hew-runtime", default-features = false }
 base64.workspace = true
 libc.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9"
 toml.workspace = true
 
 # Native-only module deps (union of the former per-module crates). Gated off the

@@ -216,6 +216,7 @@ if _should_test debian; then
             apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
+            hew run --link=dynamic /pkg/test.hew
         '
     else
         _skip "debian-12" "no .deb found in dist/"
@@ -231,6 +232,7 @@ if _should_test ubuntu; then
             apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
+            hew run --link=dynamic /pkg/test.hew
         '
     else
         _skip "ubuntu-24.04" "no .deb found in dist/"
@@ -246,6 +248,7 @@ if _should_test ubuntu22; then
             apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
+            hew run --link=dynamic /pkg/test.hew
         '
     else
         _skip "ubuntu-22.04" "no .deb found in dist/"
@@ -260,6 +263,7 @@ if _should_test rpm || _should_test fedora; then
             dnf install -y -q /pkg/hew-*.rpm /pkg/libhew*.rpm
             echo "--- hew run ---"
             hew run /pkg/test.hew
+            hew run --link=dynamic /pkg/test.hew
         '
     else
         _skip "fedora-41" "no .rpm found in dist/"
@@ -275,6 +279,7 @@ if _should_test arch; then
             pacman -U --noconfirm /pkg/hew-bin-*.pkg.tar.zst
             echo "--- hew run ---"
             hew run /pkg/test.hew
+            hew run --link=dynamic /pkg/test.hew
         '
     else
         _skip "arch" "no .pkg.tar.zst found in dist/"

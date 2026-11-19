@@ -485,6 +485,28 @@ def main():
         require(
             stdout == b"pkg-smoke-ok\n" and not stderr, "packaged hello output changed"
         )
+        # The shared runtime ships under its release-versioned name on the
+        # platforms that support --link=dynamic, and a relocated SDK links
+        # against it in place.
+        shared = sorted([*sdk.glob("lib/libhew.so.*"), *sdk.glob("lib/libhew.*.dylib")])
+        glibc_linux = (
+            sys.platform.startswith("linux") and platform.libc_ver()[0] == "glibc"
+        )
+        if glibc_linux or sys.platform.startswith(("freebsd", "darwin")):
+            require(len(shared) == 1, f"expected one shared runtime, found {shared}")
+            dynamic = output / "pkg-smoke-dynamic"
+            run("dynamic-build", [hew, "build", "--link=dynamic", smoke, "-o", dynamic])
+            _, stdout, stderr = run("dynamic-run", [dynamic], seconds=30)
+            require(
+                stdout == b"pkg-smoke-ok\n" and not stderr,
+                "dynamically linked hello output changed",
+            )
+            require(
+                shared[0].name.encode() in dynamic.read_bytes(),
+                "a dynamic program must record the versioned runtime name",
+            )
+        else:
+            require(not shared, f"no shared runtime ships for this platform: {shared}")
         projects = output / "projects"
         projects.mkdir()
         run("init", [hew, "init", "demo"], cwd=projects, seconds=30)

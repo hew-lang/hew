@@ -27,6 +27,7 @@ Source1:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 # Native Hew builds also need a C driver and the system C development files.
 Requires:       (gcc or clang)
 Requires:       glibc-devel
+Requires:       libhew%{version} = %{version}-%{release}
 # AutoProv: no — we don't export reusable shared-library provides.
 AutoProv:       no
 
@@ -38,6 +39,18 @@ trees and first-class async/await.
 This package provides:
   - hew          the compiler driver
   - libhew.a     the combined runtime + stdlib static library
+
+# The shared runtime carries the exact release in its SONAME
+# (libhew.so.<version>). Its package is named for the release so releases
+# install side by side: upgrading hew leaves programs built with
+# `--link=dynamic` by an earlier release working.
+%package -n libhew%{version}
+Summary:        Hew runtime and standard library (shared, release %{version})
+AutoReqProv:    yes
+
+%description -n libhew%{version}
+The shared Hew runtime that programs built with `hew build --link=dynamic`
+by Hew %{version} load at start-up.
 
 %package debuginfo
 Summary:        Debug symbols for the Hew compiler
@@ -56,6 +69,10 @@ crash by the binary's build-id.
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
 
 install -Dm644 lib/libhew.a %{buildroot}%{_libdir}/hew/libhew.a
+# The shared runtime goes in the system libdir, where the loader finds it
+# without a run path; the compiler finds it through %{_libdir}/hew.
+install -Dm755 lib/libhew.so.%{version} %{buildroot}%{_libdir}/libhew.so.%{version}
+ln -s ../libhew.so.%{version} %{buildroot}%{_libdir}/hew/libhew.so.%{version}
 
 # Standard library
 if [ -d std ]; then
@@ -106,6 +123,13 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_datadir}/hew/
 %{_includedir}/hew.h
 %{_includedir}/hew_host.h
+
+%files -n libhew%{version}
+%license LICENSE-MIT LICENSE-APACHE NOTICE
+%{_libdir}/libhew.so.%{version}
+
+%post -n libhew%{version} -p /sbin/ldconfig
+%postun -n libhew%{version} -p /sbin/ldconfig
 
 %files debuginfo
 /usr/lib/debug/.build-id/

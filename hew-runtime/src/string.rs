@@ -1260,6 +1260,43 @@ unsafe fn string_slice_oob_trap(start: i64, end: i64, len: Option<usize>) -> ! {
     }
 }
 
+/// One compiler-generated step over an immutable string snapshot.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HewStringCursorStep {
+    /// Unicode scalar at the input byte offset.
+    pub scalar: u32,
+    /// Byte offset immediately following the scalar.
+    pub next_byte: i64,
+}
+
+/// Decode one scalar at a UTF-8 boundary. The compiler walks from byte zero to
+/// the captured byte length. An invalid cursor returns (NUL, -1).
+///
+/// # Safety
+/// `s` must be null or a live managed string handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_cursor_step(
+    s: *const HewString,
+    offset: i64,
+) -> HewStringCursorStep {
+    // SAFETY: the caller keeps the immutable string live for this call.
+    let text = unsafe { string_as_str(s) };
+    let step = usize::try_from(offset).ok().and_then(|at| {
+        let mut remaining = text.get(at..)?.chars();
+        let scalar = remaining.next()?;
+        let next_byte = i64::try_from(text.len() - remaining.as_str().len()).ok()?;
+        Some(HewStringCursorStep {
+            scalar: u32::from(scalar),
+            next_byte,
+        })
+    });
+    step.unwrap_or(HewStringCursorStep {
+        scalar: 0,
+        next_byte: -1,
+    })
+}
+
 /// Read the Unicode scalar at `index` in constant time.
 /// Out-of-range indices fault; the compiler's normal path supplies its own
 /// checked cleanup edge before calling this entry.

@@ -55,6 +55,10 @@ class ReleaseInventory(unittest.TestCase):
             f"hew-{VERSION}-1.fc41.aarch64.rpm",
             f"hew-debuginfo-{VERSION}-1.fc41.x86_64.rpm",
             f"hew-debuginfo-{VERSION}-1.fc41.aarch64.rpm",
+            f"libhew{VERSION}_{VERSION}-1_amd64.deb",
+            f"libhew{VERSION}_{VERSION}-1_arm64.deb",
+            f"libhew{VERSION}-{VERSION}-1.fc41.x86_64.rpm",
+            f"libhew{VERSION}-{VERSION}-1.fc41.aarch64.rpm",
             f"hew-bin-{VERSION}-1-x86_64.pkg.tar.zst",
         ]:
             (self.directory / name).write_bytes(b"package")
@@ -157,7 +161,7 @@ class ReleaseInventory(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required qualified archive"):
             self.assemble(notes, version="0.7.0")
 
-    def test_a_missing_architecture_or_debug_package_makes_the_channel_unavailable(
+    def test_a_missing_architecture_or_companion_makes_the_channel_unavailable(
         self,
     ):
         for name in (
@@ -165,6 +169,8 @@ class ReleaseInventory(unittest.TestCase):
             f"hew-{VERSION}-1.fc41.aarch64.rpm",
             f"hew-dbgsym_{VERSION}-1_amd64.deb",
             f"hew-debuginfo-{VERSION}-1.fc41.x86_64.rpm",
+            f"libhew{VERSION}_{VERSION}-1_arm64.deb",
+            f"libhew{VERSION}-{VERSION}-1.fc41.x86_64.rpm",
             f"hew-bin-{VERSION}-1-x86_64.pkg.tar.zst",
         ):
             with self.subTest(name=name):

@@ -1124,6 +1124,11 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@# Shared runtime for --link=dynamic, under its versioned name.
+	@for runtime in "$(RELEASE_LIB_DIR)"/libhew.so.* "$(RELEASE_LIB_DIR)"/libhew.*.dylib; do \
+		[ -e "$$runtime" ] || continue; \
+		ln -sfn "$(LINK_UP2)$$runtime" "$(BUILD_DIR)/lib/$$(basename "$$runtime")"; \
+	done
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_DEBUG_DIR)/$$lib" ]; then \
@@ -1244,6 +1249,11 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@# Shared runtime for --link=dynamic, under its versioned name.
+	@for runtime in "$(RELEASE_LIB_DIR)"/libhew.so.* "$(RELEASE_LIB_DIR)"/libhew.*.dylib; do \
+		[ -e "$$runtime" ] || continue; \
+		ln -sfn "$(LINK_UP2)$$runtime" "$(BUILD_DIR)/lib/$$(basename "$$runtime")"; \
+	done
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \

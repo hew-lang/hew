@@ -374,10 +374,30 @@ main() {
         fi
     done
 
+    # The shared runtime (lib/libhew.so.<version>, lib/libhew.<version>.dylib)
+    # may be mapped by running programs. Copying over it would rewrite their
+    # code in place, so it is renamed into place instead, and set aside before
+    # the bulk copy below. Each release's runtime has its own name, so earlier
+    # releases' runtimes stay installed for the programs built against them.
+    shared_stage="${TMPDIR_INSTALL}/shared-runtime"
+    mkdir -p "$shared_stage"
+    for runtime in "${extracted_dir}"/lib/libhew.so.* "${extracted_dir}"/lib/libhew.*.dylib; do
+        [ -f "$runtime" ] || continue
+        mv "$runtime" "$shared_stage/"
+    done
+
     # Copy all of lib/ — preserves libhew.a at both the flat path and any
     # triple-specific subdirectory (e.g. lib/aarch64-apple-darwin/libhew.a)
     # that hew uses when resolving the linker search path.
     cp -rf "${extracted_dir}/lib/." "${INSTALL_PREFIX}/lib/"
+
+    for runtime in "$shared_stage"/*; do
+        [ -f "$runtime" ] || continue
+        name=$(basename "$runtime")
+        cp "$runtime" "${INSTALL_PREFIX}/lib/.${name}.new"
+        chmod 755 "${INSTALL_PREFIX}/lib/.${name}.new"
+        mv -f "${INSTALL_PREFIX}/lib/.${name}.new" "${INSTALL_PREFIX}/lib/${name}"
+    done
 
     # Standard library (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then

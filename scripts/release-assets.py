@@ -22,17 +22,18 @@ PRIMARY = {"linux-x86_64", "linux-aarch64"}
 
 def linux_package_names(version):
     # The final-release matrix builds Debian and Fedora packages on both
-    # architectures, with their split debug symbols, and Arch on x86_64.
+    # architectures, with split debug symbols and versioned shared runtimes.
+    # Arch ships both runtime forms in the x86_64 compiler package.
     # installers/build-packages.sh uses revision 1 and builds RPMs on Fedora 41.
     return {
         *(
             f"{name}_{version}-1_{arch}.deb"
-            for name in ("hew", "hew-dbgsym")
+            for name in ("hew", "hew-dbgsym", f"libhew{version}")
             for arch in ("amd64", "arm64")
         ),
         *(
             f"{name}-{version}-1.fc41.{arch}.rpm"
-            for name in ("hew", "hew-debuginfo")
+            for name in ("hew", "hew-debuginfo", f"libhew{version}")
             for arch in ("x86_64", "aarch64")
         ),
         f"hew-bin-{version}-1-x86_64.pkg.tar.zst",

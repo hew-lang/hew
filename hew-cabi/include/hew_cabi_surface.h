@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1801u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1803u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1801] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1803] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4262,6 +4262,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1801] = {
      "\"wasm32-wasip1\": \"fn hew_i64_to_string( i64) -> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_image_register",
+     "{\"native\": \"fn hew_image_register( *const c_char, *const u8, *const "
+     "u8, *const u8, *const u8, )\", \"wasm32-wasip1\": \"fn "
+     "hew_image_register( *const c_char, *const u8, *const u8, *const u8, "
+     "*const u8, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "nul-terminated",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_instant_duration_since",
      "{\"native\": \"fn hew_instant_duration_since( i64, i64) -> i64\", "
      "\"wasm32-wasip1\": \"fn hew_instant_duration_since( i64, i64) -> i64\"}",
@@ -7744,6 +7751,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1801] = {
      "{\"native\": \"fn hew_string_contains( *const HewString, *const "
      "HewString, ) -> bool\", \"wasm32-wasip1\": \"fn hew_string_contains( "
      "*const HewString, *const HewString, ) -> bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_cursor_step",
+     "{\"native\": \"fn hew_string_cursor_step( *const HewString, i64, ) -> "
+     "HewStringCursorStep\", \"wasm32-wasip1\": \"fn hew_string_cursor_step( "
+     "*const HewString, i64, ) -> HewStringCursorStep\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_drop",

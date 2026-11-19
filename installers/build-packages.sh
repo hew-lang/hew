@@ -283,6 +283,7 @@ build_debian() {
         cp "${SCRIPT_DIR}/debian/source/format" "${ctx}/hew-${VERSION}/debian/source/"
     chmod +x "${ctx}/hew-${VERSION}/debian/rules"
     echo "${VERSION}" >"${ctx}/hew-${VERSION}/debian/hew-version"
+    sed -i "s/@HEW_VERSION@/${VERSION}/g" "${ctx}/hew-${VERSION}/debian/control"
     sed -i "1s/^hew ([^)]*)/hew (${VERSION}-1)/" "${ctx}/hew-${VERSION}/debian/changelog"
 
     # Pre-place the tarballs so debian/rules skips the download
@@ -301,10 +302,11 @@ build_debian() {
              dpkg-buildpackage -b -nc -us -uc 2>&1'; then
         local deb_name="hew_${VERSION}-1_${deb_arch}.deb"
         local dbgsym_name="hew-dbgsym_${VERSION}-1_${deb_arch}.deb"
-        if [[ -f "${ctx}/${deb_name}" && -f "${ctx}/${dbgsym_name}" ]]; then
-            cp "${ctx}/${deb_name}" "${ctx}/${dbgsym_name}" "${DIST_DIR}/"
+        local runtime_name="libhew${VERSION}_${VERSION}-1_${deb_arch}.deb"
+        if [[ -f "${ctx}/${deb_name}" && -f "${ctx}/${dbgsym_name}" && -f "${ctx}/${runtime_name}" ]]; then
+            cp "${ctx}/${deb_name}" "${ctx}/${dbgsym_name}" "${ctx}/${runtime_name}" "${DIST_DIR}/"
             _docker_rm "${ctx}"
-            _record_ok "debian" "${DIST_DIR}/${deb_name} ${DIST_DIR}/${dbgsym_name}"
+            _record_ok "debian" "${DIST_DIR}/${deb_name} ${DIST_DIR}/${dbgsym_name} ${DIST_DIR}/${runtime_name}"
         else
             _docker_rm "${ctx}"
             _record_fail "debian" ".deb not found after build"
@@ -357,13 +359,14 @@ build_rpm() {
              rpmbuild -bb /root/rpmbuild/SPECS/hew.spec 2>&1 &&
              cp /root/rpmbuild/RPMS/'"${TARGET_ARCH}"'/*.rpm /build/ 2>/dev/null'; then
         # RPM filename includes dist tag (e.g. .fc41), so glob for it
-        local rpm_file debuginfo_file
+        local rpm_file debuginfo_file runtime_file
         rpm_file="$(ls "${ctx}"/hew-"${VERSION}"-1.*.rpm 2>/dev/null | head -1)"
         debuginfo_file="$(ls "${ctx}"/hew-debuginfo-"${VERSION}"-1.*.rpm 2>/dev/null | head -1)"
-        if [[ -n "${rpm_file}" && -f "${rpm_file}" && -n "${debuginfo_file}" ]]; then
-            cp "${rpm_file}" "${debuginfo_file}" "${DIST_DIR}/"
+        runtime_file="$(ls "${ctx}"/libhew"${VERSION}"-"${VERSION}"-1.*.rpm 2>/dev/null | head -1)"
+        if [[ -n "${rpm_file}" && -f "${rpm_file}" && -n "${debuginfo_file}" && -n "${runtime_file}" ]]; then
+            cp "${rpm_file}" "${debuginfo_file}" "${runtime_file}" "${DIST_DIR}/"
             _docker_rm "${ctx}"
-            _record_ok "rpm" "${DIST_DIR}/$(basename "${rpm_file}") ${DIST_DIR}/$(basename "${debuginfo_file}")"
+            _record_ok "rpm" "${DIST_DIR}/$(basename "${rpm_file}") ${DIST_DIR}/$(basename "${debuginfo_file}") ${DIST_DIR}/$(basename "${runtime_file}")"
         else
             _docker_rm "${ctx}"
             _record_fail "rpm" ".rpm not found after build"

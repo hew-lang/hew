@@ -642,6 +642,7 @@ stable = [
   "hew_string_find",
   "hew_string_from_char",
   "hew_string_hash_fnv1a",
+  "hew_string_cursor_step",
   "hew_string_index",
   "hew_string_is_alpha",
   "hew_string_is_alphanumeric",
@@ -1901,6 +1902,8 @@ non-declarable = [
   "hew_fault_set_site",
   "hew_fault_set_site_in_image",
   "hew_fault_trap",
+  # Every native entry registers its image's debug tables and release first.
+  "hew_image_register",
   "hew_failure_snapshot_kind",
   "hew_failure_snapshot_trap",
   "hew_failure_snapshot_message",

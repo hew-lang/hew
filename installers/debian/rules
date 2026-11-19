@@ -2,6 +2,8 @@
 # Debian rules — binary-only packaging from GitHub releases.
 # Usage: dpkg-buildpackage -b -us -uc
 #   or:  debian/rules binary HEW_VERSION=0.1.0
+# installers/build-packages.sh substitutes @HEW_VERSION@ in debian/control,
+# which names the release's shared-runtime package (libhew<version>).
 
 DEB_HOST_ARCH     ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 HEW_VERSION       ?= $(shell cat debian/hew-version)
@@ -22,6 +24,11 @@ ARCHIVE       := hew-v$(HEW_VERSION)-linux-$(HEW_ARCH).tar.gz
 DEBUG_ARCHIVE := hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)-debug.tar.gz
 DESTDIR       := debian/hew
 DBGSYM_DIR    := debian/hew-dbgsym
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+# The shared runtime carries the exact release in its SONAME; its package is
+# named for it so releases install side by side.
+SHARED_RUNTIME := libhew.so.$(HEW_VERSION)
+RUNTIME_DIR    := debian/libhew$(HEW_VERSION)
 
 %:
 	dh $@
@@ -50,6 +57,17 @@ override_dh_auto_install:
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew          $(DESTDIR)/usr/bin/hew
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew.a \
 	              $(DESTDIR)/usr/lib/hew/libhew.a
+	# The shared runtime lives in the system libdir, where the loader finds it
+	# without a run path; the compiler finds it through /usr/lib/hew.
+	install -d $(RUNTIME_DIR)/usr/lib/$(DEB_HOST_MULTIARCH)
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/$(SHARED_RUNTIME) \
+	              $(RUNTIME_DIR)/usr/lib/$(DEB_HOST_MULTIARCH)/$(SHARED_RUNTIME)
+	ln -s ../$(DEB_HOST_MULTIARCH)/$(SHARED_RUNTIME) $(DESTDIR)/usr/lib/hew/$(SHARED_RUNTIME)
+	install -d $(RUNTIME_DIR)/usr/share/doc/libhew$(HEW_VERSION)
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-MIT \
+	              hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-APACHE \
+	              hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/NOTICE \
+	              $(RUNTIME_DIR)/usr/share/doc/libhew$(HEW_VERSION)/
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/include/. $(DESTDIR)/usr/include/
 	if [ -d hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share ]; then cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share/. $(DESTDIR)/usr/share/; fi

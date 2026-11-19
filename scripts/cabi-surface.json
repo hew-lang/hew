@@ -10760,6 +10760,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_image_register( *const c_char, *const u8, *const u8, *const u8, *const u8, )",
+        "wasm32-wasip1": "fn hew_image_register( *const c_char, *const u8, *const u8, *const u8, *const u8, )"
+      },
+      "symbol": "hew_image_register"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
@@ -20002,6 +20017,21 @@
         "wasm32-wasip1": "fn hew_string_contains( *const HewString, *const HewString, ) -> bool"
       },
       "symbol": "hew_string_contains"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_cursor_step( *const HewString, i64, ) -> HewStringCursorStep",
+        "wasm32-wasip1": "fn hew_string_cursor_step( *const HewString, i64, ) -> HewStringCursorStep"
+      },
+      "symbol": "hew_string_cursor_step"
     },
     {
       "availability": [

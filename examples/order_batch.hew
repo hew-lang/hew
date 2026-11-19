@@ -1,0 +1,42 @@
+//! Status: runnable
+//! Description: Read independent order files with bounded concurrency
+
+import "order_totals.hew";
+import std.io;
+import std.os;
+import std.pipeline;
+
+type OrderResult {
+    path: string;
+    totals: Result<order_totals.Totals, string>;
+}
+
+fn summarize(consume path: string) -> OrderResult {
+    let totals = order_totals.read_order(path);
+    OrderResult { path, totals }
+}
+
+fn main() -> i32 {
+    let args = os.args();
+    if args.len() < 2 {
+        io.write_err("usage: order_batch ORDER.json [ORDER.json ...]\n").expect("standard error");
+        return 2;
+    }
+    let paths = args[1..args.len()];
+    scope within 5s {
+        var status: i32 = 0;
+        for outcome in pipeline.map(paths.iter(), summarize, concurrency: 4) {
+            match outcome.totals {
+                .Ok(totals) => println(f"{outcome.path}: {totals.units} units, {totals.cents} cents"),
+                .Err(error) => {
+                    io.write_err(f"order_batch: {error}\n").expect("standard error");
+                    status = 1;
+                }
+            }
+        }
+        status
+    } handle failure {
+        io.write_err(f"order_batch: {failure}\n").expect("standard error");
+        1
+    }
+}

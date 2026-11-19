@@ -68,9 +68,12 @@ What to check:
   without any extra build step.
 - For this repo, use `make`, `make release`, `make test`, and other Makefile
   targets instead of calling Cargo directly.
-- Use the toolchain from the root README: Rust stable and LLVM 22.
-- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) so
-  `llvm-sys` can locate the static libraries.
+- Use the toolchain from the root README: the pinned Rust toolchain and the
+  LLVM series in `llvm-version.env`. A build script that reports a different
+  LLVM major found an older or newer LLVM first on `PATH`.
+- On macOS, put the versioned Homebrew LLVM first on `PATH`
+  (`$(brew --prefix llvm@<major>)/bin`) so `llvm-sys` can locate the static
+  libraries.
 - After switching LLVM installs or `CC` / `CXX`, run
   `make clean` before rebuilding.
 - If the program builds but you need a debugger, use

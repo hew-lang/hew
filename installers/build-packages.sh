@@ -469,7 +469,7 @@ build_alpine() {
 
         # Verify LLVM is available for llvm-sys / hew-codegen-rs.
         if [[ -z "${LLVM_PREFIX:-}" ]]; then
-            die "LLVM_PREFIX is not set — hew-codegen-rs requires LLVM 22. Set LLVM_PREFIX to your LLVM installation."
+            die "LLVM_PREFIX is not set — hew-codegen-rs requires the LLVM series in llvm-version.env. Set LLVM_PREFIX to your LLVM installation."
         fi
 
         # Build Rust binaries with musl target

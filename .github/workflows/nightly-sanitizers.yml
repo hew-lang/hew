@@ -10,7 +10,6 @@ permissions:
   contents: read
 
 env:
-  LLVM_VERSION: "22"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -23,6 +22,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/llvm-version
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
@@ -31,15 +31,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install llvm-symbolizer (${{ env.LLVM_VERSION }})
+      - name: Install llvm-symbolizer (${{ env.LLVM_MAJOR }})
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_MAJOR }} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }}
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_MAJOR }}
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
@@ -76,6 +76,7 @@ jobs:
         shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/llvm-version
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
@@ -84,20 +85,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install llvm-${{ env.LLVM_VERSION }} (symbolizer + clang for link step)
+      - name: Install llvm-${{ env.LLVM_MAJOR }} (symbolizer + clang for link step)
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_MAJOR }} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
           # libpolly-N-dev supplies libLLVMPolly.a: llvm-config-N --link-static
           # lists Polly, so llvm-sys requests it at link time.
-          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }} libpolly-${{ env.LLVM_VERSION }}-dev
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_MAJOR }} clang-${{ env.LLVM_MAJOR }} libpolly-${{ env.LLVM_MAJOR }}-dev
           # Make clang-N available as `clang` (hew's link step calls `clang`).
           sudo update-alternatives --install /usr/bin/clang clang \
-            /usr/bin/clang-${{ env.LLVM_VERSION }} 100
+            /usr/bin/clang-${{ env.LLVM_MAJOR }} 100
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
@@ -130,23 +131,24 @@ jobs:
         target: [test-host-safety, test-extern-bytes-safety]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/llvm-version
 
       - uses: ./.github/actions/setup-ubuntu-dns
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - name: Install LLVM and Clang ${{ env.LLVM_VERSION }}
+      - name: Install LLVM and Clang ${{ env.LLVM_MAJOR }}
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_MAJOR }} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }} \
-            libpolly-${{ env.LLVM_VERSION }}-dev libssl-dev pkg-config
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_MAJOR }} clang-${{ env.LLVM_MAJOR }} \
+            libpolly-${{ env.LLVM_MAJOR }}-dev libssl-dev pkg-config
           sudo update-alternatives --install /usr/bin/clang clang \
-            /usr/bin/clang-${{ env.LLVM_VERSION }} 100
+            /usr/bin/clang-${{ env.LLVM_MAJOR }} 100
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: nightly

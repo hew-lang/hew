@@ -16,9 +16,9 @@
 # Prerequisites:
 #   - SSH access to platform hosts (see PLATFORM_HOSTS below)
 #   - rsync available locally and on remote hosts
-#   - Each host must have Rust and LLVM 22 installed
+#   - Each host must have Rust and the LLVM series in llvm-version.env installed
 #   - Linux aarch64 remote validation requires Ubuntu 24.04 arm64 + sudo so the
-#     script can provision LLVM 22 from apt.llvm.org/noble
+#     script can provision that LLVM from apt.llvm.org/noble
 #   - timeout (Linux) or gtimeout (macOS/coreutils) for bounded execution
 #
 # Timeout overrides (seconds):
@@ -36,8 +36,8 @@ set -euo pipefail
 #   FREEBSD_HOST=user@freebsd-host
 #   WINDOWS_HOST=user@windows-host
 #   MACOS_TART_VM=macos-build
-#   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
-#   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
+#   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@<major>
+#   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-<major>'
 #   HEW_WINDOWS_STAGE_ROOT='P:/hew-pre-release-stages'
 #   HEW_WINDOWS_CANDIDATE_ARCHIVE='/path/to/target/hew-windows-candidate.tar.gz'
 #   HEW_WINDOWS_CC=cl
@@ -46,6 +46,10 @@ set -euo pipefail
 # Or export them as environment variables (HEW_MACOS_HOST, etc.).
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# LLVM_MAJOR / LLVM_SERIES: the one LLVM pin every host validates against.
+# llvm-version.env is plain KEY=value lines; nothing to follow.
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/llvm-version.env"
 
 CONFIG_FILE="${REPO_ROOT}/.env.pre-release"
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -59,7 +63,7 @@ FREEBSD_HOST="${HEW_FREEBSD_HOST:-${FREEBSD_HOST:-}}"
 WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
 MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"
 
-WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
+WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-${LLVM_MAJOR}}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
 WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"
 WINDOWS_CANDIDATE_ARCHIVE="${HEW_WINDOWS_CANDIDATE_ARCHIVE:-${WINDOWS_CANDIDATE_ARCHIVE:-}}"
@@ -431,7 +435,7 @@ validate_macos() {
 
             # Prefer an operator-supplied LLVM root. Otherwise try Homebrew
             # when it exists, then probe the canonical versioned Homebrew
-            # prefixes directly so a working llvm@22 install does not require
+            # prefixes directly so a working llvm@<major> install does not require
             # the brew executable to be on PATH.
             configured_prefix=\"\${HEW_MACOS_LLVM_PREFIX:-}\"
             llvm_prefix=\"\"
@@ -440,14 +444,14 @@ validate_macos() {
             else
                 llvm_candidates=()
                 if command -v brew >/dev/null 2>&1; then
-                    brew_prefix=\"\$(brew --prefix llvm@22 2>/dev/null || true)\"
+                    brew_prefix=\"\$(brew --prefix llvm@${LLVM_MAJOR} 2>/dev/null || true)\"
                     if [ -n \"\$brew_prefix\" ]; then
                         llvm_candidates+=(\"\$brew_prefix\")
                     fi
                 fi
                 llvm_candidates+=(
-                    /opt/homebrew/opt/llvm@22
-                    /usr/local/opt/llvm@22
+                    /opt/homebrew/opt/llvm@${LLVM_MAJOR}
+                    /usr/local/opt/llvm@${LLVM_MAJOR}
                 )
             fi
 
@@ -456,7 +460,7 @@ validate_macos() {
                 [ -x \"\$llvm_config\" ] || continue
                 llvm_version=\"\$(\"\$llvm_config\" --version 2>/dev/null || true)\"
                 case \"\$llvm_version\" in
-                    22.*)
+                    ${LLVM_SERIES}.*)
                         llvm_prefix=\"\$candidate\"
                         break
                         ;;
@@ -464,7 +468,7 @@ validate_macos() {
             done
 
             if [ -z \"\$llvm_prefix\" ]; then
-                echo \"FATAL: LLVM 22 was not found. Set HEW_MACOS_LLVM_PREFIX to an LLVM 22 root.\" >&2
+                echo \"FATAL: LLVM ${LLVM_SERIES} was not found. Set HEW_MACOS_LLVM_PREFIX to an LLVM ${LLVM_SERIES} root.\" >&2
                 exit 1
             fi
 
@@ -525,7 +529,7 @@ validate_linux_aarch64() {
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${LINUX_AARCH64_HOST}:${remote_stage}/"
 
-        echo "==> Provisioning LLVM 22 from apt.llvm.org/noble"
+        echo "==> Provisioning LLVM ${LLVM_MAJOR} from apt.llvm.org/noble"
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
             set -eux
             cd ${remote_stage}
@@ -547,19 +551,19 @@ validate_linux_aarch64() {
             sudo mkdir -p /etc/apt/keyrings
             wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
                 | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-            echo \"deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main\" \
+            echo \"deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_MAJOR} main\" \
                 | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
             sudo apt-get update -qq
             sudo apt-get install -y -qq \
-                llvm-22-dev \
-                clang-22 \
-                lld-22 \
+                llvm-${LLVM_MAJOR}-dev \
+                clang-${LLVM_MAJOR} \
+                lld-${LLVM_MAJOR} \
                 libssl-dev pkg-config \
                 zlib1g-dev libzstd-dev
 
-            export LLVM_PREFIX=/usr/lib/llvm-22
-            export CC=clang-22
-            export CXX=clang++-22
+            export LLVM_PREFIX=/usr/lib/llvm-${LLVM_MAJOR}
+            export CC=clang-${LLVM_MAJOR}
+            export CXX=clang++-${LLVM_MAJOR}
 
             make test-release-lib-link
             rustup target add wasm32-wasip1
@@ -629,8 +633,8 @@ validate_freebsd() {
                 exit 1
             }
 
-            # Auto-detect LLVM 22 from typical FreeBSD install locations
-            for dir in /usr/local/llvm22 /usr/local/llvm22-src /usr/local; do
+            # Auto-detect LLVM from typical FreeBSD install locations
+            for dir in /usr/local/llvm${LLVM_MAJOR} /usr/local/llvm${LLVM_MAJOR}-src /usr/local; do
                 if [ -f \"\${dir}/bin/llvm-config\" ]; then
                     export LLVM_PREFIX=\"\${dir}\"
                     break
@@ -716,7 +720,7 @@ Remove-Item -LiteralPath '${remote_stage}/candidate.tar.gz' -Force
 \$Utf8 = [System.Text.Encoding]::UTF8
 \$LlvmConfig = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
 if (-not (Test-Path \$LlvmConfig)) {
-    throw \"Missing \$LlvmConfig. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.\"
+    throw \"Missing \$LlvmConfig. Bootstrap LLVM ${LLVM_MAJOR} at C:\\llvm-${LLVM_MAJOR} (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.\"
 }
 Write-Host \"Found \$LlvmConfig\"
 "

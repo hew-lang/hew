@@ -9,10 +9,13 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TARGET = HERE / "target"
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import llvm_version  # noqa: E402
 
 
 class Rejected(Exception):
@@ -37,14 +40,16 @@ def setup():
     TARGET.mkdir(parents=True, exist_ok=True)
     if invoke(["lean", "--short-version"]).strip() != "4.19.0":
         raise RuntimeError("Lean 4.19.0 is required")
-    configured = os.environ.get("LLVM_SYS_221_PREFIX")
+    pin = llvm_version.load()
+    series, prefix_var = pin["LLVM_SERIES"], pin["LLVM_SYS_PREFIX_VAR"]
+    configured = os.environ.get(prefix_var)
     config = (
         str(Path(configured) / "bin/llvm-config")
         if configured
         else shutil.which("llvm-config")
     )
-    if not config or not invoke([config, "--version"]).strip().startswith("22.1."):
-        raise RuntimeError("LLVM 22.1 toolchain required; set LLVM_SYS_221_PREFIX")
+    if not config or not invoke([config, "--version"]).strip().startswith(f"{series}."):
+        raise RuntimeError(f"LLVM {series} toolchain required; set {prefix_var}")
     prefix = Path(invoke([config, "--prefix"]).strip())
     flags = shlex.split(
         invoke(

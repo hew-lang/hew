@@ -53,13 +53,12 @@ installer or extracting a tarball, install them first:
 | macOS           | `xcode-select --install`             |
 
 On FreeBSD, the base system provides Clang and the C development files. On
-Windows, install LLVM (`winget install LLVM.LLVM`) so `clang.exe` and
-`lld-link.exe` are on `PATH`, and install Visual Studio Build Tools with the
-Desktop development with C++ workload and Windows SDK. The linker discovers the
-MSVC and Windows SDK libraries; a developer shell is not required. Prebuilt SDK
-users do not need Rust or LLVM development headers and libraries. The shipped
-Linux archives target glibc; they do not run on an unmodified musl-based Alpine
-system.
+Windows, put an LLVM release's `clang.exe` and `lld-link.exe` on `PATH`, and install
+Visual Studio Build Tools with the Desktop development with C++ workload and
+Windows SDK. The linker discovers the MSVC and Windows SDK libraries; a developer
+shell is not required. Prebuilt SDK users do not need Rust or LLVM development
+headers and libraries. The shipped Linux archives target glibc;
+they do not run on an unmodified musl-based Alpine system.
 
 Releases for Linux, FreeBSD and macOS also install the shared runtime
 (`lib/libhew.so.<version>`, or `lib/libhew.<version>.dylib` on macOS) used

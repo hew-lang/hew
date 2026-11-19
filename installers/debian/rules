@@ -63,8 +63,11 @@ override_dh_auto_install:
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/$(SHARED_RUNTIME) \
 	              $(RUNTIME_DIR)/usr/lib/$(DEB_HOST_MULTIARCH)/$(SHARED_RUNTIME)
 	ln -s ../$(DEB_HOST_MULTIARCH)/$(SHARED_RUNTIME) $(DESTDIR)/usr/lib/hew/$(SHARED_RUNTIME)
-	install -d $(RUNTIME_DIR)/usr/share/doc
-	ln -s hew $(RUNTIME_DIR)/usr/share/doc/libhew$(HEW_VERSION)
+	install -d $(RUNTIME_DIR)/usr/share/doc/libhew$(HEW_VERSION)
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-MIT \
+	              hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-APACHE \
+	              hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/NOTICE \
+	              $(RUNTIME_DIR)/usr/share/doc/libhew$(HEW_VERSION)/
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/include/. $(DESTDIR)/usr/include/
 	if [ -d hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share ]; then cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/share/. $(DESTDIR)/usr/share/; fi

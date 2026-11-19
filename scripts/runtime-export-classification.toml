@@ -1901,6 +1901,8 @@ non-declarable = [
   "hew_fault_set_site",
   "hew_fault_set_site_in_image",
   "hew_fault_trap",
+  # Every native entry registers its image's debug tables and release first.
+  "hew_image_register",
   "hew_failure_snapshot_kind",
   "hew_failure_snapshot_trap",
   "hew_failure_snapshot_message",

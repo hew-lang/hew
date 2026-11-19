@@ -10760,6 +10760,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_image_register( *const c_char, *const u8, *const u8, *const u8, *const u8, ) -> i32",
+        "wasm32-wasip1": "fn hew_image_register( *const c_char, *const u8, *const u8, *const u8, *const u8, ) -> i32"
+      },
+      "symbol": "hew_image_register"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",

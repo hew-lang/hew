@@ -42,7 +42,23 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
             hew_runtime::owned_value_budget::hew_budget_release_backing as *const () as usize,
         );
     }
+    // A JIT module's tables die with its engine, but a registration would
+    // outlive it in the process-wide runtime. Oracles keep the link-time
+    // tables instead.
+    extern "C" fn keep_link_time_tables(
+        _version: *const std::ffi::c_char,
+        _files: *const u8,
+        _sites: *const u8,
+        _symbols: *const u8,
+        _has_debug_info: *const u8,
+    ) -> i32 {
+        0
+    }
     for (name, address) in [
+        (
+            "hew_image_register",
+            keep_link_time_tables as *const () as usize,
+        ),
         (
             "hew_code_root_acquire",
             hew_cabi::code::hew_code_root_acquire as *const () as usize,

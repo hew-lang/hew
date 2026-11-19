@@ -58,7 +58,7 @@ pub enum AccessError {
 impl Display for AccessError {
     fn fmt(self) -> string {
         match self {
-            AccessError.WrongKind(_, _) => "yaml: unexpected value kind",
+            AccessError.WrongKind(expected, actual) => f"yaml: expected {expected:?}, found {actual:?}",
             AccessError.IntegerRange => "yaml: integer outside the requested range",
             AccessError.InvalidIndex(index) => f"yaml: unsupported array index {index}",
             AccessError.UnsupportedMappingKey(_) => "yaml: mapping key is not a string",

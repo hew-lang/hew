@@ -125,7 +125,7 @@ fn empty_enum_cannot_be_constructed_as_a_record_or_variant() {
 }
 
 #[test]
-fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
+fn user_enum_call_and_match_borrow_the_callers_value() {
     let lowered = lower_source(
         r#"enum Choice {
     Text(string);
@@ -173,23 +173,14 @@ fn main() {
         .iter()
         .find(|function| function.callable == inspect.id)
         .expect("inspect must have a demanded body");
-    assert!(body
-        .blocks
-        .iter()
-        .flat_map(hew_sir::SemBlock::operations)
-        .any(|op| {
-            matches!(op.kind, SemOpKind::CopyValue { .. })
-                && op
-                    .results
-                    .first()
-                    .is_some_and(|result| result.ty == shape.enum_ty)
-        }));
     assert!(body.blocks.iter().any(|block| {
         matches!(
             &block.terminator,
-            SemTerminator::SwitchVariant { arms, .. }
-                if arms.len() == 2
+            SemTerminator::SwitchVariant { scrutinee, arms, .. }
+                if scrutinee.value == body.params[0].value
+                    && arms.len() == 2
                     && arms[0].fields.len() == 1
+                    && arms[0].fields[0].own == hew_sir::OwnKind::Guaranteed
                     && arms[1].fields.is_empty()
         )
     }));
@@ -273,7 +264,7 @@ fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
 fn fresh_option_match_accounts_for_unbound_owned_payload() {
     let lowered = lower_source(
         r#"
-        fn classify(value: Option<string>) -> i64 {
+        fn classify(consume value: Option<string>) -> i64 {
             match value {
                 .Some(_) => 1,
                 .None => 0,

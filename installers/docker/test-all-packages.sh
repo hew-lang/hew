@@ -177,6 +177,13 @@ _run_test() {
         fi
     done
 
+    if [[ -f "$DEB_PKG" ]]; then
+        cp "${DIST_DIR}/libhew${VERSION}_${VERSION}-1_${DEB_ARCH}.deb" "$tmpdir/"
+    fi
+    if [[ -f "$RPM_PKG" ]]; then
+        cp "${DIST_DIR}/libhew${VERSION}-${RPM_PKG##*/hew-}" "$tmpdir/"
+    fi
+
     local output
     if output=$(run_with_timeout "${TEST_TIMEOUT}" docker run --rm \
         -v "${tmpdir}:/pkg" \
@@ -206,7 +213,7 @@ if _should_test debian; then
         _run_test "debian-12" "debian:bookworm" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends /pkg/hew_*.deb
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -221,7 +228,7 @@ if _should_test ubuntu; then
         _run_test "ubuntu-24.04" "ubuntu:24.04" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends /pkg/hew_*.deb
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -236,7 +243,7 @@ if _should_test ubuntu22; then
         _run_test "ubuntu-22.04" "ubuntu:22.04" '
             set -e
             apt-get update -qq
-            apt-get install -y --no-install-recommends /pkg/hew_*.deb
+            apt-get install -y --no-install-recommends /pkg/hew_*.deb /pkg/libhew*.deb
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '
@@ -250,7 +257,7 @@ if _should_test rpm || _should_test fedora; then
     if [[ -n "${RPM_PKG}" ]] && [[ -f "${RPM_PKG}" ]]; then
         _run_test "fedora-41" "fedora:41" '
             set -e
-            dnf install -y -q /pkg/hew-*.rpm
+            dnf install -y -q /pkg/hew-*.rpm /pkg/libhew*.rpm
             echo "--- hew run ---"
             hew run /pkg/test.hew
         '

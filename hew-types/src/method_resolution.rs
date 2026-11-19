@@ -37,15 +37,22 @@ pub(crate) fn instantiate_named_method_sig(
             .zip(type_args.iter().cloned())
             .collect()
     };
+    apply_method_receiver_substitution(sig, &subst_map)
+}
+
+pub(crate) fn apply_method_receiver_substitution(
+    mut sig: FnSig,
+    subst_map: &HashMap<crate::ParamHead, Ty>,
+) -> FnSig {
     for provider in sig.param_defaults.iter_mut().flatten() {
         for argument in &mut provider.type_args {
-            *argument = argument.substitute_type_params_parallel(&subst_map);
+            *argument = argument.substitute_type_params_parallel(subst_map);
         }
     }
     for param_ty in &mut sig.params {
-        *param_ty = param_ty.map(|ty| ty.substitute_type_params_parallel(&subst_map));
+        *param_ty = param_ty.map(|ty| ty.substitute_type_params_parallel(subst_map));
     }
-    sig.return_type = sig.return_type.substitute_type_params_parallel(&subst_map);
+    sig.return_type = sig.return_type.substitute_type_params_parallel(subst_map);
 
     let substituted_params: HashSet<_> = subst_map.keys().copied().collect();
     sig.type_params
@@ -57,7 +64,7 @@ pub(crate) fn instantiate_named_method_sig(
         .collect();
     sig.bounds = sig
         .bounds
-        .map_types(|ty| ty.substitute_type_params_parallel(&subst_map));
+        .map_types(|ty| ty.substitute_type_params_parallel(subst_map));
     for (parameter, bound) in sig.bounds.iter() {
         if let Some((param, arg)) = subst_map.iter().find(|(param, _)| param.id == *parameter) {
             sig.receiver_obligations.push(ReceiverObligation {

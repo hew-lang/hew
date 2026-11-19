@@ -117,7 +117,7 @@ impl Checker {
             if let Some(result) = self.dispatch_dotted_type_member(
                 &head,
                 field,
-                &DottedTypeMemberUse::Reference { span },
+                &DottedTypeMemberUse::Reference { span, type_args },
             ) {
                 self.note_import_use_of_expr_head(&object.0);
                 return result;
@@ -220,6 +220,7 @@ impl Checker {
                                 &qualified_key,
                                 type_args,
                                 span,
+                                None,
                             );
                         }
                         let similar = crate::error::find_similar(

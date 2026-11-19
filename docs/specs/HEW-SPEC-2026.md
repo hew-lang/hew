@@ -2069,6 +2069,10 @@ Inherent methods, including associated functions, follow the visibility of their
 own declaration. A bare `fn` is callable inside its declaring module, including
 from peer files. `package fn` also admits other modules in the same package.
 Mark a method `pub fn` to expose it through a public type to other packages.
+A visible associated function can be passed as a callable, as in
+`issue(model.Card.make)`. An explicit owner such as `Holder<i64>.make` fixes
+the owner type arguments. Method type arguments can be inferred or supplied
+separately, as in `Holder<i64>.pair<string>`.
 Selecting a private or package method from outside that boundary produces
 `E_VISIBILITY_PRIVATE` or `E_VISIBILITY_PACKAGE`. Trait methods keep the
 visibility of the trait contract.

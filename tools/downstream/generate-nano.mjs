@@ -91,7 +91,7 @@ blank();
 
 // Regex literals
 emit('# Regex literals');
-emit('color yellow "re\\"([^\\"])*\\""');
+emit('color yellow "re\\"([^"\\\\]|\\\\.)*\\""');
 blank();
 
 // F-strings

@@ -1,0 +1,30 @@
+fn main() {
+    println(first("hello"));
+    println(first(17));
+    println(count(4));
+    let box = Box { wrapped: "method" };
+    println(box.first());
+    println(choose("recursion", 3));
+    println(repeat(8, 3));
+}
+
+fn first<T>(value: T) -> _ { identity(value) }
+fn identity<T>(value: T) -> _ { value }
+
+fn count(n: i64) -> _ {
+    if n == 0 { 0 } else { 1 + count(n - 1) }
+}
+
+fn choose<T>(value: T, turns: i64) -> _ {
+    if turns == 0 { value } else { repeat(value, turns - 1) }
+}
+
+fn repeat<U>(value: U, turns: i64) -> _ {
+    if turns == 0 { value } else { choose(value, turns - 1) }
+}
+
+type Box<T> { wrapped: T; }
+impl<T> Box<T> {
+    fn first(self) -> _ { self.second() }
+    fn second(self) -> _ { self.wrapped }
+}

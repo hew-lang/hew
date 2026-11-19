@@ -1006,6 +1006,9 @@ impl Checker {
         }
         let previous_declaration = std::mem::replace(&mut self.checking_declaration, declaration);
         self.check_function_body_as(fd, fn_name);
+        if matches!(fd.return_type, Some((TypeExpr::Infer, _))) {
+            self.resolve_inferred_call_returns();
+        }
         self.checking_declaration = previous_declaration;
         if let Some(declaration) = declaration {
             if fd.is_generator {

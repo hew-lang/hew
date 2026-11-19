@@ -294,6 +294,13 @@ jobs:
           destination="cross-release-libs/${{ matrix.rust_target }}"
           mkdir -p "${destination}"
           cp "${archive}" "${destination}/${{ matrix.archive }}"
+          # The shared runtime for --link=dynamic, under its versioned name
+          # (hew-lib's build links it to Cargo's libhew.so); staging ships it
+          # from beside the archive.
+          for runtime in "$(dirname "${archive}")"/libhew.so.*; do
+            [ -e "${runtime}" ] || continue
+            cp -L "${runtime}" "${destination}/"
+          done
 
           if [[ "${{ matrix.build_std }}" == "true" ]]; then
             cp "cross-release-consumer-target/${{ matrix.rust_target }}/release/libhew_release_link_probe.a" \
@@ -702,9 +709,16 @@ jobs:
           fi
           echo "Signing with identity: ${IDENTITY}"
 
-          # Sign each binary with hardened runtime and secure timestamp
+          # Sign each binary with hardened runtime and secure timestamp. The
+          # shared runtime (lib/libhew.<version>.dylib) is Mach-O code that
+          # dynamically linked programs load, so it is signed too.
           codesign --force --options runtime --timestamp \
             --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/hew"
+          for runtime in "${ARCHIVE_NAME}"/lib/libhew.*.dylib; do
+            [ -f "${runtime}" ] || continue
+            codesign --force --timestamp --sign "${IDENTITY}" "${runtime}"
+            codesign --verify --verbose "${runtime}"
+          done
 
           # Verify signatures
           codesign --verify --verbose "${ARCHIVE_NAME}/bin/hew"

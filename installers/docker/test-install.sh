@@ -73,5 +73,19 @@ else
     exit "$status"
 fi
 
+# 5. A program linked against the shared runtime finds it through the loader
+# cache (the image's runtime is in /usr/local/lib), with no run path to it.
+echo ""
+echo "--- Dynamic runtime linking (hew build --link=dynamic)"
+dynamic_dir="$(mktemp -d)"
+/usr/local/bin/hew build --link=dynamic /work/test.hew -o "$dynamic_dir/test-dynamic"
+if run_with_timeout "$TIMEOUT" "$dynamic_dir/test-dynamic"; then
+    echo "  --link=dynamic: ok"
+else
+    status=$?
+    echo "  --link=dynamic: failed with status $status" >&2
+    exit "$status"
+fi
+
 echo ""
 echo "==> All checks passed on Ubuntu 24.04."

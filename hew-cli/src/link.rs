@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::diagnostic::emit_plain_diagnostic_line;
-use crate::target::{DebugInfoLayout, EntryAlias, TargetSpec};
+use crate::target::{DebugInfoLayout, EntryAlias, TargetArch, TargetOs, TargetSpec};
 use hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,41 @@ impl std::fmt::Display for LinkerProbeError {
     }
 }
 
+/// How a native program links the Hew runtime and standard library.
+///
+/// System libraries (the C library, `libm`, platform frameworks) are linked
+/// dynamically in both modes, as each platform expects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum RuntimeLink {
+    /// Copy the runtime into the program (`libhew.a`). The binary runs on any
+    /// compatible system without Hew installed, and upgrading or removing Hew
+    /// never affects it.
+    #[default]
+    Static,
+    /// Load the shared runtime of this Hew release at run time
+    /// (`libhew.so.<version>`, `libhew.<version>.dylib`). Smaller binaries that
+    /// share one runtime; the program needs that runtime installed to run.
+    Dynamic,
+}
+
+/// Link-step choices that do not change the compiled code.
+#[derive(Debug, Clone, Default)]
+pub struct LinkOptions {
+    pub runtime: RuntimeLink,
+    /// Run-time search directories for the shared runtime, replacing the
+    /// defaults. `None` keeps the defaults; only meaningful when `runtime` is
+    /// [`RuntimeLink::Dynamic`].
+    pub rpath: Option<Vec<String>>,
+    /// Record no build-machine directory in the default search path: only
+    /// the program-relative entries. Set when a build trims paths
+    /// (`--trim-paths`, the `--release` default), so such a program is
+    /// reproducible and names no install location.
+    pub relocatable: bool,
+}
+
+/// The Hew release this compiler is, which names its shared runtime.
+pub(crate) const HEW_RELEASE: &str = env!("CARGO_PKG_VERSION");
+
 /// Link an object file with the combined Hew library into a native executable
 /// (or `.wasm` binary when the target triple indicates a WASM platform).
 ///
@@ -125,7 +160,15 @@ pub fn link_executable(
     extra_libs: &[String],
     debug: bool,
 ) -> Result<(), String> {
-    link_executable_with_hew_lib(object_path, output_path, target, extra_libs, debug, None)
+    link_executable_with_hew_lib(
+        object_path,
+        output_path,
+        target,
+        extra_libs,
+        debug,
+        None,
+        &LinkOptions::default(),
+    )
 }
 
 /// Link a native object with an optional, already-resolved Hew runtime archive.
@@ -144,7 +187,10 @@ pub(crate) fn link_executable_with_hew_lib(
     extra_libs: &[String],
     debug: bool,
     hew_lib: Option<&std::path::Path>,
+    link: &LinkOptions,
 ) -> Result<(), String> {
+    let dynamic = link.runtime == RuntimeLink::Dynamic;
+    validate_link_options(target, link)?;
     if target.is_wasm() {
         return link_wasm(object_path, output_path, target.normalized_triple());
     }
@@ -198,6 +244,17 @@ pub(crate) fn link_executable_with_hew_lib(
 
     let sanitize_address = address_sanitizer_requested();
     validate_address_sanitizer_linker(&compiler, sanitize_address)?;
+    if dynamic && (sanitize_address || coverage_instrument) {
+        return Err(format!(
+            "Error: --link=dynamic cannot be combined with {}; the instrumented runtime \
+             is only built as a static archive",
+            if sanitize_address {
+                "HEW_SANITIZE_ADDRESS=1"
+            } else {
+                "HEW_COVERAGE=1"
+            }
+        ));
+    }
 
     // A compiler running from a recognized Cargo profile must link the archive
     // built in that same profile family. This is not instrumentation-specific:
@@ -213,6 +270,7 @@ pub(crate) fn link_executable_with_hew_lib(
                 path.display()
             ));
         }
+        None if dynamic => find_shared_hew_lib(target)?,
         None => find_hew_lib(
             target.hew_lib_name(),
             target.normalized_triple(),
@@ -276,6 +334,16 @@ pub(crate) fn link_executable_with_hew_lib(
     cmd.arg(object_path).arg(&hew_lib);
 
     cmd.arg("-o").arg(&safe_output);
+
+    // ── Shared runtime search path (dynamic links only) ───────────────
+    // The program records the runtime's versioned name (its SONAME or
+    // install name) and finds it at run time through these directories.
+    if dynamic {
+        let search = link.rpath.clone().unwrap_or_else(|| {
+            default_runtime_search_path(target, std::path::Path::new(&hew_lib), link.relocatable)
+        });
+        cmd.args(runtime_search_path_flags(target, &search));
+    }
 
     if debug {
         cmd.arg("-g");
@@ -957,7 +1025,6 @@ pub(crate) fn native_toolchain(
     debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
 ) -> Result<hew_pkg::native::NativeToolchain, String> {
-    use crate::target::TargetOs;
     use hew_pkg::manifest::NativeOs;
 
     let os = match target.os() {
@@ -1024,13 +1091,7 @@ pub(crate) fn native_toolchain(
     )
 )]
 fn windows_missing_clang_error() -> String {
-    "Error: clang.exe not found on PATH. Install the LLVM 22.1.6 Windows MSVC \
-     toolchain from https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz, \
-     add its bin directory to PATH, and ensure lld-link.exe is available from \
-     the same LLVM bin directory. Do not rely on vcvars64.bat for Hew builds; \
-     lld-link auto-detects the MSVC/Windows SDK libraries and vcvars64.bat can \
-     interfere with llvm-sys detection."
-        .to_string()
+    crate::toolchain_hint::missing_windows_clang()
 }
 
 /// Decide whether to link the LLVM profiler runtime into the final binary for
@@ -1073,16 +1134,10 @@ fn driver_version_is_clang(version: &str) -> bool {
         .is_some_and(|first| first.to_lowercase().contains("clang"))
 }
 
-/// Build the "no C driver found" message: names what was tried and the
-/// packages that provide one, mirroring `windows_missing_clang_error`'s shape
-/// (what was tried, what to install) for the non-Windows probe order.
+/// Build the "no C driver found" message: names what was tried and the one
+/// command that installs a driver and the C library files on this host.
 fn native_compiler_not_found_error(tried: &str) -> String {
-    format!(
-        "Error: {tried}. Install a C compiler driver: `clang` (https://clang.llvm.org), \
-         `gcc`/`build-essential` on Debian/Ubuntu (`apt install build-essential`) or \
-         Fedora/RHEL (`dnf install gcc`), or the Xcode Command Line Tools on macOS \
-         (`xcode-select --install`)."
-    )
+    crate::toolchain_hint::missing_c_driver(tried, crate::toolchain_hint::HostFamily::host())
 }
 
 fn select_native_compiler_with<F>(
@@ -1123,9 +1178,9 @@ where
     #[cfg(not(target_os = "windows"))]
     {
         if !target.can_run_on_host() {
-            return Err(format!(
-                "Error: clang not found. Install LLVM/Clang to link target {} from this host.",
-                target.normalized_triple()
+            return Err(crate::toolchain_hint::missing_cross_clang(
+                target.normalized_triple(),
+                crate::toolchain_hint::HostFamily::host(),
             ));
         }
 
@@ -1144,6 +1199,160 @@ where
             "no C compiler found (tried clang, cc)",
         ))
     }
+}
+
+/// Check `--link`/`--rpath` against the target before anything compiles, so
+/// an unsupported request fails as a usage error rather than after codegen
+/// (or, for paths that never reach the native link, not at all).
+///
+/// # Errors
+///
+/// Returns the diagnostic for `--rpath` without `--link=dynamic`, or for a
+/// target with no shared runtime.
+pub(crate) fn validate_link_options(target: &TargetSpec, link: &LinkOptions) -> Result<(), String> {
+    match link.runtime {
+        RuntimeLink::Static if link.rpath.is_some() => {
+            Err("Error: --rpath applies only with --link=dynamic".into())
+        }
+        RuntimeLink::Static => Ok(()),
+        RuntimeLink::Dynamic => refuse_dynamic_runtime(target),
+    }
+}
+
+/// Refuse `--link=dynamic` for targets without a shared Hew runtime, naming
+/// why and what works instead.
+fn refuse_dynamic_runtime(target: &TargetSpec) -> Result<(), String> {
+    if target.shared_hew_lib_name(HEW_RELEASE).is_some() {
+        return Ok(());
+    }
+    let reason = if target.is_wasm() {
+        "a wasm module carries its runtime inside the module"
+    } else if target.os() == TargetOs::Windows {
+        "Windows has no shared Hew runtime yet; Windows programs link the runtime statically"
+    } else if target.env() == Some("musl") {
+        "musl programs link the runtime statically, so they run without any Hew files"
+    } else {
+        "Hew provides no shared runtime for this target"
+    };
+    Err(format!(
+        "Error: --link=dynamic is not supported for target {}: {reason}. \
+         Use --link=static (the default).",
+        target.normalized_triple()
+    ))
+}
+
+/// Locate this release's shared runtime beside the compiler, the same way
+/// [`find_hew_lib`] locates `libhew.a`.
+fn find_shared_hew_lib(target: &TargetSpec) -> Result<String, String> {
+    let name = target
+        .shared_hew_lib_name(HEW_RELEASE)
+        .ok_or_else(|| refuse_dynamic_runtime(target).unwrap_err())?;
+    find_hew_lib(&name, target.normalized_triple(), target.can_run_on_host()).map_err(|_| {
+        let exe = std::env::current_exe().ok();
+        let searched = exe
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(|dir| {
+                hew_lib_candidates(
+                    dir,
+                    &name,
+                    target.normalized_triple(),
+                    target.can_run_on_host(),
+                )
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+            })
+            .unwrap_or_default();
+        format!(
+            "Error: the shared Hew runtime {name} is not installed beside this compiler, \
+             so --link=dynamic cannot be used. Release packages include it; in a source \
+             checkout, build it with `make hew`. Use --link=static (the default) to \
+             link without it.\nSearched:\n  {searched}"
+        )
+    })
+}
+
+/// Directories a dynamically linked program searches for the shared runtime,
+/// in order: the program's own directory and its sibling `../lib`, so a program
+/// shipped together with its runtime finds that copy first, then the
+/// directory the runtime was linked from, so a program built against an
+/// installed Hew runs in place. A runtime in a directory the loader searches
+/// anyway (a distribution package's libdir) needs no entry of its own.
+///
+/// A `relocatable` build (one that trims paths) records only the
+/// program-relative entries: the same program then links byte-identically on
+/// every machine and names no build-machine directory, and it finds its
+/// runtime once that ships beside it or is installed in the system libdir.
+fn default_runtime_search_path(
+    target: &TargetSpec,
+    runtime: &std::path::Path,
+    relocatable: bool,
+) -> Vec<String> {
+    let (here, beside) = if target.os() == TargetOs::Darwin {
+        ("@executable_path", "@executable_path/../lib")
+    } else {
+        ("$ORIGIN", "$ORIGIN/../lib")
+    };
+    let mut search = vec![here.to_string(), beside.to_string()];
+    if relocatable {
+        return search;
+    }
+    if let Some(dir) = runtime.parent() {
+        if !loader_searches_by_default(target, dir) {
+            search.push(dir.display().to_string());
+        }
+    }
+    search
+}
+
+/// Whether the dynamic loader searches `dir` without a run path, so a
+/// runtime installed there by a distribution package needs no entry.
+fn loader_searches_by_default(target: &TargetSpec, dir: &std::path::Path) -> bool {
+    let dir = dir.to_string_lossy();
+    let dir = dir.trim_end_matches('/');
+    match target.os() {
+        TargetOs::Darwin => return dir == "/usr/lib" || dir == "/usr/local/lib",
+        TargetOs::FreeBsd => return matches!(dir, "/lib" | "/usr/lib" | "/usr/local/lib"),
+        _ => {}
+    }
+    matches!(dir, "/lib" | "/lib64" | "/usr/lib" | "/usr/lib64")
+        || linux_cross_arch_tuple_for(target).is_some_and(|tuple| {
+            dir == format!("/lib/{tuple}") || dir == format!("/usr/lib/{tuple}")
+        })
+}
+
+/// The Debian multiarch tuple for a Linux GNU target, whatever the host.
+fn linux_cross_arch_tuple_for(target: &TargetSpec) -> Option<&'static str> {
+    if target.os() != TargetOs::Linux || target.env() != Some("gnu") {
+        return None;
+    }
+    match target.arch() {
+        TargetArch::Aarch64 => Some("aarch64-linux-gnu"),
+        TargetArch::X86_64 => Some("x86_64-linux-gnu"),
+        TargetArch::Wasm32 => None,
+    }
+}
+
+/// The driver flags that record `search` as the program's run-time search
+/// path. ELF links use `DT_RUNPATH`, which `LD_LIBRARY_PATH` still overrides;
+/// FreeBSD's loader expands `$ORIGIN` only for images flagged `DF_ORIGIN`.
+fn runtime_search_path_flags(target: &TargetSpec, search: &[String]) -> Vec<String> {
+    let mut flags = Vec::new();
+    if target.os() != TargetOs::Darwin {
+        flags.push("-Wl,--enable-new-dtags".to_string());
+        if target.os() == TargetOs::FreeBsd {
+            flags.push("-Wl,-z,origin".to_string());
+        }
+    }
+    flags.extend(
+        search
+            .iter()
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| format!("-Wl,-rpath,{dir}")),
+    );
+    flags
 }
 
 /// Probe for the Debian/Ubuntu GNU multiarch tuple for Linux cross-arch linking.
@@ -1184,8 +1393,6 @@ fn find_linux_cross_gcc_toolchain(target: &TargetSpec) -> Option<&'static str> {
 
 #[cfg(target_os = "linux")]
 fn linux_cross_arch_tuple(target: &TargetSpec) -> Option<&'static str> {
-    use crate::target::{TargetArch, TargetOs};
-
     if target.os() != TargetOs::Linux || target.env() != Some("gnu") {
         return None;
     }
@@ -1700,6 +1907,13 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
         );
     }
 
+    if let Some(hint) = crate::toolchain_hint::missing_c_library_hint(
+        stderr,
+        crate::toolchain_hint::HostFamily::host(),
+    ) {
+        hints.push(hint);
+    }
+
     hints
 }
 
@@ -1759,7 +1973,7 @@ fn runtime_symbol_redefinitions(
     if libraries.is_empty() {
         return std::collections::BTreeSet::new();
     }
-    let Some(runtime) = archive_hew_symbols(hew_lib) else {
+    let Some(runtime) = archive_hew_symbols(hew_lib).or_else(|| shared_hew_symbols(hew_lib)) else {
         return std::collections::BTreeSet::new();
     };
     libraries
@@ -1767,6 +1981,35 @@ fn runtime_symbol_redefinitions(
         .flat_map(|defined| defined.intersection(&runtime))
         .map(|name| name.strip_prefix('_').unwrap_or(name).to_string())
         .collect()
+}
+
+/// The `hew_*` symbols a shared runtime exports, retaining platform
+/// decoration. With a shared runtime, a linked library defining one of them
+/// would silently interpose on the runtime's own copy, so the same check
+/// applies.
+fn shared_hew_symbols(path: &std::path::Path) -> Option<std::collections::BTreeSet<String>> {
+    use object::{Object as _, ObjectSymbol as _};
+    let data = std::fs::read(path).ok()?;
+    let file = object::File::parse(&*data).ok()?;
+    let exported: std::collections::BTreeSet<String> = match file.format() {
+        // A dylib's global defined symbols are its exports.
+        object::BinaryFormat::MachO => file
+            .symbols()
+            .filter(|symbol| symbol.is_global() && !symbol.is_undefined())
+            .filter_map(|symbol| symbol.name().ok().map(str::to_string))
+            .collect(),
+        _ => file
+            .dynamic_symbols()
+            .filter(|symbol| !symbol.is_undefined())
+            .filter_map(|symbol| symbol.name().ok().map(str::to_string))
+            .collect(),
+    };
+    Some(
+        exported
+            .into_iter()
+            .filter(|name| name.starts_with("hew_") || name.starts_with("_hew_"))
+            .collect(),
+    )
 }
 
 /// Raw runtime names from the archive index, retaining platform decoration
@@ -2068,6 +2311,178 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
     use std::os::windows::process::ExitStatusExt;
+
+    // ── --link=dynamic ────────────────────────────────────────────────
+
+    fn spec(triple: &str) -> TargetSpec {
+        TargetSpec::from_requested(Some(triple)).expect("target")
+    }
+
+    #[test]
+    fn shared_runtime_name_carries_the_exact_release() {
+        assert_eq!(
+            spec("x86_64-unknown-linux-gnu")
+                .shared_hew_lib_name("0.11.1")
+                .as_deref(),
+            Some("libhew.so.0.11.1")
+        );
+        assert_eq!(
+            spec("x86_64-unknown-freebsd")
+                .shared_hew_lib_name("0.12.0-rc1")
+                .as_deref(),
+            Some("libhew.so.0.12.0-rc1")
+        );
+        assert_eq!(
+            spec("aarch64-apple-darwin")
+                .shared_hew_lib_name("0.11.1")
+                .as_deref(),
+            Some("libhew.0.11.1.dylib")
+        );
+        for triple in [
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-musl",
+            "wasm32-wasip1",
+            "wasm32-unknown-unknown",
+        ] {
+            assert_eq!(spec(triple).shared_hew_lib_name("0.11.1"), None, "{triple}");
+        }
+    }
+
+    #[test]
+    fn dynamic_link_is_refused_where_no_shared_runtime_exists() {
+        let dynamic = LinkOptions {
+            runtime: RuntimeLink::Dynamic,
+            ..LinkOptions::default()
+        };
+        for (triple, reason) in [
+            ("x86_64-pc-windows-msvc", "Windows"),
+            ("x86_64-unknown-linux-musl", "musl"),
+            ("wasm32-wasip1", "wasm"),
+        ] {
+            let error = validate_link_options(&spec(triple), &dynamic).unwrap_err();
+            assert!(error.contains("--link=dynamic is not supported"), "{error}");
+            assert!(error.contains(reason), "{error}");
+            assert!(error.contains("--link=static"), "{error}");
+        }
+        assert!(validate_link_options(&spec("x86_64-unknown-linux-gnu"), &dynamic).is_ok());
+        assert!(validate_link_options(&spec("aarch64-apple-darwin"), &dynamic).is_ok());
+    }
+
+    #[test]
+    fn rpath_requires_dynamic_linking() {
+        let static_with_rpath = LinkOptions {
+            runtime: RuntimeLink::Static,
+            rpath: Some(vec!["/opt/app/lib".into()]),
+            ..LinkOptions::default()
+        };
+        let error = validate_link_options(&spec("x86_64-unknown-linux-gnu"), &static_with_rpath)
+            .unwrap_err();
+        assert!(
+            error.contains("--rpath applies only with --link=dynamic"),
+            "{error}"
+        );
+        assert!(
+            validate_link_options(&spec("x86_64-unknown-linux-gnu"), &LinkOptions::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn default_search_path_prefers_the_program_then_the_installed_runtime() {
+        let linux = spec("x86_64-unknown-linux-gnu");
+        assert_eq!(
+            default_runtime_search_path(
+                &linux,
+                std::path::Path::new("/home/u/.hew/lib/libhew.so.0.11.1"),
+                false
+            ),
+            ["$ORIGIN", "$ORIGIN/../lib", "/home/u/.hew/lib"]
+        );
+        // A distribution package's runtime in the multiarch libdir is found
+        // by the loader itself; recording it would only pin the path.
+        assert_eq!(
+            default_runtime_search_path(
+                &linux,
+                std::path::Path::new("/usr/lib/x86_64-linux-gnu/libhew.so.0.11.1"),
+                false
+            ),
+            ["$ORIGIN", "$ORIGIN/../lib"]
+        );
+        assert_eq!(
+            default_runtime_search_path(
+                &spec("aarch64-unknown-linux-gnu"),
+                std::path::Path::new("/usr/lib64/libhew.so.0.11.1"),
+                false
+            ),
+            ["$ORIGIN", "$ORIGIN/../lib"]
+        );
+        assert_eq!(
+            default_runtime_search_path(
+                &spec("x86_64-unknown-freebsd"),
+                std::path::Path::new("/usr/local/lib/libhew.so.0.11.1"),
+                false
+            ),
+            ["$ORIGIN", "$ORIGIN/../lib"]
+        );
+        assert_eq!(
+            default_runtime_search_path(
+                &spec("aarch64-apple-darwin"),
+                std::path::Path::new("/opt/homebrew/opt/hew/lib/libhew.0.11.1.dylib"),
+                false
+            ),
+            [
+                "@executable_path",
+                "@executable_path/../lib",
+                "/opt/homebrew/opt/hew/lib"
+            ]
+        );
+    }
+
+    #[test]
+    fn relocatable_search_path_records_no_build_machine_directory() {
+        let runtime = std::path::Path::new("/home/u/.hew/lib/libhew.so.0.11.1");
+        assert_eq!(
+            default_runtime_search_path(&spec("x86_64-unknown-linux-gnu"), runtime, true),
+            ["$ORIGIN", "$ORIGIN/../lib"]
+        );
+        assert_eq!(
+            default_runtime_search_path(
+                &spec("aarch64-apple-darwin"),
+                std::path::Path::new("/Users/u/.hew/lib/libhew.0.11.1.dylib"),
+                true
+            ),
+            ["@executable_path", "@executable_path/../lib"]
+        );
+    }
+
+    #[test]
+    fn search_path_flags_use_runpath_and_origin_where_needed() {
+        let search = vec!["$ORIGIN".to_string(), "/opt/hew/lib".to_string()];
+        assert_eq!(
+            runtime_search_path_flags(&spec("x86_64-unknown-linux-gnu"), &search),
+            [
+                "-Wl,--enable-new-dtags",
+                "-Wl,-rpath,$ORIGIN",
+                "-Wl,-rpath,/opt/hew/lib"
+            ]
+        );
+        assert_eq!(
+            runtime_search_path_flags(&spec("x86_64-unknown-freebsd"), &search),
+            [
+                "-Wl,--enable-new-dtags",
+                "-Wl,-z,origin",
+                "-Wl,-rpath,$ORIGIN",
+                "-Wl,-rpath,/opt/hew/lib"
+            ]
+        );
+        assert_eq!(
+            runtime_search_path_flags(
+                &spec("aarch64-apple-darwin"),
+                &["@executable_path".to_string()]
+            ),
+            ["-Wl,-rpath,@executable_path"]
+        );
+    }
 
     // ── extract_undefined_hew_symbol ──────────────────────────────────
 
@@ -2788,10 +3203,8 @@ mod tests {
             "must name the literal HEW_CC value: {error}"
         );
         assert!(
-            ["clang", "gcc", "build-essential", "xcode"]
-                .iter()
-                .any(|pkg| error.to_lowercase().contains(pkg)),
-            "must name a package that provides a driver: {error}"
+            error.contains(crate::toolchain_hint::HostFamily::host().c_toolchain_advice()),
+            "must give this host's install command: {error}"
         );
     }
 
@@ -2873,9 +3286,8 @@ mod tests {
         let error = windows_missing_clang_error();
 
         assert!(error.contains("clang.exe"));
-        assert!(error.contains("lld-link.exe"));
-        assert!(error.contains("LLVM 22.1.6"));
-        assert!(error.contains("llvm-project/releases/download/llvmorg-22.1.6"));
+        assert!(error.contains("lld-link"));
+        assert!(error.contains("winget install LLVM.LLVM"));
         assert!(error.contains("PATH"));
         assert!(error.contains("vcvars64.bat"));
     }

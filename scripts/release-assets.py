@@ -48,7 +48,19 @@ def assemble(directory, version, source, run, jobs, deferrals):
         if expected and target == "linux-packages":
             missing = [
                 pattern
-                for pattern in ("hew_*.deb", "hew-*.rpm", "hew-bin-*.pkg.tar.zst")
+                for pattern in (
+                    *(f"hew_{version}-*_{arch}.deb" for arch in ("amd64", "arm64")),
+                    *(
+                        f"libhew{version}_{version}-*_{arch}.deb"
+                        for arch in ("amd64", "arm64")
+                    ),
+                    *(f"hew-{version}-*.{arch}.rpm" for arch in ("x86_64", "aarch64")),
+                    *(
+                        f"libhew{version}-{version}-*.{arch}.rpm"
+                        for arch in ("x86_64", "aarch64")
+                    ),
+                    f"hew-bin-{version}-*-x86_64.pkg.tar.zst",
+                )
                 if not any(
                     path.is_file() and path.stat().st_size
                     for path in directory.glob(pattern)
@@ -56,9 +68,10 @@ def assemble(directory, version, source, run, jobs, deferrals):
             ]
         if target == "build-docs":
             docs_asset = f"hew-v{version}-reference-docs.tar.gz"
-            if not (directory / docs_asset).is_file() or not (
-                directory / docs_asset
-            ).stat().st_size:
+            if (
+                not (directory / docs_asset).is_file()
+                or not (directory / docs_asset).stat().st_size
+            ):
                 missing = [docs_asset]
         available = result == "success" and not missing
         if expected and not available and (target == "build-docs" or not patch):

@@ -929,7 +929,9 @@ pub fn capture_frames(record: &mut FailureRecord) {
         let count = unsafe {
             windows_ffi::RtlCaptureStackBackTrace(
                 1,
-                MAX_FRAMES as u32,
+                // MAX_FRAMES is a small constant; saturating cannot exceed the
+                // buffer, and a fault path must not panic.
+                u32::try_from(MAX_FRAMES).unwrap_or(u32::MAX),
                 addresses.as_mut_ptr(),
                 std::ptr::null_mut(),
             )

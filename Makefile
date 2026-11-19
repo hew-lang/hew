@@ -323,41 +323,12 @@ LINK_UP3 :=
 endif
 
 # Every staging recipe runs STAGE_CHECK_DEST before it changes anything under
-# BUILD_DIR. Staging removes bin/, lib/ and std/ there and writes into bin/
-# and lib/, so it refuses:
-#   - an empty BUILD_DIR, or one that is a filesystem or volume root, or a
-#     bin/ or lib/ that resolves to a directory directly under such a root;
-#     (MSYS drive mounts such as /c and UNC shares count as volume roots);
-#   - a bin/ or lib/ whose physical directory, reached through links or
-#     junctions too, holds checkout sources;
-#   - a real std/ directory holding checkout sources (BUILD_DIR=., or an
-#     alias of the checkout). A std/ link is only ever unlinked or kept.
-define STAGE_CHECK_DEST
-	@is_root() { case "$$1" in \
-		/|/[A-Za-z]|[A-Za-z]:|[A-Za-z]:/) return 0;; \
-		//*) unc=$${1#//}; unc=$${unc%/}; case "$$unc" in */*/*) return 1;; esac; return 0;; \
-		esac; return 1; }; \
-	has_sources() { [ -n "$$(git -C "$(CURDIR)" ls-files -- "$$1" 2>/dev/null | head -n 1)" ]; }; \
-	refuse() { echo "error: BUILD_DIR='$(BUILD_DIR)' $$1" >&2; exit 1; }; \
-	[ -n "$(strip $(BUILD_DIR))" ] || refuse "is empty"; \
-	if [ -d "$(BUILD_DIR)" ]; then \
-		build_physical=$$(cd "$(BUILD_DIR)" && pwd -P) || exit 1; \
-		! is_root "$$build_physical" || refuse "is the filesystem root $$build_physical"; \
-	fi; \
-	for dest in "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"; do \
-		[ -d "$$dest" ] || continue; \
-		physical=$$(cd "$$dest" && pwd -P) || exit 1; \
-		! is_root "$$(dirname "$$physical")" || refuse "would stage into the system directory $$physical"; \
-		! has_sources "$$physical" || refuse "would stage over checkout sources in $$physical"; \
-	done; \
-	std="$(BUILD_DIR)/std"; \
-	if [ -d "$$std" ] && [ ! -L "$$std" ]; then \
-		physical=$$(cd "$$std" && pwd -P) || exit 1; \
-		if test "$$std" -ef "$(CURDIR)/std" || has_sources "$$physical"; then \
-			refuse "would stage over checkout sources in $$physical"; \
-		fi; \
-	fi
-endef
+# BUILD_DIR: staging removes bin/, lib/ and std/ there and writes through a
+# linked bin/ or lib/. scripts/check-stage-dest.py refuses an empty or root
+# BUILD_DIR, one overlapping the caller's std/, and a bin/, lib/ or real std/
+# that resolves to tracked sources of any checkout; it documents each rule
+# and scripts/tests/test_check_stage_dest.py holds them under test.
+STAGE_CHECK_DEST = @$(PYTHON) "$(MAKEFILE_ROOT)/scripts/check-stage-dest.py" "$(BUILD_DIR)"
 
 # Point BUILD_DIR/std at the standard library. Git Bash's ln copies
 # directories, and a later `ln -sfn` would then link inside that copy, so a
@@ -1800,6 +1771,7 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_hew_suite_runner.py
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
+	$(PYTHON) scripts/tests/test_check_stage_dest.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
 	$(PYTHON) scripts/tests/test_packaged_debug_sdk.py

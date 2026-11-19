@@ -40,6 +40,8 @@ def platform_flags():
             "CoreFoundation",
             "-framework",
             "Security",
+            "-framework",
+            "SystemConfiguration",
         ]
     if sys.platform.startswith("freebsd"):
         return ["-lpthread", "-lm"]

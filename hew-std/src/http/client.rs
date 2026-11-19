@@ -119,7 +119,7 @@ pub struct HewHttpResponse {
 }
 
 /// Collect all response headers without silently dropping non-UTF-8 values.
-fn capture_headers(map: &ureq::http::HeaderMap) -> Result<*mut Vec<(String, String)>, String> {
+fn capture_headers(map: &reqwest::header::HeaderMap) -> Result<Vec<(String, String)>, String> {
     let mut pairs = Vec::with_capacity(map.len());
     for (name, value) in map {
         let value = value.to_str().map_err(|_| {
@@ -129,7 +129,7 @@ fn capture_headers(map: &ureq::http::HeaderMap) -> Result<*mut Vec<(String, Stri
         })?;
         pairs.push((name.to_string(), value.to_string()));
     }
-    Ok(Box::into_raw(Box::new(pairs)))
+    Ok(pairs)
 }
 
 /// Build a [`HewHttpResponse`] from a Rust string body and captured headers.
@@ -250,92 +250,97 @@ pub unsafe extern "C" fn hew_http_set_timeout(timeout_ms: i32) {
     HTTP_TIMEOUT_MS.store(timeout_ms, Ordering::Relaxed);
 }
 
-/// Build a configured [`ureq::Agent`] using the current global timeout.
-fn make_agent() -> ureq::Agent {
-    let raw = HTTP_TIMEOUT_MS.load(Ordering::Relaxed).max(0);
-    // Casting i32 → u32 is safe here because .max(0) guarantees non-negative.
-    let ms = u64::from(raw.cast_unsigned());
-    let config = ureq::Agent::config_builder()
-        .timeout_global(if ms > 0 {
-            Some(Duration::from_millis(ms))
-        } else {
-            None
-        })
-        // Non-2xx responses still carry a body the caller may need (e.g. a
-        // JSON error payload on a 404). ureq's default turns 4xx/5xx into
-        // `Err(Error::StatusCode)`, which discards the body entirely — route
-        // every status through `Ok` and let `finish_response` read it.
-        .http_status_as_error(false)
-        .build();
-    ureq::Agent::new_with_config(config)
+thread_local! {
+    // A calling thread reuses its connection pool and releases the client on exit.
+    static HTTP_CLIENT: Result<reqwest::blocking::Client, String> =
+        reqwest::blocking::Client::builder().timeout(None).build().map_err(|error| error.to_string());
 }
 
-/// Parse a response, capturing headers and mapping body-read errors to an
-/// error response.
-fn finish_response(mut resp: ureq::http::Response<ureq::Body>) -> *mut HewHttpResponse {
-    let status = resp.status().as_u16();
-    let headers = match capture_headers(resp.headers()) {
-        Ok(headers) => headers,
-        Err(message) => return error_response(&message),
+const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
+
+struct Reply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+fn execute_request(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    headers: &[(String, String)],
+) -> Result<Reply, String> {
+    use reqwest::Method;
+    use std::io::Read as _;
+
+    let method = match method.to_ascii_uppercase().as_str() {
+        "GET" => Method::GET,
+        "HEAD" => Method::HEAD,
+        "DELETE" => Method::DELETE,
+        "POST" => Method::POST,
+        "PUT" => Method::PUT,
+        "PATCH" => Method::PATCH,
+        _ => return Err(format!("unsupported HTTP method: {method}")),
     };
-    match resp.body_mut().read_to_string() {
-        Ok(body) => build_response(i32::from(status), &body, headers),
-        Err(e) => {
-            if !headers.is_null() {
-                // SAFETY: headers was just allocated with Box::into_raw.
-                drop(unsafe { Box::from_raw(headers) });
-            }
-            error_response(&format!("failed to read response body: {e}"))
+    HTTP_CLIENT.with(|client| {
+        let client = client.as_ref().map_err(Clone::clone)?;
+        let mut request = client.request(method.clone(), url);
+        for (name, value) in headers {
+            request = request.header(name, value);
         }
-    }
+        if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
+            request = request.body(body.unwrap_or_default().to_vec());
+        }
+        let timeout = HTTP_TIMEOUT_MS.load(Ordering::Relaxed);
+        if timeout > 0 {
+            request = request.timeout(Duration::from_millis(u64::from(timeout.cast_unsigned())));
+        }
+        let response = request.send().map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let headers = capture_headers(response.headers())?;
+        let mut body = Vec::new();
+        response
+            .take(MAX_BODY_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| format!("failed to read response body: {error}"))?;
+        if body.len() as u64 > MAX_BODY_BYTES {
+            return Err("failed to read response body: exceeds the 10 MiB limit".to_string());
+        }
+        Ok(Reply {
+            status,
+            headers,
+            body,
+        })
+    })
 }
 
-/// Execute an outbound HTTP request with the shared timeout/configuration path.
+/// Execute a synchronous request, including when an embedding application calls
+/// the C ABI from an async runtime that cannot itself run a blocking client.
 fn send_request(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
     headers: &[(String, String)],
 ) -> *mut HewHttpResponse {
-    let agent = make_agent();
-    let method_upper = method.to_uppercase();
-
-    match method_upper.as_str() {
-        "GET" | "HEAD" | "DELETE" => {
-            let req = match method_upper.as_str() {
-                "HEAD" => agent.head(url),
-                "DELETE" => agent.delete(url),
-                _ => agent.get(url),
-            };
-            let req = headers
-                .iter()
-                .fold(req, |request, (name, value)| request.header(name, value));
-            match req.call() {
-                Ok(resp) => finish_response(resp),
-                // `make_agent` disables `http_status_as_error`, so this arm
-                // is unreachable via a real HTTP status — kept as a fail-closed
-                // fallback in case a future ureq version reintroduces it.
-                Err(e) => error_response(&e.to_string()),
-            }
-        }
-        "POST" | "PUT" | "PATCH" => {
-            let req = match method_upper.as_str() {
-                "PUT" => agent.put(url),
-                "PATCH" => agent.patch(url),
-                _ => agent.post(url),
-            };
-            let req = headers
-                .iter()
-                .fold(req, |request, (name, value)| request.header(name, value));
-            match req.send(body.unwrap_or(b"")) {
-                Ok(resp) => finish_response(resp),
-                // `make_agent` disables `http_status_as_error`, so this arm
-                // is unreachable via a real HTTP status — kept as a fail-closed
-                // fallback in case a future ureq version reintroduces it.
-                Err(e) => error_response(&e.to_string()),
-            }
-        }
-        _ => error_response(&format!("unsupported HTTP method: {method}")),
+    let execute = || execute_request(method, url, body, headers);
+    let result = if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .spawn_scoped(scope, execute)
+                .map_err(|error| error.to_string())?
+                .join()
+                .map_err(|_| "HTTP worker stopped unexpectedly".to_string())?
+        })
+    } else {
+        execute()
+    };
+    match result {
+        Ok(reply) => build_response(
+            i32::from(reply.status),
+            &String::from_utf8_lossy(&reply.body),
+            Box::into_raw(Box::new(reply.headers)),
+        ),
+        Err(error) => error_response(&error),
     }
 }
 
@@ -511,7 +516,7 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
         unsafe { free_cstring(response.body) }; // CSTRING-FREE: str-open (response.body via raw_http_str_to_malloc)
     }
     if !response.headers.is_null() {
-        // SAFETY: headers was allocated with Box::into_raw in capture_headers.
+        // SAFETY: headers was allocated with Box::into_raw for this response.
         drop(unsafe { Box::from_raw(response.headers) });
     }
     // Box is dropped here, freeing the HewHttpResponse struct.
@@ -686,7 +691,7 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
     if r.headers.is_null() {
         return vec;
     }
-    // SAFETY: headers was allocated with Box::into_raw in capture_headers.
+    // SAFETY: headers was allocated with Box::into_raw for this response.
     let headers = unsafe { &*r.headers };
     for (name, value) in headers {
         let pair = HewStringPair {
@@ -846,10 +851,10 @@ mod tests {
 
     #[test]
     fn capture_headers_rejects_non_utf8_value_instead_of_dropping_it() {
-        let mut headers = ureq::http::HeaderMap::new();
+        let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
-            ureq::http::HeaderName::from_static("x-opaque"),
-            ureq::http::HeaderValue::from_bytes(&[0x80]).unwrap(),
+            reqwest::header::HeaderName::from_static("x-opaque"),
+            reqwest::header::HeaderValue::from_bytes(&[0x80]).unwrap(),
         );
         let err = capture_headers(&headers).unwrap_err();
         assert_eq!(
@@ -860,14 +865,12 @@ mod tests {
 
     #[test]
     fn capture_headers_preserves_valid_values() {
-        let mut headers = ureq::http::HeaderMap::new();
+        let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
-            ureq::http::HeaderName::from_static("x-test"),
-            ureq::http::HeaderValue::from_static("present"),
+            reqwest::header::HeaderName::from_static("x-test"),
+            reqwest::header::HeaderValue::from_static("present"),
         );
         let pairs = capture_headers(&headers).unwrap();
-        // SAFETY: capture_headers allocated this Vec with Box::into_raw.
-        let pairs = unsafe { Box::from_raw(pairs) };
         assert_eq!(pairs.as_slice(), &[("x-test".into(), "present".into())]);
     }
 
@@ -1449,11 +1452,19 @@ mod tests {
         unsafe { hew_http_response_free(resp) };
     }
 
-    // -- make_agent ---------------------------------------------------
-
     #[test]
-    fn make_agent_does_not_panic_with_default_timeout() {
-        let _agent = make_agent();
+    fn current_thread_async_host_can_call_the_synchronous_http_abi() {
+        let (addr, server) = start_echo_server(200, "embedded");
+        let url = CString::new(addr).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (status, body) = runtime.block_on(async {
+            // SAFETY: url and the returned response are valid through this call.
+            unsafe { take_response(hew_http_get(url.as_ptr())) }
+        });
+        server.join().unwrap();
+        assert_eq!((status, body.as_str()), (200, "embedded"));
     }
 
     // -- Invalid URL (actual network) ---------------------------------
@@ -1604,7 +1615,7 @@ mod tests {
         assert!(!resp.is_null());
         // SAFETY: resp is a valid response.
         let (status, body) = unsafe { take_response(resp) };
-        // `make_agent` disables ureq's `http_status_as_error`, so a 4xx/5xx
+        // A 4xx/5xx
         // status still routes through `finish_response` and the server's
         // actual body is preserved, not discarded.
         assert_eq!(status, 404);

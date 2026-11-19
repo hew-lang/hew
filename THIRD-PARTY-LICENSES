@@ -673,7 +673,6 @@ Apache License 2.0
   * siphasher 1.0.4 — https://github.com/jedisct1/rust-siphash
   * static_assertions 1.1.0 — https://github.com/nvzqz/static-assertions-rs
   * tinyvec 1.13.3 — https://github.com/Lokathor/tinyvec
-  * ureq-proto 0.7.1 — https://github.com/algesten/ureq-proto
   * utf8_iter 1.0.4 — https://github.com/hsivonen/utf8_iter
   * zeroize 1.9.0 — https://github.com/RustCrypto/utils
   * zeroize_derive 1.5.0 — https://github.com/RustCrypto/utils
@@ -2198,7 +2197,6 @@ Apache License 2.0
   * quinn 0.11.12 — https://github.com/quinn-rs/quinn
   * rustls-platform-verifier 0.7.1 — https://github.com/rustls/rustls-platform-verifier
   * unarray 0.1.4 — https://github.com/cameron1024/unarray
-  * ureq 3.5.2 — https://github.com/algesten/ureq
 
                                  Apache License
                            Version 2.0, January 2004
@@ -6378,6 +6376,7 @@ Apache License 2.0
   * addr2line 0.26.1 — https://github.com/gimli-rs/addr2line
   * ambient-authority 0.0.2 — https://github.com/sunfishcode/ambient-authority
   * arbitrary 1.5.0 — https://github.com/rust-fuzz/arbitrary/
+  * async-compression 0.4.51 — https://github.com/Nullus157/async-compression
   * atomic-waker 1.1.2 — https://github.com/smol-rs/atomic-waker
   * autocfg 1.5.1 — https://github.com/cuviper/autocfg
   * base64 0.22.1 — https://github.com/marshallpierce/rust-base64
@@ -6392,6 +6391,8 @@ Apache License 2.0
   * cfg-if 1.0.5 — https://github.com/rust-lang/cfg-if
   * chunked_transfer 1.5.0 — https://github.com/frewsxcv/rust-chunked-transfer
   * cmake 0.1.58 — https://github.com/rust-lang/cmake-rs
+  * compression-codecs 0.4.46 — https://github.com/Nullus157/async-compression
+  * compression-core 0.4.34 — https://github.com/Nullus157/async-compression
   * core-foundation-sys 0.8.7 — https://github.com/servo/core-foundation-rs
   * core-foundation 0.10.1 — https://github.com/servo/core-foundation-rs
   * core-foundation 0.9.4 — https://github.com/servo/core-foundation-rs
@@ -8696,7 +8697,6 @@ Apache License 2.0
   * time-macros 0.2.32 — https://github.com/time-rs/time
   * time 0.3.55 — https://github.com/time-rs/time
   * unicode-ident 1.0.26 — https://github.com/dtolnay/unicode-ident
-  * utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
   * utf8parse 0.2.2 — https://github.com/alacritty/vte
   * winapi-i686-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs
   * winapi-x86_64-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs

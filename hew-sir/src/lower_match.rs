@@ -341,6 +341,20 @@ impl Builder<'_, '_> {
     ) -> Result<(), SirLoweringError> {
         self.restore_control_state(&group.entry);
         self.owned_live = group.owned_live;
+        // A borrowed switch projects its payloads on the branch edge. Every
+        // candidate may read them, and a guard or probe may exit the function
+        // before an arm is selected.
+        if plan.borrowed && group.variant.is_some() {
+            self.argument_receiver_loans.extend(
+                group
+                    .fields
+                    .iter()
+                    .flatten()
+                    .filter(|field| field.own == OwnKind::Guaranteed)
+                    .map(|field| field.value),
+            );
+        }
+        let branch_loans = self.argument_receiver_loans.len();
         // A variant with an uninhabited payload has no values, so its branch is
         // unreachable and the source needs no arm for it.
         if group.arms.is_empty() {
@@ -394,7 +408,7 @@ impl Builder<'_, '_> {
             }
 
             if !guard_diverged {
-                self.end_loans_since(plan.outer_loans)?;
+                self.end_loans_since(branch_loans)?;
                 self.select_match_candidate(plan, arm, &fields)?;
                 // Saved rejection states retain the probe declarations. The
                 // selected path introduces their owned replacements once.
@@ -469,7 +483,7 @@ impl Builder<'_, '_> {
                     fields = self.rebuilt_scrutinee_fields(plan, group.variant, value)?;
                     root_live = self.owned_live.clone();
                 }
-                self.cleanup_match_candidate(&root_live, plan.outer_loans, &plan.outer_bindings)?;
+                self.cleanup_match_candidate(&root_live, branch_loans, &plan.outer_bindings)?;
                 cleaned.push(self.control_state());
             }
             self.merge_control_states(cleaned)?;
@@ -668,18 +682,6 @@ impl Builder<'_, '_> {
                 self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
             }
             MatchShape::Variant { .. } => {
-                if plan.borrowed {
-                    // The payloads name the scrutinee's region: they stay
-                    // readable for the arm body, and the candidate cleanup ends
-                    // them on every exit from it.
-                    self.argument_receiver_loans.extend(
-                        fields
-                            .iter()
-                            .flatten()
-                            .filter(|field| field.own == OwnKind::Guaranteed)
-                            .map(|field| field.value),
-                    );
-                }
                 self.transfer_selected_payloads(fields, &arm.payload_variant_predicates)
             }
         }

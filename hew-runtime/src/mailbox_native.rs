@@ -134,12 +134,12 @@ pub struct HewNativeAsk {
 /// # Safety
 /// The operation is pinned outside its exclusive admission poll or destruction.
 pub(crate) unsafe fn visit_managed_request(
-    wait: *const HewNativeAsk,
+    wait: Option<&HewNativeAsk>,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
     // SAFETY: the affine admission owner pins its envelope outside concurrent polls.
     unsafe {
-        let Some(wait) = wait.as_ref() else {
+        let Some(wait) = wait else {
             return 0;
         };
         if wait.envelope.is_null() {
@@ -149,11 +149,10 @@ pub(crate) unsafe fn visit_managed_request(
     }
 }
 
-pub(crate) unsafe fn request_transfer_pending(wait: *const HewNativeAsk) -> bool {
+pub(crate) unsafe fn request_transfer_pending(wait: Option<&HewNativeAsk>) -> bool {
     // SAFETY: this synchronous query borrows the same exclusively polled operation.
     unsafe {
-        wait.as_ref()
-            .and_then(|wait| wait.envelope.as_ref())
+        wait.and_then(|wait| wait.envelope.as_ref())
             .is_some_and(|envelope| {
                 envelope.admission_pending
                     || envelope
@@ -304,20 +303,27 @@ pub unsafe extern "C" fn hew_actor_ask_wait_take_request(
     let Some(wait) = (unsafe { wait.as_mut() }) else {
         return std::ptr::null_mut();
     };
-    let envelope = std::mem::replace(&mut wait.envelope, std::ptr::null_mut());
-    if !envelope.is_null() {
-        // SAFETY: the unadmitted request owns one channel reference. A later
-        // resubmission creates its own channel; the old reply cannot escape.
-        unsafe {
-            (*envelope).transfer.take();
-            (*envelope).transfer_waker = None;
-            (*envelope).admission_pending = false;
-            (*envelope).request = None;
-            crate::reply_channel::hew_reply_channel_free(wait.channel.cast());
+    wait.take_request()
+}
+
+impl HewNativeAsk {
+    /// Detach the unpublished envelope from this admission before resubmission.
+    pub(crate) fn take_request(&mut self) -> *mut super::HewMsgEnvelope {
+        let envelope = std::mem::replace(&mut self.envelope, std::ptr::null_mut());
+        if !envelope.is_null() {
+            // SAFETY: the unadmitted request owns one channel reference. A later
+            // resubmission creates its own channel; the old reply cannot escape.
+            unsafe {
+                (*envelope).transfer.take();
+                (*envelope).transfer_waker = None;
+                (*envelope).admission_pending = false;
+                (*envelope).request = None;
+                crate::reply_channel::hew_reply_channel_free(self.channel.cast());
+            }
+            self.channel = std::ptr::null_mut();
         }
-        wait.channel = std::ptr::null_mut();
+        envelope
     }
-    envelope
 }
 
 /// Resume admission using the original sealed request, without repacking it.
@@ -363,6 +369,7 @@ pub(crate) unsafe fn ask_wait_resume(
             token, message, envelope, channel, waker, caller, state, true,
         )
     }
+    .map_or(std::ptr::null_mut(), |wait| Box::into_raw(Box::new(wait)))
 }
 
 /// Bind an owned request to the existing capacity driver, with or without a reply.
@@ -381,9 +388,9 @@ pub(crate) unsafe fn request_wait_resume(
     caller: crate::actor_caller::HewCallerStamp,
     state: Option<Arc<crate::request_state::RequestState>>,
     obligated: bool,
-) -> *mut HewNativeAsk {
+) -> Option<HewNativeAsk> {
     if envelope.is_null() {
-        return std::ptr::null_mut();
+        return None;
     }
     // A resumed request receives the new invocation's exact immutable state.
     // SAFETY: the unpublished envelope is exclusive.
@@ -397,7 +404,7 @@ pub(crate) unsafe fn request_wait_resume(
         crate::reply_channel::hew_reply_channel_retain(channel.cast());
         CapacityWake::Direct(OwnedWaker::retain(&*waker))
     };
-    Box::into_raw(Box::new(HewNativeAsk {
+    Some(HewNativeAsk {
         caller,
         obligated,
         token,
@@ -405,7 +412,7 @@ pub(crate) unsafe fn request_wait_resume(
         envelope,
         channel,
         wake: waker,
-    }))
+    })
 }
 
 /// Answer a [`HewSubmitStatus`]: `Pending` while the mailbox stays full,

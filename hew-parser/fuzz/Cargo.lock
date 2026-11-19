@@ -773,6 +773,7 @@ version = "0.11.1"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
+ "regex-syntax",
  "serde",
  "serde_json",
  "stacker",

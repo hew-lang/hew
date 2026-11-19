@@ -253,6 +253,7 @@ impl RuntimeCallFamily {
                 | Self::Set(_)
                 | Self::BytesGet
                 | Self::RegexCapture
+                | Self::RegexCaptureSpans
                 | Self::RegexCompile
                 | Self::RegexFreeCapture
                 | Self::RegexHandle
@@ -843,6 +844,9 @@ impl RuntimeCallFamily {
             | F::WeakDropRc
             | F::WeakUpgradeRc
             | F::RegexCapture
+            | F::RegexCaptureSpans
+            | F::RegexGroupPresent
+            | F::RegexGroupText
             | F::RegexCompile
             | F::RegexFreeCapture
             | F::RegexHandle

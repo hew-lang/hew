@@ -969,12 +969,21 @@ pub enum Pattern {
     ///
     /// `pattern` is the normalised regex string (delimiter escapes decoded,
     /// regex backslashes preserved verbatim — see `normalize_regex_literal`).
-    /// `captures` is populated by the checker from `regex::Regex::capture_names()`
-    /// and is empty when produced by the parser.
+    /// Named groups retain their source occurrences for lexical binding and editor navigation.
     Regex {
         pattern: String,
-        captures: Vec<String>,
+        captures: Vec<RegexCapture>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegexCapture {
+    pub name: Ident,
+    pub span: Span,
+    /// Engine group index, including intervening unnamed groups. Group zero is the match.
+    pub index: u32,
+    /// Every matching path through the written pattern participates in this group.
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -35,7 +35,9 @@ use serde::{de::DeserializeOwned, Serialize};
 mod calendar;
 mod codec;
 mod encoding_values;
+mod regex_patterns;
 pub use calendar::execute_calendar;
+pub use regex_patterns::{compile_sandbox_regex, SandboxRegex};
 mod inputs;
 pub use codec::execute_codec;
 

@@ -1356,7 +1356,7 @@ impl LowerCtx<'_> {
                 // Regex literal pattern in a string-scrutinee match arm.
                 // Allocate (or reuse) the literal-table entry and build the
                 // `HirMatchArmPredicate::Regex` predicate.
-                PatternKind::Regex { captures } => {
+                PatternKind::Regex => {
                     // Extract the raw pattern string from the AST pattern node.
                     // The pattern must be `Pattern::Regex { pattern, .. }`; any
                     // other shape is a checker contract violation — fail closed.
@@ -1376,11 +1376,10 @@ impl LowerCtx<'_> {
                             continue;
                         }
                     };
-                    let literal_id = self.alloc_regex_literal(&raw_pattern, &captures);
+                    let literal_id = self.alloc_regex_literal(&raw_pattern);
                     HirMatchArmPredicate::Regex {
                         literal_id,
                         pattern: raw_pattern,
-                        captures,
                     }
                 }
             };

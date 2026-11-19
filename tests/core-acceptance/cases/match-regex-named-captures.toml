@@ -1,0 +1,10 @@
+[[case]]
+id = "match-regex-named-captures"
+intent = "Named groups stay in their match arm, including guards. Optional participation distinguishes an absent group from a present empty string, and each returned capture owns its Unicode text."
+source = "cases/match-regex-named-captures.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 35
+
+[case.expected]
+stdout = "Hello, Zoë 🦀!\nskip\nno greeting\nÉté: none\nÉté: some []\nÉté: some [fin]\nnone / none / []\nsome [a] / some [8] / [xx]\n"
+exit = 0

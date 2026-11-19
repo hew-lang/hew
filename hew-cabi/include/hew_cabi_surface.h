@@ -4264,9 +4264,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1798] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_image_register",
      "{\"native\": \"fn hew_image_register( *const c_char, *const u8, *const "
-     "u8, *const u8, *const u8, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "u8, *const u8, *const u8, )\", \"wasm32-wasip1\": \"fn "
      "hew_image_register( *const c_char, *const u8, *const u8, *const u8, "
-     "*const u8, ) -> i32\"}",
+     "*const u8, )\"}",
      "native,wasm32-wasip1", "non-declarable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_instant_duration_since",

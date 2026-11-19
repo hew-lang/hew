@@ -818,7 +818,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
         if !wasm {
-            self.emit_image_registration(&builder, wrapper)?;
+            self.emit_image_registration(&builder)?;
         }
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
@@ -837,18 +837,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     /// runs. A program linked against the shared runtime cannot override the
     /// library's own table symbols, so registration is how its tables reach
     /// the runtime; a statically linked program registers the same tables its
-    /// link already bound. A nonzero status (a runtime from another release)
-    /// is the process exit status.
-    fn emit_image_registration(
-        &self,
-        builder: &Builder<'ctx>,
-        wrapper: FunctionValue<'ctx>,
-    ) -> CodegenResult<()> {
+    /// link already bound. A runtime from another release exits the process
+    /// inside the call, so the entry block stays unsplit and keeps its
+    /// allocas.
+    fn emit_image_registration(&self, builder: &Builder<'ctx>) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let register = get_or_declare_external(
             &self.llvm,
             "hew_image_register",
-            self.ctx.i32_type().fn_type(
+            self.ctx.void_type().fn_type(
                 &[ptr.into(), ptr.into(), ptr.into(), ptr.into(), ptr.into()],
                 false,
             ),
@@ -863,7 +860,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .map_or_else(|| ptr.const_null(), |global| global.as_pointer_value())
                 .into()
         };
-        let status = builder
+        builder
             .build_call(
                 register,
                 &[
@@ -873,33 +870,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     table(hew_debug_abi::SYMTAB_SYMBOL),
                     table(hew_debug_abi::HAS_DEBUG_INFO_SYMBOL),
                 ],
-                "image.register",
+                "",
             )
-            .llvm_ctx("register image with the runtime")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("image registration returned no status".into())
-            })?
-            .into_int_value();
-        let registered = self.ctx.append_basic_block(wrapper, "image.registered");
-        let refused = self.ctx.append_basic_block(wrapper, "image.refused");
-        let ok = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_zero(),
-                "image.ok",
-            )
-            .llvm_ctx("check image registration")?;
-        builder
-            .build_conditional_branch(ok, registered, refused)
-            .llvm_ctx("branch on image registration")?;
-        builder.position_at_end(refused);
-        builder
-            .build_return(Some(&status))
-            .llvm_ctx("return image registration refusal")?;
-        builder.position_at_end(registered);
+            .llvm_ctx("register image with the runtime")?;
         Ok(())
     }
 
@@ -1038,7 +1011,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .collect::<Vec<_>>();
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
-        self.emit_image_registration(&builder, wrapper)?;
+        self.emit_image_registration(&builder)?;
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
         let selected = self.llvm.add_function(

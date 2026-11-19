@@ -51,8 +51,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         _sites: *const u8,
         _symbols: *const u8,
         _has_debug_info: *const u8,
-    ) -> i32 {
-        0
+    ) {
     }
     for (name, address) in [
         (

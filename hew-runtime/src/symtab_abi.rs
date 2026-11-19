@@ -107,11 +107,10 @@ const RUNTIME_MISMATCH_STATUS: i32 = 70;
 /// A statically linked program always carries its own runtime, so the check
 /// only fails for a program linked against the shared runtime that found a
 /// different release's library (a renamed file, an `LD_LIBRARY_PATH`
-/// override). The runtime ABI is not stable across releases, so it refuses to
-/// run rather than misbehave, and names both releases and the library it
-/// loaded.
-///
-/// Returns 0, or a nonzero exit status the entry returns.
+/// override). The runtime ABI is not stable across releases, so the process
+/// exits before any Hew code runs, naming both releases and the library it
+/// loaded, rather than misbehave. Exiting here keeps the entry a straight line:
+/// it has no failure branch of its own to split its block.
 ///
 /// # Safety
 /// `version` is null or a NUL-terminated string. Each table pointer is null or
@@ -123,35 +122,45 @@ pub unsafe extern "C" fn hew_image_register(
     sites: *const u8,
     symbols: *const u8,
     has_debug_info: *const u8,
-) -> i32 {
-    use std::io::Write as _;
+) {
+    let tables = [files, sites, symbols, has_debug_info];
+    // SAFETY: forwarded from this function's own contract.
+    let registered = unsafe { register_image(version, tables) };
+    if let Err(message) = registered {
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_all(message.as_bytes());
+        std::process::exit(RUNTIME_MISMATCH_STATUS);
+    }
+}
+
+/// [`hew_image_register`] without the exit: the diagnostic for a runtime from
+/// another release, or the tables registered.
+///
+/// # Safety
+/// As for [`hew_image_register`].
+unsafe fn register_image(version: *const c_char, tables: [*const u8; 4]) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     if !version.is_null() {
         // SAFETY: the caller passes a NUL-terminated string.
         let expected = unsafe { std::ffi::CStr::from_ptr(version) }.to_bytes();
         if expected != RUNTIME_VERSION.as_bytes() {
             let library = runtime_image_path();
-            let message = format!(
+            return Err(format!(
                 "hew: this program was compiled by Hew {expected} but loaded the Hew {actual} \
                  runtime{from}. Install the Hew {expected} runtime, or rebuild the program \
                  with this Hew release.\n",
                 expected = String::from_utf8_lossy(expected),
                 actual = RUNTIME_VERSION,
                 from = library.map_or_else(String::new, |path| format!(" from {path}")),
-            );
-            let _ = std::io::stderr().write_all(message.as_bytes());
-            return RUNTIME_MISMATCH_STATUS;
+            ));
         }
     }
-    for (slot, table) in [files, sites, symbols, has_debug_info]
-        .into_iter()
-        .enumerate()
-    {
+    for (slot, table) in tables.into_iter().enumerate() {
         if !table.is_null() {
             image::REGISTERED[slot].store(table.cast_mut(), Ordering::Release);
         }
     }
-    0
+    Ok(())
 }
 
 /// The file the runtime was loaded from, when the platform can say.
@@ -291,8 +300,12 @@ mod tests {
     fn image_registration_refuses_a_program_from_another_release() {
         let null = std::ptr::null();
         // SAFETY: a NUL-terminated version and null tables.
-        let status = unsafe { hew_image_register(c"0.0.0-other".as_ptr(), null, null, null, null) };
-        assert_eq!(status, RUNTIME_MISMATCH_STATUS);
+        let error = unsafe { register_image(c"0.0.0-other".as_ptr(), [null; 4]) }.unwrap_err();
+        assert!(
+            error.contains("compiled by Hew 0.0.0-other")
+                && error.contains(&format!("the Hew {RUNTIME_VERSION} runtime")),
+            "{error}"
+        );
         for slot in &image::REGISTERED {
             assert!(
                 slot.load(std::sync::atomic::Ordering::Acquire).is_null(),
@@ -307,8 +320,8 @@ mod tests {
         let version = std::ffi::CString::new(RUNTIME_VERSION).unwrap();
         // SAFETY: a NUL-terminated version and null tables, which register
         // nothing and leave the link-time tables in place.
-        let status = unsafe { hew_image_register(version.as_ptr(), null, null, null, null) };
-        assert_eq!(status, 0);
+        let registered = unsafe { register_image(version.as_ptr(), [null; 4]) };
+        assert_eq!(registered, Ok(()));
     }
 
     #[test]

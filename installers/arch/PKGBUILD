@@ -38,6 +38,13 @@ package() {
   install -Dm644 "${_srcdir}/lib/libhew.a" \
     "${pkgdir}/usr/lib/hew/libhew.a"
 
+  # Shared runtime for `hew build --link=dynamic`, named for the exact
+  # release, in the libdir the loader searches; the compiler finds it through
+  # /usr/lib/hew.
+  install -Dm755 "${_srcdir}/lib/libhew.so.${pkgver}" \
+    "${pkgdir}/usr/lib/libhew.so.${pkgver}"
+  ln -s "../libhew.so.${pkgver}" "${pkgdir}/usr/lib/hew/libhew.so.${pkgver}"
+
   # Standard library
   if [ -d "${_srcdir}/std" ]; then
     install -dm755 "${pkgdir}/usr/share/hew/std"

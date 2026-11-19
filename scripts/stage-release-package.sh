@@ -5,6 +5,12 @@
 # the tree they all ship and refuses to publish a partial stage. With
 # --debug-symbols DIR it also moves the compiler's debug info out of the staged
 # binary into DIR (see scripts/split-debug-symbols.sh for the layout).
+#
+# The shared runtime for `hew build --link=dynamic` ships as
+# lib/libhew.so.<version> (lib/libhew.<version>.dylib on macOS). By default
+# (--shared-runtime auto) it is the versioned library hew-lib's build left
+# beside --native-lib; a target built without one (a staticlib-only cross
+# build, Windows) ships without it and `--link=dynamic` reports that.
 set -eu
 
 usage() {
@@ -13,6 +19,7 @@ usage: scripts/stage-release-package.sh \
   --source-dir DIR --bin-dir DIR [--bin-suffix SUFFIX] \
   --native-lib FILE --native-triple TRIPLE --native-lib-name NAME \
   --wasi-lib-dir DIR [--optional-wasi] [--live-runtime FILE] \
+  [--shared-runtime FILE|auto|none] \
   --destination DIR --completion-shells "SHELL ..." [--debug-symbols DIR]
 EOF
 }
@@ -33,6 +40,7 @@ destination=
 completion_shells=
 optional_wasi=false
 live_runtime=
+shared_runtime=auto
 debug_symbols=
 
 while [ "$#" -gt 0 ]; do
@@ -40,7 +48,8 @@ while [ "$#" -gt 0 ]; do
     case "$option" in
     --source-dir | --bin-dir | --bin-suffix | --native-lib | \
         --native-triple | --native-lib-name | --wasi-lib-dir | \
-        --destination | --completion-shells | --live-runtime | --debug-symbols)
+        --destination | --completion-shells | --live-runtime | --debug-symbols | \
+        --shared-runtime)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value=$2
         shift 2
@@ -71,6 +80,7 @@ while [ "$#" -gt 0 ]; do
     --destination) destination=$value ;;
     --completion-shells) completion_shells=$value ;;
     --live-runtime) live_runtime=$value ;;
+    --shared-runtime) shared_runtime=$value ;;
     --debug-symbols) debug_symbols=$value ;;
     esac
 done
@@ -125,6 +135,25 @@ if [ -n "$live_runtime" ]; then
     [ -f "$source_dir/hew-live/README.md" ] || die "missing live SDK documentation"
 fi
 
+case "$shared_runtime" in
+none) shared_runtime= ;;
+auto)
+    shared_runtime=
+    for candidate in "$(dirname "$native_lib")"/libhew.so.* "$(dirname "$native_lib")"/libhew.*.dylib; do
+        [ -e "$candidate" ] || continue
+        [ -z "$shared_runtime" ] || die "more than one shared runtime beside $native_lib"
+        shared_runtime=$candidate
+    done
+    ;;
+*) [ -f "$shared_runtime" ] || die "missing shared runtime: $shared_runtime" ;;
+esac
+if [ -n "$shared_runtime" ]; then
+    case "$(basename "$shared_runtime")" in
+    libhew.so.[0-9]* | libhew.[0-9]*.dylib) ;;
+    *) die "shared runtime must carry its release in its name: $shared_runtime" ;;
+    esac
+fi
+
 if [ -n "$debug_symbols" ]; then
     if [ -e "$debug_symbols" ] || [ -L "$debug_symbols" ]; then
         die "debug symbols destination already exists: $debug_symbols"
@@ -153,6 +182,12 @@ chmod +x "$package_root/bin/hew$bin_suffix"
 
 cp "$native_lib" "$package_root/lib/$native_lib_name"
 cp "$native_lib" "$package_root/lib/$native_triple/$native_lib_name"
+if [ -n "$shared_runtime" ]; then
+    # One copy, at the host path the compiler searches after lib/<triple>/;
+    # `cp -L` resolves the versioned name to the library it names.
+    cp -L "$shared_runtime" "$package_root/lib/$(basename "$shared_runtime")"
+    chmod 755 "$package_root/lib/$(basename "$shared_runtime")"
+fi
 if [ "$include_wasi" = true ]; then
     mkdir -p "$package_root/lib/wasm32-wasip1"
     for wasi_lib in libhew_runtime.a libhew_std.a; do
@@ -193,7 +228,12 @@ if [ -n "$live_runtime" ]; then
         chmod +x "$package_root/bin/$companion$bin_suffix"
     done
     runtime_name=$(basename "$live_runtime")
-    cp "$live_runtime" "$package_root/lib/hew/$runtime_name"
+    cp -L "$live_runtime" "$package_root/lib/hew/$runtime_name"
+    # Live modules record the runtime's versioned name (its SONAME); give it
+    # that name too so their `$ORIGIN/..` search finds it.
+    if [ -n "$shared_runtime" ]; then
+        ln -s "$runtime_name" "$package_root/lib/hew/$(basename "$shared_runtime")"
+    fi
     cp "$source_dir/hew-live/README.md" "$package_root/share/hew/live/README.md"
     cp "$source_dir/hew-live/tests/fixtures/router.hew" "$package_root/share/hew/live/router.hew"
     "$package_root/bin/hew-live-node$bin_suffix" prepare-transport \

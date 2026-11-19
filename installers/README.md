@@ -21,11 +21,11 @@ installed without installing it). `sh install.sh --help` lists all of them.
 
 ## Native build prerequisites
 
-Hew includes LLVM and its runtime. Building or running a native Hew program also
-requires a system C compiler driver and C development files for the final link.
-The Linux `.deb`, `.rpm` and Arch packages install these dependencies through the
-package manager. When using the shell installer or extracting a tarball, install
-them first:
+Hew includes LLVM and its runtime. Building a native Hew program also requires
+a system C compiler driver and C development files for the final link; running
+an already-built program does not. The Linux `.deb`, `.rpm` and Arch packages
+install these dependencies through the package manager. When using the shell
+installer or extracting a tarball, install them first:
 
 | System          | Command                              |
 | --------------- | ------------------------------------ |
@@ -35,12 +35,19 @@ them first:
 | macOS           | `xcode-select --install`             |
 
 On FreeBSD, the base system provides Clang and the C development files. On
-Windows, put LLVM 22.1.6 `clang.exe` and `lld-link.exe` on `PATH`, and install
-Visual Studio Build Tools with the Desktop development with C++ workload and
-Windows SDK. The linker discovers the MSVC and Windows SDK libraries; a developer
-shell is not required. Prebuilt SDK users do not need Rust or LLVM development
-headers and libraries. The shipped Linux archives target glibc;
-they do not run on an unmodified musl-based Alpine system.
+Windows, install LLVM (`winget install LLVM.LLVM`) so `clang.exe` and
+`lld-link.exe` are on `PATH`, and install Visual Studio Build Tools with the
+Desktop development with C++ workload and Windows SDK. The linker discovers the
+MSVC and Windows SDK libraries; a developer shell is not required. Prebuilt SDK
+users do not need Rust or LLVM development headers and libraries. The shipped
+Linux archives target glibc; they do not run on an unmodified musl-based Alpine
+system.
+
+Releases for Linux, FreeBSD and macOS also install the shared runtime
+(`lib/libhew.so.<version>`, or `lib/libhew.<version>.dylib` on macOS) used
+by `hew build --link=dynamic`. Each release's runtime has its own file name,
+and upgrading never removes an earlier one. See
+[Linking Hew programs](../docs/linking.md).
 
 ## Quick Install (FreeBSD)
 

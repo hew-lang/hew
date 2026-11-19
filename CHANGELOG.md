@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- `hew build --link=dynamic` and `hew run --link=dynamic` link programs
+  against the shared Hew runtime instead of copying it in. The shared runtime
+  is `libhew.so.<version>` on Linux (glibc) and FreeBSD and
+  `libhew.<version>.dylib` on macOS. Each release's runtime has its own name
+  and installs beside the others, so upgrading Hew keeps earlier programs
+  running while their runtime stays installed. `--rpath DIR` sets where such
+  programs look for it. Static linking stays the default. See
+  [Linking Hew programs](docs/linking.md).
+- Release archives, the Docker image and the Arch package ship the shared
+  runtime. Debian and RPM ship it as a per-release package (`libhew<version>`).
+- A missing C compiler, a missing clang for cross-target links, or missing C
+  library development files now produce one install command for the host
+  (for example `sudo apt install gcc libc6-dev` on Debian or Ubuntu, or
+  `xcode-select --install` on macOS). Windows advice no longer pins an LLVM
+  download.
+
 - `std.time.datetime` supports proleptic Gregorian years −999999 through
   +999999 on native and sandbox targets. Custom `format` and `parse`
   patterns use the Rust `time` crate's strftime dialect. Use `%z` for a

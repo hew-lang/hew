@@ -15,6 +15,8 @@ mkdir -p target/debug target/wasm32-wasip1/debug
 install -m 755 "$stage/compiled-hew/debug/hew" target/debug/hew
 install -m 644 "$stage/compiled-hew/debug/libhew.a" target/debug/libhew.a
 install -m 755 "$stage/compiled-hew/debug/libhew.so" target/debug/libhew.so
+# The shared runtime's versioned name, a link to libhew.so.
+cp -P "$stage"/compiled-hew/debug/libhew.so.* target/debug/
 install -m 644 "$stage/compiled-hew/debug/libhew_runtime.a" target/debug/libhew_runtime.a
 install -m 644 "$stage/compiled-hew/wasm32-wasip1/debug/libhew_runtime.a" target/wasm32-wasip1/debug/libhew_runtime.a
 install -m 644 "$stage/compiled-hew/wasm32-wasip1/debug/libhew_std.a" target/wasm32-wasip1/debug/libhew_std.a

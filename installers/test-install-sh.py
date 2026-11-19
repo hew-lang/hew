@@ -41,10 +41,12 @@ cp "$HEW_FIXTURE/${url##*/}" "$destination"
         self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
                         HEW_FIXTURE=str(self.fixture), TMPDIR=str(self.root))
 
-    def archive(self, compiler=True, optional=False):
+    def archive(self, compiler=True, optional=False, shared_runtime=None):
         name = "hew-v0.10.0-linux-x86_64.tar.gz"
         archive = self.fixture / name
         files = {"lib/libhew.a": b"test library"}
+        if shared_runtime is not None:
+            files["lib/libhew.so.0.10.0"] = shared_runtime
         if compiler:
             files["bin/hew"] = b"#!/bin/sh\nexit 0\n"
         if optional:
@@ -90,6 +92,26 @@ cp "$HEW_FIXTURE/${url##*/}" "$destination"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing required binary: hew", result.stderr)
         self.assertFalse((self.prefix / ".hew-version").exists())
+
+    def test_shared_runtimes_install_side_by_side_and_replace_by_rename(self):
+        self.archive(shared_runtime=b"runtime 0.10.0, new build")
+        lib = self.prefix / "lib"
+        lib.mkdir(parents=True)
+        older = lib / "libhew.so.0.9.0"
+        older.write_bytes(b"runtime 0.9.0")
+        current = lib / "libhew.so.0.10.0"
+        current.write_bytes(b"runtime 0.10.0, old build")
+        # A running program's mapping behaves like this second link: the
+        # installer must not rewrite the file it names.
+        mapped = self.root / "mapped-runtime"
+        os.link(current, mapped)
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(current.read_bytes(), b"runtime 0.10.0, new build")
+        self.assertEqual(mapped.read_bytes(), b"runtime 0.10.0, old build")
+        self.assertEqual(older.read_bytes(), b"runtime 0.9.0")
+        self.assertTrue(os.access(current, os.X_OK))
+        self.assertEqual([path.name for path in lib.glob(".*.new")], [])
 
     def test_dry_run_does_not_create_installation(self):
         result = self.run_installer("--dry-run")

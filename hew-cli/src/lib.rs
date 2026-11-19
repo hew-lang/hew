@@ -555,7 +555,15 @@ fn link_native_object_with_hew_lib_and_extra(
         eprintln!("Error: output path is not valid UTF-8");
         DiagChannel::User
     })?;
-    crate::link::link_executable_with_hew_lib(obj_str, bin_str, &target, extra_libs, false, hew_lib)
+    crate::link::link_executable_with_hew_lib(
+        obj_str,
+        bin_str,
+        &target,
+        extra_libs,
+        false,
+        hew_lib,
+        &crate::link::LinkOptions::default(),
+    )
         .map_err(|e| {
             crate::diagnostic::emit_plain_diagnostic_line(&e);
             DiagChannel::User
@@ -855,6 +863,7 @@ fn link_native_object_for_target_with_hew_lib(
     debug: bool,
     extra_libs: &[String],
     hew_lib: Option<&Path>,
+    link: &crate::link::LinkOptions,
 ) -> Result<(), DiagChannel> {
     let obj_str = obj.to_str().ok_or_else(|| {
         eprintln!("Error: object path is not valid UTF-8");
@@ -864,7 +873,9 @@ fn link_native_object_for_target_with_hew_lib(
         eprintln!("Error: output path is not valid UTF-8");
         DiagChannel::User
     })?;
-    crate::link::link_executable_with_hew_lib(obj_str, bin_str, target, extra_libs, debug, hew_lib)
+    crate::link::link_executable_with_hew_lib(
+        obj_str, bin_str, target, extra_libs, debug, hew_lib, link,
+    )
         .map_err(|e| {
             crate::diagnostic::emit_plain_diagnostic_line(&e);
             DiagChannel::User
@@ -1010,6 +1021,7 @@ fn compile_build_binary_with_hew_lib(
         debug,
         &native.libraries(extra_libs),
         hew_lib,
+        &options.link,
     )?;
     remove_intermediate_object(object)?;
     measure_compile_phase("total", wall_started.elapsed());
@@ -1178,6 +1190,17 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     }
 
     let options = a.to_compile_options();
+
+    // `--link` and `--rpath` describe the native link, which `--emit-obj`
+    // skips; refuse rather than silently ignore them.
+    if a.emit_obj && (options.link.runtime != link::RuntimeLink::Static || options.link.rpath.is_some()) {
+        eprintln!("Error: --link and --rpath apply to linked programs, not --emit-obj");
+        return 2;
+    }
+    if let Err(error) = link::validate_link_options(&target, &options.link) {
+        eprintln!("{error}");
+        return 2;
+    }
 
     // The clap `value_parser` already constrains `--opt-level` to {"0","2"}, so
     // `from_cli_str` cannot return `None` here; fail closed regardless rather than
@@ -1419,6 +1442,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
             false,
             &native.libraries(&[]),
             None,
+            &crate::link::LinkOptions::default(),
         ) {
             return channel.exit_code();
         }
@@ -1734,6 +1758,10 @@ fn cmd_run(a: &args::RunArgs) {
             "Error: --link-lib is not supported for WASI targets \
              (native archives cannot be linked into a wasm module)"
         );
+        std::process::exit(2);
+    }
+    if let Err(error) = link::validate_link_options(target.spec(), &options.link) {
+        eprintln!("{error}");
         std::process::exit(2);
     }
 

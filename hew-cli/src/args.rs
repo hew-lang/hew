@@ -309,6 +309,35 @@ fn parse_source_overlay(value: &str) -> Result<SourceOverlay, String> {
     Ok(SourceOverlay { path, source })
 }
 
+/// How a native program links the Hew runtime.
+#[derive(Debug, Args, Clone, Default)]
+pub struct LinkArgs {
+    /// How to link the Hew runtime and standard library: `static` (default)
+    /// copies them into the program, which then runs without Hew installed and
+    /// is unaffected by upgrading or removing Hew. `dynamic` loads this
+    /// release's shared runtime (`libhew.so.<version>` on Linux and FreeBSD,
+    /// `libhew.<version>.dylib` on macOS) at run time: smaller programs that
+    /// share one runtime, which must be installed wherever they run. System
+    /// libraries are linked dynamically either way.
+    #[arg(long, value_enum, default_value_t = crate::link::RuntimeLink::Static, value_name = "MODE")]
+    pub link: crate::link::RuntimeLink,
+    /// With `--link=dynamic`: a directory the program searches for the shared
+    /// runtime when it starts. Repeatable; replaces the default search path
+    /// (the program's directory, a `lib` directory beside it, then the
+    /// directory of the runtime it was linked against).
+    #[arg(long, value_name = "DIR")]
+    pub rpath: Vec<String>,
+}
+
+impl LinkArgs {
+    pub fn options(&self) -> crate::link::LinkOptions {
+        crate::link::LinkOptions {
+            runtime: self.link,
+            rpath: (!self.rpath.is_empty()).then(|| self.rpath.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Args, Clone, Default)]
 pub struct CommonBuildArgs {
     /// Treat warnings as errors.
@@ -396,6 +425,8 @@ pub struct RunArgs {
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
     #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
+    #[command(flatten)]
+    pub linking: LinkArgs,
     /// Write a Makefile-format dependency file naming every Hew module,
     /// manifest and native source the program read; the file is its own target.
     #[arg(long = "emit-deps", value_name = "FILE")]
@@ -445,6 +476,7 @@ impl RunArgs {
             } else {
                 hew_compile::HostAdmission::Off
             },
+            link: self.linking.options(),
             ..self.common.base_compile_options()
         }
     }
@@ -662,6 +694,8 @@ pub struct BuildArgs {
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
     #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
+    #[command(flatten)]
+    pub linking: LinkArgs,
     /// Write a Makefile-format dependency file naming every Hew module,
     /// manifest and native source the build read, with the output as target.
     #[arg(long = "emit-deps", value_name = "FILE", conflicts_with_all = ["export_c", "export_c_async"])]
@@ -677,6 +711,7 @@ impl BuildArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
+            link: self.linking.options(),
             ..self.common.base_compile_options()
         }
     }

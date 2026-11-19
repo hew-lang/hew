@@ -8,6 +8,8 @@ The Hew programming language compiler driver.
 hew compile file.hew [--emit-dir DIR] [--target wasm32-unknown-unknown]
                                    # Compile through HIR, SIR, MIR, and LLVM
 hew run file.hew [-- args...]     # Compile and run
+hew build file.hew -o app         # Build a native program (runtime linked in)
+hew build --link=dynamic file.hew # Load the shared runtime libhew.so.<version> instead
 hew run file.hew --profile        # Compile, run, and enable the built-in profiler
 hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
 hew check file.hew                # Parse + typecheck only

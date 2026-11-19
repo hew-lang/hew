@@ -203,6 +203,23 @@ impl TargetSpec {
         }
     }
 
+    /// The file name of release `release`'s shared runtime for this target:
+    /// the versioned name the loader looks up (ELF `SONAME`, Mach-O install
+    /// name). `None` where Hew does not provide a shared runtime.
+    ///
+    /// The runtime ABI is not stable across releases, so the name carries the
+    /// exact release and a program only ever loads the runtime it was built
+    /// against.
+    pub fn shared_hew_lib_name(&self, release: &str) -> Option<String> {
+        match (self.os, self.env.as_deref()) {
+            (TargetOs::Linux, Some("gnu") | None) | (TargetOs::FreeBsd, _) => {
+                Some(format!("libhew.so.{release}"))
+            }
+            (TargetOs::Darwin, _) => Some(format!("libhew.{release}.dylib")),
+            _ => None,
+        }
+    }
+
     pub fn is_wasm(&self) -> bool {
         self.arch == TargetArch::Wasm32
     }
@@ -671,6 +688,11 @@ fn host_env() -> Option<&'static str> {
 }
 
 impl ExecutionTarget {
+    /// The compilation target this execution target runs.
+    pub fn spec(&self) -> &TargetSpec {
+        &self.spec
+    }
+
     pub fn from_requested(requested: Option<&str>) -> Result<Self, String> {
         let spec = TargetSpec::from_requested(requested)?;
         let kind = if spec.is_wasm() {

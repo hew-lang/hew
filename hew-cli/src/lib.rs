@@ -62,6 +62,7 @@ mod source_paths;
 mod symbolize;
 mod target;
 mod test_runner;
+mod toolchain_hint;
 mod util;
 mod wasi_runner;
 mod watch;

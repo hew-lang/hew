@@ -1024,13 +1024,7 @@ pub(crate) fn native_toolchain(
     )
 )]
 fn windows_missing_clang_error() -> String {
-    "Error: clang.exe not found on PATH. Install the LLVM 22.1.6 Windows MSVC \
-     toolchain from https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz, \
-     add its bin directory to PATH, and ensure lld-link.exe is available from \
-     the same LLVM bin directory. Do not rely on vcvars64.bat for Hew builds; \
-     lld-link auto-detects the MSVC/Windows SDK libraries and vcvars64.bat can \
-     interfere with llvm-sys detection."
-        .to_string()
+    crate::toolchain_hint::missing_windows_clang()
 }
 
 /// Decide whether to link the LLVM profiler runtime into the final binary for
@@ -1073,16 +1067,10 @@ fn driver_version_is_clang(version: &str) -> bool {
         .is_some_and(|first| first.to_lowercase().contains("clang"))
 }
 
-/// Build the "no C driver found" message: names what was tried and the
-/// packages that provide one, mirroring `windows_missing_clang_error`'s shape
-/// (what was tried, what to install) for the non-Windows probe order.
+/// Build the "no C driver found" message: names what was tried and the one
+/// command that installs a driver and the C library files on this host.
 fn native_compiler_not_found_error(tried: &str) -> String {
-    format!(
-        "Error: {tried}. Install a C compiler driver: `clang` (https://clang.llvm.org), \
-         `gcc`/`build-essential` on Debian/Ubuntu (`apt install build-essential`) or \
-         Fedora/RHEL (`dnf install gcc`), or the Xcode Command Line Tools on macOS \
-         (`xcode-select --install`)."
-    )
+    crate::toolchain_hint::missing_c_driver(tried, crate::toolchain_hint::HostFamily::host())
 }
 
 fn select_native_compiler_with<F>(
@@ -1123,9 +1111,9 @@ where
     #[cfg(not(target_os = "windows"))]
     {
         if !target.can_run_on_host() {
-            return Err(format!(
-                "Error: clang not found. Install LLVM/Clang to link target {} from this host.",
-                target.normalized_triple()
+            return Err(crate::toolchain_hint::missing_cross_clang(
+                target.normalized_triple(),
+                crate::toolchain_hint::HostFamily::host(),
             ));
         }
 
@@ -1698,6 +1686,13 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
              already provided by another linked input (such as the Hew runtime)."
                 .to_string(),
         );
+    }
+
+    if let Some(hint) = crate::toolchain_hint::missing_c_library_hint(
+        stderr,
+        crate::toolchain_hint::HostFamily::host(),
+    ) {
+        hints.push(hint);
     }
 
     hints
@@ -2786,10 +2781,8 @@ mod tests {
             "must name the literal HEW_CC value: {error}"
         );
         assert!(
-            ["clang", "gcc", "build-essential", "xcode"]
-                .iter()
-                .any(|pkg| error.to_lowercase().contains(pkg)),
-            "must name a package that provides a driver: {error}"
+            error.contains(crate::toolchain_hint::HostFamily::host().c_toolchain_advice()),
+            "must give this host's install command: {error}"
         );
     }
 
@@ -2871,9 +2864,8 @@ mod tests {
         let error = windows_missing_clang_error();
 
         assert!(error.contains("clang.exe"));
-        assert!(error.contains("lld-link.exe"));
-        assert!(error.contains("LLVM 22.1.6"));
-        assert!(error.contains("llvm-project/releases/download/llvmorg-22.1.6"));
+        assert!(error.contains("lld-link"));
+        assert!(error.contains("winget install LLVM.LLVM"));
         assert!(error.contains("PATH"));
         assert!(error.contains("vcvars64.bat"));
     }

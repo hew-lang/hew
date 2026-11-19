@@ -19,14 +19,43 @@ For the standard bootstrap flow, start with `hew init <name>` so you get
 
 ## Build & linking
 
+The `hew` binary embeds LLVM, so compiling needs no LLVM installation. Linking
+a native program runs the system C compiler driver (`clang` or `cc`), which
+supplies the C runtime start files and the C library. Running an
+already-built program needs neither.
+
 Common signs:
 
-- `Error: clang not found. Install LLVM to link Hew programs.`
+- `Error: no C compiler found (tried clang, cc). Hew links native programs
+  with the system C compiler driver; install one with ...`
+- `hint: the C compiler driver ran, but the C library's development files are
+  missing; ...` (the linker reported `cannot find crt1.o`, `crti.o` or `-lc`)
+- `Error: clang not found. Linking for target <triple> from this host needs
+  clang; ...` (cross-target builds)
+- `Error: clang.exe not found on PATH.` (Windows)
 - `Error: cannot find libhew.a. Build with: make stdlib`
-- raw linker output after `hew compile <file.hew>`
-- `hew check <file.hew>` succeeds, but `hew compile ...` fails
+- raw linker output after `hew build <file.hew>`
+- `hew check <file.hew>` succeeds, but `hew build ...` fails
 
 What to check:
+
+- The missing-compiler errors name the install command for the machine you
+  are on. On Linux, install the compiler *and* the C library development
+  files (`gcc libc6-dev` on Debian/Ubuntu, `gcc glibc-devel` on Fedora/RHEL).
+  On macOS, run `xcode-select --install`. FreeBSD's base system already
+  provides `cc`. On Windows, install LLVM (`winget install LLVM.LLVM`) for
+  `clang.exe` and `lld-link.exe`, plus Visual Studio Build Tools with the
+  "Desktop development with C++" workload and a Windows SDK.
+- `HEW_CC=<path>` selects a specific C compiler driver instead of probing for
+  `clang` and then `cc`.
+- Cross-target links (`--target` for another architecture or OS) need clang,
+  because GCC's `cc` cannot take a target triple.
+- Use `hew check <file.hew>` first to separate frontend failures from
+  link/toolchain failures.
+- Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`
+  flags, or target mismatches before chasing compiler internals.
+
+### Building Hew from source
 
 - `Error: cannot find libhew.a. Build with: make stdlib` only happens on a
   **source checkout**: `cargo build -p hew-cli --bin hew` builds the driver
@@ -37,10 +66,6 @@ What to check:
   step. This does not affect an installed release binary — the release
   artifacts already bundle `libhew.a`, so a downloaded or packaged `hew` works
   without any extra build step.
-- Use `hew check <file.hew>` first to separate frontend failures from
-  link/toolchain failures.
-- Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`
-  flags, or target mismatches before chasing compiler internals.
 - For this repo, use `make`, `make release`, `make test`, and other Makefile
   targets instead of calling Cargo directly.
 - Use the toolchain from the root README: Rust stable and LLVM 22.

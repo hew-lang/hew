@@ -704,7 +704,7 @@ pub(super) fn insert_declare<'ctx>(
     block: inkwell::basic_block::BasicBlock<'ctx>,
 ) {
     let expression = builder.create_expression(vec![]);
-    // LLVM 19+ returns a DbgRecord, but inkwell 0.9 casts it to an
+    // LLVM 19+ returns a DbgRecord, but inkwell (still in 0.11) casts it to an
     // InstructionValue and can panic. The record API returns the right type.
     use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
     // SAFETY: all handles belong to this live context, and the returned

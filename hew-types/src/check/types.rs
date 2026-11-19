@@ -2914,6 +2914,8 @@ pub struct ImplMethodProvenance {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    /// A written return hole is owned by the function body and shared by its callers.
+    pub inferred_return: bool,
     /// Declaration-owned computations for omitted arguments, aligned with `params`.
     pub param_defaults: Vec<Option<DefaultArgumentProvider>>,
     pub impl_method: Option<ImplMethodProvenance>,
@@ -3023,6 +3025,7 @@ pub struct ReceiverObligation {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            inferred_return: false,
             param_defaults: Vec::new(),
             impl_method: None,
             type_params: vec![],
@@ -3643,6 +3646,7 @@ pub struct Checker {
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
+    pub(super) deferred_call_returns: Vec<super::return_inference::CallReturn>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
     pub(super) deferred_negate_checks: Vec<DeferredNegateCheck>,
     /// `is` obligations recorded while an operand type was still an
@@ -4631,6 +4635,7 @@ impl Checker {
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
+            deferred_call_returns: Vec::new(),
             deferred_cast_checks: Vec::new(),
             deferred_negate_checks: Vec::new(),
             deferred_is_checks: BTreeMap::new(),

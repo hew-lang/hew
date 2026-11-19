@@ -57,7 +57,7 @@ pub enum AccessError {
 impl Display for AccessError {
     fn fmt(self) -> string {
         match self {
-            AccessError.WrongKind(_, _) => "json: unexpected value kind",
+            AccessError.WrongKind(expected, actual) => f"json: expected {expected:?}, found {actual:?}",
             AccessError.IntegerRange => "json: integer outside the requested range",
             AccessError.InvalidIndex(index) => f"json: unsupported array index {index}",
         }

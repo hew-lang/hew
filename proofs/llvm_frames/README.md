@@ -14,7 +14,7 @@ coverage fails.
 
 The LLVM job runs independently of runtime proofs in the daily/manual advisory
 workflow. Normal PRs do not run it. It needs the normal compiler toolchain
-(LLVM 22.1) and Lean 4.19, with no SMT service or Python package dependency.
+(the LLVM series in `llvm-version.env`) and Lean 4.19, with no SMT service or Python package dependency.
 
 ## What is proved
 

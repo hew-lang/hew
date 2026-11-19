@@ -1,0 +1,22 @@
+[[case]]
+id = "inferred-function-results-ambiguous"
+intent = "Callers cannot choose the result of an unconstrained recursive cycle or the element type of an empty option."
+source = "cases/inferred-function-results-ambiguous.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "InferenceFailed"
+line = 1
+column = 15
+
+[[case.expected.diagnostics]]
+code = "InferenceFailed"
+line = 2
+column = 16
+
+[[case.expected.diagnostics]]
+code = "InferenceFailed"
+line = 3
+column = 17

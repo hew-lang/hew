@@ -813,6 +813,39 @@ fn parse_match_block_arms_without_commas() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
+#[test]
+fn arm_separator_keeps_expression_and_member_rules() {
+    for (source, kind) in [
+        (
+            "fn f() { match n { 0 => 1 _ => 2 } }",
+            ParseDiagnosticKind::ListSeparator,
+        ),
+        (
+            "fn f() { select { x from left => x y from right => y } }",
+            ParseDiagnosticKind::ListSeparator,
+        ),
+        (
+            "fn f() { match n { 0 => {},, _ => {} } }",
+            ParseDiagnosticKind::SeparatorAfterBody,
+        ),
+        (
+            "fn f() { select { x from left => {}; after 1s => {} } }",
+            ParseDiagnosticKind::SeparatorAfterBody,
+        ),
+        (
+            "actor A { receive fn f() {}, }",
+            ParseDiagnosticKind::SeparatorAfterBody,
+        ),
+    ] {
+        let result = parse(source);
+        assert!(
+            result.errors.iter().any(|error| error.kind == kind),
+            "{source}: {:?}",
+            result.errors,
+        );
+    }
+}
+
 /// A block-bodied arm needs no trailing comma, and a contextual variant
 /// pattern opens with `.` — the only spelling of the dotted form. The `.` after
 /// the closing `}` must start the next arm rather than read as member access on

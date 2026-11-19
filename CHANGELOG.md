@@ -8,6 +8,11 @@
   numeric offset such as `+0000`. Migrate patterns using Chrono's fractional
   directives (`%f`, `%.f`, `%.9f`) or colonized offsets (`%:z`) to
   `to_iso8601` and `parse_iso8601` for lossless timestamp text.
+- Build the compiler against LLVM 23.1 (inkwell 0.11, llvm-sys 231). Source
+  builds need LLVM 23 development libraries (`llvm@23`, `llvm-23-dev`,
+  `llvm23`) and set `LLVM_SYS_231_PREFIX` instead of `LLVM_SYS_221_PREFIX`.
+  The LLVM version now lives in `llvm-version.env`, and any 23.1 maintenance
+  release is accepted.
 
 - Native and browser YAML decoding use a pure Rust parser. Rust callers of
   `hew_codec::yaml_value::parse` can name the returned value through

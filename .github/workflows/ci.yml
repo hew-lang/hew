@@ -33,10 +33,6 @@ permissions:
   pull-requests: read
 
 env:
-  # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
-  # llvm-sys-221) build script. Bumps must be reflected in
-  # .github/actions/setup-llvm/action.yml (asset SHA256 pins) too.
-  LLVM_VERSION: "22.1.5"
   # Pinned wasmtime release tag. Every job that provisions a WASI runner
   # downloads its per-platform asset from THIS tag. It is pinned, and pinned in
   # one place, for two reasons: resolving "latest" per job (as the Linux job
@@ -80,10 +76,8 @@ jobs:
           targets: wasm32-wasip1
           cache-shared-key: lint
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Install ShellCheck
         uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
@@ -211,10 +205,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -268,10 +260,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Download compiled Hew bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -476,8 +466,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq mosquitto-clients
       - uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
           tools: ${{ matrix.shard == 2 && 'nextest@0.9.120' || '' }}
@@ -533,8 +521,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb libssl-dev pkg-config zlib1g-dev libzstd-dev
       - uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: wasm32-wasip1
@@ -592,8 +578,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
       - uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
           cache-shared-key: corpus

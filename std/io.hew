@@ -159,7 +159,9 @@ impl Error for WatchError {}
 /// one descriptor, including standard input alongside `read_line`, can
 /// coexist. Unix only.
 pub fn watch_readable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
-    watch_stream(unsafe { hew_io_watch_readable(fd) })
+    watch_stream(unsafe {
+        hew_io_watch_readable(fd)
+    })
 }
 
 /// Wait for a foreign descriptor to accept a write without blocking. Each
@@ -169,7 +171,9 @@ pub fn watch_readable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
 /// a separate close-on-exec duplicate. Use a nonblocking descriptor and retry
 /// the write after readiness if another writer can use the available space.
 pub fn watch_writable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
-    watch_stream(unsafe { hew_io_watch_writable(fd) })
+    watch_stream(unsafe {
+        hew_io_watch_writable(fd)
+    })
 }
 
 fn watch_stream(consume pair: stream.StreamPair) -> Result<stream.Stream<()>, WatchError> {

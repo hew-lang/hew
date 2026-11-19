@@ -47,9 +47,15 @@ class ReleaseInventory(unittest.TestCase):
             b"reference docs"
         )
         for name in [
-            "hew_0.6.3_amd64.deb",
-            "hew-0.6.3.x86_64.rpm",
-            "hew-bin-0.6.3.pkg.tar.zst",
+            f"hew_{VERSION}-1_amd64.deb",
+            f"hew_{VERSION}-1_arm64.deb",
+            f"hew-dbgsym_{VERSION}-1_amd64.deb",
+            f"hew-dbgsym_{VERSION}-1_arm64.deb",
+            f"hew-{VERSION}-1.fc41.x86_64.rpm",
+            f"hew-{VERSION}-1.fc41.aarch64.rpm",
+            f"hew-debuginfo-{VERSION}-1.fc41.x86_64.rpm",
+            f"hew-debuginfo-{VERSION}-1.fc41.aarch64.rpm",
+            f"hew-bin-{VERSION}-1-x86_64.pkg.tar.zst",
         ]:
             (self.directory / name).write_bytes(b"package")
 
@@ -66,6 +72,7 @@ class ReleaseInventory(unittest.TestCase):
     def test_complete_set_and_receipt_have_exact_checksums_without_self_reference(self):
         receipt = self.assemble()
         self.assertEqual(receipt["source"], SHA)
+        self.assertEqual(receipt["platforms"]["linux-packages"]["state"], "available")
         self.assertTrue(
             all(
                 receipt["platforms"][name]["state"] == "available"
@@ -150,13 +157,58 @@ class ReleaseInventory(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required qualified archive"):
             self.assemble(notes, version="0.7.0")
 
-    def test_missing_optional_package_output_records_actual_success(self):
-        (self.directory / "hew_0.6.3_amd64.deb").unlink()
-        receipt = self.assemble()
-        self.assertEqual(
-            receipt["platforms"]["linux-packages"],
-            {"state": "unavailable", "result": "success", "missing": ["hew_*.deb"]},
-        )
+    def test_a_missing_architecture_or_debug_package_makes_the_channel_unavailable(
+        self,
+    ):
+        for name in (
+            f"hew_{VERSION}-1_arm64.deb",
+            f"hew-{VERSION}-1.fc41.aarch64.rpm",
+            f"hew-dbgsym_{VERSION}-1_amd64.deb",
+            f"hew-debuginfo-{VERSION}-1.fc41.x86_64.rpm",
+            f"hew-bin-{VERSION}-1-x86_64.pkg.tar.zst",
+        ):
+            with self.subTest(name=name):
+                path = self.directory / name
+                path.unlink()
+                receipt = self.assemble()
+                self.assertEqual(
+                    receipt["platforms"]["linux-packages"],
+                    {"state": "unavailable", "result": "success", "missing": [name]},
+                )
+                path.write_bytes(b"package")
+
+    def test_an_empty_expected_package_is_missing(self):
+        name = f"hew_{VERSION}-1_amd64.deb"
+        (self.directory / name).write_bytes(b"")
+        channel = self.assemble()["platforms"]["linux-packages"]
+        self.assertEqual(channel["state"], "unavailable")
+        self.assertEqual(channel["missing"], [name])
+
+    def test_a_stale_package_makes_the_channel_unavailable(self):
+        name = f"hew_{VERSION}-1_arm64.deb"
+        current = self.directory / name
+        stale = "hew_0.6.2-1_arm64.deb"
+        current.rename(self.directory / stale)
+        channel = self.assemble()["platforms"]["linux-packages"]
+        self.assertEqual(channel["state"], "unavailable")
+        self.assertEqual(channel["missing"], [name])
+        self.assertEqual(channel["unexpected"], [stale])
+
+        current.write_bytes(b"package")
+        channel = self.assemble()["platforms"]["linux-packages"]
+        self.assertEqual(channel["state"], "unavailable")
+        self.assertNotIn("missing", channel)
+        self.assertEqual(channel["unexpected"], [stale])
+
+    def test_a_final_minor_requires_the_complete_distro_set(self):
+        version = "0.7.0"
+        for path in self.directory.iterdir():
+            path.rename(path.with_name(path.name.replace(VERSION, version)))
+        receipt = self.assemble(version=version)
+        self.assertEqual(receipt["platforms"]["linux-packages"]["state"], "available")
+        (self.directory / f"hew-dbgsym_{version}-1_arm64.deb").unlink()
+        with self.assertRaisesRegex(ValueError, "linux-packages"):
+            self.assemble(version=version)
 
     def test_prerelease_records_unproduced_distro_packages_even_when_note_step_succeeds(
         self,

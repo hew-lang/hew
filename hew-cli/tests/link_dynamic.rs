@@ -188,6 +188,65 @@ fn rpath_replaces_the_default_search_path() {
     assert_eq!(found.stdout, b"hello from hew\n");
 }
 
+/// A build that trims paths (the `--release` default) records no
+/// build-machine directory, so it links the same on every machine; it runs
+/// once its runtime ships beside it. `--no-trim-paths` keeps the in-place
+/// search directory.
+#[test]
+fn trimmed_builds_record_no_runtime_install_directory() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let runtime = hew_binary()
+        .parent()
+        .expect("compiler directory")
+        .join(runtime_name())
+        .canonicalize()
+        .expect("in-tree shared runtime");
+    let install_dir = runtime
+        .parent()
+        .expect("runtime directory")
+        .display()
+        .to_string();
+    let records_install_dir = |program: &Path| {
+        let image = std::fs::read(program).expect("read binary");
+        image
+            .windows(install_dir.len())
+            .any(|window| window == install_dir.as_bytes())
+    };
+
+    let trimmed = build(
+        dir.path(),
+        "release",
+        HELLO,
+        &["--release", "--link=dynamic"],
+    );
+    assert!(
+        !records_install_dir(&trimmed),
+        "a trimmed build must not name {install_dir}"
+    );
+    assert!(
+        !run(&trimmed).status.success(),
+        "no runtime beside the program yet"
+    );
+    std::fs::copy(&runtime, trimmed.with_file_name(runtime_name())).expect("copy runtime");
+    let shipped = run(&trimmed);
+    assert!(shipped.status.success(), "{}", describe_output(&shipped));
+    assert_eq!(shipped.stdout, b"hello from hew\n");
+
+    let untrimmed = build(
+        dir.path(),
+        "release-untrimmed",
+        HELLO,
+        &["--release", "--no-trim-paths", "--link=dynamic"],
+    );
+    assert!(
+        records_install_dir(&untrimmed),
+        "--no-trim-paths keeps {install_dir}"
+    );
+    let in_place = run(&untrimmed);
+    assert!(in_place.status.success(), "{}", describe_output(&in_place));
+}
+
 #[test]
 fn rpath_without_dynamic_linking_is_a_usage_error() {
     require_codegen();

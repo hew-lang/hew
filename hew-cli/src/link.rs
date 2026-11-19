@@ -134,6 +134,11 @@ pub struct LinkOptions {
     /// defaults. `None` keeps the defaults; only meaningful when `runtime` is
     /// [`RuntimeLink::Dynamic`].
     pub rpath: Option<Vec<String>>,
+    /// Record no build-machine directory in the default search path: only
+    /// the program-relative entries. Set when a build trims paths
+    /// (`--trim-paths`, the `--release` default), so such a program is
+    /// reproducible and names no install location.
+    pub relocatable: bool,
 }
 
 /// The Hew release this compiler is, which names its shared runtime.
@@ -334,10 +339,9 @@ pub(crate) fn link_executable_with_hew_lib(
     // The program records the runtime's versioned name (its SONAME or
     // install name) and finds it at run time through these directories.
     if dynamic {
-        let search = link
-            .rpath
-            .clone()
-            .unwrap_or_else(|| default_runtime_search_path(target, std::path::Path::new(&hew_lib)));
+        let search = link.rpath.clone().unwrap_or_else(|| {
+            default_runtime_search_path(target, std::path::Path::new(&hew_lib), link.relocatable)
+        });
         cmd.args(runtime_search_path_flags(target, &search));
     }
 
@@ -1276,13 +1280,25 @@ fn find_shared_hew_lib(target: &TargetSpec) -> Result<String, String> {
 /// directory the runtime was linked from, so a program built against an
 /// installed Hew runs in place. A runtime in a directory the loader searches
 /// anyway (a distribution package's libdir) needs no entry of its own.
-fn default_runtime_search_path(target: &TargetSpec, runtime: &std::path::Path) -> Vec<String> {
+///
+/// A `relocatable` build (one that trims paths) records only the
+/// program-relative entries: the same program then links byte-identically on
+/// every machine and names no build-machine directory, and it finds its
+/// runtime once that ships beside it or is installed in the system libdir.
+fn default_runtime_search_path(
+    target: &TargetSpec,
+    runtime: &std::path::Path,
+    relocatable: bool,
+) -> Vec<String> {
     let (here, beside) = if target.os() == TargetOs::Darwin {
         ("@executable_path", "@executable_path/../lib")
     } else {
         ("$ORIGIN", "$ORIGIN/../lib")
     };
     let mut search = vec![here.to_string(), beside.to_string()];
+    if relocatable {
+        return search;
+    }
     if let Some(dir) = runtime.parent() {
         if !loader_searches_by_default(target, dir) {
             search.push(dir.display().to_string());
@@ -2334,7 +2350,7 @@ mod tests {
     fn dynamic_link_is_refused_where_no_shared_runtime_exists() {
         let dynamic = LinkOptions {
             runtime: RuntimeLink::Dynamic,
-            rpath: None,
+            ..LinkOptions::default()
         };
         for (triple, reason) in [
             ("x86_64-pc-windows-msvc", "Windows"),
@@ -2355,6 +2371,7 @@ mod tests {
         let static_with_rpath = LinkOptions {
             runtime: RuntimeLink::Static,
             rpath: Some(vec!["/opt/app/lib".into()]),
+            ..LinkOptions::default()
         };
         let error = validate_link_options(&spec("x86_64-unknown-linux-gnu"), &static_with_rpath)
             .unwrap_err();
@@ -2374,7 +2391,8 @@ mod tests {
         assert_eq!(
             default_runtime_search_path(
                 &linux,
-                std::path::Path::new("/home/u/.hew/lib/libhew.so.0.11.1")
+                std::path::Path::new("/home/u/.hew/lib/libhew.so.0.11.1"),
+                false
             ),
             ["$ORIGIN", "$ORIGIN/../lib", "/home/u/.hew/lib"]
         );
@@ -2383,34 +2401,55 @@ mod tests {
         assert_eq!(
             default_runtime_search_path(
                 &linux,
-                std::path::Path::new("/usr/lib/x86_64-linux-gnu/libhew.so.0.11.1")
+                std::path::Path::new("/usr/lib/x86_64-linux-gnu/libhew.so.0.11.1"),
+                false
             ),
             ["$ORIGIN", "$ORIGIN/../lib"]
         );
         assert_eq!(
             default_runtime_search_path(
                 &spec("aarch64-unknown-linux-gnu"),
-                std::path::Path::new("/usr/lib64/libhew.so.0.11.1")
+                std::path::Path::new("/usr/lib64/libhew.so.0.11.1"),
+                false
             ),
             ["$ORIGIN", "$ORIGIN/../lib"]
         );
         assert_eq!(
             default_runtime_search_path(
                 &spec("x86_64-unknown-freebsd"),
-                std::path::Path::new("/usr/local/lib/libhew.so.0.11.1")
+                std::path::Path::new("/usr/local/lib/libhew.so.0.11.1"),
+                false
             ),
             ["$ORIGIN", "$ORIGIN/../lib"]
         );
         assert_eq!(
             default_runtime_search_path(
                 &spec("aarch64-apple-darwin"),
-                std::path::Path::new("/opt/homebrew/opt/hew/lib/libhew.0.11.1.dylib")
+                std::path::Path::new("/opt/homebrew/opt/hew/lib/libhew.0.11.1.dylib"),
+                false
             ),
             [
                 "@executable_path",
                 "@executable_path/../lib",
                 "/opt/homebrew/opt/hew/lib"
             ]
+        );
+    }
+
+    #[test]
+    fn relocatable_search_path_records_no_build_machine_directory() {
+        let runtime = std::path::Path::new("/home/u/.hew/lib/libhew.so.0.11.1");
+        assert_eq!(
+            default_runtime_search_path(&spec("x86_64-unknown-linux-gnu"), runtime, true),
+            ["$ORIGIN", "$ORIGIN/../lib"]
+        );
+        assert_eq!(
+            default_runtime_search_path(
+                &spec("aarch64-apple-darwin"),
+                std::path::Path::new("/Users/u/.hew/lib/libhew.0.11.1.dylib"),
+                true
+            ),
+            ["@executable_path", "@executable_path/../lib"]
         );
     }
 

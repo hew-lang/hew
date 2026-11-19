@@ -8,7 +8,8 @@
   `libhew.<version>.dylib` on macOS. Each release's runtime has its own name
   and installs beside the others, so upgrading Hew keeps earlier programs
   running while their runtime stays installed. `--rpath DIR` sets where such
-  programs look for it. Static linking stays the default. See
+  programs look for it. Builds that trim paths (`--release` by default)
+  record no build-machine directory for it. Static linking stays the default. See
   [Linking Hew programs](docs/linking.md).
 - Release archives, the Docker image and the Arch package ship the shared
   runtime. Debian and RPM ship it as a per-release package (`libhew<version>`).

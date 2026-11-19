@@ -112,21 +112,30 @@ A dynamically linked program searches these directories, in order:
 1. its own directory (`$ORIGIN`, or `@executable_path` on macOS);
 2. `lib/` beside it (`$ORIGIN/../lib`);
 3. the directory of the runtime it was linked against, unless the system
-   loader already searches that directory.
+   loader already searches that directory, or the build trims paths.
 
 The first two let you ship a program with its runtime: put
 `libhew.so.<version>` next to the binary, or lay out `bin/app` with
 `lib/libhew.so.<version>`. The third makes `hew build --link=dynamic &&
-./app` work in place against an installed Hew. A runtime installed by a
-distribution package sits in the system library directory, so the program
-records no install path for it.
+./app` and `hew run --link=dynamic` work in place against an installed Hew.
+A runtime installed by a distribution package sits in the system library
+directory, so the program records no install path for it.
+
+A build that trims paths leaves the third entry out. That includes
+`--release` builds by default, and any build with `--trim-paths`. Such a
+build names no directory on the build machine, so it links the same
+wherever it is built. It finds its runtime once you ship that runtime
+beside it, or once the runtime is installed in the system library
+directory; until then the loader refuses to start it and names the
+missing `libhew.so.<version>`. To run such a build in place against
+`~/.hew`, add `--no-trim-paths`.
 
 On Linux and FreeBSD the search path is a `DT_RUNPATH`, so
 `LD_LIBRARY_PATH` still takes precedence for testing.
 
 `--rpath DIR` (repeatable) replaces the whole default list. For example,
-`--rpath '$ORIGIN/../lib'` builds a relocatable package that records no
-build-machine path. Quote `$ORIGIN` so the shell passes it through.
+`--rpath '$ORIGIN/../lib'` searches only a `lib` directory beside the
+program. Quote `$ORIGIN` so the shell passes it through.
 
 ### Where the runtime is installed
 

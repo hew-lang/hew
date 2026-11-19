@@ -324,7 +324,8 @@ pub struct LinkArgs {
     /// With `--link=dynamic`: a directory the program searches for the shared
     /// runtime when it starts. Repeatable; replaces the default search path
     /// (the program's directory, a `lib` directory beside it, then the
-    /// directory of the runtime it was linked against).
+    /// directory of the runtime it was linked against, which a build that
+    /// trims paths, such as `--release`, leaves out).
     #[arg(long, value_name = "DIR")]
     pub rpath: Vec<String>,
 }
@@ -334,6 +335,7 @@ impl LinkArgs {
         crate::link::LinkOptions {
             runtime: self.link,
             rpath: (!self.rpath.is_empty()).then(|| self.rpath.clone()),
+            relocatable: false,
         }
     }
 }
@@ -711,7 +713,10 @@ impl BuildArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            link: self.linking.options(),
+            link: crate::link::LinkOptions {
+                relocatable: self.trims_paths(),
+                ..self.linking.options()
+            },
             ..self.common.base_compile_options()
         }
     }

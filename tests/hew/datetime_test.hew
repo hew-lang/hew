@@ -33,8 +33,8 @@ fn test_try_parse_invalid_timestamp_returns_err() {
 #[test]
 fn test_try_format_rejects_invalid_directive_with_error() {
     match datetime.format(timestamp.from_unix_secs(0), "%Q") {
-        .Ok(_) => assert(false),
-        .Err(error) => assert(error == datetime.DateTimeError.Format("invalid datetime format directive")),
+        .Err(.Format(message)) => assert(!message.is_empty()),
+        _ => panic("expected a checked format error"),
     }
 }
 

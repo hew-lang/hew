@@ -67,7 +67,7 @@ impl ConnMethods for Conn {
 
 impl Conn {
     /// Release this SMTP connection early. Scope exit performs the same release.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_smtp_close(self)
         };

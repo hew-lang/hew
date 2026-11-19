@@ -48,7 +48,7 @@ pub type Lease {
 
 impl Lease {
     /// Return this lease's capacity early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         let Lease { semaphore } = self;
         semaphore.release();
         semaphore.close();
@@ -118,7 +118,7 @@ impl Semaphore {
     /// Scope exit, fault and cancellation return acquired capacity. While
     /// waiting, cancellation removes the pending acquisition. Raw `acquire`
     /// and `release` remain available for cross-task signalling.
-    fn lease(self) -> Lease {
+    pub fn lease(self) -> Lease {
         let owner = self.clone();
         owner.acquire();
         Lease { semaphore: owner }
@@ -127,14 +127,14 @@ impl Semaphore {
     /// Create an independently owned handle to this semaphore.
     ///
     /// Both handles share one permit count. Close each handle separately.
-    fn clone(self) -> Semaphore {
+    pub fn clone(self) -> Semaphore {
         unsafe {
             Semaphore { handle: hew_semaphore_clone(self.handle) }
         }
     }
 
     /// Release this semaphore early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_semaphore_free(self.handle)
         };

@@ -102,7 +102,7 @@ impl GlobResultMethods for GlobResult {
 
 impl GlobResult {
     /// Release this glob result early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_glob_free(self.handle)
         };

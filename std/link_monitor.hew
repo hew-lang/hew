@@ -59,7 +59,7 @@ pub type MonitorRef {
 
 impl MonitorRef {
     /// Return this registration's stable monitor id without consuming the handle.
-    fn id(self) -> MonitorId {
+    pub fn id(self) -> MonitorId {
         MonitorId { value: self.ref_id }
     }
 
@@ -67,7 +67,7 @@ impl MonitorRef {
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
     /// so actor-free close paths are safe at scope exit.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_actor_demonitor(self.ref_id)
         };

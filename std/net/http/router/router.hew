@@ -103,7 +103,7 @@ impl<T: Clone> Router<T> {
     /// Parameter names are unique ASCII identifiers; parameters match one
     /// non-empty segment. Renaming parameters does not make a duplicate route
     /// distinct. Literal segments use the same percent encoding as requests.
-    fn add(var self, method: string, pattern: string, value: T) fails RouteConfigError {
+    pub fn add(var self, method: string, pattern: string, value: T) fails RouteConfigError {
         if !valid_method(method) {
             return error .InvalidMethod(method);
         }
@@ -123,7 +123,7 @@ impl<T: Clone> Router<T> {
     /// and `\` are content within one segment, never new separators. No case,
     /// dot-segment, repeated-slash or trailing-slash normalization is performed.
     /// `HEAD` and `OPTIONS` require explicit registrations like other methods.
-    fn resolve(self, method: string, target: string) -> RouteMatch<T> fails RouteError {
+    pub fn resolve(self, method: string, target: string) -> RouteMatch<T> fails RouteError {
         let path = request_segments(target)?;
         var best: Option<i64> = .None;
         for i in 0..self.routes.len() {
@@ -167,7 +167,7 @@ impl<T: Clone> Router<T> {
 impl<T> RouteMatch<T> {
     /// Read one already-decoded parameter. Pass it directly to an application
     /// parser for other types; decoding it again would change its meaning.
-    fn param(self, name: string) -> string fails ExtractError {
+    pub fn param(self, name: string) -> string fails ExtractError {
         for i in 0..self.parameters.len() {
             let pair = self.parameters[i];
             if pair.0 == name {
@@ -178,7 +178,7 @@ impl<T> RouteMatch<T> {
     }
 
     /// Read a signed decimal integer, rejecting invalid text and overflow.
-    fn param_i64(self, name: string) -> i64 fails ExtractError {
+    pub fn param_i64(self, name: string) -> i64 fails ExtractError {
         let text = self.param(name)?;
         match text.to_int() {
             .Ok(value) => value,
@@ -187,7 +187,7 @@ impl<T> RouteMatch<T> {
     }
 
     /// Read exactly `true` or `false`, case-sensitively.
-    fn param_bool(self, name: string) -> bool fails ExtractError {
+    pub fn param_bool(self, name: string) -> bool fails ExtractError {
         let text = self.param(name)?;
         match text {
             "true" => true,

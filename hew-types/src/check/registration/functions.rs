@@ -1414,6 +1414,9 @@ impl Checker {
         else {
             return FnSig::default();
         };
+        if trait_bound.is_none() && method.origin == hew_parser::ast::DeclarationOrigin::Authored {
+            self.defs.set_visibility(declaration_id, method.visibility);
+        }
         let receiver = self
             .current_impl_target()
             .expect("impl registration publishes its resolved target");

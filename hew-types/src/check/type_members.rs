@@ -230,13 +230,23 @@ impl Checker {
         if let Some(result) = self.dispatch_builtin_variant_member(head, member, usage) {
             return Some(result);
         }
-        let DottedTypeMemberUse::Call {
-            args,
-            expected,
-            span,
-        } = usage
-        else {
-            return None;
+        let (args, expected, span) = match usage {
+            DottedTypeMemberUse::Call {
+                args,
+                expected,
+                span,
+            } => (args, expected, span),
+            DottedTypeMemberUse::Reference { span } => {
+                let receiver = self.named_ty_for_key(&head.canonical_type, Vec::new());
+                if let crate::check::dispatch_table::MethodSelection::Unique(_, declaration) =
+                    self.select_method(&receiver, member)
+                {
+                    if !self.check_declaration_visible(declaration, span) {
+                        return Some(Ty::Error);
+                    }
+                }
+                return None;
+            }
         };
         self.dispatch_static_type_member(head, member, args, *expected, span)
     }

@@ -1,0 +1,3 @@
+import model;
+
+pub fn read(card: model.Card) -> i64 { card.inspect() }

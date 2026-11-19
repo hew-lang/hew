@@ -31,9 +31,6 @@ permissions:
   checks: write
 
 env:
-  # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
-  # llvm-sys-221) build script. Must match ci.yml / setup-llvm action pins.
-  LLVM_VERSION: "22.1.5"
   # Pinned wasmtime release tag for full-windows's WASI provisioning step,
   # matching ci.yml's single pin (see ci.yml's WASMTIME_VERSION comment for
   # why it is pinned rather than resolved as "latest").
@@ -74,10 +71,8 @@ jobs:
           sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Compile, run, and measure the runtime corpus
         env:
@@ -145,7 +140,7 @@ jobs:
       - name: Free runner disk
         # cargo-llvm-cov instruments the full workspace and writes a separate
         # target/llvm-cov-target/ tree on top of the normal target/. That
-        # combination — LLVM 22.1.5 download/install plus the instrumented
+        # combination — LLVM download/install plus the instrumented
         # build — has exhausted the runner disk at the LLVM install step
         # (System.IO.IOException: No space left on device). Mirror the same
         # preinstalled-toolchain purge the Linux build job carries (PR #1995).
@@ -159,12 +154,10 @@ jobs:
           sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
-      # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
-      # script requires LLVM_SYS_221_PREFIX.
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      # hew-codegen-rs depends on inkwell -> llvm-sys, whose build
+      # script requires LLVM_SYS_<ver>_PREFIX.
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
 
       - name: Disk space before coverage build
         # Baseline snapshot before the instrumented build writes

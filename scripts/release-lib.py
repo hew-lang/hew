@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
+import llvm_version  # noqa: E402
 
 # Archive members whose debug info is kept: the runtime's own code units.
 RUNTIME_MEMBER_PREFIX = "hew_runtime-"
@@ -98,13 +100,15 @@ def host_triple() -> str:
 
 
 def llvm_tool(name: str) -> str:
-    """Find an LLVM binutils tool from the LLVM 22 toolchain Hew builds with."""
+    """Find an LLVM binutils tool from the LLVM toolchain Hew builds with."""
+    pin = llvm_version.load()
+    major = pin["LLVM_MAJOR"]
     candidates: list[str] = []
-    for variable in ("LLVM_SYS_221_PREFIX", "LLVM_PREFIX"):
+    for variable in (pin["LLVM_SYS_PREFIX_VAR"], "LLVM_PREFIX"):
         prefix = os.environ.get(variable)
         if prefix:
             candidates.append(str(Path(prefix) / "bin" / name))
-    for config in ("llvm-config", "llvm-config-22"):
+    for config in ("llvm-config", f"llvm-config-{major}"):
         found = shutil.which(config)
         if found:
             bindir = subprocess.run(
@@ -112,13 +116,14 @@ def llvm_tool(name: str) -> str:
             ).stdout.strip()
             if bindir:
                 candidates.append(str(Path(bindir) / name))
-    candidates.extend([name, f"{name}-22"])
+    candidates.extend([name, f"{name}-{major}"])
     for candidate in candidates:
         found = shutil.which(candidate)
         if found:
             return found
     die(
-        f"cannot find {name}; put LLVM 22's bin directory on PATH or set LLVM_SYS_221_PREFIX"
+        f"cannot find {name}; put LLVM {major}'s bin directory on PATH or set "
+        f"{pin['LLVM_SYS_PREFIX_VAR']}"
     )
     return ""
 

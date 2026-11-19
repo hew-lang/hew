@@ -31,9 +31,10 @@ HEW_STD=$PWD/../std cargo +nightly fuzz run fuzz_encoding_codegen # valid codec 
 ```
 
 `hew-cli/fuzz` links the whole driver, including `hew-codegen-rs` (inkwell and
-`llvm-sys`), so building it needs LLVM 22 and about 4 GB of target directory.
-On Debian/Ubuntu, install the matching `libpolly-22-dev` alongside
-`llvm-22-dev`: `llvm-sys` links LLVM's static libraries, including Polly.
+`llvm-sys`), so building it needs the LLVM series in `llvm-version.env` and
+about 4 GB of target directory. On Debian/Ubuntu, install the matching
+`libpolly-<major>-dev` alongside `llvm-<major>-dev`: `llvm-sys` links LLVM's
+static libraries, including Polly.
 It stays out of the Cargo workspace. Where LLVM is installed,
 `cargo fuzz list --fuzz-dir
 hew-cli/fuzz` from the repository root lists its targets. It runs three full

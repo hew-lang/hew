@@ -300,13 +300,49 @@ WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 # Windows separators here so UNC and drive-qualified paths use the same test.
 target_root_slashes := $(subst \,/,$(CARGO_TARGET_ROOT))
 CARGO_TARGET_ROOT_ABSOLUTE := $(or $(filter /%,$(target_root_slashes)),$(and $(findstring :/,$(target_root_slashes)),$(filter %:,$(firstword $(subst /, ,$(target_root_slashes))))))
+# The `../` hops assume the default build/ directory; any other BUILD_DIR
+# (out of tree, or nested) links into the checkout by absolute path.
 ifeq ($(CARGO_TARGET_ROOT_ABSOLUTE),)
+ifeq ($(BUILD_DIR),build)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../
+else
+LINK_UP2 := $(MAKEFILE_ROOT)/
+LINK_UP3 := $(MAKEFILE_ROOT)/
+endif
 else
 LINK_UP2 :=
 LINK_UP3 :=
 endif
+STD_LINK_TARGET := $(if $(filter build,$(BUILD_DIR)),../std,$(MAKEFILE_ROOT)/std)
+
+# Every staging recipe runs STAGE_CHECK_DEST before it changes anything under
+# BUILD_DIR. It refuses when bin/, lib/ or std/ there is a real directory
+# holding checkout sources -- BUILD_DIR=., or BUILD_DIR reached through a
+# symlink or junction into the checkout -- because staging removes those
+# directories. A link is only ever unlinked, so it is always safe.
+define STAGE_CHECK_DEST
+	@root_std="$(MAKEFILE_ROOT)/std"; \
+	for dest in "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib" "$(BUILD_DIR)/std"; do \
+		[ -d "$$dest" ] && [ ! -L "$$dest" ] || continue; \
+		physical=$$(cd "$$dest" && pwd -P) || exit 1; \
+		if test "$$dest" -ef "$$root_std" || \
+			[ -n "$$(git -C "$(MAKEFILE_ROOT)" ls-files -- "$$physical" 2>/dev/null | head -n 1)" ]; then \
+			echo "error: BUILD_DIR=$(BUILD_DIR) would stage over checkout sources in $$physical" >&2; \
+			exit 1; \
+		fi; \
+	done
+endef
+
+# Point BUILD_DIR/std at the standard library. Git Bash's ln copies
+# directories, and a later `ln -sfn` would then link inside that copy, so a
+# copy is replaced rather than relinked over; a link that already resolves to
+# the source is left alone. Run after STAGE_CHECK_DEST.
+define STAGE_STD
+	@if ! test "$(BUILD_DIR)/std" -ef "$(MAKEFILE_ROOT)/std"; then \
+		rm -rf "$(BUILD_DIR)/std" && ln -sfn "$(STD_LINK_TARGET)" "$(BUILD_DIR)/std"; \
+	fi
+endef
 
 # ── The combined runtime + stdlib archive ───────────────────────────────────
 #
@@ -466,20 +502,16 @@ build: all
 # compiler debugging without changing the stable build/bin/hew selection.
 hew: require-host-cargo-target ## Build: build the release-lib compiler and native archive
 	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
-	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
+	$(STAGE_CHECK_DEST)
+	@mkdir -p "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
 	$(call STAGE_DROP_UNSUFFIXED,hew)
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
-	@# Git Bash's ln copies directories, and a later `ln -sfn` would then
-	@# link inside that copy, so replace build/std rather than relink over it.
-	@# Skip both steps when build/std already is the source tree (a correct
-	@# symlink, or BUILD_DIR=.), so the source is never removed.
-	@if ! test "$(BUILD_DIR)/std" -ef "$(MAKEFILE_ROOT)/std"; then \
-		rm -rf "$(BUILD_DIR)/std" && ln -sfn ../std "$(BUILD_DIR)/std"; \
-	fi
+	$(STAGE_STD)
 
 hew-debug: hew-native ## Build: build and stage the debug compiler
-	@mkdir -p $(BUILD_DIR)/bin
+	$(STAGE_CHECK_DEST)
+	@mkdir -p "$(BUILD_DIR)/bin"
 	$(call STAGE_DROP_UNSUFFIXED,hew-debug)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@echo "compiler profile: debug"
@@ -1125,8 +1157,9 @@ assemble-host-debug:
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
 assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-release-lib wasm-runtime ## Build: assemble native, debug, cross-target and WASI artifacts
-	@rm -rf $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
-	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
+	$(STAGE_CHECK_DEST)
+	@rm -rf "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
+	@mkdir -p "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
 	@# Compiler drivers: keep the supported release-lib launcher stable while
 	@# exposing the debug compiler under its explicit debug name.
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
@@ -1136,7 +1169,7 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_DEBUG_DIR)/$$lib" ]; then \
-			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
+			mkdir -p "$(BUILD_DIR)/lib/wasm32-wasip1"; \
 			ln -sfn "$(LINK_UP3)$(WASM_DEBUG_DIR)/$$lib" \
 				"$(BUILD_DIR)/lib/wasm32-wasip1/$$lib"; \
 		fi; \
@@ -1154,11 +1187,11 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 		else \
 			continue; \
 		fi; \
-		mkdir -p $(BUILD_DIR)/lib/$$triple; \
+		mkdir -p "$(BUILD_DIR)/lib/$$triple"; \
 		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
 	done
 	@# Keep the complete nested standard library available from the staged tree.
-	@ln -sfn ../std $(BUILD_DIR)/std
+	$(STAGE_STD)
 	@echo "build/ assembled (release-lib compiler, debug support tools). Add to PATH:"
 	@echo "  export PATH=\"$(CURDIR)/$(BUILD_DIR)/bin:\$$PATH\""
 
@@ -1247,15 +1280,16 @@ endif
 
 # Assemble build/ with release symlinks.
 assemble-release: require-host-cargo-target release-host libhew-cross-release-lib wasm-runtime-release
-	@rm -rf $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
-	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
+	$(STAGE_CHECK_DEST)
+	@rm -rf "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
+	@mkdir -p "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
-			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
+			mkdir -p "$(BUILD_DIR)/lib/wasm32-wasip1"; \
 			ln -sfn "$(LINK_UP3)$(WASM_RELEASE_DIR)/$$lib" \
 				"$(BUILD_DIR)/lib/wasm32-wasip1/$$lib"; \
 		fi; \
@@ -1271,11 +1305,10 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 		else \
 			continue; \
 		fi; \
-		mkdir -p $(BUILD_DIR)/lib/$$triple; \
+		mkdir -p "$(BUILD_DIR)/lib/$$triple"; \
 		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
 	done
-	@rm -rf $(BUILD_DIR)/std
-	@ln -sfn ../std $(BUILD_DIR)/std
+	$(STAGE_STD)
 	@echo "build/ assembled (release)."
 
 # ── Tests ───────────────────────────────────────────────────────────────────
@@ -2039,7 +2072,7 @@ uninstall:
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 
 clean: ## Develop: remove generated build and test artifacts
-	rm -rf -- $(BUILD_DIR)
+	rm -rf -- "$(BUILD_DIR)"
 	cargo clean
 	rm -rf -- $(COV_DIR) \
 		"$(CURDIR)/.tmp/compile-out" \

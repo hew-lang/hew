@@ -480,16 +480,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         })
     }
 
-    /// A binding whose value has no copy operation. `Some` is the loan the
-    /// binding names, read through that loan rather than transferred out of
-    /// it; `None` means the binding owns its value and transfers normally.
+    /// Reuse a live loan for a probe, including a payload borrowed from
+    /// another match. Transfers still need an owning, selected binding.
     pub(super) fn read_bound_loan(
         &mut self,
         binding: BindingId,
         source: ValueId,
         binding_use: OwnedBindingUse,
     ) -> Result<Option<ValueId>, SirLoweringError> {
-        self.require_selected_binding(binding, source)?;
         let name = self.source_bindings[self.binding_declarations[&binding]]
             .name
             .clone();
@@ -503,6 +501,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             return Ok(Some(source));
         }
+        self.require_selected_binding(binding, source)?;
         if self.value_own_kind(source) != Some(OwnKind::Owned) {
             return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: format!(
                 "`{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
@@ -620,7 +619,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         );
                     }
                     BindingTarget::Value(source) => {
-                        if movable {
+                        // A probe only reads a guaranteed binding. Reuse its
+                        // loan even when the type would also permit a deep copy.
+                        if movable
+                            || (binding_use == OwnedBindingUse::Probe
+                                && self.value_own_kind(source) == Some(OwnKind::Guaranteed))
+                        {
                             if let Some(loan) =
                                 self.read_bound_loan(*binding, source, binding_use)?
                             {

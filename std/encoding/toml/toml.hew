@@ -71,7 +71,7 @@ pub enum AccessError {
 impl Display for AccessError {
     fn fmt(self) -> string {
         match self {
-            AccessError.WrongKind(_, _) => "toml: unexpected value kind",
+            AccessError.WrongKind(expected, actual) => f"toml: expected {expected:?}, found {actual:?}",
             AccessError.InvalidIndex(index) => f"toml: unsupported array index {index}",
         }
     }

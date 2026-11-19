@@ -12,12 +12,30 @@
   numeric offset such as `+0000`. Migrate patterns using Chrono's fractional
   directives (`%f`, `%.f`, `%.9f`) or colonized offsets (`%:z`) to
   `to_iso8601` and `parse_iso8601` for lossless timestamp text.
+- Build the compiler against LLVM 23.1 (inkwell 0.11, llvm-sys 231). Source
+  builds need LLVM 23 development libraries (`llvm@23`, `llvm-23-dev`,
+  `llvm23`) and set `LLVM_SYS_231_PREFIX` instead of `LLVM_SYS_221_PREFIX`.
+  The LLVM version now lives in `llvm-version.env`, and any 23.1 maintenance
+  release is accepted.
 
 - Native and browser YAML decoding use a pure Rust parser. Rust callers of
   `hew_codec::yaml_value::parse` can name the returned value through
   `hew_codec::yaml_value::Value`. Hew programs keep the existing
   `std.encoding.yaml` API. In YAML flow collections, add a space between an
   explicit key indicator and a collection key, as in `? [north, west]`.
+
+- Configure the native package registry client, TCP Observe connections,
+  `std.net.http.client` and the optional OTLP exporter with `HTTP_PROXY`,
+  `HTTPS_PROXY` and `NO_PROXY`. The proxy forwards plain HTTP requests and
+  tunnels HTTPS with `CONNECT`. Add internal hosts to `NO_PROXY` for direct
+  connections. To connect Observe through TLS, use
+  `hew observe --addr https://profiler.example.com`. Install a private CA
+  in the operating system's trust store, or set `SSL_CERT_FILE` to a trusted
+  CA bundle on Linux.
+- Rust callers of `hew_pkg::happy_eyeballs::HappyEyeballsConnector` or
+  `HewTcpTransport` should use `hew_pkg::client::RegistryClient` for registry
+  operations. For other HTTP requests, configure your HTTP client's connector
+  directly. Hew's native client handles IPv4 and IPv6 connection racing.
 
 ## [0.11.0] - 2026-11-12
 

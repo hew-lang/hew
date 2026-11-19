@@ -2,8 +2,8 @@
 #
 # No secret and no package-repository install: GitHub's OIDC token is the credential (dist.hewpkg.com accepts it
 # only from hew-lang/hew on a tag), and .github/scripts/apt-push is the client. Prereleases carry no distro
-# packages, so they are skipped. Run it by hand to republish a tag:
-#   gh workflow run publish-dist.yml -f tag=v0.9.3
+# packages, so they are skipped. To republish a release that contains this workflow, dispatch from its tag:
+#   gh workflow run publish-dist.yml --ref v0.11.0 -f tag=v0.11.0
 name: publish-dist
 
 on:
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to publish (for example v0.9.3)
+        description: Release tag to publish (for example v0.11.0)
         type: string
         required: true
 
@@ -52,11 +52,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/tags/$TAG" ]]; then
+            echo "::error::Select the same release tag for the workflow ref and package input."
+            exit 1
+          fi
           if [[ "${TAG}" == *-* ]]; then
             echo "::notice::${TAG} is a prerelease; distro packages ship with final releases"
             echo "SKIP=1" >>"${GITHUB_ENV}"
             exit 0
           fi
+          receipt="hew-${TAG}-platforms.json"
+          gh release download "${TAG}" --pattern "${receipt}"
+          channel=$(jq -er '.platforms["linux-packages"].state' "${receipt}")
+          case "$channel" in
+            available) ;;
+            unavailable)
+              echo "::notice::${TAG} has no qualified Linux package set; keeping the existing stable repository"
+              echo "SKIP=1" >>"$GITHUB_ENV"
+              exit 0 ;;
+            *) echo "::error::Unexpected Linux package state: $channel"; exit 1 ;;
+          esac
           mkdir pkgs
           gh release download "${TAG}" --dir pkgs \
             --pattern '*.deb' --pattern '*.rpm' --pattern '*.pkg.tar.zst'

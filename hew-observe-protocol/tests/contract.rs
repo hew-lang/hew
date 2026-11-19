@@ -1,8 +1,35 @@
 use hew_observe_protocol::{
-    decode_envelope, envelope_json_raw, DecodeError, Envelope, Metrics, RoutingSnapshot,
-    TraceBatch, TraceEvent, OBSERVE_SCHEMA_VERSION,
+    decode_envelope, envelope_json_raw, CrashEntry, DecodeError, Envelope, Metrics,
+    RoutingSnapshot, TraceBatch, TraceEvent, OBSERVE_SCHEMA_VERSION,
 };
 use serde_json::json;
+
+#[test]
+fn crash_details_survive_decoding_and_recording() {
+    let payload = json!({
+        "time_s": 1.5, "actor_id": "1", "signal": 212,
+        "trap_kind": "UserPanic", "msg_type": 2, "fault_addr": "0"
+    });
+    let older: CrashEntry = serde_json::from_value(payload.clone()).expect("decode older crash");
+    assert!(older.handler.is_none());
+    assert!(older.spawn_serial.is_none());
+
+    let mut current = payload;
+    current["actor_type"] = json!("Worker");
+    current["handler"] = json!("Worker.crash");
+    current["spawn_serial"] = json!(u64::MAX.to_string());
+    current["supervisor"] = json!("supervisor#4/alpha");
+    current["message"] = json!("worker hit a poison message");
+    current["file"] = json!("./showcase.hew");
+    current["line"] = json!(59);
+    current["col"] = json!(15);
+    let crash: CrashEntry = serde_json::from_value(current.clone()).expect("decode current crash");
+    assert_eq!(crash.spawn_serial, Some(u64::MAX));
+    assert_eq!(
+        serde_json::to_value(crash).expect("record the crash"),
+        current
+    );
+}
 
 #[test]
 fn max_width_integers_round_trip_without_loss() {

@@ -343,6 +343,14 @@ fn validate_supervisor_drill_down(
     let rows: Vec<SupervisorRow> = fetch_json(client, base_url, "/api/supervisors")?;
     let actors: Vec<ActorInfo> = fetch_json(client, base_url, "/api/actors")?;
     let traces: TraceBatch = fetch_json(client, base_url, "/api/traces")?;
+    if traces.events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "spawn" | "crash" | "stop" | "supervisor_restart"
+        ) && event.handler_name.is_some()
+    }) {
+        return Err("lifecycle event reported an unrelated handler".to_owned());
+    }
     for (role, restarts) in [("a", 1), ("b", 3)] {
         let details = rows
             .iter()

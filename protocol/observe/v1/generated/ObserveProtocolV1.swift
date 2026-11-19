@@ -1553,6 +1553,14 @@ public struct CrashEntry: Codable, Sendable {
     public let trapKind: String
     public let msgType: Int32
     public let faultAddr: UInt64
+    public let actorType: String?
+    public let handler: String?
+    public let spawnSerial: UInt64?
+    public let supervisor: String?
+    public let message: String?
+    public let file: String?
+    public let line: UInt32?
+    public let col: UInt32?
 
     enum CodingKeys: String, CodingKey {
         case timeS = "time_s"
@@ -1561,6 +1569,14 @@ public struct CrashEntry: Codable, Sendable {
         case trapKind = "trap_kind"
         case msgType = "msg_type"
         case faultAddr = "fault_addr"
+        case actorType = "actor_type"
+        case handler
+        case spawnSerial = "spawn_serial"
+        case supervisor
+        case message
+        case file
+        case line
+        case col
     }
 
     public init(
@@ -1569,7 +1585,15 @@ public struct CrashEntry: Codable, Sendable {
         signal: Int32 = 0,
         trapKind: String = "",
         msgType: Int32 = 0,
-        faultAddr: UInt64 = 0
+        faultAddr: UInt64 = 0,
+        actorType: String? = nil,
+        handler: String? = nil,
+        spawnSerial: UInt64? = nil,
+        supervisor: String? = nil,
+        message: String? = nil,
+        file: String? = nil,
+        line: UInt32? = nil,
+        col: UInt32? = nil
     ) {
         self.timeS = timeS
         self.actorId = actorId
@@ -1577,6 +1601,14 @@ public struct CrashEntry: Codable, Sendable {
         self.trapKind = trapKind
         self.msgType = msgType
         self.faultAddr = faultAddr
+        self.actorType = actorType
+        self.handler = handler
+        self.spawnSerial = spawnSerial
+        self.supervisor = supervisor
+        self.message = message
+        self.file = file
+        self.line = line
+        self.col = col
     }
 
     public init(from decoder: Decoder) throws {
@@ -1587,6 +1619,46 @@ public struct CrashEntry: Codable, Sendable {
         trapKind = try values.decode(String.self, forKey: .trapKind)
         msgType = try values.decode(Int32.self, forKey: .msgType)
         faultAddr = try decodeUInt64Decimal(from: values, forKey: .faultAddr)
+        if values.contains(.actorType) {
+            actorType = try values.decode(String?.self, forKey: .actorType)
+        } else {
+            actorType = nil
+        }
+        if values.contains(.handler) {
+            handler = try values.decode(String?.self, forKey: .handler)
+        } else {
+            handler = nil
+        }
+        if values.contains(.spawnSerial) {
+            spawnSerial = try decodeOptionalUInt64Decimal(from: values, forKey: .spawnSerial)
+        } else {
+            spawnSerial = nil
+        }
+        if values.contains(.supervisor) {
+            supervisor = try values.decode(String?.self, forKey: .supervisor)
+        } else {
+            supervisor = nil
+        }
+        if values.contains(.message) {
+            message = try values.decode(String?.self, forKey: .message)
+        } else {
+            message = nil
+        }
+        if values.contains(.file) {
+            file = try values.decode(String?.self, forKey: .file)
+        } else {
+            file = nil
+        }
+        if values.contains(.line) {
+            line = try values.decode(UInt32?.self, forKey: .line)
+        } else {
+            line = nil
+        }
+        if values.contains(.col) {
+            col = try values.decode(UInt32?.self, forKey: .col)
+        } else {
+            col = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1597,5 +1669,13 @@ public struct CrashEntry: Codable, Sendable {
         try values.encode(trapKind, forKey: .trapKind)
         try values.encode(msgType, forKey: .msgType)
         try values.encode(String(faultAddr), forKey: .faultAddr)
+        try values.encode(actorType, forKey: .actorType)
+        try values.encode(handler, forKey: .handler)
+        try values.encode(spawnSerial.map(String.init), forKey: .spawnSerial)
+        try values.encode(supervisor, forKey: .supervisor)
+        try values.encode(message, forKey: .message)
+        try values.encode(file, forKey: .file)
+        try values.encode(line, forKey: .line)
+        try values.encode(col, forKey: .col)
     }
 }

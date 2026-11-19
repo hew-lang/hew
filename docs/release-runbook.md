@@ -86,7 +86,7 @@ Release artefacts on the GitHub Release:
 
 ## One-time setup
 
-One protected environment, `release`, gates every external destination. An
+The `release` environment gates npm, GitHub Packages, GHCR and Homebrew. An
 environment a workflow names but nobody configured is created unprotected and
 would publish without a click, so create it with a required reviewer and a
 `v*` tag policy (`bash npm-user-steps.sh env` does the same):

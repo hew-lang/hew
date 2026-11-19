@@ -43,7 +43,10 @@ validate ─► build ─────────────► package and pro
    | `publish-dist`            | signed stable APT, DNF/Zypper and pacman repositories (finals)     |
 
    The distro publisher runs automatically after the tagged GitHub release,
-   using GitHub OIDC. The repository signs the package indexes. Verify that
+   using GitHub OIDC. In the dry run, check the `linux-packages` entry in
+   `hew-v<version>-platforms.json` before tagging. A patch release can finish
+   with this channel marked `unavailable`; the receipt lists missing package
+   patterns when package files are absent. The repository signs the package indexes. Verify that
    a fresh client using the published repository configuration selects the
    released version, installs its dependencies and runs a compiled program.
    [Repository setup and signing fingerprint](https://dist.hewpkg.com/)

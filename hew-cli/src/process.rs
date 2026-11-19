@@ -428,10 +428,146 @@ impl Drop for ConsoleInterrupts {
     }
 }
 
+/// Whether this process is in the foreground process group of the terminal
+/// on any of its standard streams: what a program it runs must share to use
+/// that terminal. Always false where there are no process groups.
+pub(crate) fn in_terminal_foreground() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: getpgrp only queries this process.
+        let group = unsafe { libc::getpgrp() };
+        (0..3).any(|fd| {
+            // SAFETY: tcgetpgrp only queries the descriptor; one that is not
+            // a terminal reports -1.
+            unsafe { libc::tcgetpgrp(fd) == group }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Set by the console handler; taken by a temporary build's watcher.
+#[cfg(windows)]
+static CONSOLE_INTERRUPTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(windows)]
 unsafe extern "system" fn outlive_console_interrupt(kind: u32) -> i32 {
     use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
-    i32::from(kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT)
+    let interrupt = kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT;
+    if interrupt {
+        CONSOLE_INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    i32::from(interrupt)
+}
+
+/// The exit status of a runner a pending interrupt or termination request
+/// stops, if one arrived: `128 + signal` on Unix, as a shell reports it, and
+/// `STATUS_CONTROL_C_EXIT` on Windows.
+pub(crate) fn take_pending_interrupt() -> Option<i32> {
+    #[cfg(unix)]
+    {
+        crate::signal::take_pending().map(|signal| 128 + signal)
+    }
+    #[cfg(windows)]
+    {
+        const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
+        CONSOLE_INTERRUPTED
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then_some(STATUS_CONTROL_C_EXIT.cast_signed())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+/// End this process at once with `code`, without running exit handlers: a
+/// compile may be in progress on another thread.
+fn exit_immediately(code: i32) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    // SAFETY: `_exit` ends the process without touching shared state.
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(windows)]
+    // SAFETY: terminating the current process with an exit code.
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        TerminateProcess(GetCurrentProcess(), code.cast_unsigned());
+        std::process::abort()
+    }
+    #[cfg(not(any(unix, windows)))]
+    std::process::exit(code)
+}
+
+/// Interrupts and termination requests while a runner owns a temporary build.
+///
+/// While the build compiles, a request removes the build directory and ends
+/// the runner at once, rather than leaving the directory behind (the default
+/// disposition) or making Ctrl-C wait for a slow compile. Once the build is
+/// done ([`BuildInterrupts::finish`]) the dispositions stay installed and
+/// requests stay pending, so nothing reverts to the default before the run
+/// of the program, whose own wait loop takes them, begins.
+pub(crate) struct BuildInterrupts {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    watcher: Option<JoinHandle<()>>,
+    #[cfg(unix)]
+    _signals: Option<crate::signal::RunSignals>,
+    #[cfg(windows)]
+    _console: ConsoleInterrupts,
+}
+
+impl BuildInterrupts {
+    pub(crate) fn install(directory: &Path) -> Self {
+        #[cfg(unix)]
+        let signals = crate::signal::RunSignals::install().ok();
+        #[cfg(windows)]
+        let console = ConsoleInterrupts::install();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let stop = std::sync::Arc::clone(&stop);
+            let directory = directory.to_path_buf();
+            std::thread::Builder::new()
+                .name("hew-build-interrupts".into())
+                .spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(code) = take_pending_interrupt() {
+                            let _ = std::fs::remove_dir_all(&directory);
+                            exit_immediately(code);
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                })
+                .ok()
+        };
+        Self {
+            stop,
+            watcher,
+            #[cfg(unix)]
+            _signals: signals,
+            #[cfg(windows)]
+            _console: console,
+        }
+    }
+
+    /// The build is complete: stop watching, keeping the dispositions.
+    pub(crate) fn finish(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+    }
+}
+
+impl Drop for BuildInterrupts {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// Ask the kernel to kill this (forked, not yet exec'd) child when `parent`

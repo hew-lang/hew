@@ -1,13 +1,17 @@
 //! Scoped termination requests for interactive child runs, plus the CLI's
 //! default SIGPIPE disposition.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 /// Requests the runner outlives so it can clean up after its program. SIGQUIT
 /// is included: a terminal's Ctrl-\\ must not kill the runner and orphan its
 /// program and temporary directory.
 const RUN_SIGNALS: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT];
 static RUN_SIGNAL: AtomicI32 = AtomicI32::new(0);
+/// Installed guards. A request recorded under an outer guard (a temporary
+/// build in progress) must survive an inner guard's installation (the run of
+/// the program it built), so only the outermost guard starts and ends clean.
+static GUARDS: AtomicUsize = AtomicUsize::new(0);
 
 /// Record a termination request for the wait loop to take. Child ownership and
 /// forwarding belong to the wait loop, which can safely report errors, enforce
@@ -26,7 +30,9 @@ pub(crate) struct RunSignals {
 
 impl RunSignals {
     pub(crate) fn install() -> Result<Self, String> {
-        RUN_SIGNAL.store(0, Ordering::SeqCst);
+        if GUARDS.fetch_add(1, Ordering::SeqCst) == 0 {
+            RUN_SIGNAL.store(0, Ordering::SeqCst);
+        }
         let mut guard = Self {
             previous: Vec::new(),
         };
@@ -58,10 +64,15 @@ impl RunSignals {
         reason = "request reads require an installed signal guard"
     )]
     pub(crate) fn take(&self) -> Option<libc::c_int> {
-        match RUN_SIGNAL.swap(0, Ordering::SeqCst) {
-            0 => None,
-            signal => Some(signal),
-        }
+        take_pending()
+    }
+}
+
+/// Take the latest request recorded by an installed guard, from any thread.
+pub(crate) fn take_pending() -> Option<libc::c_int> {
+    match RUN_SIGNAL.swap(0, Ordering::SeqCst) {
+        0 => None,
+        signal => Some(signal),
     }
 }
 
@@ -70,6 +81,9 @@ impl Drop for RunSignals {
         for (signal, previous) in self.previous.iter().rev() {
             // SAFETY: restore the exact disposition saved during installation.
             unsafe { libc::sigaction(*signal, previous, std::ptr::null_mut()) };
+        }
+        if GUARDS.fetch_sub(1, Ordering::SeqCst) == 1 {
+            RUN_SIGNAL.store(0, Ordering::SeqCst);
         }
     }
 }

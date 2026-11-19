@@ -6,7 +6,8 @@
   invocation creates for itself, `$TMPDIR/hew-run-XXXXXX` (also
   `hew-debug-` and `hew-eval-`). The directory is owner-only and is removed
   when the program finishes, whether it exits normally, fails, is stopped by
-  a timeout, or Ctrl-C or SIGTERM ends it. No invocation sweeps directories
+  a timeout, or Ctrl-C or SIGTERM ends it, including while it is still
+  compiling. No invocation sweeps directories
   that earlier ones left behind. A `hew run` killed outright (SIGKILL) cannot
   remove its directory, as with `go run`. On Linux, FreeBSD and Windows its
   program now dies with it instead of running on. Directories left in

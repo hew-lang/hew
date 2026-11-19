@@ -316,3 +316,48 @@ fn an_interactive_program_reads_from_the_terminal() {
     assert!(status.success(), "{status}");
     assert_eq!(fixture.leftovers(), Vec::<String>::new());
 }
+
+/// Ctrl-C while the program is still compiling ends the run at once and
+/// removes the half-built directory; the program never starts.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_during_the_compile_removes_the_build() {
+    require_codegen();
+    let fixture = Fixture::new();
+    // Enough code that the debug compiler spends a visible while on it.
+    let mut text = String::new();
+    for index in 0..4000 {
+        text.push_str(&format!(
+            "fn step{index}(x: i64) -> i64 {{\n    if x > {index} {{ x - 1 }} else {{ x + {index} }}\n}}\n"
+        ));
+    }
+    text.push_str("fn main() {\n    println(\"program ran\");\n    println(step0(1));\n}\n");
+    let source = fixture.source("large.hew", &text);
+    let mut runner = fixture
+        .hew_run(&source, &[])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hew run");
+    wait_until(
+        "the build directory exists",
+        Duration::from_secs(30),
+        || !fixture.leftovers().is_empty(),
+    );
+    // SAFETY: the runner is an unreaped child of this test.
+    let sent = unsafe { libc::kill(runner.id().cast_signed(), libc::SIGINT) };
+    assert_eq!(sent, 0);
+    let output = runner.wait_with_output().expect("wait for hew run");
+    assert_eq!(
+        output.status.code(),
+        Some(128 + libc::SIGINT),
+        "{}",
+        describe_output(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("program ran"),
+        "{}",
+        describe_output(&output)
+    );
+    assert_eq!(fixture.leftovers(), Vec::<String>::new());
+}

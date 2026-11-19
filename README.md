@@ -19,6 +19,11 @@ curl -fsSL https://hew.sh/install | bash
 
 Pre-built binaries for Linux (x86_64, ARM64), macOS (ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
 
+Linux users can also install Hew through their package manager and receive
+stable updates alongside system updates. Add the [signed Hew repository](https://dist.hewpkg.com/)
+and verify its signing fingerprint, then install `hew` with APT or DNF,
+or `hew-bin` with pacman.
+
 See the [release notes](https://github.com/hew-lang/hew/releases) for the
 SDK you install and its matching language specification. Changes on `main`
 after the latest release are [unreleased](docs/releases/UNRELEASED.md).

@@ -1247,6 +1247,7 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     }
 }
@@ -1733,6 +1734,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let items = vec![
@@ -2281,6 +2283,7 @@ fn user_module_registers_types() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let import = make_user_import(
@@ -2870,6 +2873,7 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     }
 }
@@ -2947,6 +2951,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let output = check_items(vec![
@@ -3018,6 +3023,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let import = make_user_import(
@@ -3265,6 +3271,7 @@ fn test_file_import_private_items_not_visible() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     });
 

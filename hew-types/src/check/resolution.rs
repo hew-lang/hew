@@ -1634,15 +1634,33 @@ impl Checker {
                 Item::Function(fd) => {
                     if lookup_scoped_item(
                         &self.fn_sig_inference_holes,
-                        module_name,
+                        module_name.or_else(|| self.canonical_fn_owner()),
                         fd.name.name.as_str(),
                     )
                     .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
-                        self.errors.push(TypeError::inference_failed(
-                            span.clone(),
-                            &format!("signature of function `{}`", fd.name),
-                        ));
+                        let return_hole = fd.return_type.as_ref().filter(|_| {
+                            fd.params
+                                .iter()
+                                .all(|param| first_infer_span_in_type_expr(&param.ty).is_none())
+                        });
+                        let error = if let Some((TypeExpr::Infer, hole)) = return_hole {
+                            TypeError::new(
+                                TypeErrorKind::InferenceFailed,
+                                hole.clone(),
+                                format!(
+                                    "the body of `{}` does not determine its return type",
+                                    fd.name
+                                ),
+                            )
+                            .with_suggestion("write the return type in place of `_`")
+                        } else {
+                            TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of function `{}`", fd.name),
+                            )
+                        };
+                        self.errors.push(error);
                     }
                 }
                 Item::TypeDecl(td) => {

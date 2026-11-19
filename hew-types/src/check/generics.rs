@@ -140,7 +140,7 @@ impl Checker {
             .iter()
             .map(|parameter| parameter.ty.clone())
             .collect();
-        let mut ret = sig.return_type.clone();
+        let mut ret = self.subst.resolve(&sig.return_type);
         let mut resolved_type_args = Vec::new();
 
         if let Some(type_args) = type_args {
@@ -247,6 +247,13 @@ impl Checker {
             }
         }
 
+        self.defer_inferred_call_return(
+            sig,
+            &freshened_ret,
+            &resolved_type_args,
+            receiver_type_args,
+            span,
+        );
         (freshened_params, freshened_ret, resolved_type_args)
     }
 

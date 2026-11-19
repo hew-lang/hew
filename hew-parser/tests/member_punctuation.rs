@@ -32,7 +32,7 @@ supervisor App {
 fn main() {
     let point = Point { x: 1, y: 2 };
     match Reply.Ready {
-        .Ready => { println("ready"); }
+        .Ready => { println("ready"); },
         .Failed(reason) => println(reason),
         _ => println("other"),
     }
@@ -85,8 +85,8 @@ fn retired_marks_report_recoverable_kinds_at_exact_sites() {
             ParseDiagnosticKind::ListSeparator,
         ),
         (
-            "fn main() { match 1 { 1 => { 2 }, _ => 3, } }",
-            ",",
+            "fn main() { match 1 { 1 => { 2 }; _ => 3, } }",
+            ";",
             ParseDiagnosticKind::SeparatorAfterBody,
         ),
     ];

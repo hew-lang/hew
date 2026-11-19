@@ -90,8 +90,9 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
 
     // Also pin the redundant X-Hew-Schema-Version header so consumers can
     // short-circuit without parsing the body.
-    let resp = ureq::get(&format!("{base_url}/api/actors"))
-        .call()
+    let resp = reqwest::blocking::Client::new()
+        .get(format!("{base_url}/api/actors"))
+        .send()
         .expect("GET /api/actors must succeed");
     let header = resp
         .headers()
@@ -108,10 +109,9 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
 }
 
 fn http_get(url: &str) -> String {
-    let mut resp = ureq::get(url).call().unwrap_or_else(|err| {
+    let resp = reqwest::blocking::get(url).unwrap_or_else(|err| {
         panic!("GET {url} must succeed: {err}");
     });
-    resp.body_mut()
-        .read_to_string()
+    resp.text()
         .unwrap_or_else(|err| panic!("read body for {url}: {err}"))
 }

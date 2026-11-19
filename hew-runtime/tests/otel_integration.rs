@@ -209,10 +209,12 @@ fn otel_exporter_posts_valid_otlp_json() {
     let receiver = MockOtlpReceiver::start();
     let endpoint = format!("{}/v1/traces", receiver.addr);
 
-    // POST using ureq directly (no env-var wiring needed in this test).
-    let result = ureq::post(&endpoint)
+    // Submit the generated payload to the local receiver.
+    let result = reqwest::blocking::Client::new()
+        .post(&endpoint)
         .header("Content-Type", "application/json")
-        .send(&json);
+        .body(json)
+        .send();
 
     assert!(
         result.is_ok(),

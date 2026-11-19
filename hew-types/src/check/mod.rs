@@ -59,6 +59,7 @@ mod expressions;
 mod generic_callables;
 mod generic_schema;
 pub use generic_schema::AssociatedTypeSchemas;
+mod c_abi;
 mod generator_send;
 mod generics;
 mod items;
@@ -86,6 +87,7 @@ mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
 mod resolution;
+mod return_inference;
 pub mod scope;
 mod serializable;
 mod statements;
@@ -3203,6 +3205,7 @@ impl Checker {
             consuming_inherent_methods: self.consuming_inherent_methods.clone(),
             root_value_bindings: self.root_value_bindings.clone(),
             handle_bearing_structs: self.handle_bearing_structs.clone(),
+            c_abi: self.c_abi.clone(),
             opaque_type_ids: self.opaque_type_ids.clone(),
             handle_bearing_dirty: self.handle_bearing_dirty.clone(),
             refresh_call_count: self.refresh_call_count.clone(),
@@ -3214,6 +3217,7 @@ impl Checker {
             type_def_inference_holes: self.type_def_inference_holes.clone(),
             fn_sig_inference_holes: self.fn_sig_inference_holes.clone(),
             deferred_inference_holes: self.deferred_inference_holes.clone(),
+            deferred_call_returns: self.deferred_call_returns.clone(),
             deferred_cast_checks: self.deferred_cast_checks.clone(),
             deferred_negate_checks: self.deferred_negate_checks.clone(),
             deferred_is_checks: self.deferred_is_checks.clone(),
@@ -3609,7 +3613,8 @@ impl Checker {
                         self.is_stdlib_source = true;
                     }
 
-                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    for item_idx in return_inference::body_order(&module.items) {
+                        let (item, span) = &module.items[item_idx];
                         self.current_item_source = self
                             .module_item_sources
                             .get(&module_name)
@@ -3679,12 +3684,11 @@ impl Checker {
         {
             self.check_item(item, span);
         }
-        for (item, span) in program
-            .items
-            .iter()
-            .filter(|(item, _)| !matches!(item, Item::Supervisor(_)))
-        {
-            self.check_item(item, span);
+        for idx in return_inference::body_order(&program.items) {
+            let (item, span) = &program.items[idx];
+            if !matches!(item, Item::Supervisor(_)) {
+                self.check_item(item, span);
+            }
         }
     }
 
@@ -4368,6 +4372,7 @@ impl Checker {
             resolutions,
             shorthand_field_labels,
             contexts,
+            c_abi: std::mem::take(&mut self.c_abi),
             entry_exit_plan,
             test_entry_plans,
             extern_contracts: std::mem::take(&mut self.extern_table),

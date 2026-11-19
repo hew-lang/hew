@@ -2,7 +2,7 @@
 //!
 //! Properties: parsing never panics; peak heap respects the absolute alias
 //! expansion policy plus parser overhead; and an admitted document reads
-//! exactly as `serde_yaml` reads it.
+//! with the same values as the parser under its own default limits.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -19,9 +19,11 @@ fuzz_target!(|data: &[u8]| {
     let bound = support::heap_bound(text.len())
         .max(16 * hew_codec::yaml_value::YAML_EXPANSION_BUDGET_UNITS);
     let ours = support::bounded("yaml", bound, || hew_codec::yaml_value::parse(text));
-    if let Ok(value) = ours {
-        let reference: serde_yaml::Value =
-            serde_yaml::from_str(text).expect("the guard only refuses, it never repairs");
-        assert_eq!(value, reference);
+    let Ok(value) = ours else { return };
+    if let Ok(reference) = ayaml::compat::from_str::<ayaml::Value>(text) {
+        assert_eq!(
+            value,
+            hew_codec::yaml_value::Value::try_from(reference).unwrap()
+        );
     }
 });

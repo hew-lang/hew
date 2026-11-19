@@ -407,9 +407,8 @@ impl Parser<'_> {
         // pattern as part of `break`'s value. The token check is local and
         // cannot be fooled by a future desugar.
         //
-        // `arm_body_opens_block` accepts every opener `is_block_expr` accepts —
-        // not just `{` — so `if`/`match`/`unsafe`/`scope`/`select`/`fork {`/
-        // `after(..) {` arm bodies end at their closing brace.
+        // `arm_body_opens_block` also covers brace-bodied constructs such as
+        // `if`, `match`, `unsafe`, `scope`, `select` and `fork { ... }`.
         let body_looks_like_block = self.arm_body_opens_block();
         let body = if body_looks_like_block {
             // The arm needs no trailing comma, so the next arm's pattern may

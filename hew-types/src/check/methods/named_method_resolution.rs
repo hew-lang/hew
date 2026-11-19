@@ -149,7 +149,10 @@ impl Checker {
         receiver: &Ty,
         declaration: crate::DefId,
     ) -> Option<FnSig> {
-        let sig = self.fn_sigs.get(&declaration)?.clone();
+        let mut sig = self.fn_sigs.get(&declaration)?.clone();
+        if sig.inferred_return {
+            sig.return_type = self.subst.resolve(&sig.return_type);
+        }
         let Ty::Named { args, .. } = receiver else {
             return Some(sig);
         };

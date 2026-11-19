@@ -3590,7 +3590,21 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 - **Lambda parameters infer from context**: When a lambda appears where a specific function type is expected, parameter types are inferred
 - **Explicit annotations when ambiguous**: If types cannot be inferred, the compiler requires explicit annotations
 
-> **Note:** Return type inference via `-> _` is **not yet implemented**. A function annotated `fn f(...) -> _ { ... }` is rejected at HIR with `E_HIR: inferred type reached resolved HIR boundary (UnresolvedInferenceVar)`. All function return types must be written explicitly.
+Write `-> _` to infer a function’s result from its body. A generic result can
+refer to the function’s own type parameters. Each call substitutes its own
+argument types, including calls written before the declaration.
+
+```hew
+fn first<T>(left: T, right: T) -> _ { left }
+fn countdown(n: i64) -> _ {
+    if n == 0 { "done" } else { countdown(n - 1) }
+}
+```
+
+Recursive and mutually recursive functions can infer their results when
+their bodies determine a type. When every path calls back into the same
+cycle, write an explicit result on one function. An unconstrained value
+such as `Option.None` also needs a result type such as `Option<string>`.
 
 **Lambda inference examples:**
 
@@ -4014,12 +4028,10 @@ fn main() {
 
 ### 3.9 Foreign Function Interface (FFI)
 
-> **Partially implemented.** `extern "C"` blocks, unsafe foreign calls,
-> package native code (§3.9.7) and native linking with `hew build --link-lib`
-> are shipped. Layout/export attributes and the higher-level C-string wrapper
-> surface remain planned; their subsections are marked accordingly.
-
-Hew provides FFI capabilities for interoperating with C libraries and system calls.
+Hew programs can call C functions, export ordinary Hew functions with C
+signatures and pass explicitly laid-out records by value. A package can supply
+its own native code (§3.9.7), or the caller can link an archive with
+`hew build --link-lib`.
 
 #### 3.9.1 Extern Function Declaration
 
@@ -4103,40 +4115,28 @@ other thread-local state of the C library does not.
 
 #### 3.9.2 C-Compatible Struct Layout
 
-> **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
-> with `#[repr(C)]` is rejected at parse time with
-> `unrecognised type attribute '#[repr]' [E_UNKNOWN_TYPE_MARKER]`; layout is
-> controlled by the compiler for all types today.
+Mark a non-empty named record with `#[repr(C)]` to use the target C
+compiler's natural field alignment, declaration order and tail padding.
 
-Use `#[repr(C)]` to ensure C-compatible memory layout:
-
-```hew,ignore
+```hew
 #[repr(C)]
-type Point {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-type FileInfo {
-    size: u64,
-    mode: u32,
-    flags: u16,
-    padding: u16,  // Explicit padding for alignment
+type Reading {
+    station: i32;
+    value: f64;
 }
 ```
 
-**Additional layout attributes:**
-
-- `#[repr(C)]` - C-compatible layout with C alignment rules
-- `#[repr(C, packed)]` - C layout with no padding
-- `#[repr(C, align(N))]` - C layout with minimum alignment N
+The corresponding C declaration is `typedef struct { int32_t station; double
+value; } Reading;`. Each field must be an integer, floating-point value,
+Boolean, raw pointer to a C-compatible type, or another `#[repr(C)]` record.
+A raw pointer to unit represents a C `void *`. The checker rejects managed
+fields, generic records, enums, ownership markers and custom packing or
+alignment. C callers and Hew code can pass and return these records by value.
 
 #### 3.9.3 Type Mapping: Hew ↔ C
 
-> Primitive, raw-pointer, function-pointer, and immutable-view mappings apply
-> to shipped `extern "C"` declarations. Aggregate layout remains contingent on
-> the planned `#[repr(C)]` surface.
+Primitive and raw pointer mappings below apply to both directions. Foreign
+declarations also support the documented runtime-owned adapters.
 
 | Hew Type                  | C Type                      | Notes                      |
 | ------------------------- | --------------------------- | -------------------------- |
@@ -4198,27 +4198,37 @@ HewBytes xor_checksum(const HewBytes *frame) {
 
 #### 3.9.4 Exporting Functions to C
 
-> **Accepted, not yet wired to codegen.** `#[export]` parses on a Hew function
-> without error, but has no effect on the emitted binary today: the function
-> keeps its original name and internal (non-exported) linkage, so it is not
-> yet callable from C. `extern "C"` prefixing a Hew function body (as opposed
-> to a foreign declaration in an `extern "C" { ... }` block, §3.9.1) is not
-> valid syntax — `#[export]` applies directly to an ordinary `fn`.
-
-Use `#[export]` to make Hew functions callable from C once codegen support lands:
+Use `#[export]` on an ordinary monomorphic function to publish its name as
+a C symbol. Use `#[export("name")]` to choose a different C name. Source
+visibility is independent of C linkage. Each symbol must be unique across
+the program and use a valid, available C identifier.
 
 ```hew
-#[export("hew_process_data")]
-fn process_data(data: *const u8, len: usize) -> i32 {
-    // Intended to be accessible from C as hew_process_data() once wired.
-    0
+#[repr(C)]
+type Reading {
+    station: i32;
+    value: f64;
 }
 
-#[export]  // Uses the function name as-is
-fn my_callback(value: i32) -> i32 {
-    value * 2
+#[export("weather_calibrate")]
+fn calibrate(reading: Reading, adjustment: f64) -> Reading {
+    Reading { station: reading.station, value: reading.value + adjustment }
 }
+
+#[export]
+fn sensor_count() -> u32 { 4 }
 ```
+
+Build a library source with `hew build weather.hew --emit-obj -o weather.o`.
+A separately compiled C caller can declare `Reading weather_calibrate(Reading,
+double);` and `uint32_t sensor_count(void);` and link the resulting object
+with the matching Hew runtime. A C export accepts C-compatible values as
+described in §3.9.2. A unit return maps to C `void`.
+
+The call completes synchronously. A Hew fault runs the ordinary Hew cleanup,
+reports the fault and terminates the process at the C boundary. For a host
+that must recover a Hew fault or work with managed Hew values, use the
+status-returning host interface in §8.3.1.
 
 #### 3.9.5 Safety Rules
 
@@ -8314,9 +8324,11 @@ are invalid there. A newline is whitespace and never ends a member.
 
 Commas separate elements of lists and values: arguments, parameters, tuple and
 array elements, record and map literals, record patterns, import selections,
-and attribute arguments. A trailing comma is optional. Match and select arms
-whose bodies are blocks end at their closing brace; expression arms use commas
-between them. Statements and bodyless signatures still end with `;`.
+and attribute arguments. A trailing comma is optional. A block-bodied `match`
+or `select` arm, including a block-bodied `after` arm, may have one comma after
+its closing brace. The formatter omits that comma. An expression arm requires
+a comma before the next arm and may omit its final comma. Statements and
+bodyless signatures still end with `;`.
 An array's `[T; N]` size syntax retains its semicolon.
 
 ```hew
@@ -8934,7 +8946,8 @@ refuses the name it does not know rather than dropping it.
 | `#[max_heap(N)]` | actor declaration | Actor-owned managed-payload budget in bytes; excess faults with `HeapExceeded` (§2.2). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
-| `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |
+| `#[export]`, `#[export("name")]` | free `fn` | Exposes the function with its C signature (§3.9.4). |
+| `#[repr(C)]` | named record | Uses C field order, alignment and padding (§3.9.2). |
 
 Testing attribute arguments are positional. `test`, `bench`, `serial` and `real_time`
 accept no arguments; `ignore` and `should_panic` accept at most one quoted

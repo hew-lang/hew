@@ -356,7 +356,7 @@ fn name_of(day: i64) -> string {
 }
 ```
 
-`match` returns a value. Arms are comma-separated; `_` is the catch-all final arm.
+`match` returns a value. Use commas between expression arms. `_` is the catch-all final arm.
 
 ### match guards and block-bodied arms
 
@@ -373,7 +373,9 @@ fn classify(n: i64) -> string {
 }
 ```
 
-Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` still needs a trailing comma after `}`. Guards do not contribute to exhaustiveness — keep a `_` or unguarded fallback.
+Bind with a name, then add a guard as in `x if cond =>`. A block-bodied arm
+may have a comma after `}`. The formatter omits it. Guards do not contribute
+to exhaustiveness, so keep a `_` or unguarded fallback.
 
 ### match on enum variants binding payloads
 

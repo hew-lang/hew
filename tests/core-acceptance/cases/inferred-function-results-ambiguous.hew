@@ -1,0 +1,7 @@
+fn first() -> _ { second() }
+fn second() -> _ { first() }
+fn missing() -> _ { Option.None }
+
+fn main() {
+    let _typed: i64 = first();
+}

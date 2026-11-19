@@ -597,8 +597,7 @@ fn fetch_json<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("GET {url} failed: {error}"))?
         .error_for_status()
         .map_err(|error| format!("GET {url} returned non-success status: {error}"))?;
-    let envelope: Envelope<T> = response
-        .json()
+    let envelope: Envelope<T> = serde_json::from_reader(std::io::BufReader::new(response))
         .map_err(|error| format!("GET {url} returned invalid envelope JSON: {error}"))?;
     if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
         return Err(format!(

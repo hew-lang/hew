@@ -1,0 +1,59 @@
+#[repr(C)]
+type Reading {
+    station: i32;
+    value: f64;
+}
+
+#[repr(C)]
+type Sample {
+    reading: Reading;
+    count: u64;
+}
+
+extern "C" {
+    fn calibrate(reading: Reading) -> Reading;
+    fn close_sample(sample: Sample) -> Sample;
+    fn record_cleanup();
+}
+
+#[export("weather_sample")]
+fn sample(input: Sample) -> Sample {
+    let calibrated = unsafe { calibrate(input.reading) };
+    unsafe { close_sample(Sample { reading: calibrated, count: input.count + 1 }) }
+}
+
+#[export]
+fn select_reading(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, reading: Reading) -> Reading {
+    Reading { station: reading.station, value: reading.value + ((a + b + c + d + e + f) as f64) }
+}
+
+#[export]
+fn sign(value: i8, enabled: bool) -> i8 {
+    if enabled { value } else { 0 }
+}
+
+#[export]
+fn checked_ratio(divisor: i64) -> i64 {
+    defer { unsafe { record_cleanup(); } }
+    42 / divisor
+}
+
+#[repr(C)]
+type Range {
+    low: f32;
+    high: f32;
+}
+
+#[export]
+fn shift_range(input: Range, offset: f32) -> Range {
+    Range { low: input.low + offset, high: input.high + offset }
+}
+
+#[export]
+fn station_pointer(value: *const u8) -> *const u8 { value }
+
+#[export]
+fn packed_range(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64,
+                first: Range, last: Range) -> f64 {
+    a + b + c + d + e + f + g + h + (first.low as f64) + (last.high as f64)
+}

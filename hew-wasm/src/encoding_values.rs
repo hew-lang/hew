@@ -1,6 +1,7 @@
 //! Lossless native Encoding Value text operations for the sandbox bridge.
 
 use hew_codec::managed_tree;
+use hew_codec::yaml_value as yaml;
 use serde_json::{json, Value as Json};
 
 fn retained_capacity(value: &Json, len: usize) -> Result<usize, String> {
@@ -59,8 +60,8 @@ fn json_response(value: Json) -> Result<Json, String> {
     )
 }
 
-fn yaml_capacities(value: &serde_yaml::Value) -> Json {
-    use serde_yaml::Value;
+fn yaml_capacities(value: &yaml::Value) -> Json {
+    use yaml::Value;
     match value {
         Value::String(text) => json!(text.capacity().to_string()),
         Value::Sequence(values) => json!([
@@ -79,8 +80,7 @@ fn yaml_capacities(value: &serde_yaml::Value) -> Json {
     }
 }
 
-fn yaml_response(mut value: serde_yaml::Value) -> Result<Json, String> {
-    managed_tree::normalize_yaml_tags(&mut value);
+fn yaml_response(value: yaml::Value) -> Result<Json, String> {
     let bytes =
         managed_tree::yaml_payload_bytes(&value).ok_or("encoding payload capacity overflow")?;
     Ok(
@@ -233,7 +233,7 @@ pub(crate) fn execute(request: &Json) -> Result<Json, String> {
             let encoded = match format {
                 "Json" => serde_json::to_string(&json_value_from_bridge(value, &Json::Null)?)
                     .map_err(|error| format!("json stringify failed: {error}")),
-                "Yaml" => serde_yaml::to_string(&yaml_value_from_bridge(value, &Json::Null)?)
+                "Yaml" => yaml::to_string(&yaml_value_from_bridge(value, &Json::Null)?)
                     .map_err(|error| format!("yaml stringify failed: {error}")),
                 "Toml" => toml::to_string(&toml_value_from_bridge(value, &Json::Null)?)
                     .map_err(|error| format!("toml: {error}")),
@@ -292,9 +292,9 @@ fn mutate(request: &Json, format: &str) -> Result<Json, String> {
                     child = child.clone();
                 }
                 match (&mut value, operation) {
-                    (serde_yaml::Value::Sequence(values), "array_push") => values.push(child),
-                    (serde_yaml::Value::Mapping(values), "object_set") => {
-                        let key = serde_yaml::Value::String(key()?.to_owned());
+                    (yaml::Value::Sequence(values), "array_push") => values.push(child),
+                    (yaml::Value::Mapping(values), "object_set") => {
+                        let key = yaml::Value::String(key()?.to_owned());
                         let growth = hew_codec::managed_tree::yaml_mapping_growth(values, &key);
                         hew_codec::managed_tree::yaml_mapping_insert(values, growth, key, child);
                     }
@@ -336,22 +336,13 @@ fn bridge_float(value: &Json) -> Result<f64, String> {
         .map_err(|error| error.to_string())
 }
 
-fn yaml_value_to_bridge(value: serde_yaml::Value) -> Json {
-    use serde_yaml::Value;
+fn yaml_value_to_bridge(value: yaml::Value) -> Json {
+    use yaml::Value;
     match value {
         Value::Null => json!(["null"]),
         Value::Bool(value) => json!(["bool", value]),
-        Value::Number(value) => {
-            if value.is_i64() || value.is_u64() {
-                json!(["integer", value.to_string()])
-            } else {
-                float_to_bridge(
-                    value
-                        .as_f64()
-                        .expect("YAML number has a float representation"),
-                )
-            }
-        }
+        Value::Number(value) if value.is_f64() => float_to_bridge(value.as_f64().unwrap()),
+        Value::Number(value) => json!(["integer", value.to_string()]),
         Value::String(value) => json!(["string", value]),
         Value::Sequence(values) => json!([
             "array",
@@ -375,8 +366,8 @@ fn yaml_value_to_bridge(value: serde_yaml::Value) -> Json {
     }
 }
 
-fn yaml_value_from_bridge(value: &Json, capacities: &Json) -> Result<serde_yaml::Value, String> {
-    use serde_yaml::Value;
+fn yaml_value_from_bridge(value: &Json, capacities: &Json) -> Result<yaml::Value, String> {
+    use yaml::Value;
     let invalid = || "invalid YAML value bridge payload".to_owned();
     let payload = &value[1];
     Ok(match value[0].as_str().ok_or_else(invalid)? {
@@ -387,12 +378,12 @@ fn yaml_value_from_bridge(value: &Json, capacities: &Json) -> Result<serde_yaml:
             let text = payload.as_str().ok_or_else(invalid)?;
             Value::Number(
                 text.parse::<i64>()
-                    .map(serde_yaml::Number::from)
-                    .or_else(|_| text.parse::<u64>().map(serde_yaml::Number::from))
+                    .map(yaml::Number::from)
+                    .or_else(|_| text.parse::<u64>().map(yaml::Number::from))
                     .map_err(|error| error.to_string())?,
             )
         }
-        "float" => Value::Number(serde_yaml::Number::from(bridge_float(payload)?)),
+        "float" => Value::Number(yaml::Number::from(bridge_float(payload)?)),
         "array" => Value::Sequence(retained_array(
             payload
                 .as_array()
@@ -406,7 +397,7 @@ fn yaml_value_from_bridge(value: &Json, capacities: &Json) -> Result<serde_yaml:
         "mapping" => {
             let pairs = payload.as_array().ok_or_else(invalid)?;
             let mut mapping =
-                serde_yaml::Mapping::with_capacity(retained_capacity(&capacities[0], pairs.len())?);
+                yaml::Mapping::with_capacity(retained_capacity(&capacities[0], pairs.len())?);
             for (index, pair) in pairs.iter().enumerate() {
                 mapping.insert(
                     yaml_value_from_bridge(&pair[0], &capacities[1][index][0])?,
@@ -415,8 +406,8 @@ fn yaml_value_from_bridge(value: &Json, capacities: &Json) -> Result<serde_yaml:
             }
             Value::Mapping(mapping)
         }
-        "tagged" => Value::Tagged(Box::new(serde_yaml::value::TaggedValue {
-            tag: serde_yaml::value::Tag::new(payload.as_str().ok_or_else(invalid)?),
+        "tagged" => Value::Tagged(Box::new(yaml::TaggedValue {
+            tag: payload.as_str().ok_or_else(invalid)?.into(),
             value: yaml_value_from_bridge(&value[2], capacities)?,
         })),
         _ => return Err(invalid()),
@@ -570,19 +561,14 @@ mod tests {
 
     #[test]
     fn retained_yaml_mapping_uses_the_native_growth_and_detach_policy() {
-        let mut native = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let mut native = yaml::Value::Mapping(yaml::Mapping::new());
         let mut bridged =
             execute(&json!({"format": "Yaml", "operation": "parse", "text": "{}"})).unwrap();
         for key in ["a", "b", "c", "d", "e", "f", "g", "h", "a"] {
             let mapping = native.as_mapping_mut().unwrap();
-            let native_key = serde_yaml::Value::String(key.to_owned());
+            let native_key = yaml::Value::String(key.to_owned());
             let growth = managed_tree::yaml_mapping_growth(mapping, &native_key);
-            managed_tree::yaml_mapping_insert(
-                mapping,
-                growth,
-                native_key,
-                serde_yaml::Value::from(7),
-            );
+            managed_tree::yaml_mapping_insert(mapping, growth, native_key, yaml::Value::from(7));
             bridged = execute(&json!({"format": "Yaml", "operation": "object_set", "value": bridged["value"], "capacities": bridged["managed"]["capacities"], "key": key, "child": ["integer", "7"]})).unwrap();
             assert_eq!(
                 bridged["managed"]["bytes"],
@@ -595,9 +581,9 @@ mod tests {
         let retained = native;
         let mut native = retained.clone();
         let mapping = native.as_mapping_mut().unwrap();
-        let key = serde_yaml::Value::String("detached".to_owned());
+        let key = yaml::Value::String("detached".to_owned());
         let growth = managed_tree::yaml_mapping_growth(mapping, &key);
-        managed_tree::yaml_mapping_insert(mapping, growth, key, serde_yaml::Value::from(8));
+        managed_tree::yaml_mapping_insert(mapping, growth, key, yaml::Value::from(8));
         let detached = execute(&json!({"format": "Yaml", "operation": "object_set", "detach": true, "value": bridged["value"], "capacities": bridged["managed"]["capacities"], "key": "detached", "child": ["integer", "8"]})).unwrap();
         assert_eq!(
             detached["managed"]["bytes"],

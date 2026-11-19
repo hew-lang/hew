@@ -1249,11 +1249,16 @@ fn find_shared_hew_lib(target: &TargetSpec) -> Result<String, String> {
             .as_deref()
             .and_then(std::path::Path::parent)
             .map(|dir| {
-                hew_lib_candidates(dir, &name, target.normalized_triple(), target.can_run_on_host())
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
+                hew_lib_candidates(
+                    dir,
+                    &name,
+                    target.normalized_triple(),
+                    target.can_run_on_host(),
+                )
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n  ")
             })
             .unwrap_or_default();
         format!(
@@ -2298,15 +2303,21 @@ mod tests {
     #[test]
     fn shared_runtime_name_carries_the_exact_release() {
         assert_eq!(
-            spec("x86_64-unknown-linux-gnu").shared_hew_lib_name("0.11.1").as_deref(),
+            spec("x86_64-unknown-linux-gnu")
+                .shared_hew_lib_name("0.11.1")
+                .as_deref(),
             Some("libhew.so.0.11.1")
         );
         assert_eq!(
-            spec("x86_64-unknown-freebsd").shared_hew_lib_name("0.12.0-rc1").as_deref(),
+            spec("x86_64-unknown-freebsd")
+                .shared_hew_lib_name("0.12.0-rc1")
+                .as_deref(),
             Some("libhew.so.0.12.0-rc1")
         );
         assert_eq!(
-            spec("aarch64-apple-darwin").shared_hew_lib_name("0.11.1").as_deref(),
+            spec("aarch64-apple-darwin")
+                .shared_hew_lib_name("0.11.1")
+                .as_deref(),
             Some("libhew.0.11.1.dylib")
         );
         for triple in [
@@ -2345,11 +2356,15 @@ mod tests {
             runtime: RuntimeLink::Static,
             rpath: Some(vec!["/opt/app/lib".into()]),
         };
-        let error =
-            validate_link_options(&spec("x86_64-unknown-linux-gnu"), &static_with_rpath).unwrap_err();
-        assert!(error.contains("--rpath applies only with --link=dynamic"), "{error}");
+        let error = validate_link_options(&spec("x86_64-unknown-linux-gnu"), &static_with_rpath)
+            .unwrap_err();
         assert!(
-            validate_link_options(&spec("x86_64-unknown-linux-gnu"), &LinkOptions::default()).is_ok()
+            error.contains("--rpath applies only with --link=dynamic"),
+            "{error}"
+        );
+        assert!(
+            validate_link_options(&spec("x86_64-unknown-linux-gnu"), &LinkOptions::default())
+                .is_ok()
         );
     }
 

@@ -11,7 +11,7 @@
 pub(crate) enum HostFamily {
     /// Debian, Ubuntu and derivatives (`apt`).
     Debian,
-    /// Fedora, RHEL, CentOS, Rocky, Alma, Amazon Linux (`dnf`).
+    /// Fedora, RHEL and the distributions built from it (`dnf`).
     Fedora,
     /// openSUSE and SLES (`zypper`).
     Suse,
@@ -63,9 +63,7 @@ impl HostFamily {
             .chain(like.split_whitespace())
             .find_map(|name| match name {
                 "debian" | "ubuntu" => Some(Self::Debian),
-                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "amzn" => {
-                    Some(Self::Fedora)
-                }
+                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "amzn" => Some(Self::Fedora),
                 "opensuse" | "opensuse-leap" | "opensuse-tumbleweed" | "suse" | "sles" => {
                     Some(Self::Suse)
                 }
@@ -161,7 +159,15 @@ pub(crate) fn missing_windows_clang() -> String {
 /// is what a bare `gcc` install without `libc6-dev`/`glibc-devel` produces.
 pub(crate) fn missing_c_library_hint(stderr: &str, family: HostFamily) -> Option<String> {
     let missing_start_files = ["crt1.o", "Scrt1.o", "crti.o", "crtbeginS.o", "crtbegin.o"];
-    let missing_libs = ["-lc", "-lgcc_s", "-lgcc", "-lm", "-lpthread", "-ldl", "-lrt"];
+    let missing_libs = [
+        "-lc",
+        "-lgcc_s",
+        "-lgcc",
+        "-lm",
+        "-lpthread",
+        "-ldl",
+        "-lrt",
+    ];
     let mentions_missing = stderr.lines().any(|line| {
         let lower = line.to_ascii_lowercase();
         let not_found = lower.contains("cannot find")
@@ -191,10 +197,19 @@ mod tests {
     fn os_release_maps_ids_and_derivatives_to_their_package_manager() {
         let cases = [
             ("ID=ubuntu\nID_LIKE=debian\n", HostFamily::Debian),
-            ("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", HostFamily::Debian),
+            (
+                "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n",
+                HostFamily::Debian,
+            ),
             ("ID=fedora\n", HostFamily::Fedora),
-            ("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n", HostFamily::Fedora),
-            ("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n", HostFamily::Suse),
+            (
+                "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n",
+                HostFamily::Fedora,
+            ),
+            (
+                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                HostFamily::Suse,
+            ),
             ("ID=arch\n", HostFamily::Arch),
             ("ID=endeavouros\nID_LIKE=arch\n", HostFamily::Arch),
             ("ID=alpine\n", HostFamily::Alpine),
@@ -219,16 +234,26 @@ mod tests {
     fn missing_driver_names_one_command_for_this_host() {
         let debian = missing_c_driver("no C compiler found (tried clang, cc)", HostFamily::Debian);
         assert!(debian.contains("tried clang, cc"), "{debian}");
-        assert!(debian.contains("sudo apt install gcc libc6-dev"), "{debian}");
-        assert!(!debian.contains("dnf"), "only this host's command: {debian}");
-        assert!(!debian.contains("xcode-select"), "only this host's command: {debian}");
+        assert!(
+            debian.contains("sudo apt install gcc libc6-dev"),
+            "{debian}"
+        );
+        assert!(
+            !debian.contains("dnf"),
+            "only this host's command: {debian}"
+        );
+        assert!(
+            !debian.contains("xcode-select"),
+            "only this host's command: {debian}"
+        );
         assert!(debian.contains("HEW_CC"), "{debian}");
 
         let mac = missing_c_driver("no C compiler found (tried clang, cc)", HostFamily::MacOs);
         assert!(mac.contains("xcode-select --install"), "{mac}");
         assert!(!mac.contains("apt"), "{mac}");
 
-        let freebsd = missing_c_driver("no C compiler found (tried clang, cc)", HostFamily::FreeBsd);
+        let freebsd =
+            missing_c_driver("no C compiler found (tried clang, cc)", HostFamily::FreeBsd);
         assert!(freebsd.contains("base system provides `cc`"), "{freebsd}");
     }
 
@@ -257,16 +282,16 @@ mod tests {
 
     #[test]
     fn missing_c_library_hint_detects_absent_start_files_and_libc() {
-        let gnu_ld = "/usr/bin/ld: cannot find Scrt1.o: No such file or directory\n\
+        let start_files = "/usr/bin/ld: cannot find Scrt1.o: No such file or directory\n\
                       /usr/bin/ld: cannot find crti.o: No such file or directory";
-        let hint = missing_c_library_hint(gnu_ld, HostFamily::Debian).expect("hint");
+        let hint = missing_c_library_hint(start_files, HostFamily::Debian).expect("hint");
         assert!(hint.contains("libc6-dev"), "{hint}");
 
         let lld = "ld.lld: error: unable to find library -lgcc_s";
         assert!(missing_c_library_hint(lld, HostFamily::Fedora).is_some());
 
-        let gnu_lc = "/usr/bin/ld: cannot find -lc: No such file or directory";
-        assert!(missing_c_library_hint(gnu_lc, HostFamily::Debian).is_some());
+        let libc = "/usr/bin/ld: cannot find -lc: No such file or directory";
+        assert!(missing_c_library_hint(libc, HostFamily::Debian).is_some());
     }
 
     #[test]

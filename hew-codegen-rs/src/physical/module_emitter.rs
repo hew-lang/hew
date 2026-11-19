@@ -848,9 +848,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let register = get_or_declare_external(
             &self.llvm,
             "hew_image_register",
-            self.ctx
-                .i32_type()
-                .fn_type(&[ptr.into(), ptr.into(), ptr.into(), ptr.into(), ptr.into()], false),
+            self.ctx.i32_type().fn_type(
+                &[ptr.into(), ptr.into(), ptr.into(), ptr.into(), ptr.into()],
+                false,
+            ),
         )?;
         let version = builder
             .build_global_string_ptr(env!("CARGO_PKG_VERSION"), "hew.compiler.version")
@@ -877,7 +878,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("register image with the runtime")?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| CodegenError::FailClosed("image registration returned no status".into()))?
+            .ok_or_else(|| {
+                CodegenError::FailClosed("image registration returned no status".into())
+            })?
             .into_int_value();
         let registered = self.ctx.append_basic_block(wrapper, "image.registered");
         let refused = self.ctx.append_basic_block(wrapper, "image.refused");

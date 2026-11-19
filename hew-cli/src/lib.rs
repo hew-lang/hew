@@ -564,10 +564,10 @@ fn link_native_object_with_hew_lib_and_extra(
         hew_lib,
         &crate::link::LinkOptions::default(),
     )
-        .map_err(|e| {
-            crate::diagnostic::emit_plain_diagnostic_line(&e);
-            DiagChannel::User
-        })
+    .map_err(|e| {
+        crate::diagnostic::emit_plain_diagnostic_line(&e);
+        DiagChannel::User
+    })
 }
 
 pub(crate) fn compile_native_binary(
@@ -876,10 +876,10 @@ fn link_native_object_for_target_with_hew_lib(
     crate::link::link_executable_with_hew_lib(
         obj_str, bin_str, target, extra_libs, debug, hew_lib, link,
     )
-        .map_err(|e| {
-            crate::diagnostic::emit_plain_diagnostic_line(&e);
-            DiagChannel::User
-        })
+    .map_err(|e| {
+        crate::diagnostic::emit_plain_diagnostic_line(&e);
+        DiagChannel::User
+    })
 }
 
 /// Produce the `.wasm` module `output_path` names from an emitted wasm object.
@@ -1153,6 +1153,20 @@ fn cmd_build(a: &args::BuildArgs) {
     }
 }
 
+/// `--link` and `--rpath` describe the native link, which `--emit-obj` skips;
+/// refuse rather than silently ignore them, and refuse a target without a
+/// shared runtime before anything compiles.
+fn validate_build_link(
+    a: &args::BuildArgs,
+    target: &target::TargetSpec,
+    link: &link::LinkOptions,
+) -> Result<(), String> {
+    if a.emit_obj && (link.runtime != link::RuntimeLink::Static || link.rpath.is_some()) {
+        return Err("Error: --link and --rpath apply to linked programs, not --emit-obj".into());
+    }
+    link::validate_link_options(target, link)
+}
+
 /// Body of `hew build`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
 fn cmd_build_run(a: &args::BuildArgs) -> i32 {
@@ -1191,13 +1205,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
 
     let options = a.to_compile_options();
 
-    // `--link` and `--rpath` describe the native link, which `--emit-obj`
-    // skips; refuse rather than silently ignore them.
-    if a.emit_obj && (options.link.runtime != link::RuntimeLink::Static || options.link.rpath.is_some()) {
-        eprintln!("Error: --link and --rpath apply to linked programs, not --emit-obj");
-        return 2;
-    }
-    if let Err(error) = link::validate_link_options(&target, &options.link) {
+    if let Err(error) = validate_build_link(a, &target, &options.link) {
         eprintln!("{error}");
         return 2;
     }

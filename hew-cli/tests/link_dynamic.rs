@@ -32,8 +32,13 @@ fn runtime_name() -> String {
     }
 }
 
+/// Build `source` as `<dir>/<name>/prog.hew` into `<dir>/<name>/<name>`.
+/// Every build reads a file of the same name, so fault reports, which name
+/// the source file, compare across builds.
 fn build(dir: &Path, name: &str, source: &str, args: &[&str]) -> PathBuf {
-    let input = dir.join(format!("{name}.hew"));
+    let dir = dir.join(name);
+    std::fs::create_dir_all(&dir).expect("build directory");
+    let input = dir.join("prog.hew");
     std::fs::write(&input, source).expect("write source");
     let output = dir.join(name);
     let built = Command::new(hew_binary())
@@ -49,8 +54,16 @@ fn build(dir: &Path, name: &str, source: &str, args: &[&str]) -> PathBuf {
     output
 }
 
+/// Run a built program with the loader's own search variables cleared, so
+/// it finds its runtime only through the run path it recorded. (Cargo puts
+/// the target directory, which holds the in-tree runtime, on them for tests.)
 fn run(program: &Path) -> Output {
-    Command::new(program).output().expect("run program")
+    Command::new(program)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .output()
+        .expect("run program")
 }
 
 /// The fault report without its `build <id>` line, which names each binary.
@@ -70,7 +83,11 @@ fn dynamic_program_matches_its_static_twin() {
     let shared = build(dir.path(), "hello-dynamic", HELLO, &["--link=dynamic"]);
 
     let (fixed_run, shared_run) = (run(&fixed), run(&shared));
-    assert!(shared_run.status.success(), "{}", describe_output(&shared_run));
+    assert!(
+        shared_run.status.success(),
+        "{}",
+        describe_output(&shared_run)
+    );
     assert_eq!(shared_run.stdout, fixed_run.stdout);
     assert_eq!(shared_run.stdout, b"hello from hew\n");
 
@@ -86,7 +103,9 @@ fn dynamic_program_matches_its_static_twin() {
     let image = std::fs::read(&shared).expect("read binary");
     let name = runtime_name();
     assert!(
-        image.windows(name.len()).any(|window| window == name.as_bytes()),
+        image
+            .windows(name.len())
+            .any(|window| window == name.as_bytes()),
         "the program must record {name}"
     );
     assert!(
@@ -163,7 +182,7 @@ fn rpath_replaces_the_default_search_path() {
         .join(&name)
         .canonicalize()
         .expect("in-tree shared runtime");
-    std::fs::copy(&runtime, dir.path().join(&name)).expect("copy runtime");
+    std::fs::copy(&runtime, program.with_file_name(&name)).expect("copy runtime");
     let found = run(&program);
     assert!(found.status.success(), "{}", describe_output(&found));
     assert_eq!(found.stdout, b"hello from hew\n");

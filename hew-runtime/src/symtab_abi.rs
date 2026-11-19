@@ -124,6 +124,7 @@ pub unsafe extern "C" fn hew_image_register(
     symbols: *const u8,
     has_debug_info: *const u8,
 ) -> i32 {
+    use std::io::Write as _;
     use std::sync::atomic::Ordering;
     if !version.is_null() {
         // SAFETY: the caller passes a NUL-terminated string.
@@ -138,12 +139,14 @@ pub unsafe extern "C" fn hew_image_register(
                 actual = RUNTIME_VERSION,
                 from = library.map_or_else(String::new, |path| format!(" from {path}")),
             );
-            use std::io::Write as _;
             let _ = std::io::stderr().write_all(message.as_bytes());
             return RUNTIME_MISMATCH_STATUS;
         }
     }
-    for (slot, table) in [files, sites, symbols, has_debug_info].into_iter().enumerate() {
+    for (slot, table) in [files, sites, symbols, has_debug_info]
+        .into_iter()
+        .enumerate()
+    {
         if !table.is_null() {
             image::REGISTERED[slot].store(table.cast_mut(), Ordering::Release);
         }
@@ -162,8 +165,12 @@ fn runtime_image_path() -> Option<String> {
     }
     // SAFETY: dladdr succeeded, so `info` is initialized.
     let name = unsafe { info.assume_init() }.dli_fname;
+    if name.is_null() {
+        return None;
+    }
     // SAFETY: a non-null dli_fname is a NUL-terminated path owned by the loader.
-    (!name.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned())
+    let name = unsafe { std::ffi::CStr::from_ptr(name) };
+    Some(name.to_string_lossy().into_owned())
 }
 
 #[cfg(not(unix))]

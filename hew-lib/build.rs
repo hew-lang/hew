@@ -52,7 +52,13 @@ fn main() {
 /// Point `<profile>/<versioned>` at Cargo's `<profile>/<cargo_name>`, which
 /// the link after this script produces. A relative link survives moving the
 /// target directory.
-#[cfg_attr(not(unix), allow(unused_variables, reason = "only Unix hosts link ELF and Mach-O runtimes"))]
+#[cfg_attr(
+    not(unix),
+    allow(
+        unused_variables,
+        reason = "only Unix hosts link ELF and Mach-O runtimes"
+    )
+)]
 fn link_versioned_name(profile: &Path, cargo_name: &str, versioned: &str) {
     #[cfg(unix)]
     {
@@ -62,7 +68,10 @@ fn link_versioned_name(profile: &Path, cargo_name: &str, versioned: &str) {
         }
         let _ = std::fs::remove_file(&link);
         if let Err(error) = std::os::unix::fs::symlink(cargo_name, &link) {
-            println!("cargo:warning=cannot link {} to {cargo_name}: {error}", link.display());
+            println!(
+                "cargo:warning=cannot link {} to {cargo_name}: {error}",
+                link.display()
+            );
         }
     }
 }

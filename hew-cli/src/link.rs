@@ -1275,7 +1275,7 @@ fn find_shared_hew_lib(target: &TargetSpec) -> Result<String, String> {
 }
 
 /// Directories a dynamically linked program searches for the shared runtime,
-/// in order: the program's own directory and a `lib` beside it, so a program
+/// in order: the program's own directory and its sibling `../lib`, so a program
 /// shipped together with its runtime finds that copy first, then the
 /// directory the runtime was linked from, so a program built against an
 /// installed Hew runs in place. A runtime in a directory the loader searches

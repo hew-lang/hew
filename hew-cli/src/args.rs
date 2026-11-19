@@ -323,7 +323,7 @@ pub struct LinkArgs {
     pub link: crate::link::RuntimeLink,
     /// With `--link=dynamic`: a directory the program searches for the shared
     /// runtime when it starts. Repeatable; replaces the default search path
-    /// (the program's directory, a `lib` directory beside it, then the
+    /// (the program's directory, `../lib` relative to it, then the
     /// directory of the runtime it was linked against, which a build that
     /// trims paths, such as `--release`, leaves out).
     #[arg(long, value_name = "DIR")]

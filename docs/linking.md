@@ -110,7 +110,7 @@ static twin.
 A dynamically linked program searches these directories, in order:
 
 1. its own directory (`$ORIGIN`, or `@executable_path` on macOS);
-2. `lib/` beside it (`$ORIGIN/../lib`);
+2. `../lib/` relative to the executable (for example, `app/lib/` for a program in `app/bin/`);
 3. the directory of the runtime it was linked against, unless the system
    loader already searches that directory, or the build trims paths.
 
@@ -134,8 +134,7 @@ On Linux and FreeBSD the search path is a `DT_RUNPATH`, so
 `LD_LIBRARY_PATH` still takes precedence for testing.
 
 `--rpath DIR` (repeatable) replaces the whole default list. For example,
-`--rpath '$ORIGIN/../lib'` searches only a `lib` directory beside the
-program. Quote `$ORIGIN` so the shell passes it through.
+`--rpath '$ORIGIN/../lib'` searches only `../lib/` relative to the executable. Quote `$ORIGIN` so the shell passes it through.
 
 ### Where the runtime is installed
 

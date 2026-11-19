@@ -127,13 +127,9 @@ jobs:
         with:
           tool: shellcheck@${{ env.SHELLCHECK_VERSION }}
 
-      - name: Install C header checks
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-format gcc
-
       - name: Verify build tooling and checker behaviour
-        run: make -k test-tooling compile-determinism-selftest
+        # Noble ships the LLVM 18 tools in a versioned directory.
+        run: PATH="$PATH:/usr/lib/llvm-18/bin" make -k test-tooling compile-determinism-selftest
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.

@@ -22,6 +22,7 @@ try {
   const args = parseArgs(process.argv.slice(2));
   const packageValue = JSON.parse(fs.readFileSync(args.path, "utf8"));
   let codecBridge;
+  let regexBridge;
   let calendarBridge;
   if (packageValue.codecs?.length) {
     const local = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../hew-wasm/pkg/hew_wasm.js");
@@ -32,12 +33,14 @@ try {
       await wasm.default({ module_or_path: fs.readFileSync(new URL(resolved.replace(/\.js$/, "_bg.wasm"))) });
     }
     codecBridge = wasm.executeCodec ?? wasm.default?.executeCodec;
+    regexBridge = wasm.compileSandboxRegex ?? wasm.default?.compileSandboxRegex;
     calendarBridge = wasm.executeCalendar ?? wasm.default?.executeCalendar;
     if (typeof codecBridge !== "function") throw new Error("hew-wasm executeCodec export is missing; rebuild the Wasm package");
   }
   const propertyPath = reportPath ? path.join(path.dirname(reportPath), "property.cbor") : null;
   const trace = await runBytecode(packageValue, {
     codecBridge,
+    regexBridge,
     calendarBridge,
     propertyInput: propertyPath && fs.existsSync(propertyPath) ? [...fs.readFileSync(propertyPath)] : [],
     fixtureId: "hew-test",

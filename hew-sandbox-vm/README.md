@@ -116,6 +116,10 @@ Their ordinary value operations execute in the VM, including independent copies,
 checked access, mutation and cleanup. The bridge preserves full-width JSON
 integers, YAML mapping keys and tags, and TOML datetimes using the native engines.
 
+Regex match arms use the same Rust regex engine as native Hew. Pass the
+initialized compiler’s `compileSandboxRegex` export as `regexBridge`. The VM
+compiles each literal on its first use and releases it when the program exits.
+
 UTC calendar operations also require the initialized `executeCalendar`
 export as `calendarBridge`. Both hosts use the shared UTC calendar engine.
 The bridge preserves integer seconds and nanoseconds exactly.

@@ -46,6 +46,8 @@ assert.equal(
 );
 globalThis.__hewSandboxExecuteCodec =
   wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
+globalThis.__hewSandboxCompileRegex =
+  wasmModule.compileSandboxRegex ?? wasmModule.default?.compileSandboxRegex;
 globalThis.__hewSandboxExecuteCalendar =
   wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
 
@@ -72,6 +74,7 @@ test.after(() => {
     if (ownsBindings) fs.rmSync(wasmDir, { recursive: true, force: true });
     delete globalThis.__hewSandboxCompileToSandboxBytecode;
     delete globalThis.__hewSandboxExecuteCodec;
+    delete globalThis.__hewSandboxCompileRegex;
     delete globalThis.__hewSandboxExecuteCalendar;
   }
 });
@@ -203,6 +206,7 @@ for (const name of [
     const trace = await runBytecode(compiled.bytecode, {
       codecBridge: globalThis.__hewSandboxExecuteCodec,
       calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+      regexBridge: globalThis.__hewSandboxCompileRegex,
     });
     assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
     assert.equal(trace.final_state.exit_code, 0);
@@ -995,6 +999,7 @@ test("calendar extern results require their checked record descriptor", async ()
     else malformed.aggregates[call.aggregate_result_shape].fields.reverse();
     const trace = await runBytecode(malformed, {
       calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+      regexBridge: globalThis.__hewSandboxCompileRegex,
     });
     assert.equal(trace.result, "sandbox_rejected");
     assert.deepEqual(trace.final_state.stdout, []);
@@ -1354,4 +1359,20 @@ test("interpolation keeps originating faults and cleans up across suspension", a
     "interpolation cancelled\ninterpolation recovered\n",
   );
   assert.equal(result.exit_code, 0);
+});
+
+test("regex arm bindings preserve Unicode text and optional participation", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/match-regex-named-captures.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  assert.equal(
+    result.stdout,
+    "Hello, Zoë 🦀!\nskip\nno greeting\nÉté: none\nÉté: some []\nÉté: some [fin]\nnone / none / []\nsome [a] / some [8] / [xx]\n",
+  );
 });

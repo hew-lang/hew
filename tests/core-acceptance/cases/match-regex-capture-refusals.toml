@@ -1,0 +1,27 @@
+[[case]]
+id = "match-regex-capture-refusals"
+intent = "Named regex captures need valid Hew identifiers, cannot collide with a binding in scope, and are unavailable in other arms."
+source = "cases/match-regex-capture-refusals.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "InvalidRegexLiteral"
+line = 4
+column = 16
+
+[[case.expected.diagnostics]]
+code = "InvalidRegexLiteral"
+line = 5
+column = 16
+
+[[case.expected.diagnostics]]
+code = "Shadowing"
+line = 6
+column = 16
+
+[[case.expected.diagnostics]]
+code = "UndefinedVariable"
+line = 8
+column = 14

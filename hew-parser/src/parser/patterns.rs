@@ -347,16 +347,16 @@ impl Parser<'_> {
                 Pattern::Literal(Literal::Bool(false))
             }
             // Regex literal pattern: re"pattern" in a match arm.
-            // `captures` is empty here; the checker populates it from the
-            // regex engine's named-capture list after validating the pattern.
             Some(Token::RegexLiteral(s)) => {
                 let s = *s;
                 let pattern = normalize_regex_literal(s);
+                let token = self.peek_span();
+                let captures =
+                    super::regex_patterns::named_captures(&pattern, token.start, |name| {
+                        self.ident_at(name, &token)
+                    });
                 self.advance();
-                Pattern::Regex {
-                    pattern,
-                    captures: vec![],
-                }
+                Pattern::Regex { pattern, captures }
             }
             // Contextual keywords used as identifiers in patterns
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {

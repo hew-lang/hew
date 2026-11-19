@@ -43,6 +43,7 @@ type SandboxCompiler = (
 declare global {
   var __hewSandboxCompileToSandboxBytecode: SandboxCompiler | undefined;
   var __hewSandboxExecuteCodec: ((request: string) => string) | undefined;
+  var __hewSandboxCompileRegex: import("./types.js").RunOptions["regexBridge"];
   var __hewSandboxExecuteCalendar: ((request: string) => string) | undefined;
   var compileToSandboxBytecode: SandboxCompiler | undefined;
 }
@@ -74,6 +75,7 @@ export async function runProgram(
     ...options,
     fixtureId: "page-run",
     codecBridge: options.codecBridge ?? globalThis.__hewSandboxExecuteCodec,
+    regexBridge: options.regexBridge ?? globalThis.__hewSandboxCompileRegex,
     calendarBridge:
       options.calendarBridge ?? globalThis.__hewSandboxExecuteCalendar,
     traceId: "trace:page-run",

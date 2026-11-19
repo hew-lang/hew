@@ -281,8 +281,8 @@ impl TemplateNames<'_> {
                 }
             }
             Pattern::Regex { captures, .. } => {
-                for name in captures {
-                    self.bind(Ident::new(name));
+                for group in captures {
+                    self.bind(group.name);
                 }
             }
             Pattern::Wildcard | Pattern::Literal(_) => {}

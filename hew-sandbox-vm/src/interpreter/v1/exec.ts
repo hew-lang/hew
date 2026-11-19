@@ -498,6 +498,10 @@ export async function runPackageV1(
 }
 
 class ExecutorV1 {
+  private readonly regexes = new Map<
+    number,
+    import("../types.js").CompiledRegex
+  >();
   private encodingErrors: Partial<Record<EncodingFormat, string>> = {};
   private current: Activation;
   private readonly host: ShimHost;
@@ -630,6 +634,19 @@ class ExecutorV1 {
       writeStderr: (text) => this.trace.writeStderr(text, null),
       prng: new Mt19937(),
       regexPatterns: pkg.regex_patterns,
+      regexLiteral:
+        options.regexBridge &&
+        ((index) => {
+          const source = pkg.regex_patterns[index];
+          if (source === undefined)
+            throw new RangeError("regex literal index is outside this package");
+          let compiled = this.regexes.get(index);
+          if (!compiled) {
+            compiled = options.regexBridge!(source);
+            this.regexes.set(index, compiled);
+          }
+          return compiled;
+        }),
       enumValue: (shape, role, payload) => ({
         kind: "enum",
         typeId: shape.name,
@@ -697,6 +714,8 @@ class ExecutorV1 {
         this.trace.exitCode = 1;
     } finally {
       this.terminating = true;
+      for (const compiled of this.regexes.values()) compiled.free();
+      this.regexes.clear();
       await this.scheduler.retireHost();
       this.directories.retire((value) => this.closeHostResource(value));
       this.options.signal?.removeEventListener("abort", cancel);

@@ -4884,6 +4884,36 @@
               "type": "null"
             },
             "family": {
+              "const": "RegexCaptureSpans"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexGroupPresent"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexGroupText"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "RegexCompile"
             }
           }

@@ -557,7 +557,10 @@ impl Checker {
                 if let Some(result) = self.dispatch_context_builtin_variant(
                     expected,
                     context,
-                    &super::type_members::DottedTypeMemberUse::Reference { span },
+                    &super::type_members::DottedTypeMemberUse::Reference {
+                        span,
+                        type_args: None,
+                    },
                 ) {
                     return result;
                 }

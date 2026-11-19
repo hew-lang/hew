@@ -1,0 +1,10 @@
+[[case]]
+id = "associated-function-values"
+intent = "Associated function values infer or specialize the owner and method type arguments independently."
+source = "cases/associated-function-values.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "5\nwarm\n7 both\n8 partial\n"
+exit = 0

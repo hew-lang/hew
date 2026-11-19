@@ -11,7 +11,7 @@ use hew_types::{module_registry::ModuleRegistry, Checker};
 const OPAQUE_RESOURCE: &str = r#"
     #[resource] #[opaque] pub type Handle {}
     impl Handle {
-        fn close(consume self) { unsafe { fixture_release(self) }; }
+        pub fn close(consume self) { unsafe { fixture_release(self) }; }
     }
     extern "C" {
         fn fixture_create(command: string) -> Handle;

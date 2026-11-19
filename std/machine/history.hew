@@ -11,12 +11,12 @@ pub type Owner<M: Machine> {
 
 impl<M: Machine> Owner<M> where M.Scope: Eq {
     /// Return an independent copy of the current machine.
-    fn state(self) -> M {
+    pub fn state(self) -> M {
         self.current
     }
 
     /// Return the most recently departed subtree for this scope, if any.
-    fn saved(self, target: M.Scope) -> Option<M.Subtree> {
+    pub fn saved(self, target: M.Scope) -> Option<M.Subtree> {
         for entry in self.entries {
             if entry.target == target {
                 return .Some(entry.subtree);
@@ -26,7 +26,7 @@ impl<M: Machine> Owner<M> where M.Scope: Eq {
     }
 
     /// Commit the machine and saved subtrees together after a successful step.
-    fn step(var self, event: M.Event, limit: i64 = 1024) -> Result<M.Step, MachineStepError> {
+    pub fn step(var self, event: M.Event, limit: i64 = 1024) -> Result<M.Step, MachineStepError> {
         var staged = self;
         let observed = match staged.current.step_observed_with_limit(event, limit, staged.requested) {
             .Ok(value) => value,

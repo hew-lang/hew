@@ -103,7 +103,7 @@ fn validate_field_number(field_number: i64) {
 
 impl Message {
     /// Release this message early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_proto_msg_free(self.handle)
         };

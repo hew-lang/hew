@@ -17,6 +17,7 @@ pub(super) struct ResolvedDottedTypeHead {
 pub(super) enum DottedTypeMemberUse<'a> {
     Reference {
         span: &'a Span,
+        type_args: Option<&'a [Spanned<TypeExpr>]>,
     },
     Call {
         args: &'a [CallArg],
@@ -46,9 +47,8 @@ impl Checker {
         };
         let name = head.registry_key();
         let span = match usage {
-            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
-                *span
-            }
+            DottedTypeMemberUse::Reference { span, .. }
+            | DottedTypeMemberUse::Call { span, .. } => *span,
         };
         let Some(variant) = builtin.enum_variant(context.name.name.as_str()) else {
             self.report_error(
@@ -230,15 +230,47 @@ impl Checker {
         if let Some(result) = self.dispatch_builtin_variant_member(head, member, usage) {
             return Some(result);
         }
-        let DottedTypeMemberUse::Call {
-            args,
-            expected,
-            span,
-        } = usage
+        let (args, expected, span) = match usage {
+            DottedTypeMemberUse::Call {
+                args,
+                expected,
+                span,
+            } => (args, expected, span),
+            DottedTypeMemberUse::Reference { span, type_args } => {
+                return self.associated_function_reference(head, member, *type_args, span);
+            }
+        };
+        self.dispatch_static_type_member(head, member, args, *expected, span)
+    }
+
+    fn associated_function_reference(
+        &mut self,
+        head: &ResolvedDottedTypeHead,
+        member: &str,
+        method_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Option<Ty> {
+        let owner_args: Option<Vec<_>> = head.type_args.as_ref().map(|arguments| {
+            arguments
+                .iter()
+                .map(|argument| self.resolve_type_expr(argument))
+                .collect()
+        });
+        let receiver =
+            self.named_ty_for_key(&head.canonical_type, owner_args.clone().unwrap_or_default());
+        let crate::check::dispatch_table::MethodSelection::Unique(_, declaration) =
+            self.select_method(&receiver, member)
         else {
             return None;
         };
-        self.dispatch_static_type_member(head, member, args, *expected, span)
+        if !self.check_declaration_visible(declaration, span) {
+            return Some(Ty::Error);
+        }
+        if !self.fn_sigs.get(&declaration)?.associated {
+            return None;
+        }
+        let key = self.defs.path(declaration).to_string();
+        Some(self.instantiate_function_value(&key, method_args, span, owner_args.as_deref()))
     }
 
     fn dispatch_declared_variant_member(
@@ -256,7 +288,7 @@ impl Checker {
         }
         let variant = type_def.variants.get(member)?;
         match usage {
-            DottedTypeMemberUse::Reference { span }
+            DottedTypeMemberUse::Reference { span, .. }
                 if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_))
                     || Self::variant_is_source_unit(type_def, member) =>
             {
@@ -335,9 +367,8 @@ impl Checker {
             .enumerate()
             .find(|(_, variant)| variant.name == member)?;
         let span = match usage {
-            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
-                *span
-            }
+            DottedTypeMemberUse::Reference { span, .. }
+            | DottedTypeMemberUse::Call { span, .. } => *span,
         };
         if let Some(site) = self.scope_site() {
             self.scopes.record_resolution(
@@ -353,7 +384,7 @@ impl Checker {
         let expected_arity = builtin.arity();
 
         let result = match usage {
-            DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
+            DottedTypeMemberUse::Reference { .. } if variant.payload_type_args.is_empty() => {
                 Ty::Named {
                     head: crate::TypeHead::Builtin(builtin),
                     args: (0..expected_arity)
@@ -361,7 +392,7 @@ impl Checker {
                         .collect(),
                 }
             }
-            DottedTypeMemberUse::Reference { span } => {
+            DottedTypeMemberUse::Reference { span, .. } => {
                 self.synthesize_identifier(constructor, span)
             }
             DottedTypeMemberUse::Call {
@@ -401,7 +432,7 @@ impl Checker {
         };
         if type_args.len() != expected_arity {
             let span = match usage {
-                DottedTypeMemberUse::Reference { span }
+                DottedTypeMemberUse::Reference { span, .. }
                 | DottedTypeMemberUse::Call { span, .. } => *span,
             };
             self.report_error(
@@ -424,9 +455,8 @@ impl Checker {
             args: resolved_args,
         };
         let span = match usage {
-            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
-                *span
-            }
+            DottedTypeMemberUse::Reference { span, .. }
+            | DottedTypeMemberUse::Call { span, .. } => *span,
         };
         self.expect_type(&expected, &result, span);
         Some(self.subst.resolve(&expected))

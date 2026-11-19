@@ -516,6 +516,9 @@ impl Checker {
         record_call_type_args: bool,
         callee: Option<GenericCallee<'_>>,
     ) -> AppliedCallSignature {
+        if let Some(method) = &sig.impl_method {
+            self.check_declaration_visible(method.declaration, span);
+        }
         let receiver_type_args = match &callee {
             Some(GenericCallee::Method {
                 owner_type_args, ..
@@ -1664,6 +1667,13 @@ impl Checker {
             return CallTarget::Runtime(family);
         }
         // Ordinary associated methods retain their selected source identity.
+        if let Some(method) = self
+            .fn_sig(signature_key)
+            .filter(|sig| sig.associated)
+            .and_then(|sig| sig.impl_method.as_ref())
+        {
+            return CallTarget::ImplMethod(method.declaration);
+        }
         if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
             return CallTarget::ImplMethod(*declaration);
         }

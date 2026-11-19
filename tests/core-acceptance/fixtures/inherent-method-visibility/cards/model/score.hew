@@ -1,0 +1,2 @@
+// A peer file belongs to the same declaring module.
+pub fn score(card: Card) -> i64 { card.digits() }

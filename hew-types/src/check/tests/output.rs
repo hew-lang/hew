@@ -215,7 +215,7 @@ fn callable_actuals_follow_exact_formals_through_helpers() {
 
 #[test]
 fn imported_method_callback_flows_to_its_exact_formal() {
-    let module_source = "pub type Runner {\n    value: i64;\n}\n\nimpl Runner {\n    fn apply(self, f: fn() -> i64) -> i64 {\n        f()\n    }\n}\n";
+    let module_source = "pub type Runner {\n    value: i64;\n}\n\nimpl Runner {\n    pub fn apply(self, f: fn() -> i64) -> i64 {\n        f()\n    }\n}\n";
     let source = "import m; fn main() { \
         let runner = m.Runner { value: 0 }; \
         println(runner.apply(|| 1)); \

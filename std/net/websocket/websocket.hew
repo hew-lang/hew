@@ -205,7 +205,7 @@ fn next_message(conn: Conn, deadline_ms: i64) -> Result<Option<Message>, net.Net
 
 impl Conn {
     /// Release this connection early. Scope exit performs the same release.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_ws_close(self)
         };
@@ -255,7 +255,7 @@ impl ServerMethods for Server {
 
 impl Server {
     /// Stop listening and release this server early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_ws_server_close(self)
         };

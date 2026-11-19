@@ -42,7 +42,7 @@ impl Error for NumberError {}
 /// character — any non-digit anywhere in the string (after an optional leading
 /// sign) returns a structured error.
 impl string {
-    fn to_int(self) -> i64 fails NumberError {
+    pub fn to_int(self) -> i64 fails NumberError {
         let slen = self.len();
         if slen == 0 {
             return error .Invalid(self);
@@ -83,7 +83,7 @@ impl string {
 
 /// Parse a string as a float, failing on text that is not a float literal.
 impl string {
-    fn to_float(self) -> f64 fails NumberError {
+    pub fn to_float(self) -> f64 fails NumberError {
         if !is_valid_float_literal(self) {
             return error .Invalid(self);
         }
@@ -307,7 +307,7 @@ fn digit_to_float(digit: i64) -> f64 {
 /// }
 /// ```
 impl string {
-    fn pad_left(self, width: i64, pad: char) -> string {
+    pub fn pad_left(self, width: i64, pad: char) -> string {
         let slen = self.len();
         if slen >= width {
             return self;
@@ -330,7 +330,7 @@ impl string {
 /// }
 /// ```
 impl string {
-    fn pad_right(self, width: i64, pad: char) -> string {
+    pub fn pad_right(self, width: i64, pad: char) -> string {
         let slen = self.len();
         if slen >= width {
             return self;
@@ -352,7 +352,7 @@ impl string {
 /// }
 /// ```
 impl string {
-    fn count(self, needle: string) -> i64 {
+    pub fn count(self, needle: string) -> i64 {
         let nlen = needle.len();
         if nlen == 0 {
             return 0;
@@ -375,51 +375,51 @@ impl string {
 /// Scalar-indexed UTF-8 string operations.
 impl string {
     #[extern_symbol(hew_string_byte_length)]
-    fn byte_len(self) -> i64 {
+    pub fn byte_len(self) -> i64 {
         0
     }
     #[extern_symbol(hew_string_length)]
-    fn len(self) -> i64 {
+    pub fn len(self) -> i64 {
         0
     }
     #[extern_symbol(hew_string_is_empty)]
-    fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         false
     }
     #[extern_symbol(hew_string_contains)]
-    fn contains(self, needle: string) -> bool {
+    pub fn contains(self, needle: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_starts_with)]
-    fn starts_with(self, prefix: string) -> bool {
+    pub fn starts_with(self, prefix: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_ends_with)]
-    fn ends_with(self, suffix: string) -> bool {
+    pub fn ends_with(self, suffix: string) -> bool {
         false
     }
     #[extern_symbol(hew_string_to_uppercase)]
-    fn to_upper(self) -> string {
+    pub fn to_upper(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_to_lowercase)]
-    fn to_lower(self) -> string {
+    pub fn to_lower(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_trim)]
-    fn trim(self) -> string {
+    pub fn trim(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_clone)]
-    fn clone(self) -> string {
+    pub fn clone(self) -> string {
         ""
     }
     #[extern_symbol(hew_string_replace)]
-    fn replace(self, from: string, to: string) -> string {
+    pub fn replace(self, from: string, to: string) -> string {
         ""
     }
     #[extern_symbol(hew_string_split)]
-    fn split(self, sep: string) -> Vec<string> {
+    pub fn split(self, sep: string) -> Vec<string> {
         Vec.new()
     }
     /// Split the string at each newline and return every resulting part.
@@ -428,33 +428,33 @@ impl string {
     /// returns one empty string. A trailing carriage return is removed from
     /// each part, including a final part not followed by a newline.
     #[extern_symbol(hew_string_lines)]
-    fn lines(self) -> Vec<string> {
+    pub fn lines(self) -> Vec<string> {
         Vec.new()
     }
     #[extern_symbol(hew_string_find)]
-    fn find(self, needle: string) -> Option<i64> {
+    pub fn find(self, needle: string) -> Option<i64> {
         .None
     }
     #[extern_symbol(hew_string_find_from)]
-    fn find_from(self, needle: string, start: i64) -> Option<i64> {
+    pub fn find_from(self, needle: string, start: i64) -> Option<i64> {
         .None
     }
     #[extern_symbol(hew_string_repeat)]
-    fn repeat(self, n: i64) -> string {
+    pub fn repeat(self, n: i64) -> string {
         ""
     }
     #[extern_symbol(hew_string_get)]
-    fn get(self, index: i64) -> Option<char> {
+    pub fn get(self, index: i64) -> Option<char> {
         .None
     }
     #[extern_symbol(hew_string_to_bytes)]
-    fn to_bytes(self) -> bytes {
+    pub fn to_bytes(self) -> bytes {
         bytes.new()
     }
     #[extern_symbol(hew_string_push)]
-    fn push(self, value: char) {}
+    pub fn push(self, value: char) {}
     #[extern_symbol(hew_string_clear)]
-    fn clear(self) {}
+    pub fn clear(self) {}
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────

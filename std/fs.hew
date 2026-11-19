@@ -199,14 +199,14 @@ pub type ReadFile {
 
 impl ReadFile {
     /// Read the remaining bytes, leaving the cursor at EOF on success.
-    fn read(self) -> Result<bytes, IoError> {
+    pub fn read(self) -> Result<bytes, IoError> {
         unsafe {
             let data = hew_file_read_remaining(self);
             if hew_stream_has_error() { .Err(last_io_error()) } else { .Ok(data) }
         }
     }
 
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_file_read_close(self)
         };
@@ -221,7 +221,7 @@ pub type WriteFile {
 }
 
 impl WriteFile {
-    fn write(self, data: bytes) -> Result<(), IoError> {
+    pub fn write(self, data: bytes) -> Result<(), IoError> {
         match unsafe {
             hew_file_write_handle(self, data)
         } {
@@ -230,7 +230,7 @@ impl WriteFile {
         }
     }
 
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_file_write_close(self)
         };
@@ -264,13 +264,13 @@ pub type ReadDir {
 
 impl ReadDir {
     /// Read a whole child file through an independently owned read handle.
-    fn read(self, path: string) -> bytes fails IoError {
+    pub fn read(self, path: string) -> bytes fails IoError {
         let file = self.open_read(path)?;
         file.read()?
     }
 
     /// Open a read-only child file whose owner survives this directory's close.
-    fn open_read(self, path: string) -> Result<ReadFile, IoError> {
+    pub fn open_read(self, path: string) -> Result<ReadFile, IoError> {
         unsafe {
             let file = hew_dir_read_open_file(self, path);
             if hew_file_read_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
@@ -279,7 +279,7 @@ impl ReadDir {
 
     /// Narrow authority to an existing child directory. The returned resource
     /// remains valid independently of this parent handle.
-    fn subdir(self, path: string) -> Result<ReadDir, IoError> {
+    pub fn subdir(self, path: string) -> Result<ReadDir, IoError> {
         unsafe {
             let directory = hew_dir_read_subdir(self, path);
             if hew_dir_read_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
@@ -287,7 +287,7 @@ impl ReadDir {
     }
 
     /// Release this directory owner without closing independently opened children.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_dir_read_close(self)
         };
@@ -302,13 +302,13 @@ pub type WriteDir {
 
 impl WriteDir {
     /// Create or truncate a child file and write its complete contents.
-    fn write(self, path: string, data: bytes) fails IoError {
+    pub fn write(self, path: string, data: bytes) fails IoError {
         let file = self.open_write(path)?;
         file.write(data)?;
     }
 
     /// Create or truncate a child file without acquiring read authority.
-    fn open_write(self, path: string) -> Result<WriteFile, IoError> {
+    pub fn open_write(self, path: string) -> Result<WriteFile, IoError> {
         unsafe {
             let file = hew_dir_write_open_file(self, path);
             if hew_file_write_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
@@ -316,7 +316,7 @@ impl WriteDir {
     }
 
     /// Narrow to an independently owned existing child directory.
-    fn subdir(self, path: string) -> Result<WriteDir, IoError> {
+    pub fn subdir(self, path: string) -> Result<WriteDir, IoError> {
         unsafe {
             let directory = hew_dir_write_subdir(self, path);
             if hew_dir_write_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
@@ -324,7 +324,7 @@ impl WriteDir {
     }
 
     /// Release this directory owner without closing independently opened children.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_dir_write_close(self)
         };
@@ -567,7 +567,7 @@ pub type Metadata {
 impl Metadata {
     /// Whether the path is owned by this process's user and grants nothing
     /// to group or other. Always false on Windows.
-    fn is_private(self) -> bool {
+    pub fn is_private(self) -> bool {
         match (self.mode, self.owner, current_owner()) {
             (.Some(mode), .Some(owner), .Some(me)) => owner == me && mode & 0o077 == 0,
             _ => false,
@@ -730,7 +730,7 @@ pub type FileLock {
 }
 
 impl FileLock {
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_fs_unlock(self)
         };
@@ -887,7 +887,7 @@ pub type FileReadStream {
 }
 
 impl FileReadStream {
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_file_read_stream_close(self)
         };

@@ -1,0 +1,18 @@
+import holders;
+
+fn label(holder: holders.Holder<string>) -> string {
+    holder.value
+}
+
+fn main() {
+    let make = holders.Holder<i64>.make;
+    println(make(5).value);
+    let inferred = holders.Holder.make;
+    println(label(inferred("warm")));
+    let both = holders.Holder<i64>.pair<string>;
+    let (number, label) = both(7, "both");
+    println(f"{number} {label}");
+    let partial = holders.Holder<i64>.pair;
+    let (count, description) = partial(8, "partial");
+    println(f"{count} {description}");
+}

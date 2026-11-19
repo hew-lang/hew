@@ -2348,32 +2348,11 @@ pub enum HirExprKind {
 
 /// A compiled regex literal observed in a match arm.
 ///
-/// Each distinct pattern (by string equality — no flags in v0.5) gets one
-/// entry in `HirModule::regex_literals`. The `literal_id` field is the
-/// 0-based index of this entry in that `Vec`; it matches the global-slot
-/// number that MIR (slice 4) and codegen (slice 5) will use to reference the
-/// compiled `*HewRegex` handle at runtime.
-///
-/// LESSONS: `checker-authority` (P0) — the `captures` list comes from the
-/// `PatternKind::Regex { captures }` resolver output in the type checker;
-/// HIR lowering never re-derives it.
+/// Each distinct regex pattern has one compiled slot in the module.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirRegexLiteral {
-    /// 0-based position of this entry in `HirModule::regex_literals`. Stable
-    /// across the HIR→MIR→codegen pipeline; used as the global-slot index.
     pub literal_id: u32,
-    /// The raw pattern string as written in source. No normalisation is
-    /// applied in v0.5 — deduplication is by string equality on the raw
-    /// pattern. Future flag support will key on `(pattern, flags)`.
     pub pattern: String,
-    /// Named capture groups derived from `PatternKind::Regex { captures }`
-    /// after the checker compiled and validated the pattern. Positional groups
-    /// participate in matching but are not listed here. Each entry is
-    /// `(name, group_index)` where `group_index` is the 1-based regex group
-    /// position (group 0 is the whole match). This preserves the real group
-    /// position across the HIR→MIR boundary so MIR can pass the correct index
-    /// to `hew_regex_capture` even when unnamed groups precede named ones.
-    pub captures: Vec<(String, u32)>,
 }
 
 /// The predicate of one `HirMatchArm`.
@@ -2439,19 +2418,9 @@ pub enum HirMatchArmPredicate {
     RecordProject { ty: ResolvedTy },
     /// A tuple match-arm project pattern (e.g. `(a, b)`).
     TupleProject { arity: u32 },
-    /// A regex literal pattern `re"..."` in a string-scrutinee match arm.
-    ///
-    /// `literal_id` is the index into `HirModule::regex_literals` for the
-    /// compiled pattern. `captures` lists the named capture groups (empty
-    /// when the pattern has none). Each entry is `(name, group_index)` where
-    /// `group_index` is the 1-based regex group position. MIR lowering uses
-    /// these to emit capture-extraction instructions before the arm body,
-    /// passing the real group index to `hew_regex_capture`.
-    Regex {
-        literal_id: u32,
-        pattern: String,
-        captures: Vec<(String, u32)>,
-    },
+    /// Index in the module's compiled regex table. The arm's bindings select
+    /// named group indices and carry the checked capture types.
+    Regex { literal_id: u32, pattern: String },
 }
 
 /// Literal predicate applied to an aggregate slot after its enclosing

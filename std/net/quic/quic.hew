@@ -247,7 +247,7 @@ impl QUICEndpointMethods for QUICEndpoint {
 
 impl QUICEndpoint {
     /// Release this endpoint early. Scope exit performs the same release.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_quic_endpoint_close(self)
         };
@@ -336,7 +336,7 @@ impl QUICConnectionMethods for QUICConnection {
 
 impl QUICConnection {
     /// Gracefully close this connection and release its resources.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_quic_conn_disconnect(self)
         };
@@ -511,7 +511,7 @@ impl QUICStreamMethods for QUICStream {
 
 impl QUICStream {
     /// Release this stream early. Scope exit performs the same release.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_quic_stream_close(self)
         };
@@ -538,7 +538,7 @@ impl QUICEventMethods for QUICEvent {
 
 impl QUICEvent {
     /// Release this event early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_quic_event_free(self.handle)
         };

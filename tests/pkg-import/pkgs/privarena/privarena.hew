@@ -27,7 +27,7 @@ pub fn new<T>() -> Arena<T> {
 
 impl<T> Arena<T> {
     /// Insert a value wrapped in a fresh private `Slot`, returning its index.
-    fn insert(var self, value: T) -> i64 {
+    pub fn insert(var self, value: T) -> i64 {
         let index = self.slots.len();
         self.slots.push(Slot { generation: index, value: .Some(value) });
         index
@@ -36,7 +36,7 @@ impl<T> Arena<T> {
     /// Read back the (owned) payload at `i` — proves the private record's
     /// nested `Option<T>` field resolved and the heap-owning payload
     /// round-trips cross-module.
-    fn value_at(self, i: i64) -> Option<T> {
+    pub fn value_at(self, i: i64) -> Option<T> {
         let slot = self.slots[i];
         slot.value
     }

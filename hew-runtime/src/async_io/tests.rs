@@ -872,31 +872,46 @@ fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
     assert!(received.iter().all(|byte| *byte == 0x5a));
 }
 
-/// Closing a connection while another task waits on it completes that wait
-/// with `ECANCELED` and wakes it, instead of stranding the waiter.
+fn assert_waiters_drained() {
+    // A readiness callback wakes the owner before removing its waiter count.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::reactor::waiter_count() != 0 {
+        assert!(Instant::now() < deadline, "reactor retained an I/O waiter");
+        std::thread::yield_now();
+    }
+}
+
+/// Close before or after the readiness notification, before the owner resumes
+/// its read. Both close paths report the same error and release the waiter.
 #[test]
 fn close_while_waiting_completes_the_waiter_with_ecanceled() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();
-    let (handle, _peer) = crate::transport::tcp_socketpair_conn_for_test();
-    let signal = Arc::new(ReadySignal::default());
-    // SAFETY: the operation is live until freed below.
-    unsafe {
-        let operation = hew_async_tcp_read(handle, &descriptor(&signal));
-        assert_eq!(
-            hew_async_io_status(operation),
-            AsyncIoStatus::Pending as i32
-        );
-        assert_eq!(crate::transport::hew_tcp_close(handle), 0);
-        await_ready(&signal);
-        assert_eq!(hew_async_io_status(operation), AsyncIoStatus::Error as i32);
-        assert_eq!(
-            hew_async_io_errno(operation),
-            crate::stream_error::CANCELLED_ERRNO
-        );
-        hew_async_io_free(operation);
+    for ready_before_close in [false, true] {
+        let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+        let signal = Arc::new(ReadySignal::default());
+        // SAFETY: the operation is live until freed below.
+        unsafe {
+            let operation = hew_async_tcp_read(handle, &descriptor(&signal));
+            assert_eq!(
+                hew_async_io_status(operation),
+                AsyncIoStatus::Pending as i32
+            );
+            if ready_before_close {
+                peer.write_all(b"x").unwrap();
+                await_ready(&signal);
+            }
+            assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+            await_ready(&signal);
+            assert_eq!(drive(operation, &signal), AsyncIoStatus::Error as i32);
+            assert_eq!(
+                hew_async_io_errno(operation),
+                crate::stream_error::CANCELLED_ERRNO
+            );
+            hew_async_io_free(operation);
+        }
+        assert_waiters_drained();
     }
-    assert_eq!(crate::reactor::waiter_count(), 0);
 }
 
 /// Data already buffered completes the read at submission on the calling
@@ -991,9 +1006,8 @@ fn a_reader_and_a_writer_share_one_connection() {
     assert_eq!(crate::transport::hew_tcp_close(handle), 0);
 }
 
-/// Readiness, cancellation and close race on one waiting read. Whatever wins,
-/// the operation ends in exactly one terminal state, its waker fires at most
-/// once per transition, and no waiter is left registered.
+/// Readiness, cancellation and close race on one waiting read. The owner
+/// observes the winning outcome and releases every waiter.
 #[test]
 fn readiness_cancel_and_close_races_leave_no_waiter() {
     let _runtime = crate::runtime_test_guard();
@@ -1003,7 +1017,7 @@ fn readiness_cancel_and_close_races_leave_no_waiter() {
         let signal = Arc::new(ReadySignal::default());
         // SAFETY: the operation is live until freed below.
         let operation = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
-        let raw = operation as usize;
+        let close = round % 2 == 0;
         let barrier = Arc::new(Barrier::new(3));
         let writer = {
             let barrier = Arc::clone(&barrier);
@@ -1017,36 +1031,42 @@ fn readiness_cancel_and_close_races_leave_no_waiter() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                if round % 2 == 0 {
-                    let _ = crate::transport::hew_tcp_close(handle);
+                if close {
+                    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
                 }
             })
         };
         barrier.wait();
-        if round % 3 == 0 {
-            // SAFETY: the creator reference is live on this thread.
-            unsafe { hew_async_io_cancel(raw as *const HewAsyncIo) };
-        }
+        // SAFETY: this thread holds the creator reference throughout the race.
+        let cancelled = round % 3 == 0 && unsafe { hew_async_io_cancel(operation) } == 1;
         let _peer = writer.join().unwrap();
         closer.join().unwrap();
-        // SAFETY: the operation stays live until this free.
+        let expected = if cancelled {
+            AsyncIoStatus::Cancelled
+        } else if close {
+            AsyncIoStatus::Error
+        } else {
+            AsyncIoStatus::Success
+        };
+        // SAFETY: the operation remains owned here. take_read also frees it.
         unsafe {
-            let status = hew_async_io_status(operation);
-            if status == AsyncIoStatus::Pending as i32 {
-                // Neither cancel nor close won: readiness must finish it.
-                assert_eq!(drive(operation, &signal), AsyncIoStatus::Success as i32);
+            assert_eq!(drive(operation, &signal), expected as i32, "round {round}");
+            if expected == AsyncIoStatus::Success {
+                assert_eq!(take_read(operation), b"x");
+            } else {
+                if expected == AsyncIoStatus::Error {
+                    assert_eq!(
+                        hew_async_io_errno(operation),
+                        crate::stream_error::CANCELLED_ERRNO
+                    );
+                }
+                hew_async_io_free(operation);
             }
-            hew_async_io_free(operation);
         }
-        if round % 2 != 0 {
+        if !close {
             assert_eq!(crate::transport::hew_tcp_close(handle), 0);
         }
-        // The reactor withdraws a fired waiter just after waking it.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while crate::reactor::waiter_count() != 0 {
-            assert!(Instant::now() < deadline, "round {round} left a waiter");
-            std::thread::yield_now();
-        }
+        assert_waiters_drained();
     }
 }
 

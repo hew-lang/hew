@@ -1,0 +1,17 @@
+pub type Card { number: i64; }
+
+impl Card {
+    fn digits(self) -> i64 { self.number }
+    fn reserve() -> i64 { 2 }
+    fn blank() -> Card { Card { number: 7 } }
+    package fn inspect(self) -> i64 { self.digits() }
+    pub fn issue() -> Card { Card.blank() }
+}
+
+pub trait Label {
+    fn label(self) -> string;
+}
+
+impl Label for Card {
+    fn label(self) -> string { f"card {self.digits()}" }
+}

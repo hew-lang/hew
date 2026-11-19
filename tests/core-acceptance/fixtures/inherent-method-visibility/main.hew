@@ -1,0 +1,11 @@
+import cards.model;
+import cards.reader;
+
+fn issue(factory: fn() -> model.Card) -> model.Card { factory() }
+
+fn main() {
+    let card = issue(model.Card.issue);
+    println(card.label());
+    println(reader.read(card));
+    println(model.score(card));
+}

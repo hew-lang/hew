@@ -1,0 +1,11 @@
+import cards.model;
+
+fn main() {
+    let card = model.Card.issue();
+    println(card.digits());
+    println(card.inspect());
+    let other = model.Card.blank();
+    println(other.number);
+    let reserve = model.Card.reserve;
+    println(reserve());
+}

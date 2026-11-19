@@ -38,6 +38,7 @@ mod items;
 mod macros;
 mod patterns;
 mod precedence;
+mod regex_patterns;
 mod statements;
 mod types;
 mod wire;

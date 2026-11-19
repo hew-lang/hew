@@ -86,6 +86,7 @@ mod implicit_variant_fields;
 mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
+mod regex_patterns;
 mod resolution;
 mod return_inference;
 pub mod scope;

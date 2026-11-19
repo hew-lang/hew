@@ -138,7 +138,7 @@ impl NodeConfig {
     /// `bind` and `key` are required. Lists in the environment use TOML array
     /// syntax, including `[]` to clear a list. File key paths are relative to
     /// the configuration directory; environment key paths are relative to cwd.
-    fn load() -> NodeConfig fails ConfigError {
+    pub fn load() -> NodeConfig fails ConfigError {
         let selected = os.env("HEW_NODE_CONFIG");
         let file = selected ?? "hew.toml";
         if file.is_empty() {

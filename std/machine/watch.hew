@@ -49,10 +49,10 @@ pub type Owner<E, R> {
 }
 
 impl<E, R> Owner<E, R> {
-    fn step(var self, event: E) -> R {
+    pub fn step(var self, event: E) -> R {
         self.drive(event)
     }
-    fn close(consume self) {}
+    pub fn close(consume self) {}
 }
 
 pub type Feed<M> {
@@ -60,7 +60,7 @@ pub type Feed<M> {
 }
 
 impl<M> Feed<M> {
-    fn subscribe(self) -> Result<Subscription<M>, SubscribeError> {
+    pub fn subscribe(self) -> Result<Subscription<M>, SubscribeError> {
         self.subscribe_to()
     }
 }
@@ -72,13 +72,13 @@ pub type Subscription<M> {
 }
 
 impl<M> Subscription<M> {
-    fn initial(self) -> Snapshot<M> {
+    pub fn initial(self) -> Snapshot<M> {
         self.snapshot
     }
-    fn recv(self) -> Result<Option<Notice<M>>, Lag> {
+    pub fn recv(self) -> Result<Option<Notice<M>>, Lag> {
         self.receive_notice()
     }
-    fn close(consume self) {}
+    pub fn close(consume self) {}
 }
 
 type State<M> {

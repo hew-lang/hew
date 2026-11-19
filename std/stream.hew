@@ -239,7 +239,7 @@ impl Stream<string> {
     /// Drain the stream into one string, joining items without a separator.
     /// Collection uses the same checked receives and cooperative cleanup as
     /// ordinary iteration, including streams backed by source generators.
-    fn collect(consume self) -> string {
+    pub fn collect(consume self) -> string {
         var joined = "";
         for item in self {
             joined += item;
@@ -252,19 +252,19 @@ impl Stream<bytes> {
     /// Yield newline-free UTF-8 lines, normalizing CRLF and flushing a final
     /// unterminated line at EOF. Lines longer than one MiB are split into
     /// bounded pieces. Closing the adapter closes its source cooperatively.
-    fn lines(consume self) -> Stream<string> {
+    pub fn lines(consume self) -> Stream<string> {
         from_generator(normalized_lines(self))
     }
 
     /// Yield byte chunks of `width` bytes, with a possibly shorter final chunk.
     /// Zero and negative widths select one byte per chunk.
-    fn chunks(consume self, width: i64) -> Stream<bytes> {
+    pub fn chunks(consume self, width: i64) -> Stream<bytes> {
         from_generator(fixed_chunks(self, if width > 0 { width } else { 1 }))
     }
 
     /// Decode frames across arbitrary chunk boundaries. A terminal codec error
     /// is delivered once, then the stream ends. The adapter owns both inputs.
-    fn frames<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Stream<Result<T, CodecError>> {
+    pub fn frames<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Stream<Result<T, CodecError>> {
         from_generator(decoded_frames(self, codec))
     }
 }
@@ -354,7 +354,7 @@ gen fn fixed_chunks(consume input: Stream<bytes>, width: i64) -> bytes {
 impl Sink<bytes> {
     /// Encode each item before sending it. Encode must not suspend. Clones
     /// share the encoder and pending bytes; final release closes the codec.
-    fn framed<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Sink<T> {
+    pub fn framed<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Sink<T> {
         from_encoder(self, move |item: T| codec.encode(item))
     }
 }
@@ -408,7 +408,7 @@ pub type FixedWidth {
 
 impl FixedWidth {
     /// Create a fixed-width codec. Records must contain at least one byte.
-    fn new(width: i64) -> Result<FixedWidth, CodecError> {
+    pub fn new(width: i64) -> Result<FixedWidth, CodecError> {
         if width <= 0 {
             return .Err(CodecError.Malformed(f"fixed record width {width} must be positive"));
         }
@@ -586,7 +586,7 @@ pub type StreamPair {
 }
 
 impl StreamPair {
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_stream_pair_free(self)
         };

@@ -2,8 +2,8 @@
 #
 # No secret and no package-repository install: GitHub's OIDC token is the credential (dist.hewpkg.com accepts it
 # only from hew-lang/hew on a tag), and .github/scripts/apt-push is the client. Prereleases carry no distro
-# packages, so they are skipped. Run it by hand to republish a tag:
-#   gh workflow run publish-dist.yml -f tag=v0.9.3
+# packages, so they are skipped. To republish a release that contains this workflow, dispatch from its tag:
+#   gh workflow run publish-dist.yml --ref v0.11.0 -f tag=v0.11.0
 name: publish-dist
 
 on:
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to publish (for example v0.9.3)
+        description: Release tag to publish (for example v0.11.0)
         type: string
         required: true
 
@@ -39,29 +39,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Checkout apt-push
+      - name: Checkout release tools
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           sparse-checkout: |
             .github/scripts
             .github/actions/setup-ubuntu-dns
+            scripts
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
-      - name: Download the release's distro packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${TAG}" == *-* ]]; then
-            echo "::notice::${TAG} is a prerelease; distro packages ship with final releases"
-            echo "SKIP=1" >>"${GITHUB_ENV}"
-            exit 0
-          fi
-          mkdir pkgs
-          gh release download "${TAG}" --dir pkgs \
-            --pattern '*.deb' --pattern '*.rpm' --pattern '*.pkg.tar.zst'
-          rm -f pkgs/*.src.rpm
-          ls -l pkgs
+      - name: Download and verify the qualified distro packages
+        run: python3 scripts/release-channel.py distro
 
       - name: Install the Arch package reader
         if: env.SKIP != '1'

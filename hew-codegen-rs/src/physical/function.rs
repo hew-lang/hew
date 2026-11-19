@@ -1181,10 +1181,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.store(*field, value)?;
                 }
             }
-            if layout.is_indirect {
-                self.value_emitter().free_variant_node(object, layout)?;
+            // A switch through a loan projects borrowed fields. Its caller
+            // retains the backing node and may read or release it afterwards.
+            if self.storage(scrutinee)?.own == OwnKind::Owned {
+                if layout.is_indirect {
+                    self.value_emitter().free_variant_node(object, layout)?;
+                }
+                self.clear_owned(scrutinee)?;
             }
-            self.clear_owned(scrutinee)?;
             self.emit_edge(&arm.target)?;
         }
         self.builder.position_at_end(invalid);

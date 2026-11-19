@@ -1574,7 +1574,7 @@ impl Checker {
                 self.note_import_use(name);
             }
             self.record_call_edge(&fn_sig_key);
-            self.instantiate_function_value(&fn_sig_key, type_args, span)
+            self.instantiate_function_value(&fn_sig_key, type_args, span, None)
         } else if self.module_binding_in_current_file(surface_name) {
             self.report_error(
                 TypeErrorKind::ModuleUsedAsValue,

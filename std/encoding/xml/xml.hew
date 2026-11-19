@@ -101,7 +101,7 @@ impl NodeMethods for Node {
 
 impl Node {
     /// Release this node early.
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_xml_free(self.handle)
         };

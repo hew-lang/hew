@@ -3,6 +3,7 @@
 
 import base64
 import contextlib
+from fnmatch import fnmatchcase
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -45,6 +46,113 @@ def package(name, source=SHA, payload=b"producer"):
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     return output.getvalue()
+
+
+class DistroRelease(unittest.TestCase):
+    def setUp(self):
+        temporary = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(contextlib.chdir(temporary))
+        self.tag = f"v{VERSION}"
+        self.receipt = f"hew-{self.tag}-platforms.json"
+        self.checksums = f"hew-{self.tag}-checksums.txt"
+        self.package = f"hew_{VERSION}-1_amd64.deb"
+        self.enterContext(
+            patch.dict(
+                os.environ,
+                {
+                    "TAG": self.tag,
+                    "GH_REPO": "hew-lang/hew",
+                    "GITHUB_REF": f"refs/tags/{self.tag}",
+                    "GITHUB_ENV": "github-env",
+                },
+            )
+        )
+        self.mock = self.enterContext(
+            patch.object(channel, "command", side_effect=self.gh)
+        )
+        self.release = {}
+        self.qualified_release()
+        self.release["hew_0.1.0-1_amd64.deb"] = b"unqualified asset added after release"
+
+    def qualified_release(self, state="available"):
+        self.release = {
+            self.receipt: json.dumps(
+                {
+                    "version": VERSION,
+                    "source": SHA,
+                    "platforms": {"linux-packages": {"state": state}},
+                }
+            ).encode(),
+            "reference.tar.gz": b"another attested output",
+        }
+        if state == "available":
+            self.release[self.package] = b"qualified distro package"
+        subjects = [
+            {"name": name, "digest": {"sha256": hashlib.sha256(data).hexdigest()}}
+            for name, data in self.release.items()
+        ]
+        self.attestations = [
+            {"verificationResult": {"statement": {"subject": subjects}}}
+        ]
+        self.release[self.checksums] = "".join(
+            f"{subject['digest']['sha256']}  {subject['name']}\n"
+            for subject in subjects
+        ).encode()
+
+    def gh(self, *args):
+        if args[:3] == ("gh", "attestation", "verify"):
+            return subprocess.CompletedProcess(args, 0, json.dumps(self.attestations))
+        self.assertEqual(args[:4], ("gh", "release", "download", self.tag))
+        directory = Path(args[args.index("--dir") + 1])
+        patterns = [
+            args[index + 1]
+            for index, argument in enumerate(args)
+            if argument == "--pattern"
+        ]
+        for name, data in self.release.items():
+            if any(fnmatchcase(name, pattern) for pattern in patterns):
+                (directory / name).write_bytes(data)
+        return subprocess.CompletedProcess(args, 0, "")
+
+    def test_retry_downloads_only_attested_distro_packages(self):
+        channel.download_distro()
+        self.assertEqual(set(Path("pkgs").iterdir()), {Path("pkgs") / self.package})
+        self.assertEqual(
+            (Path("pkgs") / self.package).read_bytes(), self.release[self.package]
+        )
+        verify = self.mock.call_args_list[1].args
+        self.assertIn("hew-lang/hew/.github/workflows/release.yml", verify)
+        self.assertIn(f"refs/tags/{self.tag}", verify)
+        self.assertEqual(verify[verify.index("--source-digest") + 1], SHA)
+
+    def test_changed_manifest_is_refused_before_package_download(self):
+        combined = hashlib.sha256(b"changed bytes").hexdigest()
+        self.release[self.checksums] = self.release[self.checksums].replace(
+            hashlib.sha256(self.release[self.package]).hexdigest().encode(),
+            combined.encode(),
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "do not match the producer attestation"
+        ):
+            channel.download_distro()
+        self.assertFalse(Path("pkgs").exists())
+
+    def test_changed_package_bytes_are_refused_even_when_name_matches(self):
+        self.release[self.package] = b"changed bytes"
+        with self.assertRaisesRegex(RuntimeError, "Downloaded distro package differs"):
+            channel.download_distro()
+
+    def test_unavailable_qualified_receipt_keeps_the_published_repository(self):
+        self.qualified_release("unavailable")
+        channel.download_distro()
+        self.assertEqual(Path("github-env").read_text(), "SKIP=1\n")
+        self.assertFalse(Path("pkgs").exists())
+
+    def test_other_workflow_refs_are_refused_before_download(self):
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/main"}):
+            with self.assertRaisesRegex(RuntimeError, "same release tag"):
+                channel.download_distro()
+        self.mock.assert_not_called()
 
 
 class Registry(BaseHTTPRequestHandler):

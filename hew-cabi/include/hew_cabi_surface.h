@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1798u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1801u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1798] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1801] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -6387,6 +6387,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1798] = {
      "HewString, ) -> *mut HewVec\"}",
      "native,wasm32-wasip1", "stable-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_regex_capture_spans",
+     "{\"native\": \"fn hew_regex_capture_spans( *const HewRegex, *const "
+     "HewString, ) -> *mut HewVec\", \"wasm32-wasip1\": \"fn "
+     "hew_regex_capture_spans( *const HewRegex, *const HewString, ) -> *mut "
+     "HewVec\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_regex_capture_width",
      "{\"native\": \"fn hew_regex_capture_width( *const HewRegex) -> i64\", "
      "\"wasm32-wasip1\": \"fn hew_regex_capture_width( *const HewRegex) -> "
@@ -6439,6 +6446,19 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1798] = {
     {"hew_regex_free_capture",
      "{\"native\": \"fn hew_regex_free_capture( *mut HewString)\", "
      "\"wasm32-wasip1\": \"fn hew_regex_free_capture( *mut HewString)\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_regex_group_present",
+     "{\"native\": \"fn hew_regex_group_present( *mut HewVec, i64) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_regex_group_present( *mut HewVec, i64) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_regex_group_text",
+     "{\"native\": \"fn hew_regex_group_text( *mut HewVec, i64, *const "
+     "HewString, ) -> *mut HewString\", \"wasm32-wasip1\": \"fn "
+     "hew_regex_group_text( *mut HewVec, i64, *const HewString, ) -> *mut "
+     "HewString\"}",
      "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_regex_is_match",

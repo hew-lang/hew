@@ -5,7 +5,10 @@
 //! owners that callers release with `string_release`. Null is canonical empty.
 use hew_cabi::{
     string::{string_as_str, string_from_str, string_release, HewString},
-    vec::{hew_vec_new_str, hew_vec_push_str, HewVec},
+    vec::{
+        hew_vec_get_i64, hew_vec_len, hew_vec_new_i64, hew_vec_new_str, hew_vec_push_i64,
+        hew_vec_push_str, HewVec,
+    },
 };
 
 /// Opaque handle wrapping a compiled [`regex::Regex`].
@@ -364,6 +367,98 @@ pub unsafe extern "C" fn hew_regex_match(re: *const HewRegex, text: *const HewSt
     i32::from(regex.inner.is_match(text_str))
 }
 
+/// Collect the UTF-8 byte ranges of one match. An empty vector means the
+/// pattern missed. A nonparticipating group has start and end offsets of -1.
+///
+/// # Safety
+///
+/// The caller borrows a live regex handle and managed string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_capture_spans(
+    re: *const HewRegex,
+    text: *const HewString,
+) -> *mut HewVec {
+    // SAFETY: this vector stores plain i64 elements.
+    let ranges = unsafe { hew_vec_new_i64() };
+    // SAFETY: both inputs are borrowed from the caller for this match.
+    let Some(regex) = (unsafe { re.as_ref() }) else {
+        return ranges;
+    };
+    // SAFETY: the caller lends its managed UTF-8 string for this match.
+    let text = unsafe { string_as_str(text) };
+    if let Some(captures) = regex.inner.captures(text) {
+        for group in captures.iter() {
+            // A Rust string has at most isize::MAX bytes on our 32- and
+            // 64-bit targets, so its engine offsets fit this signed ABI.
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "offsets index a live Rust string"
+            )]
+            let (start, end) =
+                group.map_or((-1, -1), |group| (group.start() as i64, group.end() as i64));
+            // SAFETY: ranges owns two more plain i64 values.
+            unsafe {
+                hew_vec_push_i64(ranges, start);
+                hew_vec_push_i64(ranges, end);
+            }
+        }
+    }
+    ranges
+}
+
+unsafe fn group_range(ranges: *mut HewVec, group: i64) -> Option<std::ops::Range<usize>> {
+    let first = group.checked_mul(2)?;
+    let second = first.checked_add(1)?;
+    // SAFETY: ranges is the live result of hew_regex_capture_spans. Guard
+    // optimized-away groups as well as a failed overall match.
+    if first < 0 || ranges.is_null() || second >= unsafe { hew_vec_len(ranges) } {
+        return None;
+    }
+    // SAFETY: both indices are inside the checked pair of i64 slots.
+    let (start, end) = unsafe {
+        (
+            hew_vec_get_i64(ranges, first),
+            hew_vec_get_i64(ranges, second),
+        )
+    };
+    let start = usize::try_from(start).ok()?;
+    let end = usize::try_from(end).ok()?;
+    Some(start..end)
+}
+
+/// Whether the indexed group participated, including a present empty match.
+///
+/// # Safety
+///
+/// `ranges` borrows the result of `hew_regex_capture_spans`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_group_present(ranges: *mut HewVec, group: i64) -> i32 {
+    // SAFETY: the checked caller supplies the live bounds vector.
+    i32::from(unsafe { group_range(ranges, group) }.is_some())
+}
+
+/// Copy a captured group into an independent managed string.
+///
+/// # Safety
+///
+/// The bounds and input borrow the same successful regex match.
+#[no_mangle]
+pub unsafe extern "C" fn hew_regex_group_text(
+    ranges: *mut HewVec,
+    group: i64,
+    text: *const HewString,
+) -> *mut HewString {
+    // SAFETY: inputs remain live for this read.
+    let range = unsafe { group_range(ranges, group) };
+    // SAFETY: the caller keeps the input string alive for this read.
+    let source = unsafe { string_as_str(text) };
+    string_from_str(
+        range
+            .and_then(|range| source.get(range))
+            .unwrap_or_default(),
+    )
+}
+
 /// Extract a capture group by its 1-based regex group index from a successful match.
 ///
 /// `capture_idx` is the 1-based regex group position (group 0 is the whole
@@ -464,7 +559,7 @@ pub unsafe extern "C" fn hew_regex_free(re: *mut HewRegex) {
 mod tests {
     use super::*;
     use crate::test_string::ManagedString;
-    use hew_cabi::vec::{hew_vec_free, hew_vec_get_str, hew_vec_len};
+    use hew_cabi::vec::{hew_vec_free, hew_vec_get_str};
 
     unsafe fn vec_to_strings(vec: *mut HewVec) -> Vec<String> {
         assert!(!vec.is_null());

@@ -1,0 +1,10 @@
+[[case]]
+id = "associated-function-values"
+intent = "Imported associated function values retain inferred returns and infer or specialize the owner and method type arguments independently."
+source = "fixtures/associated-function-values/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "5\nwarm\n7 both\n8 partial\n"
+exit = 0

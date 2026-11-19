@@ -529,7 +529,7 @@ impl LowerCtx<'_> {
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
-                let literal_id = self.alloc_regex_literal(pattern, &[]);
+                let literal_id = self.alloc_regex_literal(pattern);
                 (
                     HirExprKind::RegexLiteralRef {
                         literal_id,
@@ -1537,6 +1537,32 @@ impl LowerCtx<'_> {
                             span,
                         };
                     }
+                }
+
+                // A selected associated function carries its declaration on
+                // the whole value expression. Its type head is a namespace.
+                if let Some(CallTarget::ImplMethod(declaration)) = self.ordinary_call_target(&span)
+                {
+                    let Some(symbol) = self
+                        .registered_impl_method_symbol(declaration)
+                        .filter(|symbol| self.fn_registry.contains_key(symbol))
+                    else {
+                        self.missing_checked_fact(
+                            span.clone(),
+                            "selected associated function has no registered body",
+                            self.defs.path(declaration).to_string(),
+                        );
+                        return self.unsupported_expr(span, "unbound associated function");
+                    };
+                    let (kind, ty) = self.lower_function_value(&symbol, &span, site);
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
                 }
 
                 // Resolve a module function value through its lexical owner.

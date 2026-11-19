@@ -1,0 +1,40 @@
+fn describe(value: Option<string>) -> string {
+    match value {
+        .Some(text) => f"some [{text}]",
+        .None => "none",
+    }
+}
+
+fn greeting(input: string) -> string {
+    match input {
+        re"^(hello) (?P<name>.+)$" if name != "skip" => f"Hello, {name}!",
+        re"^hello (?P<fallback>.+)$" => fallback,
+        _ => "no greeting",
+    }
+}
+
+fn detail(input: string) -> string {
+    match input {
+        re"^(?P<lead>\p{L}+)(?:-(?P<suffix>[a-z]*))?$" => f"{lead}: {describe(suffix)}",
+        _ => "no detail",
+    }
+}
+
+fn classify(input: string) -> string {
+    match input {
+        re"^(?:(?P<word>a)|b)(?P<digit>[0-9])*(?P<empty>x*)$" =>
+            f"{describe(word)} / {describe(digit)} / [{empty}]",
+        _ => "no class",
+    }
+}
+
+fn main() {
+    println(greeting("hello Zoë 🦀"));
+    println(greeting("hello skip"));
+    println(greeting("hi"));
+    println(detail("Été"));
+    println(detail("Été-"));
+    println(detail("Été-fin"));
+    println(classify("b"));
+    println(classify("a38xx"));
+}

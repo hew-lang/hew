@@ -106,7 +106,7 @@ impl Display for NodeError {
 impl Error for NodeError {}
 
 impl NodeConfig {
-    fn at(bind: string) -> NodeConfig {
+    pub fn at(bind: string) -> NodeConfig {
         NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: "", cluster: "", seeds: Vec.new() }
     }
 }
@@ -139,13 +139,13 @@ pub type Timer {
 
 impl Timer {
     /// Before firing, cancel delivery. After firing, disarm only the overdue check.
-    fn cancel(self) {
+    pub fn cancel(self) {
         unsafe {
             hew_actor_timer_cancel(self)
         };
     }
 
-    fn close(consume self) {
+    pub fn close(consume self) {
         unsafe {
             hew_actor_timer_release(self)
         };
@@ -444,17 +444,17 @@ impl Error for LinkError {}
 impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
-    fn node_id(self) -> NodeId {}
+    pub fn node_id(self) -> NodeId {}
     /// Return the node-session incarnation.
     #[extern_symbol(hew_location_incarnation)]
-    fn incarnation(self) -> u32 {}
+    pub fn incarnation(self) -> u32 {}
     #[extern_symbol(hew_location_display)]
-    fn display(self) -> string {}
+    pub fn display(self) -> string {}
 }
 
 impl NodeId {
     #[extern_symbol(hew_node_id_display)]
-    fn display(self) -> string {}
+    pub fn display(self) -> string {}
 }
 
 impl Display for NodeId {
@@ -594,31 +594,31 @@ pub trait IntoIterator {
 impl<T> Vec<T> {
     /// Exchange two owned elements. Both indices must be in bounds.
     #[extern_symbol(hew_vec_swap)]
-    fn swap(self, left: i64, right: i64) {}
+    pub fn swap(self, left: i64, right: i64) {}
     #[extern_symbol("hew_vec_push_{T}")]
-    fn push(self, value: T) {}
+    pub fn push(self, value: T) {}
     #[extern_symbol("hew_vec_pop_{T}")]
-    fn pop(self) -> T {}
+    pub fn pop(self) -> T {}
     #[extern_symbol(hew_vec_len)]
-    fn len(self) -> i64 {}
+    pub fn len(self) -> i64 {}
     #[extern_symbol("hew_vec_get_{T}")]
-    fn get(self, index: i64) -> Option<T> {}
+    pub fn get(self, index: i64) -> Option<T> {}
     #[extern_symbol("hew_vec_set_{T}")]
-    fn set(self, index: i64, value: T) {}
+    pub fn set(self, index: i64, value: T) {}
     #[extern_symbol("hew_vec_remove_at_{T}")]
-    fn remove(self, index: i64) -> T {}
+    pub fn remove(self, index: i64) -> T {}
     #[extern_symbol("hew_vec_contains_{T}")]
-    fn contains(self, value: T) -> bool {}
+    pub fn contains(self, value: T) -> bool {}
     #[extern_symbol(hew_vec_is_empty)]
-    fn is_empty(self) -> bool {}
+    pub fn is_empty(self) -> bool {}
     #[extern_symbol(hew_vec_clear)]
-    fn clear(self) {}
+    pub fn clear(self) {}
     #[extern_symbol(hew_vec_clone)]
-    fn clone(self) -> Vec<T> {}
+    pub fn clone(self) -> Vec<T> {}
     #[extern_symbol(hew_vec_append)]
-    fn append(self, other: Vec<T>) {}
+    pub fn append(self, other: Vec<T>) {}
     #[extern_symbol(hew_vec_join_str)]
-    fn join(self, separator: string) -> string {}
+    pub fn join(self, separator: string) -> string {}
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +656,7 @@ impl<T> IntoIterator for Vec<T> {
 
 impl<T> Vec<T> {
     /// Create an independent cursor using the ordinary value-copy rules.
-    fn iter(self) -> VecIter<T> {
+    pub fn iter(self) -> VecIter<T> {
         self.clone().into_iter()
     }
 }
@@ -705,13 +705,13 @@ impl DoubleEndedIterator for StringIter {
 }
 
 impl string {
-    fn first(self) -> Option<char> {
+    pub fn first(self) -> Option<char> {
         if self.len() == 0 { .None } else { .Some(self[0]) }
     }
-    fn last(self) -> Option<char> {
+    pub fn last(self) -> Option<char> {
         if self.len() == 0 { .None } else { .Some(self[self.len() - 1]) }
     }
-    fn iter(self) -> StringIter {
+    pub fn iter(self) -> StringIter {
         StringIter { text: self, front: 0, back: self.len() }
     }
 }
@@ -1021,7 +1021,7 @@ impl Display for string {
 impl Error for string {}
 
 impl bytes {
-    fn clone(self) -> bytes {
+    pub fn clone(self) -> bytes {
         self
     }
 }
@@ -1056,25 +1056,25 @@ impl timestamp {
     /// Read the host wall clock as normalized Unix seconds and nanoseconds.
     #[runtime(family = TimestampNow, authority = Ambient, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_timestamp_now)]
-    fn now() -> timestamp {
+    pub fn now() -> timestamp {
         timestamp { seconds: 0, nanoseconds: 0 }
     }
 }
 
 impl timestamp {
     /// Construct normalized Unix seconds and a nanosecond fraction.
-    fn from_unix_parts(seconds: i64, nanos: u32) -> timestamp fails TimestampError {
+    pub fn from_unix_parts(seconds: i64, nanos: u32) -> timestamp fails TimestampError {
         if nanos >= 1000000000 {
             return error TimestampError.InvalidNanoseconds;
         }
         timestamp { seconds: seconds, nanoseconds: nanos }
     }
 
-    fn from_unix_secs(value: i64) -> timestamp {
+    pub fn from_unix_secs(value: i64) -> timestamp {
         timestamp { seconds: value, nanoseconds: 0 }
     }
 
-    fn from_unix_millis(value: i64) -> timestamp {
+    pub fn from_unix_millis(value: i64) -> timestamp {
         var seconds = value / 1000;
         var fraction = value % 1000;
         if fraction < 0 {
@@ -1084,7 +1084,7 @@ impl timestamp {
         timestamp { seconds: seconds, nanoseconds: (fraction * 1000000) as u32 }
     }
 
-    fn from_unix_micros(value: i64) -> timestamp {
+    pub fn from_unix_micros(value: i64) -> timestamp {
         var seconds = value / 1000000;
         var fraction = value % 1000000;
         if fraction < 0 {
@@ -1094,7 +1094,7 @@ impl timestamp {
         timestamp { seconds: seconds, nanoseconds: (fraction * 1000) as u32 }
     }
 
-    fn from_unix_nanos(value: i64) -> timestamp {
+    pub fn from_unix_nanos(value: i64) -> timestamp {
         var seconds = value / 1000000000;
         var fraction = value % 1000000000;
         if fraction < 0 {
@@ -1104,27 +1104,27 @@ impl timestamp {
         timestamp { seconds: seconds, nanoseconds: fraction as u32 }
     }
 
-    fn unix_parts(self) -> (i64, u32) {
+    pub fn unix_parts(self) -> (i64, u32) {
         (self.seconds, self.nanoseconds)
     }
 
     /// Whole Unix seconds rounded toward negative infinity.
-    fn unix_secs_floor(self) -> i64 {
+    pub fn unix_secs_floor(self) -> i64 {
         self.seconds
     }
 
     /// Whole Unix milliseconds rounded toward negative infinity.
-    fn unix_millis_floor(self) -> i64 fails TimestampError {
+    pub fn unix_millis_floor(self) -> i64 fails TimestampError {
         timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000)?
     }
 
     /// Whole Unix microseconds rounded toward negative infinity.
-    fn unix_micros_floor(self) -> i64 fails TimestampError {
+    pub fn unix_micros_floor(self) -> i64 fails TimestampError {
         timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000000)?
     }
 
     /// Exact Unix nanoseconds, failing when the i64 result cannot hold them.
-    fn unix_nanos(self) -> i64 fails TimestampError {
+    pub fn unix_nanos(self) -> i64 fails TimestampError {
         timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000000000)?
     }
 }
@@ -1168,23 +1168,23 @@ fn timestamp_unix_units_floor(seconds: i64, nanos: u32, scale: i64) -> i64 fails
 // the same spine as user impl blocks (HIR `is_builtin_duration_ctor_impl`), so
 // the bodies below are the running source of truth, not documentation.
 impl duration {
-    fn from_nanos(n: i64) -> duration {
+    pub fn from_nanos(n: i64) -> duration {
         n * 1ns
     }
-    fn from_micros(n: i64) -> duration {
+    pub fn from_micros(n: i64) -> duration {
         n * 1us
     }
-    fn from_millis(n: i64) -> duration {
+    pub fn from_millis(n: i64) -> duration {
         n * 1ms
     }
-    fn from_secs(n: i64) -> duration {
+    pub fn from_secs(n: i64) -> duration {
         n * 1s
     }
 }
 
 impl duration {
     /// Whole milliseconds rounded upward, preserving positive sub-millisecond waits.
-    fn millis_ceil(self) -> i64 {
+    pub fn millis_ceil(self) -> i64 {
         let millis = self.millis();
         if self > 0ns && self % 1ms != 0ns { millis + 1 } else { millis }
     }
@@ -1193,42 +1193,42 @@ impl duration {
 impl duration {
     #[runtime(family = DurationNanos, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_nanos)]
-    fn nanos(self) -> i64 {
+    pub fn nanos(self) -> i64 {
         0
     }
     #[runtime(family = DurationMicros, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_micros)]
-    fn micros(self) -> i64 {
+    pub fn micros(self) -> i64 {
         0
     }
     #[runtime(family = DurationMillis, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_millis)]
-    fn millis(self) -> i64 {
+    pub fn millis(self) -> i64 {
         0
     }
     #[runtime(family = DurationSecs, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_secs)]
-    fn secs(self) -> i64 {
+    pub fn secs(self) -> i64 {
         0
     }
     #[runtime(family = DurationMins, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_mins)]
-    fn mins(self) -> i64 {
+    pub fn mins(self) -> i64 {
         0
     }
     #[runtime(family = DurationHours, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_hours)]
-    fn hours(self) -> i64 {
+    pub fn hours(self) -> i64 {
         0
     }
     #[runtime(family = DurationAbs, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_abs)]
-    fn abs(self) -> duration {
+    pub fn abs(self) -> duration {
         self
     }
     #[runtime(family = DurationIsZero, authority = Value, lowering = direct, target = native, classification = stable, c_return = truth_i32)]
     #[extern_symbol(hew_duration_is_zero)]
-    fn is_zero(self) -> bool {
+    pub fn is_zero(self) -> bool {
         false
     }
 }
@@ -1236,17 +1236,17 @@ impl duration {
 impl instant {
     #[runtime(family = InstantNow, authority = Ambient, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_now)]
-    fn now() -> instant {
+    pub fn now() -> instant {
         instant.now()
     }
     #[runtime(family = InstantElapsed, authority = Ambient, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_elapsed)]
-    fn elapsed(self) -> duration {
+    pub fn elapsed(self) -> duration {
         0ns
     }
     #[runtime(family = InstantDurationSince, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_duration_since)]
-    fn duration_since(self, earlier: instant) -> duration {
+    pub fn duration_since(self, earlier: instant) -> duration {
         0ns
     }
 }
@@ -1446,130 +1446,130 @@ impl Error for ScopeFailure {}
 /// Unicode scalar classification and one-scalar case conversion.
 impl char {
     #[extern_symbol(hew_char_is_digit)]
-    fn is_digit(self) -> bool {
+    pub fn is_digit(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_letter)]
-    fn is_letter(self) -> bool {
+    pub fn is_letter(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_alphanumeric)]
-    fn is_alphanumeric(self) -> bool {
+    pub fn is_alphanumeric(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_whitespace)]
-    fn is_whitespace(self) -> bool {
+    pub fn is_whitespace(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_upper)]
-    fn is_upper(self) -> bool {
+    pub fn is_upper(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_lower)]
-    fn is_lower(self) -> bool {
+    pub fn is_lower(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_punctuation)]
-    fn is_punctuation(self) -> bool {
+    pub fn is_punctuation(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_control)]
-    fn is_control(self) -> bool {
+    pub fn is_control(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_is_ascii)]
-    fn is_ascii(self) -> bool {
+    pub fn is_ascii(self) -> bool {
         false
     }
     #[extern_symbol(hew_char_to_upper)]
-    fn to_upper(self) -> char {
+    pub fn to_upper(self) -> char {
         '\0'
     }
     #[extern_symbol(hew_char_to_lower)]
-    fn to_lower(self) -> char {
+    pub fn to_lower(self) -> char {
         '\0'
     }
     #[extern_symbol(hew_char_to_title)]
-    fn to_title(self) -> char {
+    pub fn to_title(self) -> char {
         '\0'
     }
     #[extern_symbol(hew_char_len_utf8)]
-    fn len_utf8(self) -> i64 {
+    pub fn len_utf8(self) -> i64 {
         0
     }
     #[extern_symbol(hew_char_to_digit)]
-    fn to_digit(self, radix: i64) -> Option<i64> {
+    pub fn to_digit(self, radix: i64) -> Option<i64> {
         .None
     }
 }
 
 impl char {
-    fn as_u32(self) -> u32 {
+    pub fn as_u32(self) -> u32 {
         self as u32
     }
-    fn as_i64(self) -> i64 {
+    pub fn as_i64(self) -> i64 {
         self as i64
     }
 }
 
 impl i8 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as i64).try_to_char()
     }
 }
 
 impl i16 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as i64).try_to_char()
     }
 }
 
 impl i32 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as i64).try_to_char()
     }
 }
 
 impl i64 {
     #[extern_symbol(hew_char_from_i64)]
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         .None
     }
 }
 
 impl isize {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as i64).try_to_char()
     }
 }
 
 impl u8 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as u64).try_to_char()
     }
 }
 
 impl u16 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as u64).try_to_char()
     }
 }
 
 impl u32 {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as u64).try_to_char()
     }
 }
 
 impl u64 {
     #[extern_symbol(hew_char_from_u64)]
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         .None
     }
 }
 
 impl usize {
-    fn try_to_char(self) -> Option<char> {
+    pub fn try_to_char(self) -> Option<char> {
         (self as u64).try_to_char()
     }
 }

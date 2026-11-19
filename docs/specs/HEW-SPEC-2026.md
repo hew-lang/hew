@@ -2065,11 +2065,17 @@ Three-tier model — written as a prefix keyword before the item keyword:
 
 The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
 
-> **Implementation note:** top-level item boundaries are enforced across
-> modules: a private item referenced from outside its module is rejected with
-> `E_VISIBILITY_PRIVATE`, and a `package` item referenced from outside its
-> package is rejected with `E_VISIBILITY_PACKAGE`. The compiler does not yet
-> fully enforce private or package visibility for authored inherent methods.
+Inherent methods, including associated functions, follow the visibility of their
+own declaration. A bare `fn` is callable inside its declaring module, including
+from peer files. `package fn` also admits other modules in the same package.
+Mark a method `pub fn` to expose it through a public type to other packages.
+A visible associated function can be passed as a callable, as in
+`issue(model.Card.make)`. An explicit owner such as `Holder<i64>.make` fixes
+the owner type arguments. Method type arguments can be inferred or supplied
+separately, as in `Holder<i64>.pair<string>`.
+Selecting a private or package method from outside that boundary produces
+`E_VISIBILITY_PRIVATE` or `E_VISIBILITY_PACKAGE`. Trait methods keep the
+visibility of the trait contract.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 
@@ -4967,6 +4973,23 @@ there is no expression timeout combinator.
 
 `std.text.regex` is shipped. It compiles patterns and supports matching,
 replacement, indexed and named captures, and multi-match capture tables.
+In a match arm a regex can bind its named groups. The bindings are in scope
+in the guard and the arm body. A group that participates on every path binds
+a `string`. A group inside an alternative or a possibly empty repetition
+binds an `Option<string>`. A participating group can capture an empty string.
+
+```hew
+fn greet(line: string) -> string {
+    match line {
+        re"^hello (?P<name>[A-Za-z]+)$" => f"Hello, {name}!",
+        _ => "Hello!",
+    }
+}
+```
+
+Capture names must be valid Hew binding names and must be distinct from names
+already in scope. Capture strings can be returned or passed to other functions.
+
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
 `regex.new(pattern)` returns a checked `Result<Pattern, RegexError>`. Invalid

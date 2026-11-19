@@ -590,7 +590,7 @@ fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
     let Some(tools) = dwarf_rewrite_tools() else {
         return DwarfShrink::Skipped;
     };
-    if !resolves_probe_line(tools.symbolizer, std::path::Path::new(binary)) {
+    if !resolves_probe_line(&tools.symbolizer, std::path::Path::new(binary)) {
         return DwarfShrink::Skipped;
     }
     let dir = std::path::Path::new(binary)
@@ -603,11 +603,11 @@ fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
             return DwarfShrink::Refused(format!("cannot create a file beside {binary}: {error}"))
         }
     };
-    let mut gc = std::process::Command::new(tools.dwarfutil);
+    let mut gc = std::process::Command::new(&tools.dwarfutil);
     gc.arg("--garbage-collection").arg(binary).arg(&shrunk);
     let mut steps = vec![gc];
     if compressed_debug_sections(compiler) {
-        let mut compress = std::process::Command::new(tools.objcopy);
+        let mut compress = std::process::Command::new(&tools.objcopy);
         compress.arg("--compress-debug-sections=zstd").arg(&shrunk);
         steps.push(compress);
     }
@@ -621,7 +621,7 @@ fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
             Err(error) => return DwarfShrink::Refused(format!("cannot run {program}: {error}")),
         }
     }
-    if !resolves_probe_line(tools.symbolizer, &shrunk) {
+    if !resolves_probe_line(&tools.symbolizer, &shrunk) {
         return DwarfShrink::Refused(format!(
             "{} lost the line table of {DWARF_PROBE_SYMBOL}",
             tools.dwarfutil
@@ -635,49 +635,28 @@ fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
 
 /// The LLVM tools a DWARF rewrite needs, found once per process.
 struct DwarfRewriteTools {
-    dwarfutil: &'static str,
-    objcopy: &'static str,
-    symbolizer: &'static str,
+    dwarfutil: String,
+    objcopy: String,
+    symbolizer: String,
 }
 
 fn dwarf_rewrite_tools() -> Option<&'static DwarfRewriteTools> {
     static TOOLS: std::sync::OnceLock<Option<DwarfRewriteTools>> = std::sync::OnceLock::new();
     TOOLS
         .get_or_init(|| {
-            // A versioned name covers distributions that install LLVM only
-            // with a suffix; 17 is the oldest dwarfutil that reads DWARF 5.
-            const DWARFUTIL: &[&str] = &[
-                "llvm-dwarfutil",
-                "llvm-dwarfutil-22",
-                "llvm-dwarfutil-21",
-                "llvm-dwarfutil-20",
-                "llvm-dwarfutil-19",
-                "llvm-dwarfutil-18",
-                "llvm-dwarfutil-17",
-            ];
-            const OBJCOPY: &[&str] = &[
-                "llvm-objcopy",
-                "llvm-objcopy-22",
-                "llvm-objcopy-21",
-                "llvm-objcopy-20",
-                "llvm-objcopy-19",
-                "llvm-objcopy-18",
-                "llvm-objcopy-17",
-            ];
-            const SYMBOLIZER: &[&str] = &[
-                "llvm-symbolizer",
-                "llvm-symbolizer-22",
-                "llvm-symbolizer-21",
-                "llvm-symbolizer-20",
-                "llvm-symbolizer-19",
-                "llvm-symbolizer-18",
-                "llvm-symbolizer-17",
-            ];
-            let first = |names: &[&'static str]| names.iter().copied().find(|name| has_tool(name));
+            // Prefer the matching version, then the toolchain on PATH. Older
+            // distribution packages remain usable when the line probe passes.
+            let first = |tool: &str| {
+                let major: u32 = env!("HEW_LLVM_MAJOR").parse().expect("LLVM major version");
+                std::iter::once(format!("{tool}-{major}"))
+                    .chain(std::iter::once(tool.to_owned()))
+                    .chain((17..major).rev().map(|version| format!("{tool}-{version}")))
+                    .find(|name| has_tool(name))
+            };
             Some(DwarfRewriteTools {
-                dwarfutil: first(DWARFUTIL)?,
-                objcopy: first(OBJCOPY)?,
-                symbolizer: first(SYMBOLIZER)?,
+                dwarfutil: first("llvm-dwarfutil")?,
+                objcopy: first("llvm-objcopy")?,
+                symbolizer: first("llvm-symbolizer")?,
             })
         })
         .as_ref()
@@ -2675,7 +2654,7 @@ mod tests {
 
         assert!(!debug_names(&binary).contains("discarded_by_the_link"));
         let tools = dwarf_rewrite_tools().expect("tools");
-        assert!(resolves_probe_line(tools.symbolizer, &binary));
+        assert!(resolves_probe_line(&tools.symbolizer, &binary));
         let mode = std::fs::metadata(&binary)
             .expect("metadata")
             .permissions()

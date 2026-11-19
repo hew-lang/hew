@@ -363,7 +363,7 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
                     Some(NativeRead::Readiness(handle)) => {
                         unit_layout(&layout);
                         yields = ReadYield::Readiness;
-                        async_io::start_tcp_readable(handle, waker)
+                        async_io::start_readiness_watch(handle, waker)
                     }
                     None => {
                         content_layout(&layout);

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- On Unix, wait for a foreign pipe or socket to accept a write with
+  `std.io.watch_writable(fd)`. The watch owns a duplicate descriptor and
+  leaves the write to your program. When matching `std.io.WatchError`
+  exhaustively, add `.System(message)` for operating system failures such
+  as descriptor exhaustion.
+
 - Inherent methods and associated functions now enforce the same module and
   package visibility as free functions. Use `package fn` for calls from other
   modules in the same package and `pub fn` for callers in other packages.

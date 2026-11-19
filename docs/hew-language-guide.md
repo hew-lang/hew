@@ -5341,6 +5341,30 @@ fn main() {
 use string case conversion for mappings that expand, such as `"ß".to_upper()`.
 Full example: [`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
 
+### Wait for a pipe to accept output
+
+On Unix, `std.io.watch_writable(fd)` lets a task wait for space in a pipe or
+socket the program already owns. Use `select` to bound the wait. The watch
+owns a duplicate descriptor, so closing it leaves the original open.
+
+The [example](../examples/io/wait_for_pipe.hew) writes a short status line to a
+pipe on standard output. It reports a timeout on standard error and exits 1
+if the reader leaves the pipe full.
+
+```sh
+hew build examples/io/wait_for_pipe.hew -o wait-for-pipe
+./wait-for-pipe | cat
+```
+
+The pipe has one writer and the message fits in a single pipe write. When
+sharing a descriptor, use nonblocking writes and wait again if another
+writer takes the available space. A closed peer also wakes the watch, and the
+write reports that outcome. Regular files do not support readiness watches.
+
+Handle `io.WatchError.NotOpen` for a closed descriptor, `.Unsupported` for
+an incompatible descriptor or platform, and `.System(detail)` for an
+operating-system failure such as descriptor exhaustion.
+
 ### Scanner — line and word tokenisation
 
 ```hew

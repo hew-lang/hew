@@ -315,20 +315,20 @@ native_only_functions = ["std.os.shutdown_signal"]
 [[feature]]
 id = "descriptor-readiness"
 generate = "refuse"
-generate_functions = ["std.io.watch_readable"]
-generate_endpoints = ["hew_io_watch_readable"]
+generate_functions = ["std.io.watch_readable", "std.io.watch_writable"]
+generate_endpoints = ["hew_io_watch_readable", "hew_io_watch_writable"]
 deterministic = "refuse"
-deterministic_functions = ["std.io.watch_readable"]
-deterministic_endpoints = ["hew_io_watch_readable"]
+deterministic_functions = ["std.io.watch_readable", "std.io.watch_writable"]
+deterministic_endpoints = ["hew_io_watch_readable", "hew_io_watch_writable"]
 enum_variant = "DescriptorReadiness"
 label = "Descriptor readiness watches"
-prose_label = "`std.io.watch_readable`"
+prose_label = "`std.io.watch_readable`, `std.io.watch_writable`"
 reason = "a readiness watch waits on the native I/O reactor, which is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only reactor watch"
 categories = ["stdlib", "io"]
-native_only_functions = ["std.io.watch_readable"]
+native_only_functions = ["std.io.watch_readable", "std.io.watch_writable"]
 
 [[feature]]
 id = "http-client"

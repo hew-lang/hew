@@ -48,7 +48,7 @@ pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 pub(crate) use file::{start_sink_write, start_stream_read};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use net::{
-    accept_now, start_tcp_readable, start_tcp_stream_read, start_tcp_stream_write,
+    accept_now, start_readiness_watch, start_tcp_stream_read, start_tcp_stream_write,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};

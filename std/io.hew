@@ -123,20 +123,22 @@ fn next_line() -> bytes fails IoError {
     line
 }
 
-/// Why a descriptor cannot be watched for readability.
+/// Why a descriptor readiness watch could not be opened.
 pub enum WatchError {
     /// The number is not an open descriptor.
     NotOpen;
-    /// The descriptor is a regular file, which is always readable, or the
-    /// platform has no descriptor readiness (Windows).
+    /// The descriptor type, access mode or platform does not support this watch.
     Unsupported;
+    /// The operating system could not create the watch.
+    System(string);
 }
 
 impl Display for WatchError {
     fn fmt(self) -> string {
         match self {
             WatchError.NotOpen => "NotOpen: the number is not an open descriptor",
-            WatchError.Unsupported => "Unsupported: this descriptor cannot be watched for readability",
+            WatchError.Unsupported => "Unsupported: this descriptor or direction cannot be watched",
+            WatchError.System(detail) => detail,
         }
     }
 }
@@ -151,20 +153,35 @@ impl Error for WatchError {}
 /// `()`; it reads nothing, so the program then reads the descriptor itself.
 /// Readiness is level-triggered: a receive returns at once while unread data
 /// remains, and `try_recv` yields `()` exactly when a receive would not wait.
-/// The stream is a `select` source and never ends on its own. It watches its
-/// own duplicate of `fd`: closing it stops the watch and leaves `fd` open,
-/// closing `fd` first is safe, and several watches of one descriptor, or a
-/// watch of standard input alongside `read_line`, are independent. Unix only.
+/// The stream is a `select` source and never ends on its own. Keep `fd` open
+/// until this call returns. The watch then owns a close-on-exec duplicate,
+/// so you can close the stream and `fd` independently. Several watches on
+/// one descriptor, including standard input alongside `read_line`, can
+/// coexist. Unix only.
 pub fn watch_readable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
+    watch_stream(unsafe { hew_io_watch_readable(fd) })
+}
+
+/// Wait for a foreign descriptor to accept a write without blocking. Each
+/// receive yields `()` without writing anything. A closed peer or another
+/// terminal condition also wakes the watch; the next write reports its outcome.
+/// Keep the original open until construction returns. The watch then owns
+/// a separate close-on-exec duplicate. Use a nonblocking descriptor and retry
+/// the write after readiness if another writer can use the available space.
+pub fn watch_writable(fd: i32) -> Result<stream.Stream<()>, WatchError> {
+    watch_stream(unsafe { hew_io_watch_writable(fd) })
+}
+
+fn watch_stream(consume pair: stream.StreamPair) -> Result<stream.Stream<()>, WatchError> {
     unsafe {
-        match hew_io_watch_check(fd) {
-            0 => {}
-            1 => return .Err(WatchError.NotOpen),
-            _ => return .Err(WatchError.Unsupported),
-        }
-        let pair = hew_io_watch_readable(fd);
         if !hew_stream_pair_is_valid(pair) {
-            return .Err(WatchError.NotOpen);
+            let kind = hew_stream_last_error_kind();
+            let detail = hew_stream_last_error();
+            return match kind {
+                1 => .Err(WatchError.NotOpen),
+                6 => .Err(WatchError.Unsupported),
+                _ => .Err(WatchError.System(detail)),
+            };
         }
         let ready: stream.Stream<()> = stream.pair_stream(pair);
         pair.close();
@@ -234,7 +251,8 @@ extern "C" {
     fn hew_io_write(s: string) -> i32;
     #[offload]
     fn hew_io_write_err(s: string) -> i32;
-    fn hew_io_watch_check(fd: i32) -> i32;
+    fn hew_stream_last_error_kind() -> i32;
+    fn hew_io_watch_writable(fd: i32) -> stream.StreamPair;
     fn hew_io_watch_readable(fd: i32) -> stream.StreamPair;
     fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }

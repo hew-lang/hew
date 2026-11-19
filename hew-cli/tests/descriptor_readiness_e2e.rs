@@ -1,10 +1,10 @@
-//! `io.watch_readable` observes a descriptor the program does not own through
-//! the reactor: here the process's standard input, a pipe the test controls.
+//! Exercise readable and writable descriptor watches on pipes shared with
+//! the test process. Filling, draining and closing the pipes drives readiness.
 #![cfg(unix)]
 
 mod support;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -42,10 +42,31 @@ fn compile(source: &str, dir: &Path, opt_level: u8) -> PathBuf {
 /// each `(prefix, input)` step's prefix, write that input; then close standard
 /// input and return every stdout line.
 fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<String> {
+    run_script(
+        binary,
+        Stdio::piped(),
+        steps.iter().map(|(prefix, _)| *prefix),
+        opt_level,
+        |index, stdin| {
+            stdin
+                .write_all(steps[index].1)
+                .expect("write fixture input");
+            stdin.flush().expect("flush fixture input");
+        },
+    )
+}
+
+fn run_script<'a>(
+    binary: &Path,
+    stderr: Stdio,
+    prefixes: impl IntoIterator<Item = &'a str>,
+    opt_level: u8,
+    mut on_step: impl FnMut(usize, &mut std::process::ChildStdin),
+) -> Vec<String> {
     let mut child = Command::new(binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(stderr)
         .spawn()
         .expect("spawn fixture");
     let mut stdin = child.stdin.take().expect("child stdin");
@@ -58,7 +79,7 @@ fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<St
         }
     });
     let mut seen = Vec::new();
-    for (prefix, input) in steps {
+    for (index, prefix) in prefixes.into_iter().enumerate() {
         loop {
             let line = match lines.recv_timeout(LINE_TIMEOUT) {
                 Ok(line) => line,
@@ -79,8 +100,7 @@ fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<St
                 break;
             }
         }
-        stdin.write_all(input).expect("write fixture input");
-        stdin.flush().expect("flush fixture input");
+        on_step(index, &mut stdin);
     }
     drop(stdin);
     let output = child.wait_with_output().expect("wait for fixture");
@@ -325,4 +345,117 @@ fn main() {
         let seen = run_scripted(&binary, &[("READ:", b"")], opt_level);
         assert_eq!(seen, ["QUIET:true", "READ:2"], "O{opt_level}");
     }
+}
+
+/// A foreign writer has filled a nonblocking pipe. A timer wins the first
+/// selection, then draining the pipe wakes an ordinary forked receive. The
+/// watched duplicate remains attached to the pipe after its source fd is reused.
+#[test]
+fn writable_watch_waits_for_pipe_capacity_without_writing() {
+    use std::os::fd::AsRawFd;
+
+    require_codegen();
+    let source = r#"
+import std.io;
+import std.stream;
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn dup2(from_fd: i32, to_fd: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+fn wait_for_space(consume watch: stream.Stream<()>) -> bool {
+    let woke = watch.recv().is_some();
+    let still_ready = watch.try_recv().is_some();
+    watch.close();
+    woke && still_ready
+}
+fn main() {
+    let fd = unsafe { dup(2) };
+    let watch = io.watch_writable(fd).expect("watch foreign writer");
+    assert(unsafe { dup2(0, fd) } == fd);
+    let invalid = match io.watch_writable(fd) {
+        .Err(.Unsupported) => true,
+        _ => false,
+    };
+    let full = watch.try_recv().is_none();
+    let timed_out = select {
+        ready from watch.recv() => false,
+        after 20ms => true,
+    };
+    println(f"FULL:{invalid} {full} {timed_out}");
+    let writable = scope within 5s {
+        let pending = fork wait_for_space(watch);
+        println("DRAIN");
+        await pending
+    };
+    println(f"READY:{writable}");
+    unsafe { close(fd) };
+    io.write_err("sent").expect("write to original");
+}
+"#;
+    let directory = support::tempdir();
+    for opt in [0, 2] {
+        let binary = compile(source, directory.path(), opt);
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        let fd = writer.as_raw_fd();
+        // SAFETY: the writer owns fd while both operations update its status flags.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            assert!(flags >= 0);
+            assert_eq!(libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK), 0);
+        }
+        let mut filled = 0;
+        loop {
+            match writer.write(&[0x5a; 4096]) {
+                Ok(n) => {
+                    assert!(n > 0);
+                    filled += n;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill pipe: {error}"),
+            }
+        }
+        assert!(filled > 0);
+        let seen = run_script(&binary, writer.into(), ["DRAIN"], opt, |_, _| {
+            let mut existing = vec![0; filled];
+            reader.read_exact(&mut existing).unwrap();
+            assert!(existing.iter().all(|byte| *byte == 0x5a));
+        });
+        assert_eq!(seen, ["FULL:true true true", "DRAIN", "READY:true"]);
+        let mut delivered = Vec::new();
+        reader.read_to_end(&mut delivered).unwrap();
+        assert_eq!(delivered, b"sent");
+    }
+}
+
+/// Exhaust the descriptor table of one child without changing the test
+/// runner's limits. A valid descriptor must retain the actual OS failure.
+#[test]
+fn descriptor_exhaustion_is_distinct_from_a_closed_descriptor() {
+    require_codegen();
+    let source = r#"
+import std.io;
+extern "C" { fn dup(fd: i32) -> i32; }
+fn main() {
+    while unsafe { dup(0) } >= 0 {}
+    match io.watch_readable(0) {
+        .Err(.System(detail)) => println(f"system:{detail}"),
+        _ => println("unexpected"),
+    }
+}
+"#;
+    let directory = support::tempdir();
+    let binary = compile(source, directory.path(), 2);
+    let output = Command::new("sh")
+        .args(["-c", "ulimit -n 64 && exec \"$1\"", "descriptor-limit"])
+        .arg(binary)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", describe_output(&output));
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.starts_with("system:") && text.trim().len() > "system:".len(),
+        "{text}"
+    );
 }

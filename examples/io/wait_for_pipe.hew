@@ -1,0 +1,24 @@
+import std.io;
+
+fn report(message: string) -> i32 {
+    io.write_err(message + "\n") handle error {};
+    1
+}
+
+fn main() -> i32 {
+    let watch = io.watch_writable(1) handle error {
+        return report(f"cannot watch standard output: {error}");
+    };
+    let writable = select {
+        ready from watch.recv() => ready.is_some(),
+        after 250ms => false,
+    };
+    watch.close();
+    if !writable {
+        return report("timed out waiting for standard output");
+    }
+    io.write("job finished\n") handle error {
+        return report(f"cannot write to standard output: {error}");
+    };
+    0
+}

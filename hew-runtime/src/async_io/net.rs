@@ -31,7 +31,7 @@ enum Action {
     Read,
     /// Completes once a read would make progress, consuming nothing: a
     /// selection's watch on a socket stream it must not read.
-    Readable,
+    Readiness,
     Accept,
     /// One line of standard input, taken from the process buffer.
     StdinLine,
@@ -137,10 +137,10 @@ fn attempt(slot: &Slot, action: &mut Action) -> Attempt {
                 }
             })
         }
-        Action::Readable => {
+        Action::Readiness => {
             // Data, end of stream, an error or a pending connection: the next
             // read or accept will not wait.
-            if slot.readable() {
+            if slot.watch_ready() {
                 Attempt::Done(Ok(IoValue::Count(0)))
             } else {
                 Attempt::Blocked { progressed: false }
@@ -308,7 +308,7 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     let kind_matches = match action {
         Action::Accept => slot.listener().is_some(),
         Action::StdinLine => slot.is_stdin(),
-        Action::Readable => !slot.is_stdin(),
+        Action::Readiness => !slot.is_stdin(),
         _ => slot.bytes().is_some(),
     };
     if !kind_matches {
@@ -339,11 +339,6 @@ unsafe fn start(
     waker: *const HewWaker,
     stream_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 ) -> *const HewAsyncIo {
-    let direction = if matches!(action, Action::Write { .. }) {
-        Direction::Write
-    } else {
-        Direction::Read
-    };
     let Some(slot) = crate::reactor::lookup(handle) else {
         if let Action::Write {
             finish: Some(pending),
@@ -359,6 +354,11 @@ unsafe fn start(
             &io::Error::from_raw_os_error(libc::EBADF),
         )));
         return Arc::into_raw(operation);
+    };
+    let direction = match action {
+        Action::Write { .. } => Direction::Write,
+        Action::Readiness => slot.watch_direction(),
+        _ => Direction::Read,
     };
     // SAFETY: the caller's waker contract is forwarded unchanged.
     unsafe { start_on(slot, action, direction, waker, stream_owner) }
@@ -429,18 +429,18 @@ pub(crate) unsafe fn start_tcp_stream_read(
     unsafe { start(connection, Action::Read, waker, Some(owner)) }
 }
 
-/// Watch a connection until a read would make progress, reading nothing. A
+/// Watch a stream until its selected I/O direction can make progress. A
 /// selection observes a socket stream this way, so a losing arm leaves every
 /// byte for the stream's next receive.
 ///
 /// # Safety
 /// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
-pub(crate) unsafe fn start_tcp_readable(
+pub(crate) unsafe fn start_readiness_watch(
     connection: i32,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed readiness descriptor.
-    unsafe { start(connection, Action::Readable, waker, None) }
+    unsafe { start(connection, Action::Readiness, waker, None) }
 }
 
 /// Start a one-shot accept. The operation owns the newly accepted connection

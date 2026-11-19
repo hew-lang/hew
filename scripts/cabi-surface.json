@@ -10843,6 +10843,19 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_io_watch_writable( i32) -> *mut HewStreamPair"
+      },
+      "symbol": "hew_io_watch_writable"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],

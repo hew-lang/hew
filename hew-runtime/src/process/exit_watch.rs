@@ -102,7 +102,7 @@ impl ExitWatch {
     /// Whether the child has exited. Never waits.
     #[cfg(target_os = "linux")]
     pub(crate) fn exited(&self) -> bool {
-        crate::reactor::fd_readable(self.fd())
+        crate::reactor::fd_ready(self.fd(), crate::reactor::Direction::Read)
     }
 
     /// Whether the child has exited. Never waits.

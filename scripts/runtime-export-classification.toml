@@ -387,6 +387,7 @@ stable = [
   "hew_int_to_string",
   "hew_io_watch_check",
   "hew_io_watch_readable",
+  "hew_io_watch_writable",
   "hew_io_write",
   "hew_io_write_err",
   "hew_report_stderr",
@@ -3026,6 +3027,16 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_io_watch_readable"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.stream.StreamPair"
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+result-retention = "resource-transfer"
+result-retention-basis = "returns one fresh Box::into_raw(HewStreamPair) holding the only owner of a new readiness stream; the descriptor stays with the caller"
+
+[[ownership.contracts]]
+symbol = "hew_io_watch_writable"
 result = "fresh"
 params = ["borrow"]
 resource-result-type = "std.stream.StreamPair"

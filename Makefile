@@ -26,6 +26,7 @@
 #   make pre-release  — release + validate on all platforms before tagging
 #   make build-docs-reference — generate the versioned language/API reference
 #   make hew          — release-lib compiler + archive, staged at build/bin/hew
+#                       (build/bin/hew.exe on Windows)
 #   make hew-debug    — debug compiler + archive, staged at build/bin/hew-debug
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
 #   make observe-functional-test — HTTP-backed functional observe harness
@@ -261,6 +262,17 @@ RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
 # archive member except the runtime's line tables. Usage:
 #   $(RELEASE_LIB_BUILD) <archive> -- cargo build ... --profile release-lib
 RELEASE_LIB_BUILD = $(PYTHON) "$(MAKEFILE_ROOT)/scripts/release-lib.py" build --archive
+# Staged executables keep the platform's suffix, so build/bin/hew.exe runs
+# from cmd.exe and PowerShell as well as Git Bash.
+ifeq ($(OS),Windows_NT)
+EXE_SUFFIX := .exe
+# An earlier build staged suffixless copies; Git Bash would run a stale
+# `hew` ahead of `hew.exe`, so the incremental staging targets drop them.
+STAGE_DROP_UNSUFFIXED = @rm -f "$(BUILD_DIR)/bin/hew" "$(BUILD_DIR)/bin/hew-debug"
+else
+EXE_SUFFIX :=
+STAGE_DROP_UNSUFFIXED =
+endif
 ifeq ($(OS),Windows_NT)
 DEBUG_HEW := $(DEBUG_DIR)/hew.exe
 RELEASE_HEW := $(RELEASE_DIR)/hew.exe
@@ -452,13 +464,15 @@ build: all
 hew: require-host-cargo-target ## Build: build the release-lib compiler and native archive
 	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew"
+	$(STAGE_DROP_UNSUFFIXED)
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@ln -sfn ../std "$(BUILD_DIR)/std"
 
 hew-debug: hew-native ## Build: build and stage the debug compiler
 	@mkdir -p $(BUILD_DIR)/bin
-	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug"
+	$(STAGE_DROP_UNSUFFIXED)
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@echo "compiler profile: debug"
 	@echo "compiler path: $(DEBUG_HEW)"
 	@test -f "$(DEBUG_HEW)"
@@ -1098,10 +1112,10 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
 	@# Compiler drivers: keep the supported release-lib launcher stable while
 	@# exposing the debug compiler under its explicit debug name.
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew"
-	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
+	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_DEBUG_DIR)/$$lib" ]; then \
@@ -1218,10 +1232,10 @@ endif
 assemble-release: require-host-cargo-target release-host libhew-cross-release-lib wasm-runtime-release
 	@rm -rf $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
-	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
@@ -1923,10 +1937,10 @@ define require_absolute_install_root
 endef
 
 define require_release_artifacts
-	@test -x "$(RELEASE_DIR)/hew" \
+	@test -x "$(RELEASE_HEW)" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -f "$(RELEASE_LIB_DIR)/libhew.a" \
-		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
+	@test -f "$(RELEASE_LIBHEW)" \
+		|| { echo "Error: $(notdir $(RELEASE_LIBHEW)) not built. Run 'make release' first."; exit 1; }
 	@test -f "$(WASM_RELEASE_DIR)/libhew_runtime.a" \
 		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }
 	@test -f "$(WASM_RELEASE_DIR)/libhew_std.a" \
@@ -1943,8 +1957,8 @@ install: require-host-cargo-target ## Develop: install the release toolchain und
 	install -d "$(DESTDIR)$(PREFIX)/include"
 	install -d "$(DESTDIR)$(PREFIX)/completions"
 	install -d "$(DESTDIR)$(PREFIX)/share/hew"
-	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
-	install -m 644 "$(RELEASE_LIB_DIR)/libhew.a"       "$(DESTDIR)$(PREFIX)/lib/libhew.a"
+	install -m 755 "$(RELEASE_HEW)"                    "$(DESTDIR)$(PREFIX)/bin/hew$(EXE_SUFFIX)"
+	install -m 644 "$(RELEASE_LIBHEW)"                 "$(DESTDIR)$(PREFIX)/lib/$(notdir $(RELEASE_LIBHEW))"
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
 			install -d "$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1"; \

@@ -22,7 +22,7 @@ xtask = "run --package xtask --"
 # WHEN obsolete: if every CI runner provisions mold unconditionally and
 # the project drops non-mold Linux workflows.
 
-# Windows uses the LLVM linker from the same provisioned LLVM 22 toolchain that
+# Windows uses the LLVM linker from the same provisioned LLVM toolchain that
 # supplies clang.exe for `hew build` and llvm-config for llvm-sys. Keep Cargo
 # pinned to lld-link, but still initialise the Visual Studio C++ Build Tools
 # environment before building: native dependencies need the MSVC/Windows SDK

@@ -29,17 +29,31 @@ foreach ($Required in 'HEW_WINDOWS_LLVM_CONFIG', 'HEW_WINDOWS_LLVM_PREFIX', 'HEW
 $LlvmConfig = $env:HEW_WINDOWS_LLVM_CONFIG
 $LlvmPrefix = $env:HEW_WINDOWS_LLVM_PREFIX
 
+# The candidate's llvm-version.env is the one LLVM pin; read the series the
+# staged build must use from it rather than restating a version here.
+$LlvmPin = @{}
+foreach ($Line in Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'llvm-version.env')) {
+    if ($Line -match '^([A-Z][A-Z0-9_]*)=(\S*)$') {
+        $LlvmPin[$Matches[1]] = $Matches[2]
+    }
+}
+$LlvmMajor = $LlvmPin['LLVM_MAJOR']
+$LlvmSeries = $LlvmPin['LLVM_SERIES']
+if ([string]::IsNullOrWhiteSpace($LlvmMajor) -or [string]::IsNullOrWhiteSpace($LlvmSeries)) {
+    throw 'llvm-version.env must define LLVM_MAJOR and LLVM_SERIES.'
+}
+
 if (-not (Test-Path $LlvmConfig)) {
-    throw "Missing $LlvmConfig. Bootstrap LLVM 22 at C:\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation."
+    throw "Missing $LlvmConfig. Bootstrap LLVM $LlvmMajor at C:\llvm-$LlvmMajor (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation."
 }
 $LlvmConfigExe = Join-Path $LlvmPrefix 'bin\llvm-config.exe'
 if (-not (Test-Path $LlvmConfigExe -PathType Leaf)) {
-    throw "Missing $LlvmConfigExe. HEW_WINDOWS_LLVM_PREFIX must name an LLVM 22 installation."
+    throw "Missing $LlvmConfigExe. HEW_WINDOWS_LLVM_PREFIX must name an LLVM $LlvmSeries installation."
 }
 $LlvmVersion = & $LlvmConfigExe --version
 Assert-NativeSuccess 'llvm-config.exe --version'
-if ([string]::IsNullOrWhiteSpace([string]$LlvmVersion) -or $LlvmVersion -notmatch '^22\.1\.0\s*$') {
-    throw "Expected release-toolchain LLVM 22.1.0 from $LlvmConfigExe, got: $LlvmVersion"
+if ([string]::IsNullOrWhiteSpace([string]$LlvmVersion) -or $LlvmVersion -notmatch ('^' + [regex]::Escape($LlvmSeries) + '\.\d+\s*$')) {
+    throw "Expected release-toolchain LLVM $LlvmSeries.x from $LlvmConfigExe, got: $LlvmVersion"
 }
 Write-Host "Using LLVM $LlvmVersion from $LlvmPrefix"
 
@@ -78,9 +92,10 @@ if ([string]::IsNullOrWhiteSpace($env:WindowsSdkDir) -or [string]::IsNullOrWhite
 Write-Host "Using Visual Studio developer environment: $VsDevCmd"
 
 $env:LLVM_PREFIX = $LlvmPrefix
-# llvm-sys 221 reads this versioned variable before falling back to PATH. Set
-# it explicitly so a stale host setting cannot redirect the staged build.
-$env:LLVM_SYS_221_PREFIX = $LlvmPrefix
+# llvm-sys reads LLVM_SYS_<series without dot>_PREFIX before falling back to
+# PATH. Set it explicitly so a stale host setting cannot redirect the staged
+# build.
+[Environment]::SetEnvironmentVariable("LLVM_SYS_$($LlvmSeries -replace '\.', '')_PREFIX", $LlvmPrefix, 'Process')
 $env:Path = "$LlvmPrefix\bin;" + $env:Path
 $env:CC = $env:HEW_WINDOWS_CC
 $env:CXX = $env:HEW_WINDOWS_CXX

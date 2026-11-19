@@ -8,6 +8,12 @@ use hew_mir::physical::{ParamCarrier, SemParamPassing};
 use hew_types::ResolvedTy;
 
 fn main() {
+    let llvm_major = include_str!("../llvm-version.env")
+        .lines()
+        .find_map(|line| line.strip_prefix("LLVM_MAJOR="))
+        .expect("LLVM major version in llvm-version.env");
+    println!("cargo:rustc-env=HEW_LLVM_MAJOR={llvm_major}");
+    println!("cargo:rerun-if-changed=../llvm-version.env");
     configure_linker_outputs();
     let build = std::thread::Builder::new()
         .name("hew-presentation-renderers".into())

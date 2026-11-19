@@ -15,8 +15,8 @@
 # Every publish job consumes the artefacts built earlier in the same run and
 # verifies a destination already holds identical content, so "Re-run failed
 # jobs" is the recovery path. The GitHub Release goes out on the signed tag;
-# every external destination waits on the one `release` environment, so a
-# single approval releases them all.
+# distro repositories accept the final tag through OIDC. One approval in the
+# `release` environment releases npm, GitHub Packages, GHCR and Homebrew.
 #
 # Triggers:
 #   push v* tag         build and publish.

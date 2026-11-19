@@ -3034,7 +3034,7 @@ Apache License 2.0
 
 ================================================================================
 Apache License 2.0
-  * inkwell 0.9.0 — https://github.com/TheDan64/inkwell
+  * inkwell 0.11.0 — https://github.com/TheDan64/inkwell
   * winapi 0.3.9 — https://github.com/retep998/winapi-rs
 
                                  Apache License
@@ -8651,7 +8651,7 @@ Apache License 2.0
   * half 2.7.1 — https://github.com/VoidStarKat/half-rs
   * ident_case 1.0.1 — https://github.com/TedDriggs/ident_case
   * indoc 2.0.7 — https://github.com/dtolnay/indoc
-  * inkwell_internals 0.14.0 — https://github.com/TheDan64/inkwell
+  * inkwell_internals 0.16.0 — https://github.com/TheDan64/inkwell
   * itoa 1.0.18 — https://github.com/dtolnay/itoa
   * jni-macros 0.22.4 — https://github.com/jni-rs/jni-rs
   * jni-sys-macros 0.4.1 — https://github.com/jni-rs/jni-sys
@@ -9399,7 +9399,7 @@ THE SOFTWARE.
 
 ================================================================================
 MIT License
-  * llvm-sys 221.1.0 — https://gitlab.com/taricorp/llvm-sys.rs
+  * llvm-sys 231.0.2 — https://gitlab.com/taricorp/llvm-sys.rs
 
 Copyright (c) 2015 Peter Marheine
 

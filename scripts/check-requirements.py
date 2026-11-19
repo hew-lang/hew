@@ -11,6 +11,8 @@ import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import llvm_version  # noqa: E402
 
 
 def main() -> int:
@@ -21,14 +23,16 @@ def main() -> int:
     shellcheck = re.search(r'^  SHELLCHECK_VERSION: "([^"]+)"$', workflow, re.M).group(
         1
     )
-    llvm_prefix = os.environ.get("LLVM_SYS_221_PREFIX")
+    pin = llvm_version.load()
+    major, series = pin["LLVM_MAJOR"], pin["LLVM_SERIES"]
+    llvm_prefix = os.environ.get(pin["LLVM_SYS_PREFIX_VAR"])
     llvm = (
         str(Path(llvm_prefix) / "bin/llvm-config")
         if llvm_prefix
-        else (shutil.which("llvm-config-22") or "llvm-config")
+        else (shutil.which(f"llvm-config-{major}") or "llvm-config")
     )
     # Only tools with a project version requirement constrain the output.
-    # LLVM patch releases share the supported 22.1 API.
+    # LLVM patch releases share the supported series API.
     commands = [
         (
             f"Rust (requires {rust})",
@@ -40,7 +44,11 @@ def main() -> int:
             ["cargo", "--version"],
             rf"^cargo {re.escape(rust)}\b",
         ),
-        ("LLVM (requires 22.1.x)", [llvm, "--version"], r"^22\.1\."),
+        (
+            f"LLVM (requires {series}.x)",
+            [llvm, "--version"],
+            rf"^{re.escape(series)}\.",
+        ),
         ("GNU Make", ["make", "--version"], r"^GNU Make "),
         ("Git", ["git", "--version"], None),
         ("Bash", ["bash", "--version"], None),

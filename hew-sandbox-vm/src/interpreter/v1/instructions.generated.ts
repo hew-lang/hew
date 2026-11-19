@@ -861,6 +861,7 @@ export type RuntimeCallFamily =
   | "StructuralFormat"
   | "StringFind"
   | "StringIndex"
+  | "StringCursorStep"
   | "StringLen"
   | "StringRepeat"
   | "StringReplace"

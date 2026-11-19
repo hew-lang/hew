@@ -48,5 +48,16 @@ fn main() -> i64 {
         println(c);
     }
     println(owned);
+    var replaced = "é中🙂";
+    for c in replaced {
+        replaced = "new";
+        println(c);
+    }
+    println(replaced);
+    var iter = "Aé中🙂".iter();
+    iter.front = 1;
+    iter.back = 3;
+    println(iter.next_back() ?? 'X');
+    println(iter.next() ?? 'X');
     0
 }

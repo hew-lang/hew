@@ -212,11 +212,68 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// `for c in s` over `string` and `for b in raw` over `bytes`.
-    ///
-    /// Both lower to `for __i in 0..seq.len() { let c = seq[__i]; body }` over
-    /// a single-evaluation binding of the sequence. `string` indexes
-    /// codepoints and `bytes` indexes bytes, matching `s[i]` exactly.
+    /// Advance the private byte offset before user code, including a labelled
+    /// continue or a suspension. The captured string and its scalar count stay
+    /// fixed for the entire loop.
+    fn string_loop_step(
+        &mut self,
+        container: HirExpr,
+        cursor: &HirBinding,
+        element: HirBinding,
+        span: &Span,
+    ) -> [HirStmt; 2] {
+        let ty = ResolvedTy::Tuple(vec![ResolvedTy::Char, ResolvedTy::I64]);
+        let offset = self.synthetic_binding_ref(&cursor.name, cursor.id, ResolvedTy::I64, span);
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::StringCursorStep,
+            vec![container, offset],
+            &ty,
+            span,
+        );
+        let step = self.make_expr(kind, ty, IntentKind::Read, span.clone());
+        let next_name = format!("__hew_for_next_byte_{}", cursor.id.0);
+        let next = self.bind(next_name, ResolvedTy::I64, false, span.clone());
+        let next_byte = self.synthetic_binding_ref(&next.name, next.id, ResolvedTy::I64, span);
+        let destructure = HirStmt {
+            node: self.ids.node(),
+            span: span.clone(),
+            kind: HirStmtKind::Destructure {
+                value: step,
+                fields: vec![
+                    HirDestructureField {
+                        selector: HirDestructureSelector::Tuple(0),
+                        binding: Some(element),
+                        nested: false,
+                    },
+                    HirDestructureField {
+                        selector: HirDestructureSelector::Tuple(1),
+                        binding: Some(next),
+                        nested: false,
+                    },
+                ],
+            },
+        };
+        let target = self.make_binding_ref(
+            cursor.name.clone(),
+            cursor.id,
+            ResolvedTy::I64,
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let advance = HirStmt {
+            node: self.ids.node(),
+            span: span.clone(),
+            kind: HirStmtKind::Assign {
+                target,
+                value: Box::new(next_byte),
+                first_store: false,
+            },
+        };
+        [destructure, advance]
+    }
+
+    /// Bind a sequence once and walk its elements. A string advances a private
+    /// UTF-8 byte cursor; fixed-width sequences use the range index directly.
     #[expect(
         clippy::too_many_lines,
         clippy::too_many_arguments,
@@ -299,6 +356,20 @@ impl LowerCtx<'_> {
         let index_id = index_binding.id;
         let start = self.make_i64_literal(0, iterable_span.clone());
 
+        let byte_cursor = (sequence_ty == ResolvedTy::String).then(|| {
+            let name = format!("__hew_for_byte_{}", index_id.0);
+            let cursor = self.bind(name, ResolvedTy::I64, true, iterable_span.clone());
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(
+                    cursor.clone(),
+                    Some(self.make_i64_literal(0, iterable_span.clone())),
+                ),
+                span: iterable_span.clone(),
+            });
+            cursor
+        });
+
         self.push_scope();
         let element_binding = if checked_binding {
             self.bind_checked(
@@ -326,32 +397,37 @@ impl LowerCtx<'_> {
             (None, Some(place)) => self.lower_expr(place, IntentKind::Read),
             (None, None) => unreachable!("a sequence walk has a temp or a place source"),
         };
-        let index = self.make_binding_ref(
-            index_name,
-            index_id,
-            ResolvedTy::I64,
-            IntentKind::Read,
-            iterable_span.clone(),
-        );
-        let read = if borrowed {
-            HirExprKind::BorrowedIndex {
-                container: Box::new(container),
-                index: Box::new(index),
-            }
-        } else {
-            HirExprKind::Index {
-                container: Box::new(container),
-                index: Box::new(index),
-            }
-        };
-        let element = self.make_expr(read, element_ty, IntentKind::Read, pattern_span.clone());
-        let element_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(element_binding, Some(element)),
-            span: pattern_span.clone(),
-        };
         let mut loop_body = self.lower_block(body, &ResolvedTy::Unit);
-        loop_body.statements.insert(0, element_stmt);
+        if let Some(cursor) = byte_cursor {
+            let step = self.string_loop_step(container, &cursor, element_binding, pattern_span);
+            loop_body.statements.splice(0..0, step);
+        } else {
+            let index = self.make_binding_ref(
+                index_name,
+                index_id,
+                ResolvedTy::I64,
+                IntentKind::Read,
+                iterable_span.clone(),
+            );
+            let read = if borrowed {
+                HirExprKind::BorrowedIndex {
+                    container: Box::new(container),
+                    index: Box::new(index),
+                }
+            } else {
+                HirExprKind::Index {
+                    container: Box::new(container),
+                    index: Box::new(index),
+                }
+            };
+            let element = self.make_expr(read, element_ty, IntentKind::Read, pattern_span.clone());
+            let element_stmt = HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(element_binding, Some(element)),
+                span: pattern_span.clone(),
+            };
+            loop_body.statements.insert(0, element_stmt);
+        }
         self.pop_scope();
 
         let range = self.make_range_value(start, length, false, iterable_span.clone());
@@ -432,10 +508,7 @@ impl LowerCtx<'_> {
             };
         }
 
-        // `for c in s` / `for b in raw` are index walks, not cursors: the
-        // element is a scalar copy, so there is no iterator object to own and
-        // no clone recipe to prove. The sequence is bound once so a
-        // side-effectful source runs once and the length is read once.
+        // Strings and bytes yield scalar copies from a single captured snapshot.
         if matches!(lowered_iterable.ty, ResolvedTy::String | ResolvedTy::Bytes) {
             let element_ty = if lowered_iterable.ty == ResolvedTy::String {
                 ResolvedTy::Char

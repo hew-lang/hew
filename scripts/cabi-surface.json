@@ -19955,6 +19955,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_string_cursor_step( *const HewString, i64, ) -> HewStringCursorStep",
+        "wasm32-wasip1": "fn hew_string_cursor_step( *const HewString, i64, ) -> HewStringCursorStep"
+      },
+      "symbol": "hew_string_cursor_step"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_string_drop( *mut HewString)",
         "wasm32-wasip1": "fn hew_string_drop( *mut HewString)"
       },

@@ -5454,6 +5454,16 @@
               "type": "null"
             },
             "family": {
+              "const": "StringCursorStep"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "StringLen"
             }
           }

@@ -544,6 +544,14 @@ const UNIT_FAMILIES = {
     str(text(args, 0).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "")),
   StringLen: (_host, args) => int(BigInt(indexed(args, 0).scalarLength)),
   StringByteLen: (_host, args) => int(BigInt(indexed(args, 0).byteLength)),
+  StringCursorStep: (_host, args) => {
+    const [scalar, next] = indexed(args, 0).cursorStep(index(args, 1));
+    return {
+      kind: "record",
+      typeId: "",
+      fields: [str(scalar), int(BigInt(next))],
+    };
+  },
   StringIndex: (_host, args) => {
     const value = indexed(args, 0);
     const at = index(args, 1);

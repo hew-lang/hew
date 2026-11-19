@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "A\né\n中\n🙂\nnul\n3\n294\n3\n2\n2\nH\nO\nL\nD\nHOLD\n"
+stdout = "A\né\n中\n🙂\nnul\n3\n294\n3\n2\n2\nH\nO\nL\nD\nHOLD\né\n中\n🙂\nnew\n中\né\n"
 exit = 0

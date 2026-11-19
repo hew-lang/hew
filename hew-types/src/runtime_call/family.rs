@@ -349,6 +349,7 @@ pub enum RuntimeCallFamily {
     StructuralFormat,
     StringFind,
     StringIndex,
+    StringCursorStep,
     StringLen,
     /// `s.repeat(n)` - a fresh string of `n` concatenated copies.
     StringRepeat,

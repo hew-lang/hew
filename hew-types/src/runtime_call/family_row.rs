@@ -6601,6 +6601,28 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StringCursorStep => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_string_cursor_step",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Tuple(&[K::Char, K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StringIndex => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_string_index",

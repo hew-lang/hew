@@ -128,15 +128,21 @@ impl ByteChannel<'_> {
 
 /// Whether a read on `fd` would not wait. Reads nothing.
 #[cfg(unix)]
-fn fd_readable(fd: std::os::fd::RawFd) -> bool {
+pub(crate) fn fd_readable(fd: std::os::fd::RawFd) -> bool {
     let mut poll = libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: one live descriptor in a local array, no wait.
-    let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
-    ready != 0
+    loop {
+        // SAFETY: one live descriptor in a local array, no wait.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+        if ready >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            // A poll failure supplies no readiness evidence. Descriptor errors
+            // and hangups still count through the positive result.
+            return ready > 0;
+        }
+    }
 }
 
 /// Whether an accept on `listener` would not wait. Accepts nothing.

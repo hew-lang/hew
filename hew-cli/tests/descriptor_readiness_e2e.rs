@@ -60,9 +60,20 @@ fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<St
     let mut seen = Vec::new();
     for (prefix, input) in steps {
         loop {
-            let line = lines
-                .recv_timeout(LINE_TIMEOUT)
-                .unwrap_or_else(|error| panic!("O{opt_level}: no {prefix} line: {error} {seen:?}"));
+            let line = match lines.recv_timeout(LINE_TIMEOUT) {
+                Ok(line) => line,
+                Err(error) => {
+                    let _ = child.kill();
+                    drop(stdin);
+                    let output = child.wait_with_output().expect("wait for fixture");
+                    reader.join().expect("join stdout reader");
+                    panic!(
+                        "O{opt_level}: no {prefix} line: {error} {seen:?}, {}\n{}",
+                        output.status,
+                        describe_output(&output)
+                    );
+                }
+            };
             seen.push(line.clone());
             if line.starts_with(prefix) {
                 break;
@@ -157,6 +168,110 @@ fn main() {
             "O{opt_level}"
         );
     }
+}
+
+/// A failed probe leaves an empty pipe idle. Restoring the descriptor limit
+/// lets the watch resume normally when the parent writes to the pipe.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_failed_readiness_probe_does_not_wake_a_descriptor_watch() {
+    require_codegen();
+    let dir = support::tempdir();
+    let limits = dir.path().join("limits.c");
+    let object = dir.path().join("limits.o");
+    std::fs::write(
+        &limits,
+        r"
+#include <errno.h>
+#include <poll.h>
+#include <sys/resource.h>
+
+static struct rlimit saved;
+
+int break_probe(void) {
+    if (getrlimit(RLIMIT_NOFILE, &saved) != 0) return 0;
+    struct rlimit reduced = {0, saved.rlim_max};
+    if (setrlimit(RLIMIT_NOFILE, &reduced) != 0) return 0;
+    struct pollfd probe = {0, POLLIN, 0};
+    return poll(&probe, 1, 0) == -1 && errno == EINVAL;
+}
+
+int restore_probe(void) {
+    return setrlimit(RLIMIT_NOFILE, &saved);
+}
+",
+    )
+    .unwrap();
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let output = Command::new(compiler)
+        .args(["-c"])
+        .arg(&limits)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", describe_output(&output));
+
+    let source = dir.path().join("failed_probe.hew");
+    std::fs::write(
+        &source,
+        r#"
+import std.io;
+
+extern "C" {
+    fn break_probe() -> i32;
+    fn restore_probe() -> i32;
+}
+
+fn main() {
+    let watch = io.watch_readable(0).expect("watch standard input");
+    // Start the reactor before reducing the descriptor limit in this process.
+    sleep(1ms);
+    assert(unsafe { break_probe() } == 1);
+    let idle = watch.try_recv().is_none();
+    let restore_before_arming = RESTORE_BEFORE_ARMING;
+    if restore_before_arming {
+        assert(unsafe { restore_probe() } == 0);
+    }
+    let timed_out = select {
+        ready from watch.recv() => false,
+        after 20ms => true,
+    };
+    if !restore_before_arming {
+        assert(unsafe { restore_probe() } == 0);
+    }
+    println(f"WAIT:{idle} {timed_out}");
+    let woke = scope within 5s { watch.recv().is_some() } handle failure { false };
+    println(f"WOKE:{woke}");
+    println(f"LINE:{io.read_line().expect("read original input") ?? "missing"}");
+    watch.close();
+}
+"#
+        .replace(
+            "RESTORE_BEFORE_ARMING",
+            // On macOS, the zero limit also stops kqueue registering the
+            // descriptor. Linux can still arm its epoll wait.
+            if cfg!(target_os = "macos") {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+    )
+    .unwrap();
+    let binary = dir.path().join("failed_probe");
+    let output = Command::new(hew_binary())
+        .args(["build", "--opt-level", "2", "--link-lib"])
+        .arg(&object)
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", describe_output(&output));
+    let seen = run_scripted(&binary, &[("WAIT:", b"still here\n")], 2);
+    assert_eq!(seen, ["WAIT:true true", "WOKE:true", "LINE:still here"]);
 }
 
 /// The program closes a watched descriptor before its watch, and a socket the

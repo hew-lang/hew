@@ -102,13 +102,7 @@ impl ExitWatch {
     /// Whether the child has exited. Never waits.
     #[cfg(target_os = "linux")]
     pub(crate) fn exited(&self) -> bool {
-        let mut poll = libc::pollfd {
-            fd: self.fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one live descriptor in a local array, no wait.
-        unsafe { libc::poll(&raw mut poll, 1, 0) != 0 }
+        crate::reactor::fd_readable(self.fd())
     }
 
     /// Whether the child has exited. Never waits.

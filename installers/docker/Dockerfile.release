@@ -32,6 +32,10 @@ RUN apt-get update \
 
 COPY --from=tarball bin/hew /usr/local/bin/
 COPY --from=tarball lib/libhew.a /usr/local/lib/libhew.a
+# The shared runtime for `hew build --link=dynamic` (libhew.so.<version>);
+# ldconfig adds it to the loader cache, so programs need no run path for it.
+COPY --from=tarball lib/libhew.so.* /usr/local/lib/
+RUN ldconfig
 COPY --from=tarball std/ /usr/local/share/hew/std/
 COPY --from=tarball include/ /usr/local/include/
 COPY --from=tarball share/ /usr/local/share/

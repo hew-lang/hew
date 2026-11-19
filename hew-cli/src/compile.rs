@@ -59,6 +59,8 @@ pub struct CompileOptions {
     /// [`hew_compile::FrontendOptions::lint_levels`]. Defaults to every lint's
     /// built-in level.
     pub lint_levels: hew_types::LintLevels,
+    /// How a native build links the Hew runtime (`--link`, `--rpath`).
+    pub link: crate::link::LinkOptions,
 }
 
 /// The source path a program's debug info names: absolute, so the compile

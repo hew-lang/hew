@@ -62,6 +62,7 @@ mod source_paths;
 mod symbolize;
 mod target;
 mod test_runner;
+mod toolchain_hint;
 mod util;
 mod wasi_runner;
 mod watch;
@@ -554,11 +555,19 @@ fn link_native_object_with_hew_lib_and_extra(
         eprintln!("Error: output path is not valid UTF-8");
         DiagChannel::User
     })?;
-    crate::link::link_executable_with_hew_lib(obj_str, bin_str, &target, extra_libs, false, hew_lib)
-        .map_err(|e| {
-            crate::diagnostic::emit_plain_diagnostic_line(&e);
-            DiagChannel::User
-        })
+    crate::link::link_executable_with_hew_lib(
+        obj_str,
+        bin_str,
+        &target,
+        extra_libs,
+        false,
+        hew_lib,
+        &crate::link::LinkOptions::default(),
+    )
+    .map_err(|e| {
+        crate::diagnostic::emit_plain_diagnostic_line(&e);
+        DiagChannel::User
+    })
 }
 
 pub(crate) fn compile_native_binary(
@@ -854,6 +863,7 @@ fn link_native_object_for_target_with_hew_lib(
     debug: bool,
     extra_libs: &[String],
     hew_lib: Option<&Path>,
+    link: &crate::link::LinkOptions,
 ) -> Result<(), DiagChannel> {
     let obj_str = obj.to_str().ok_or_else(|| {
         eprintln!("Error: object path is not valid UTF-8");
@@ -863,11 +873,13 @@ fn link_native_object_for_target_with_hew_lib(
         eprintln!("Error: output path is not valid UTF-8");
         DiagChannel::User
     })?;
-    crate::link::link_executable_with_hew_lib(obj_str, bin_str, target, extra_libs, debug, hew_lib)
-        .map_err(|e| {
-            crate::diagnostic::emit_plain_diagnostic_line(&e);
-            DiagChannel::User
-        })
+    crate::link::link_executable_with_hew_lib(
+        obj_str, bin_str, target, extra_libs, debug, hew_lib, link,
+    )
+    .map_err(|e| {
+        crate::diagnostic::emit_plain_diagnostic_line(&e);
+        DiagChannel::User
+    })
 }
 
 /// Produce the `.wasm` module `output_path` names from an emitted wasm object.
@@ -1009,6 +1021,7 @@ fn compile_build_binary_with_hew_lib(
         debug,
         &native.libraries(extra_libs),
         hew_lib,
+        &options.link,
     )?;
     remove_intermediate_object(object)?;
     measure_compile_phase("total", wall_started.elapsed());
@@ -1140,6 +1153,20 @@ fn cmd_build(a: &args::BuildArgs) {
     }
 }
 
+/// `--link` and `--rpath` describe the native link, which `--emit-obj` skips;
+/// refuse rather than silently ignore them, and refuse a target without a
+/// shared runtime before anything compiles.
+fn validate_build_link(
+    a: &args::BuildArgs,
+    target: &target::TargetSpec,
+    link: &link::LinkOptions,
+) -> Result<(), String> {
+    if a.emit_obj && (link.runtime != link::RuntimeLink::Static || link.rpath.is_some()) {
+        return Err("Error: --link and --rpath apply to linked programs, not --emit-obj".into());
+    }
+    link::validate_link_options(target, link)
+}
+
 /// Body of `hew build`. Returns the process exit code; MUST NOT call
 /// `std::process::exit` (bypasses the [`JsonDiagnosticFlush`] guard).
 fn cmd_build_run(a: &args::BuildArgs) -> i32 {
@@ -1177,6 +1204,11 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     }
 
     let options = a.to_compile_options();
+
+    if let Err(error) = validate_build_link(a, &target, &options.link) {
+        eprintln!("{error}");
+        return 2;
+    }
 
     // The clap `value_parser` already constrains `--opt-level` to {"0","2"}, so
     // `from_cli_str` cannot return `None` here; fail closed regardless rather than
@@ -1418,6 +1450,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
             false,
             &native.libraries(&[]),
             None,
+            &crate::link::LinkOptions::default(),
         ) {
             return channel.exit_code();
         }
@@ -1733,6 +1766,10 @@ fn cmd_run(a: &args::RunArgs) {
             "Error: --link-lib is not supported for WASI targets \
              (native archives cannot be linked into a wasm module)"
         );
+        std::process::exit(2);
+    }
+    if let Err(error) = link::validate_link_options(target.spec(), &options.link) {
+        eprintln!("{error}");
         std::process::exit(2);
     }
 

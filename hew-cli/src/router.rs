@@ -522,6 +522,7 @@ mod tests {
             split_debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),
+            linking: crate::args::LinkArgs::default(),
             emit_deps: None,
             common: crate::args::CommonBuildArgs::default(),
             format: crate::args::DiagnosticFormat::Text,

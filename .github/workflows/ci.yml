@@ -449,9 +449,14 @@ jobs:
           python-version: "3.12"
       - name: Install MQTT clients
         if: matrix.shard == 2
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mosquitto-clients
+          apt=(sudo apt-get -o Acquire::Retries=1 -o DPkg::Lock::Timeout=30
+               -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
+          if ! "${apt[@]}" install -y --no-install-recommends mosquitto-clients; then
+            "${apt[@]}" update
+            "${apt[@]}" install -y --no-install-recommends mosquitto-clients
+          fi
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:

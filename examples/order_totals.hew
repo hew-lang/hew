@@ -1,0 +1,90 @@
+//! Status: runnable
+//! Description: Summarize a JSON order and report invalid input
+
+import std.encoding.json;
+import std.fs;
+import std.io;
+import std.os;
+
+pub type Totals {
+    units: i64;
+    cents: i64;
+}
+
+fn required_field(value: json.Value, name: string) -> json.Value fails string {
+    let optional = value.get_field(name) handle error {
+        return error f"reading {name}: {error}";
+    };
+    let field = optional else {
+        return error f"missing {name}";
+    };
+    field
+}
+
+fn read_count(item: json.Value, name: string) -> i64 fails string {
+    let field = required_field(item, name)?;
+    let count = field.get_int() handle error {
+        return error f"{name}: {error}";
+    };
+    if count < 0 {
+        return error f"{name} must be non-negative";
+    }
+    count
+}
+
+fn summarize(document: json.Value) -> Totals fails string {
+    let items = required_field(document, "items")?;
+    let count = items.array_len() handle error {
+        return error f"items: {error}";
+    };
+    var totals = Totals { units: 0, cents: 0 };
+    for index in 0..count {
+        let entry = items.array_get(index) handle error {
+            return error f"item {index + 1}: {error}";
+        };
+        let item = entry.expect("index came from the array length");
+        let units = read_count(item, "units") handle error {
+            return error f"item {index + 1}: {error}";
+        };
+        let cents = read_count(item, "unit_cents") handle error {
+            return error f"item {index + 1}: {error}";
+        };
+        let line_cents = units.checked_mul(cents) else {
+            return error f"item {index + 1}: line total is too large";
+        };
+        let next_units = totals.units.checked_add(units) else {
+            return error "order contains too many units";
+        };
+        let next_cents = totals.cents.checked_add(line_cents) else {
+            return error "order total is too large";
+        };
+        totals = Totals { units: next_units, cents: next_cents };
+    }
+    totals
+}
+
+pub fn read_order(path: string) -> Totals fails string {
+    let input = fs.read(path) handle error {
+        return error f"{path}: {error}";
+    };
+    let document = json.parse(input) handle error {
+        return error f"{path}: {error}";
+    };
+    summarize(document) handle error {
+        return error f"{path}: {error}";
+    }
+}
+
+fn main() -> i32 {
+    let arguments = os.args();
+    let path = arguments.get(1) else {
+        io.write_err("usage: order_totals ORDER.json\n").expect("standard error");
+        return 2;
+    };
+    let totals = read_order(path) handle error {
+        io.write_err(f"order_totals: {error}\n").expect("standard error");
+        return 1;
+    };
+    println(f"{totals.units} units, {totals.cents} cents");
+    0
+}

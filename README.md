@@ -320,7 +320,7 @@ Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 | Dependency     | Version                                                  | Purpose                                              |
 | -------------- | -------------------------------------------------------- | ---------------------------------------------------- |
 | Rust and Cargo | `rust-toolchain.toml` pin (including Clippy and rustfmt) | Compiler, runtime and package manager                |
-| LLVM           | 22.1.x                                                   | Native/WASM object emission through inkwell/llvm-sys |
+| LLVM           | `LLVM_SERIES` in [`llvm-version.env`](llvm-version.env)  | Native/WASM object emission through inkwell/llvm-sys |
 | C compiler     | GCC or Clang; MSVC environment on Windows                | Native linking and C header checks                   |
 | GNU Make       | GNU implementation                                       | Build and test entry points                          |
 | Python         | 3.12+                                                    | Makefile gates and repository scripts                |
@@ -332,14 +332,14 @@ Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# LLVM 22 development libraries
+# LLVM development libraries (LLVM_MAJOR in llvm-version.env; 23 shown)
 sudo mkdir -p /etc/apt/keyrings
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
   | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
+echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
-sudo apt-get install -y llvm-22-dev clang-22 make gcc git python3
+sudo apt-get install -y llvm-23-dev libpolly-23-dev clang-23 lld-23 make gcc git python3
 ```
 
 **Install on macOS:**
@@ -348,8 +348,10 @@ sudo apt-get install -y llvm-22-dev clang-22 make gcc git python3
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# LLVM 22 development libraries
-brew install llvm
+# LLVM development libraries (LLVM_MAJOR in llvm-version.env; 23 shown).
+# The formula is keg-only: put it first on PATH so llvm-sys finds it.
+brew install llvm@23 lld@23
+export PATH="$(brew --prefix llvm@23)/bin:$(brew --prefix lld@23)/bin:$PATH"
 
 # Repository scripts and Makefile gates
 brew install python@3.12
@@ -369,6 +371,9 @@ Plain `make` (or `make all`) builds the native compiler and its linkable
 `libhew` archive with the optimized `release-lib` profile, staged with the
 standard library in `build/`. Add `build/bin` to your `PATH` to use it.
 `make help` lists the available targets.
+
+For FreeBSD, Windows and other LLVM installs, see the
+[cross-platform build guide](docs/cross-platform-build-guide.md).
 
 Use `make hew-debug` for a debug compiler. `make assemble` additionally builds
 debug support binaries, WASI and supported native cross-architecture archives. On Linux,

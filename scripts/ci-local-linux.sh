@@ -17,7 +17,9 @@
 #   CI_LINUX_HOST       ssh target of a native x86_64 Linux box (required)
 #   HEW_CI_REMOTE_REL   home-relative path of the hew clone on the host
 #                       (default: projects/hew-lang/hew)
-#   HEW_CI_LLVM_PREFIX  LLVM_SYS_221_PREFIX on the host (default: /usr/lib/llvm-22).
+#   HEW_CI_LLVM_PREFIX  LLVM prefix on the host, exported as llvm-sys's
+#                       LLVM_SYS_<ver>_PREFIX (default: /usr/lib/llvm-<major>,
+#                       the apt.llvm.org layout for llvm-version.env's major).
 #                       Point at an unpacked copy of CI's upstream LLVM tarball
 #                       for byte-faithful parity (a host's system lld/LLVM can
 #                       diverge from CI on fixture linking).
@@ -30,7 +32,12 @@ set -euo pipefail
 STEP="${1:-${STEP:-preflight}}"
 HOST="${CI_LINUX_HOST:-}"
 REMOTE_REL="${HEW_CI_REMOTE_REL:-projects/hew-lang/hew}"
-LLVM_PREFIX="${HEW_CI_LLVM_PREFIX:-/usr/lib/llvm-22}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# llvm-version.env is plain KEY=value lines; nothing to follow.
+# shellcheck source=/dev/null
+. "${ROOT}/llvm-version.env"
+LLVM_SYS_PREFIX_VAR="LLVM_SYS_${LLVM_SERIES//./}_PREFIX"
+LLVM_PREFIX="${HEW_CI_LLVM_PREFIX:-/usr/lib/llvm-${LLVM_MAJOR}}"
 
 if [[ -z "${HOST}" ]]; then
     echo "error: set CI_LINUX_HOST=<user@host> (a native x86_64 Linux box)" >&2
@@ -58,7 +65,6 @@ for relative in "$REMOTE_REL" "$WT_REL"; do
     esac
 done
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
 SHA="$(git -C "${ROOT}" rev-parse HEAD)"
 REF="refs/hew-ci/${SHA}"
@@ -68,23 +74,23 @@ echo "==> Syncing ${BRANCH} (${SHA}) → ${HOST}:${REMOTE_REL}"
 # commit's run. Use the captured SHA even if HEAD changes during the push.
 git -C "${ROOT}" push "${HOST}:${REMOTE_REL}" "${SHA}:${REF}"
 
-echo "==> Running '${TARGET}' on ${HOST} (LLVM_SYS_221_PREFIX=${LLVM_PREFIX})"
+echo "==> Running '${TARGET}' on ${HOST} (${LLVM_SYS_PREFIX_VAR}=${LLVM_PREFIX})"
 # SSH joins command arguments through the remote shell: preserve spaces and
 # metacharacters before passing the quoted heredoc's arguments to Bash.
-printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q %q' \
-    "$TARGET" "$SHA" "$WT_REL" "$REMOTE_REL" "$LLVM_PREFIX"
+printf -v REMOTE_COMMAND 'bash -s -- %q %q %q %q %q %q' \
+    "$TARGET" "$SHA" "$WT_REL" "$REMOTE_REL" "$LLVM_PREFIX" "$LLVM_SYS_PREFIX_VAR"
 # Arguments were shell-escaped above; this expansion is the SSH command.
 # shellcheck disable=SC2029
 ssh "${HOST}" "$REMOTE_COMMAND" <<'REMOTE'
 set -euo pipefail
-TARGET="$1"; SHA="$2"; WT_PARENT="$HOME/$3"; REMOTE_REL="$4"; LLVM_PREFIX="$5"
+TARGET="$1"; SHA="$2"; WT_PARENT="$HOME/$3"; REMOTE_REL="$4"; LLVM_PREFIX="$5"; LLVM_SYS_PREFIX_VAR="$6"
 cd "$HOME/$REMOTE_REL"
 mkdir -p "$WT_PARENT"
 WT="$(mktemp -d "$WT_PARENT/run.XXXXXXXX")"
 echo "==> Retained CI worktree: $WT (commit $SHA)"
 git worktree add --detach "$WT" "$SHA" >/dev/null
 cd "$WT"
-export LLVM_SYS_221_PREFIX="$LLVM_PREFIX"
+export "${LLVM_SYS_PREFIX_VAR}=${LLVM_PREFIX}"
 export CARGO_TERM_COLOR=always
 # Non-login SSH shells do not inherit the installer-managed Wasmtime path.
 # Prefer an already-provisioned per-user install before declaring the WASI

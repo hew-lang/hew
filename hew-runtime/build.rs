@@ -8,13 +8,13 @@ fn main() {
     if std::env::var_os("CARGO_CFG_SANITIZE").is_some() {
         println!("cargo:rustc-cfg=hew_sanitized");
     }
-    println!("cargo:rerun-if-env-changed=LLVM_SYS_221_PREFIX");
+    println!("cargo:rerun-if-env-changed=LLVM_SYS_231_PREFIX");
     println!("cargo:rerun-if-changed=src/coro_llvm.cpp");
     // The coroutine builtins lower the indirect calls with LLVM's calling
     // convention. Prefer the compiler's configured LLVM installation.
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|target| target == "msvc");
     let compiler = if msvc { "clang-cl" } else { "clang" };
-    let clang = std::env::var_os("LLVM_SYS_221_PREFIX").map_or_else(
+    let clang = std::env::var_os("LLVM_SYS_231_PREFIX").map_or_else(
         || std::path::PathBuf::from(compiler),
         |prefix| std::path::PathBuf::from(prefix).join("bin").join(compiler),
     );

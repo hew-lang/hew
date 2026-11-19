@@ -63,10 +63,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
-env:
-  LLVM_VERSION: "22"
-  LLVM_FULL_VERSION: "22.1.5"
-
 jobs:
   validate:
     name: Validate release identity and dependencies
@@ -338,6 +334,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/llvm-version
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
@@ -365,9 +362,9 @@ jobs:
       - name: Install LLVM (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} ninja zstd
+          brew install llvm@${{ env.LLVM_MAJOR }} ninja zstd
           # Expose the brew LLVM prefix and binaries for later steps
-          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_MAJOR }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
@@ -410,7 +407,7 @@ jobs:
         run: |
           $toolchainRepo = "hew-lang/llvm-toolchain"
           # One floating release per LLVM series holds the latest <series>.x.
-          $series        = ($env:LLVM_FULL_VERSION -split '\.')[0..1] -join '.'
+          $series        = $env:LLVM_SERIES
           $toolchainTag  = "toolchain/llvm-$series-windows-msvc"
           $asset         = "hew-llvm-$series-windows-msvc.tar.gz"
           "TOOLCHAIN_ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
@@ -467,7 +464,7 @@ jobs:
         shell: pwsh
         run: |
           $asset  = $env:TOOLCHAIN_ASSET
-          $prefix = "C:\llvm-$env:LLVM_VERSION"
+          $prefix = "C:\llvm-$env:LLVM_MAJOR"
           # Archive root is llvm-<major>/; extracting to C:\ gives $prefix.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"
@@ -488,8 +485,8 @@ jobs:
       - name: Configure LLVM toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
-          echo "LLVM_PREFIX=C:\llvm-$env:LLVM_VERSION" >> $env:GITHUB_ENV
-          echo "C:\llvm-$env:LLVM_VERSION\bin" >> $env:GITHUB_PATH
+          echo "LLVM_PREFIX=C:\llvm-$env:LLVM_MAJOR" >> $env:GITHUB_ENV
+          echo "C:\llvm-$env:LLVM_MAJOR\bin" >> $env:GITHUB_PATH
           echo "CC=cl" >> $env:GITHUB_ENV
           echo "CXX=cl" >> $env:GITHUB_ENV
         shell: pwsh
@@ -878,15 +875,13 @@ jobs:
         # binary reports `unknown` for its commit hash.
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
+      - name: Install LLVM
         # Official upstream tarball via the pinned setup-llvm action — the
         # same toolchain the release gate proved. The apt.llvm.org packages
         # do not ship libPolly.a, which llvm-sys links statically. The
         # official binaries run on the ubuntu:22.04 (glibc 2.35) build
         # container, preserving the 22.04+ artifact baseline.
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
@@ -1010,6 +1005,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/llvm-version
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
@@ -1048,7 +1044,7 @@ jobs:
             # read the catalogue the old one wrote, so every package reports missing.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2
+            pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -1067,9 +1063,9 @@ jobs:
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
 
             # ── LLVM ───────────────────────────────────────────────────────
-            # LLVM 22 comes from pkg on FreeBSD 15.1 (latest branch).
-            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
-            /usr/local/llvm22/bin/llvm-config --version
+            # LLVM comes from pkg (llvm<major>) on FreeBSD 15.1 (latest branch).
+            export ${{ env.LLVM_SYS_PREFIX_VAR }}=/usr/local/llvm${{ env.LLVM_MAJOR }}
+            /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
             # The split debug asset is keyed by the GNU build-id.
@@ -1106,7 +1102,7 @@ jobs:
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
             tar czf "${ARCHIVE_NAME}-debug.tar.gz" "${ARCHIVE_NAME}-debug"
 
-            export PATH="/usr/local/llvm22/bin:$PATH"
+            export PATH="/usr/local/llvm${{ env.LLVM_MAJOR }}/bin:$PATH"
             gmake test-packaged-sdk PYTHON=python3.12 PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz"
 
       - name: Upload packaged SDK acceptance

@@ -80,7 +80,7 @@ HOME="$REMOTE_HOME" exec bash -c "$1"
         self.wrapper(
             "make",
             """
-printf 'make %s %s %s\\n' "$PWD" "$1" "$LLVM_SYS_221_PREFIX" >> "$CALL_LOG"
+printf 'make %s %s %s\\n' "$PWD" "$1" "$LLVM_SYS_231_PREFIX" >> "$CALL_LOG"
 test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
 exit "${MAKE_STATUS:-0}"
 """,

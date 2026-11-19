@@ -13,8 +13,7 @@
 //! them to the configured endpoint as OTLP/HTTP JSON
 //! (`application/json` body, `/v1/traces` path).
 //!
-//! No `tokio` or other async runtime is required — `ureq` provides a
-//! synchronous HTTP client.
+//! The exporter reuses a blocking HTTP client on its background thread.
 //!
 //! # Environment variables
 //!
@@ -190,6 +189,13 @@ pub fn maybe_start() {
 const STALE_SPAN_MULTIPLIER: u64 = 10;
 
 fn exporter_loop(config: &OtelConfig) {
+    let client = match reqwest::blocking::Client::builder().build() {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("[hew-otel] failed to initialize HTTP client: {error}");
+            return;
+        }
+    };
     let mut pending_begins: HashMap<u64, HewTraceEvent> = HashMap::new();
     #[expect(
         clippy::cast_possible_truncation,
@@ -215,7 +221,7 @@ fn exporter_loop(config: &OtelConfig) {
             continue;
         }
         let json = build_otlp_json(&config.service_name, &spans, config.epoch_offset_ns);
-        if let Err(e) = post_spans(&config.endpoint, &json) {
+        if let Err(e) = post_spans(&client, &config.endpoint, json) {
             eprintln!("[hew-otel] export failed: {e}");
         }
     }
@@ -459,10 +465,16 @@ pub fn push_escaped(out: &mut String, s: &str) {
 ///
 /// Blocks the caller — should only be called from the background exporter
 /// thread.
-fn post_spans(endpoint: &str, json: &str) -> Result<(), String> {
-    let resp = ureq::post(endpoint)
+fn post_spans(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    json: String,
+) -> Result<(), String> {
+    let resp = client
+        .post(endpoint)
         .header("Content-Type", "application/json")
-        .send(json)
+        .body(json)
+        .send()
         .map_err(|e| e.to_string())?;
 
     let status = resp.status();

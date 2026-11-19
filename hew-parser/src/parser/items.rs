@@ -149,6 +149,7 @@ impl Parser<'_> {
                 continue;
             }
             let mut args = Vec::new();
+            let errors_before_arguments = self.errors.len();
             let mut argument_count = 0;
             let mut quoted_arguments = true;
             if self.eat(&Token::LeftParen) {
@@ -245,8 +246,10 @@ impl Parser<'_> {
                 args,
                 span: start..end,
             };
-            self.validate_test_attribute_arguments(&attr, argument_count, quoted_arguments);
-            self.validate_authority_attribute_shape(&attr);
+            if self.errors.len() == errors_before_arguments {
+                self.validate_attribute_arguments(&attr, argument_count, quoted_arguments);
+                self.validate_authority_attribute_shape(&attr);
+            }
             attrs.push(attr);
         }
         attrs
@@ -937,6 +940,19 @@ impl Parser<'_> {
             );
         }
 
+        let repr_c = attrs.iter().any(|attr| attr.name == "repr");
+        if repr_c
+            && (kind != TypeDeclKind::Struct
+                || body.is_empty()
+                || type_params.is_some()
+                || is_opaque
+                || !resource_marker.is_none())
+        {
+            self.error(
+                "#[repr(C)] requires a non-empty, non-generic named record with ordinary ownership"
+                    .into(),
+            );
+        }
         Some(TypeDecl {
             origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
@@ -950,6 +966,7 @@ impl Parser<'_> {
             is_indirect: false,
             resource_marker,
             is_opaque,
+            repr_c,
             lang_item,
             serial_case,
         })

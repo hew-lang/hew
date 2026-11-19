@@ -1603,6 +1603,9 @@ pub struct TypeDecl {
     /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_opaque: bool,
+    /// C-compatible field layout explicitly requested by `#[repr(C)]`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repr_c: bool,
     /// Lang-item key from `#[lang_item("key")]`, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang_item: Option<String>,

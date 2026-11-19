@@ -22,6 +22,8 @@ in your source to access one; do not add it as a registry dependency.
 
 For third-party packages, first use `hew search <QUERY>` and
 `hew info <PACKAGE>` to confirm that the package and version are published.
+Registry requests honour system proxy settings, including `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. HTTPS verifies the registry certificate against the platform trust store.
+
 Check that the lookup succeeds against the registry: local-cache fallback does
 not confirm publication.
 Then use `hew add <PACKAGE> --version <VERSION>` and `hew install` in your

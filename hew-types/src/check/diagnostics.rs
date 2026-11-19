@@ -226,6 +226,9 @@ impl Checker {
                 || fn_name.starts_with('_')
                 || root_leaf.is_some_and(|leaf| leaf.starts_with('_'))
                 || self.test_fn_names.contains(fn_name)
+                || self
+                    .lookup_declaration(fn_name)
+                    .is_some_and(|id| self.c_abi.exports.contains_key(&id))
                 || (library_unit
                     && root_leaf.is_some()
                     && self

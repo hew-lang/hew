@@ -295,3 +295,150 @@ fn homogeneous_float(layout: &PhysicalLayout) -> Option<(u16, u32)> {
         _ => None,
     }
 }
+
+/// One source parameter's register or memory presentation at the C boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CParameterAbi {
+    /// The pre-existing scalar, pointer or runtime adapter.
+    Direct,
+    /// One register carrier overlays the record's storage.
+    Coerce {
+        repr: PhysicalRepr,
+        stack_align: Option<u32>,
+    },
+    /// System V assigns each occupied eightbyte an individual parameter.
+    Expand(Vec<PhysicalLayout>),
+    /// The caller supplies a private copy. Some targets pass that copy on the stack.
+    Indirect { byval_align: Option<u32> },
+}
+
+impl PhysicalTarget {
+    /// Classify C parameters in order, accounting for the hidden result pointer
+    /// and the System V rule that a whole record spills when either register
+    /// class lacks room. Only explicit C records change legacy runtime adapters.
+    ///
+    /// # Errors
+    /// An explicit record requires a measured layout and a supported C ABI.
+    pub fn c_parameters<'a>(
+        &self,
+        types: impl IntoIterator<Item = &'a ResolvedTy>,
+        records: &std::collections::BTreeSet<hew_types::NominalId>,
+        result: &PhysicalExternResultAbi,
+    ) -> Result<Vec<CParameterAbi>, PhysicalError> {
+        let arch = self.triple.split('-').next().unwrap_or_default();
+        let sysv = arch == "x86_64"
+            && !self
+                .triple
+                .split('-')
+                .any(|p| matches!(p, "windows" | "win32" | "mingw32" | "cygwin" | "uefi"));
+        let aapcs = matches!(arch, "aarch64" | "aarch64_be" | "arm64" | "arm64e");
+        let mut registers = SysvRegisters {
+            integers: 6 - usize::from(matches!(result, PhysicalExternResultAbi::Indirect)),
+            floats: 8,
+        };
+        let mut parameters = Vec::new();
+        for ty in types {
+            let marked = matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(head), .. } if records.contains(&head.id));
+            if !marked {
+                if sysv {
+                    if matches!(ty, ResolvedTy::F32 | ResolvedTy::F64) {
+                        registers.floats = registers.floats.saturating_sub(1);
+                    } else {
+                        registers.integers = registers.integers.saturating_sub(1);
+                    }
+                }
+                parameters.push(CParameterAbi::Direct);
+                continue;
+            }
+            let layout = self
+                .layout(ty)
+                .ok_or_else(|| PhysicalError::new("C record parameter lacks a target layout"))?;
+            let byval_align = if sysv {
+                Some(layout.align.max(8))
+            } else if arch.starts_with("wasm") {
+                Some(layout.align)
+            } else {
+                None
+            };
+            let parameter = match self.extern_result_abi(ty)? {
+                PhysicalExternResultAbi::Indirect => CParameterAbi::Indirect { byval_align },
+                PhysicalExternResultAbi::Coerce(repr) if sysv => {
+                    registers.record(repr, byval_align)
+                }
+                PhysicalExternResultAbi::Coerce(_) if aapcs && layout.size <= 8 => {
+                    // AAPCS64 rounds a non-homogeneous composite argument up to a word.
+                    CParameterAbi::Coerce {
+                        repr: self.integer_carrier(8)?.repr,
+                        stack_align: None,
+                    }
+                }
+                PhysicalExternResultAbi::Coerce(repr) => CParameterAbi::Coerce {
+                    repr,
+                    stack_align: None,
+                },
+                PhysicalExternResultAbi::Direct => {
+                    let (bits, len) = homogeneous_float(layout)
+                        .ok_or_else(|| PhysicalError::new("expected a homogeneous C record"))?;
+                    let scalar = if bits == 32 {
+                        ResolvedTy::F32
+                    } else {
+                        ResolvedTy::F64
+                    };
+                    let element = self.layout(&scalar).ok_or_else(|| {
+                        PhysicalError::new("C floating carrier lacks its target layout")
+                    })?;
+                    CParameterAbi::Coerce {
+                        repr: PhysicalRepr::Array {
+                            element: Box::new(element.clone()),
+                            len,
+                        },
+                        // The base PCS rounds a spilled HFA up to a stack word.
+                        // Darwin and Windows retain its natural alignment.
+                        stack_align: (!self.triple.contains("apple")
+                            && !self.triple.contains("windows"))
+                        .then_some(8),
+                    }
+                }
+            };
+            parameters.push(parameter);
+        }
+        Ok(parameters)
+    }
+}
+
+/// Remaining System V argument registers at this point in the signature.
+struct SysvRegisters {
+    integers: usize,
+    floats: usize,
+}
+
+impl SysvRegisters {
+    fn record(&mut self, repr: PhysicalRepr, byval_align: Option<u32>) -> CParameterAbi {
+        let floating = |repr: &PhysicalRepr| {
+            matches!(
+                repr,
+                PhysicalRepr::Float { .. } | PhysicalRepr::Vector { .. }
+            )
+        };
+        let (integers, floats) = match &repr {
+            PhysicalRepr::Struct(parts) => {
+                let floats = parts.iter().filter(|p| floating(&p.repr)).count();
+                (parts.len() - floats, floats)
+            }
+            repr if floating(repr) => (0, 1),
+            _ => (1, 0),
+        };
+        if integers > self.integers || floats > self.floats {
+            return CParameterAbi::Indirect { byval_align };
+        }
+        self.integers -= integers;
+        self.floats -= floats;
+        match repr {
+            PhysicalRepr::Struct(parts) => CParameterAbi::Expand(parts),
+            repr => CParameterAbi::Coerce {
+                repr,
+                stack_align: None,
+            },
+        }
+    }
+}

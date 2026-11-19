@@ -6,11 +6,11 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (391 packages)
-  MIT License (107 packages)
+  Apache License 2.0 (388 packages)
+  MIT License (106 packages)
   Unicode License v3 (19 packages)
-  BSD 3-Clause "New" or "Revised" License (9 packages)
   ISC License (9 packages)
+  BSD 3-Clause "New" or "Revised" License (8 packages)
   Boost Software License 1.0 (2 packages)
   Community Data License Agreement Permissive 2.0 (2 packages)
   BSD Zero Clause License (1 package)
@@ -666,15 +666,13 @@ Apache License 2.0
 
 ================================================================================
 Apache License 2.0
+  * ayaml 0.1.3 — https://github.com/asamarts/ayaml
   * cmov 0.5.4 — https://github.com/RustCrypto/utils
   * ctutils 0.4.4 — https://github.com/RustCrypto/utils
-  * encoding_rs 0.8.42 — https://github.com/hsivonen/encoding_rs
   * lru-slab 0.1.3 — https://github.com/Ralith/lru-slab
-  * multiversion_no_op 1.0.0 — https://github.com/hsivonen/multiversion_no_op
   * siphasher 1.0.4 — https://github.com/jedisct1/rust-siphash
   * static_assertions 1.1.0 — https://github.com/nvzqz/static-assertions-rs
   * tinyvec 1.13.3 — https://github.com/Lokathor/tinyvec
-  * ureq-proto 0.7.1 — https://github.com/algesten/ureq-proto
   * utf8_iter 1.0.4 — https://github.com/hsivonen/utf8_iter
   * zeroize 1.9.0 — https://github.com/RustCrypto/utils
   * zeroize_derive 1.5.0 — https://github.com/RustCrypto/utils
@@ -2199,7 +2197,6 @@ Apache License 2.0
   * quinn 0.11.12 — https://github.com/quinn-rs/quinn
   * rustls-platform-verifier 0.7.1 — https://github.com/rustls/rustls-platform-verifier
   * unarray 0.1.4 — https://github.com/cameron1024/unarray
-  * ureq 3.5.2 — https://github.com/algesten/ureq
 
                                  Apache License
                            Version 2.0, January 2004
@@ -6170,7 +6167,6 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * core_detect 1.0.0 — https://github.com/thomcc/core_detect
   * page_size 0.6.0 — https://github.com/Elzair/page_size_rs
 
                               Apache License
@@ -6380,6 +6376,7 @@ Apache License 2.0
   * addr2line 0.26.1 — https://github.com/gimli-rs/addr2line
   * ambient-authority 0.0.2 — https://github.com/sunfishcode/ambient-authority
   * arbitrary 1.5.0 — https://github.com/rust-fuzz/arbitrary/
+  * async-compression 0.4.51 — https://github.com/Nullus157/async-compression
   * atomic-waker 1.1.2 — https://github.com/smol-rs/atomic-waker
   * autocfg 1.5.1 — https://github.com/cuviper/autocfg
   * base64 0.22.1 — https://github.com/marshallpierce/rust-base64
@@ -6394,6 +6391,8 @@ Apache License 2.0
   * cfg-if 1.0.5 — https://github.com/rust-lang/cfg-if
   * chunked_transfer 1.5.0 — https://github.com/frewsxcv/rust-chunked-transfer
   * cmake 0.1.58 — https://github.com/rust-lang/cmake-rs
+  * compression-codecs 0.4.46 — https://github.com/Nullus157/async-compression
+  * compression-core 0.4.34 — https://github.com/Nullus157/async-compression
   * core-foundation-sys 0.8.7 — https://github.com/servo/core-foundation-rs
   * core-foundation 0.10.1 — https://github.com/servo/core-foundation-rs
   * core-foundation 0.9.4 — https://github.com/servo/core-foundation-rs
@@ -6461,7 +6460,7 @@ Apache License 2.0
   * rustc-demangle 0.1.28 — https://github.com/rust-lang/rustc-demangle
   * rustc_version 0.4.1 — https://github.com/djc/rustc-version-rs
   * rustix-linux-procfs 0.1.1 — https://github.com/sunfishcode/rustix-linux-procfs
-  * rustix 1.1.5 — https://github.com/bytecodealliance/rustix
+  * rustix 1.1.6 — https://github.com/bytecodealliance/rustix
   * rustls-native-certs 0.8.5 — https://github.com/rustls/rustls-native-certs
   * rustls 0.23.46 — https://github.com/rustls/rustls
   * rusty-fork 0.3.1 — https://github.com/altsysrq/rusty-fork
@@ -6501,7 +6500,7 @@ Apache License 2.0
   * wasm-bindgen-macro 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
   * wasm-bindgen-shared 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
   * wasm-bindgen 0.2.129 — https://github.com/wasm-bindgen/wasm-bindgen
-  * wasmparser 0.259.0 — https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
+  * wasmparser 0.262.0 — https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
   * web-sys 0.3.106 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
   * wit-bindgen 0.57.1 — https://github.com/bytecodealliance/wit-bindgen
   * xattr 1.6.1 — https://github.com/Stebalien/xattr
@@ -8684,7 +8683,6 @@ Apache License 2.0
   * serde_derive 1.0.229 — https://github.com/serde-rs/serde
   * serde_derive_internals 0.30.0 — https://github.com/serde-rs/serde
   * serde_json 1.0.154 — https://github.com/serde-rs/json
-  * serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
   * shlex 2.0.1 — https://github.com/comex/rust-shlex
   * simdutf8 0.1.5 — https://github.com/rusticstuff/simdutf8
   * snow 0.10.0 — https://github.com/mcginty/snow
@@ -8699,7 +8697,6 @@ Apache License 2.0
   * time-macros 0.2.32 — https://github.com/time-rs/time
   * time 0.3.55 — https://github.com/time-rs/time
   * unicode-ident 1.0.26 — https://github.com/dtolnay/unicode-ident
-  * utf8-zero 0.8.1 — https://github.com/algesten/utf8-zero
   * utf8parse 0.2.2 — https://github.com/alacritty/vte
   * winapi-i686-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs
   * winapi-x86_64-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs
@@ -8970,38 +8967,6 @@ Redistribution and use in source and binary forms, with or without modification,
 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-
-================================================================================
-BSD 3-Clause "New" or "Revised" License
-  * encoding_rs 0.8.42 — https://github.com/hsivonen/encoding_rs
-
-Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ================================================================================
@@ -10534,7 +10499,6 @@ SOFTWARE.
 
 ================================================================================
 MIT License
-  * unsafe-libyaml 0.2.11 — https://github.com/dtolnay/unsafe-libyaml
   * zmij 1.0.23 — https://github.com/dtolnay/zmij
 
 Permission is hereby granted, free of charge, to any

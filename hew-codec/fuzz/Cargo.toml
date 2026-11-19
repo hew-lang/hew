@@ -14,7 +14,7 @@ libfuzzer-sys = "0.4.13"
 arbitrary = "1"
 hew-codec = { path = ".." }
 serde_json = { version = "1", features = ["float_roundtrip"] }
-serde_yaml = "0.9"
+ayaml = { version = "0.1.3", features = ["libyaml-compat"] }
 
 [[bin]]
 name = "fuzz_codec_formats"

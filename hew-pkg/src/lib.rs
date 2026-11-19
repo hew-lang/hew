@@ -8,7 +8,6 @@ pub mod client;
 pub mod config;
 pub mod credentials;
 pub mod generate;
-pub mod happy_eyeballs;
 pub mod index;
 pub mod manifest;
 pub mod native;

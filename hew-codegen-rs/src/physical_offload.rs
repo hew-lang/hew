@@ -147,6 +147,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &offload.symbol,
             &values,
             &widen,
+            &offload
+                .params
+                .iter()
+                .map(|p| &p.recipe.ty)
+                .collect::<Vec<_>>(),
             result,
             &offload.result_abi,
         )?;

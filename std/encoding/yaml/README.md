@@ -58,6 +58,10 @@ of this API. YAML supports non-finite floats, so `from_float` returns `Value`.
 YAML NaNs compare equal. Numeric range remains i64/u64/f64; encoding need not
 preserve lexical spelling, comments or whitespace.
 
+In a flow collection, separate an explicit key indicator (`?`) from a following
+collection with whitespace, as in `{? [north, west]: corner}`. The previous
+parser also accepted the two indicators directly adjacent.
+
 Migration: remove data `free()` and `close()` calls. Replace consuming `with_*`
 builders with `var` plus `set`, and `push_*` builders with `push` of a constructed
 value. Handle checked getters and the two lookup layers explicitly. Use

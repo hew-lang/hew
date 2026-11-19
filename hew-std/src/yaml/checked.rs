@@ -360,8 +360,8 @@ pub unsafe extern "C" fn hew_yaml_from_null_checked(
 }
 
 use hew_cabi::managed::HEAP_EXCEEDED;
+use hew_codec::yaml_value::{self as yaml, Value};
 use hew_runtime::owned_value_budget::{current_owner, ManagedStorage};
-use serde_yaml::Value;
 
 fn payload(value: &Value) -> Option<u64> {
     hew_codec::managed_tree::yaml_payload_bytes(value)
@@ -382,7 +382,7 @@ enum Child {
 struct EditPlan {
     bytes: u64,
     array: Option<Vec<Value>>,
-    mapping: Option<serde_yaml::Mapping>,
+    mapping: Option<yaml::Mapping>,
 }
 
 fn plan(candidate: &Value, key: Option<&Value>, child_value: &Value) -> Option<EditPlan> {
@@ -401,7 +401,7 @@ fn plan(candidate: &Value, key: Option<&Value>, child_value: &Value) -> Option<E
                 } else {
                     let capacity = mapping_growth
                         .as_ref()
-                        .map_or(values.capacity(), serde_yaml::Mapping::capacity);
+                        .map_or(values.capacity(), yaml::Mapping::capacity);
                     old_bytes
                         .checked_add(
                             u64::try_from(capacity.checked_sub(values.capacity())?)

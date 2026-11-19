@@ -5,7 +5,6 @@ fn encode(format: Format, value: &Value) -> Vec<u8> {
     match format {
         Format::Cbor => ciborium::ser::into_writer(value, &mut bytes).unwrap(),
         Format::Msgpack => bytes = rmp_serde::to_vec(value).unwrap(),
-        Format::Yaml => bytes = serde_yaml::to_string(value).unwrap().into_bytes(),
         _ => unreachable!(),
     }
     bytes
@@ -34,7 +33,13 @@ fn assert_duplicate(format: Format, input: &[u8]) {
 
 #[test]
 fn map_keys_ignore_entry_order_recursively() {
-    for format in [Format::Cbor, Format::Msgpack, Format::Yaml] {
+    for source in [
+        "? {1: 10, 2: 20}\n: 1\n? {2: 20, 1: 10}\n: 2",
+        "? [{1: 10, 2: 20}]\n: 1\n? [{2: 20, 1: 10}]\n: 2",
+    ] {
+        assert_duplicate(Format::Yaml, source.as_bytes());
+    }
+    for format in [Format::Cbor, Format::Msgpack] {
         for wrap in [false, true] {
             let wrap_key = |key| if wrap { Value::Seq(vec![key]) } else { key };
             let value = Value::Map(vec![
@@ -108,7 +113,11 @@ fn balanced_nested_map_keys_preserve_order_and_detect_duplicates() {
 
 #[test]
 fn maps_in_map_key_values_ignore_entry_order() {
-    for format in [Format::Cbor, Format::Msgpack, Format::Yaml] {
+    assert_duplicate(
+        Format::Yaml,
+        b"? {0: {1: 10, 2: 20}}\n: 0\n? {0: {2: 20, 1: 10}}\n: 1",
+    );
+    for format in [Format::Cbor, Format::Msgpack] {
         let value = Value::Map(vec![
             (
                 Value::Map(vec![(Value::Int(0), key(false, 10))]),

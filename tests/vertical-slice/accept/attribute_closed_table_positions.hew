@@ -67,7 +67,7 @@ fn panicking_test() {
 #[serial]
 fn serial_test() {}
 
-#[export(helper)]
+#[export("helper")]
 fn helper() -> i64 {
     1
 }

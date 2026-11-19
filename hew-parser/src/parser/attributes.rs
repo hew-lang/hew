@@ -64,7 +64,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
     ];
 
     Some(match name {
-        "resource" | "linear" | "opaque" | "json" | "yaml" | "deprecated" => &[TypeDecl],
+        "repr" | "resource" | "linear" | "opaque" | "json" | "yaml" | "deprecated" => &[TypeDecl],
         "wire" => &[TypeDecl, MachineDecl, Field, ActorReceiveFn],
         // `#[ignore]`/`#[should_panic]`/`#[serial]`/`#[real_time]` sit at
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
@@ -102,7 +102,7 @@ pub fn is_builtin_attribute(name: &str) -> bool {
 
 impl Parser<'_> {
     /// Validate literal shapes before positional strings lose their token kind.
-    pub(crate) fn validate_test_attribute_arguments(
+    pub(crate) fn validate_attribute_arguments(
         &mut self,
         attr: &Attribute,
         argument_count: usize,
@@ -115,6 +115,15 @@ impl Parser<'_> {
             "ignore" | "should_panic" => (
                 argument_count <= 1 && quoted_arguments,
                 "use no argument or one quoted string, such as (\"reason\")",
+            ),
+            "export" => (
+                argument_count <= 1 && quoted_arguments,
+                "use #[export] or a quoted C symbol name",
+            ),
+            "repr" => (
+                matches!(attr.args.as_slice(), [AttributeArg::Positional(name)] if name == "C")
+                    && !quoted_arguments,
+                "use #[repr(C)]",
             ),
             "timeout" => (
                 matches!(attr.args.as_slice(), [AttributeArg::Duration(ns)] if *ns > 0),

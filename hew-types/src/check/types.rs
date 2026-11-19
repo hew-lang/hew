@@ -416,6 +416,8 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    /// Explicit C entry points and declared value layouts in this compilation.
+    pub c_abi: crate::c_abi::SourceCAbi,
     /// File discriminators for the exact normalized graph admitted by this check.
     /// Every span-key producer and checked consumer shares this allocation.
     pub file_span_indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
@@ -3608,6 +3610,7 @@ pub struct Checker {
     /// Consumed by `record_clone_admissibility` to detect opaque fields in
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
+    pub(super) c_abi: crate::c_abi::SourceCAbi,
     pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
@@ -4616,6 +4619,7 @@ impl Checker {
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::new(),
+            c_abi: crate::c_abi::SourceCAbi::default(),
             opaque_type_ids: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,

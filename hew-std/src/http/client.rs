@@ -261,7 +261,7 @@ const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
 struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    body: String,
 }
 
 fn execute_request(
@@ -306,6 +306,8 @@ fn execute_request(
         if body.len() as u64 > MAX_BODY_BYTES {
             return Err("failed to read response body: exceeds the 10 MiB limit".to_string());
         }
+        let body = String::from_utf8(body)
+            .map_err(|_| "failed to read response body: invalid UTF-8".to_string())?;
         Ok(Reply {
             status,
             headers,
@@ -337,7 +339,7 @@ fn send_request(
     match result {
         Ok(reply) => build_response(
             i32::from(reply.status),
-            &String::from_utf8_lossy(&reply.body),
+            &reply.body,
             Box::into_raw(Box::new(reply.headers)),
         ),
         Err(error) => error_response(&error),

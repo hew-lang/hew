@@ -1539,6 +1539,32 @@ impl LowerCtx<'_> {
                     }
                 }
 
+                // A selected associated function carries its declaration on
+                // the whole value expression. Its type head is a namespace.
+                if let Some(CallTarget::ImplMethod(declaration)) = self.ordinary_call_target(&span)
+                {
+                    let Some(symbol) = self
+                        .registered_impl_method_symbol(declaration)
+                        .filter(|symbol| self.fn_registry.contains_key(symbol))
+                    else {
+                        self.missing_checked_fact(
+                            span.clone(),
+                            "selected associated function has no registered body",
+                            self.defs.path(declaration).to_string(),
+                        );
+                        return self.unsupported_expr(span, "unbound associated function");
+                    };
+                    let (kind, ty) = self.lower_function_value(&symbol, &span, site);
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
+
                 // Resolve a module function value through its lexical owner.
                 // A local record with the same name remains a field access.
                 if matches!(&object.0, Expr::Ident(_)) {

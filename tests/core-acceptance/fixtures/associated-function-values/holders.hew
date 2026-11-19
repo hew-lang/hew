@@ -1,0 +1,12 @@
+pub type Holder<T> {
+    value: T;
+}
+
+impl<T> Holder<T> {
+    pub fn make(value: T) -> _ {
+        Holder { value: value }
+    }
+    pub fn pair<U>(value: T, other: U) -> (T, U) {
+        (value, other)
+    }
+}

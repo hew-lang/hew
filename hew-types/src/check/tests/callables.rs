@@ -1031,6 +1031,25 @@ fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
 }
 
 #[test]
+fn associated_function_values_enforce_bounds_on_the_selected_owner() {
+    let source = "trait Stamp { fn stamp(self) -> i64; }
+        type Parcel<T> { value: T; }
+        impl<T: Stamp> Parcel<T> {
+            fn make(value: T) -> Parcel<T> { Parcel { value: value } }
+        }
+        fn main() { let make = Parcel<i64>.make; make(8); }";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && &source[error.span.clone()] == "Parcel<i64>.make"
+        }),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn consuming_function_values_preserve_parameter_ownership() {
     for source in [
         "fn invoke(consume f: fn[once]() -> i64) -> i64 { f() } fn main() { let erased = invoke; erased(|| 1); }",

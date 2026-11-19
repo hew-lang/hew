@@ -1,8 +1,8 @@
 //! Binding-resolved callable construction and invocation contracts.
 
 use super::{
-    Checker, ClosureCaptureFact, Expr, HashMap, HashSet, MarkerTrait, ResolvedTy, Span, Spanned,
-    Ty, TypeError, TypeErrorKind,
+    Checker, ClosureCaptureFact, Expr, FnSig, HashMap, HashSet, MarkerTrait, ResolvedTy, Span,
+    Spanned, Ty, TypeError, TypeErrorKind,
 };
 use crate::env::TypeEnv;
 use crate::{
@@ -64,6 +64,7 @@ impl Checker {
         signature_key: &str,
         type_args: Option<&[Spanned<hew_parser::ast::TypeExpr>]>,
         span: &Span,
+        receiver_args: Option<&[Ty]>,
     ) -> Ty {
         // A facade codec is a compiler operation selected per call site by
         // its value type; it has no body to take the address of.
@@ -110,7 +111,14 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
+        let declaration_params = sig.type_params.clone();
+        let Some((sig, mut arguments)) =
+            self.instantiate_function_value_receiver(sig, receiver_args, signature_key, span)
+        else {
+            return Ty::Error;
+        };
+        let (params, ret, method_arguments) =
+            self.instantiate_fn_sig_for_receiver_call(&sig, type_args, span, &arguments);
         let params = params
             .into_iter()
             .zip(&sig.params)
@@ -119,10 +127,11 @@ impl Checker {
                 ownership: parameter.ownership,
             })
             .collect();
-        self.enforce_signature_bounds(&sig, &arguments, span);
+        self.enforce_signature_bounds(&sig, &method_arguments, span);
+        arguments.extend(method_arguments);
         self.record_generic_application(
             super::types::GenericCallee::Function { key: signature_key },
-            &sig.type_params,
+            &declaration_params,
             &arguments,
             span,
         );
@@ -164,6 +173,58 @@ impl Checker {
                 ret: Box::new(ret),
             },
         }
+    }
+
+    /// Resolve the enclosing impl independently of the associated function's
+    /// own parameters. Both groups belong to the emitted monomorphisation.
+    fn instantiate_function_value_receiver(
+        &mut self,
+        mut sig: FnSig,
+        receiver_args: Option<&[Ty]>,
+        signature_key: &str,
+        span: &Span,
+    ) -> Option<(FnSig, Vec<Ty>)> {
+        let mut arguments = Vec::new();
+        if let Some(method) = sig.impl_method.as_ref().filter(|_| sig.associated) {
+            let owner = match receiver_args {
+                Some(args) => {
+                    let Some(owner) = crate::method_resolution::impl_receiver_substitution(
+                        &method.receiver_parameters,
+                        &method.receiver_args,
+                        args,
+                    ) else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!("the supplied type arguments do not select `{signature_key}`"),
+                        );
+                        return None;
+                    };
+                    owner
+                }
+                None => method
+                    .receiver_parameters
+                    .iter()
+                    .map(|parameter| (*parameter, Ty::Var(crate::ty::TypeVar::fresh())))
+                    .collect(),
+            };
+            arguments.extend(
+                method
+                    .receiver_parameters
+                    .iter()
+                    .map(|parameter| owner[parameter].clone()),
+            );
+            let method_name = method.name.clone();
+            let receiver_name = method.receiver.map(|id| self.defs.path(id).to_string());
+            // An inferred return may still be stored as the declaration's
+            // inference variable when the owner becomes concrete.
+            sig.return_type = self.subst.resolve(&sig.return_type);
+            sig = crate::method_resolution::apply_method_receiver_substitution(sig, &owner);
+            if let Some(receiver_name) = receiver_name {
+                self.enforce_receiver_obligations(&sig, &method_name, &receiver_name, span);
+            }
+        }
+        Some((sig, arguments))
     }
 
     /// Whether a value of this type has exactly one owner, so reading it out

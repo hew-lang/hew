@@ -24,14 +24,15 @@ owns the language's version and edition contract.
 ### MINOR bump (`0.Y`)
 
 Bump MINOR when opening a new development series with a coherent scope.
-An individual feature, refactor or migration does not by itself require
-leaving the 0.6 series.
+An individual feature, refactor or migration can ship within the active
+development series.
 
 ### PATCH bump (`Y.Z`, `Z > 0`)
 
-Bump PATCH to deliver a useful, qualified set of changes within the current
-series. In 0.6.x this includes language features, standard-library additions,
-correctness and performance fixes, and approved incompatible changes.
+Bump PATCH to deliver a useful, qualified set of changes within the active
+development series. Before 1.0, a patch release can include language features,
+standard-library additions, correctness and performance fixes, and approved
+incompatible changes.
 Packages using an addition declare its minimum compiler version through
 `hew` in `hew.toml`. Incompatible changes require exact migration instructions
 and coherent updates to all in-tree consumers.
@@ -45,10 +46,10 @@ untagged builds, where `X` counts commits since the nearest reachable Hew
 release tag. Unrelated tags do not affect that count. A dirty checkout also
 appends `.dirty`; a clean build at the matching tag reports the plain version.
 
-The 0.11 development candidate uses base `0.11.0-rc1`. Untagged candidate builds retain
-their derived development count and commit; the matching signed tag identifies
-the plain candidate version. Keep edition 2026 unchanged. The
-post-release bump is separate from the qualified release commit and its tag. The
+Use the candidate version as the base when qualifying a release candidate.
+Untagged candidate builds retain their derived development count and commit.
+The matching signed tag identifies the plain candidate version. Keep edition
+2026 unchanged. Apply the post-release bump in a later commit. The
 [post-release checklist](../release-runbook.md#phase-6--post-release-verification)
 owns the concrete steps.
 
@@ -76,9 +77,9 @@ SemVer says anything goes pre-1.0. We're stricter than that:
    release's notes, with old shape, new shape and migration. See `docs/release-runbook.md`.
 2. **Don't break casually.** A breaking change should land in a coherent
    PR with rationale, not as a drive-by during unrelated work.
-3. **Keep the specification and consumers aligned.** Edition 2026 is still
-   evolving; a 0.6.x release number does not imply that an intentional surface
-   change can omit migration instructions.
+3. **Keep the specification and consumers aligned.** As edition 2026 evolves,
+   accompany every intentional surface change with migration instructions,
+   including in a patch release.
 
 ## Release cadence
 

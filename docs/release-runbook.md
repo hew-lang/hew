@@ -297,7 +297,7 @@ git log --oneline -5  # confirm expected HEAD
      The iterator still yields `char` values.
    ```
 
-4. **Version:** approved language and stdlib changes may ship in the evolving 0.6.x series. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
+4. **Version** — approved language and stdlib changes may ship in a pre-1.0 patch release. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
 
 **Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
 

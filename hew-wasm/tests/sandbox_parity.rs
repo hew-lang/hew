@@ -294,6 +294,10 @@ const PARITY_CASES: &[ParityCase] = &[
         // Array literal, index read, `.len()`, and range-for over the length.
     },
     ParityCase {
+        test_name: "string_codepoint_iteration",
+        source_rel: "tests/core-acceptance/cases/string-codepoint-iteration.hew",
+    },
+    ParityCase {
         test_name: "string_slicing",
         source_rel: "examples/playground/language/string_slicing.hew",
         // String `.len()` and `.slice(start, end)`.

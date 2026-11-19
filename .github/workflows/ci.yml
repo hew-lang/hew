@@ -196,10 +196,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
 
       - name: Install LLVM
         uses: ./.github/actions/setup-llvm
@@ -452,13 +451,7 @@ jobs:
       - name: Install MQTT clients
         if: matrix.shard == 2
         timeout-minutes: 5
-        run: |
-          apt=(sudo apt-get -o Acquire::Retries=1 -o DPkg::Lock::Timeout=30
-               -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15)
-          if ! "${apt[@]}" install -y --no-install-recommends mosquitto-clients; then
-            "${apt[@]}" update
-            "${apt[@]}" install -y --no-install-recommends mosquitto-clients
-          fi
+        run: .github/scripts/install-ubuntu-packages.sh mosquitto-clients
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -510,10 +503,9 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
           sudo docker system prune -af >/dev/null 2>&1 || true
-      - name: Install native link prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gdb libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - name: Install GDB
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh gdb
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:

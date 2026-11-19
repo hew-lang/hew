@@ -213,7 +213,7 @@ impl LowerCtx<'_> {
     }
 
     /// Advance the private byte offset before user code, including a labelled
-    /// continue or a suspension. The captured string and its scalar count stay
+    /// continue or a suspension. The captured string and its byte length stay
     /// fixed for the entire loop.
     fn string_loop_step(
         &mut self,
@@ -293,8 +293,9 @@ impl LowerCtx<'_> {
         let (iterable_span, place_source) = source;
         let element_ty = element_ty.clone();
         let sequence_ty = sequence.ty.clone();
-        let length_family = if sequence_ty == ResolvedTy::String {
-            hew_types::RuntimeCallFamily::StringLen
+        let string = sequence_ty == ResolvedTy::String;
+        let length_family = if string {
+            hew_types::RuntimeCallFamily::StringByteLen
         } else if sequence_ty == ResolvedTy::Bytes {
             hew_types::RuntimeCallFamily::BytesLen
         } else if matches!(sequence_ty, ResolvedTy::Array(_, _)) {
@@ -350,25 +351,11 @@ impl LowerCtx<'_> {
         let index_binding = self.bind(
             index_name.clone(),
             ResolvedTy::I64,
-            false,
+            string,
             iterable_span.clone(),
         );
         let index_id = index_binding.id;
         let start = self.make_i64_literal(0, iterable_span.clone());
-
-        let byte_cursor = (sequence_ty == ResolvedTy::String).then(|| {
-            let name = format!("__hew_for_byte_{}", index_id.0);
-            let cursor = self.bind(name, ResolvedTy::I64, true, iterable_span.clone());
-            statements.push(HirStmt {
-                node: self.ids.node(),
-                kind: HirStmtKind::Let(
-                    cursor.clone(),
-                    Some(self.make_i64_literal(0, iterable_span.clone())),
-                ),
-                span: iterable_span.clone(),
-            });
-            cursor
-        });
 
         self.push_scope();
         let element_binding = if checked_binding {
@@ -398,8 +385,9 @@ impl LowerCtx<'_> {
             (None, None) => unreachable!("a sequence walk has a temp or a place source"),
         };
         let mut loop_body = self.lower_block(body, &ResolvedTy::Unit);
-        if let Some(cursor) = byte_cursor {
-            let step = self.string_loop_step(container, &cursor, element_binding, pattern_span);
+        if string {
+            let step =
+                self.string_loop_step(container, &index_binding, element_binding, pattern_span);
             loop_body.statements.splice(0..0, step);
         } else {
             let index = self.make_binding_ref(
@@ -430,18 +418,48 @@ impl LowerCtx<'_> {
         }
         self.pop_scope();
 
-        let range = self.make_range_value(start, length, false, iterable_span.clone());
-        let loop_expr = self.make_expr(
+        let loop_kind = if string {
+            let limit_name = format!("__hew_for_byte_limit_{}", index_id.0);
+            let limit = self.bind(limit_name, ResolvedTy::I64, false, iterable_span.clone());
+            let offset = self.synthetic_binding_ref(
+                &index_binding.name,
+                index_id,
+                ResolvedTy::I64,
+                iterable_span,
+            );
+            let end =
+                self.synthetic_binding_ref(&limit.name, limit.id, ResolvedTy::I64, iterable_span);
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(index_binding, Some(start)),
+                span: iterable_span.clone(),
+            });
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(limit, Some(length)),
+                span: iterable_span.clone(),
+            });
+            let condition = self.make_expr(
+                HirExprKind::binary(offset, hew_parser::ast::BinaryOp::Less, end),
+                ResolvedTy::Bool,
+                IntentKind::Read,
+                iterable_span.clone(),
+            );
+            HirExprKind::While {
+                label: label.cloned(),
+                condition: Box::new(condition),
+                body: loop_body,
+            }
+        } else {
+            let range = self.make_range_value(start, length, false, iterable_span.clone());
             HirExprKind::ForRange {
                 label: label.cloned(),
                 binding: index_binding,
                 range: Box::new(range),
                 body: loop_body,
-            },
-            ResolvedTy::Unit,
-            IntentKind::Read,
-            span.clone(),
-        );
+            }
+        };
+        let loop_expr = self.make_expr(loop_kind, ResolvedTy::Unit, IntentKind::Read, span.clone());
         let loop_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Expr(loop_expr),

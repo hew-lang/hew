@@ -33,12 +33,14 @@ fn main() -> i64 {
     println(raw.len());
     println(count_to("hello", 'l'));
     var kept = 0;
-    for c in "abcd" {
-        if c == 'b' {
-            continue;
-        }
-        if c == 'd' {
-            break;
+    @letters: for c in "aβcd" {
+        for _ in 0..1 {
+            if c == 'β' {
+                continue @letters;
+            }
+            if c == 'd' {
+                break @letters;
+            }
         }
         kept = kept + 1;
     }

@@ -1270,8 +1270,8 @@ pub struct HewStringCursorStep {
     pub next_byte: i64,
 }
 
-/// Decode one scalar at a UTF-8 boundary. The compiler bounds the number of
-/// steps by the snapshot's scalar length. An invalid cursor returns (NUL, -1).
+/// Decode one scalar at a UTF-8 boundary. The compiler walks from byte zero to
+/// the captured byte length. An invalid cursor returns (NUL, -1).
 ///
 /// # Safety
 /// `s` must be null or a live managed string handle.

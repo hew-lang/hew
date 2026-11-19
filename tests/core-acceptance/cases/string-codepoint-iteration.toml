@@ -1,6 +1,6 @@
 [[case]]
 id = "string-codepoint-iteration"
-intent = "`for` over a string yields codepoints and over bytes yields bytes, through early return, continue and break, leaving the source usable."
+intent = "`for` over a string yields codepoints and over bytes yields bytes, through early return and labelled loop transfers, preserving the input snapshot and editable public iterator bounds."
 source = "cases/string-codepoint-iteration.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

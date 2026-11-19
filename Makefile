@@ -281,9 +281,10 @@ WASM_RELEASE_DIR := $(CARGO_TARGET_ROOT)/wasm32-wasip1/release
 # Symlinks under build/ point into the Cargo output directory. While that
 # directory is inside the repository the links stay relative, so a moved
 # checkout keeps working; an out-of-tree CARGO_TARGET_DIR resolves to an
-# absolute path, which must not have `../` hops prepended to it. On Windows an
-# absolute path starts with a drive (`P:\targets`, `P:/targets`), not `/`.
-CARGO_TARGET_ROOT_ABSOLUTE := $(or $(filter /%,$(CARGO_TARGET_ROOT)),$(filter %:,$(firstword $(subst /, ,$(subst \, ,$(CARGO_TARGET_ROOT))))))
+# absolute path, which must not have `../` hops prepended to it. Normalize
+# Windows separators here so UNC and drive-qualified paths use the same test.
+target_root_slashes := $(subst \,/,$(CARGO_TARGET_ROOT))
+CARGO_TARGET_ROOT_ABSOLUTE := $(or $(filter /%,$(target_root_slashes)),$(and $(findstring :/,$(target_root_slashes)),$(filter %:,$(firstword $(subst /, ,$(target_root_slashes))))))
 ifeq ($(CARGO_TARGET_ROOT_ABSOLUTE),)
 LINK_UP2 := ../../
 LINK_UP3 := ../../../

@@ -649,13 +649,13 @@ fn trace_event_model(record: &crate::tracing::TraceEventRecord) -> TraceEvent {
     } else {
         record.subject_dispatch_ptr
     };
-    let handler_name = if attribution_dispatch_ptr == 0 {
-        None
-    } else {
+    let handler_name = if crate::tracing::event_carries_handler(event.event_type) {
         crate::profiler::actor_registry::handler_name_by_ptr(
             attribution_dispatch_ptr,
             event.msg_type,
         )
+    } else {
+        None
     };
     let event_type = crate::tracing::event_type_name(event.event_type)
         .map_or_else(|| format!("invalid:{}", event.event_type), str::to_owned);

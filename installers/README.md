@@ -35,7 +35,7 @@ them first:
 | macOS           | `xcode-select --install`             |
 
 On FreeBSD, the base system provides Clang and the C development files. On
-Windows, put LLVM 22.1.6 `clang.exe` and `lld-link.exe` on `PATH`, and install
+Windows, put an LLVM release's `clang.exe` and `lld-link.exe` on `PATH`, and install
 Visual Studio Build Tools with the Desktop development with C++ workload and
 Windows SDK. The linker discovers the MSVC and Windows SDK libraries; a developer
 shell is not required. Prebuilt SDK users do not need Rust or LLVM development

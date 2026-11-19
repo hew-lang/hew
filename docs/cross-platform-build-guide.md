@@ -1,21 +1,27 @@
 # Cross-Platform Build Guide
 
-The Hew compiler links against LLVM 22 via the `hew-codegen-rs` crate
-(inkwell → llvm-sys-221). The previous C++/MLIR codegen subtree was retired;
+The Hew compiler links against LLVM via the `hew-codegen-rs` crate
+(inkwell → llvm-sys). The previous C++/MLIR codegen subtree was retired;
 the Rust IR ladder is the sole compiler backend. The platform-specific
 complexity captured below is now about provisioning the LLVM development
 libraries that `llvm-sys` builds against.
+
+The supported LLVM release series is recorded once, in
+[`llvm-version.env`](../llvm-version.env) (`LLVM_MAJOR`, `LLVM_SERIES`). Any
+maintenance release of that series works. The commands below use LLVM 23
+(series 23.1, llvm-sys's `LLVM_SYS_231_PREFIX`); substitute the values from
+that file when it changes.
 
 ## Overview
 
 The release build produces two binary artifacts per platform:
 
-- `hew` — compiler driver and package manager (Rust), linking LLVM 22
+- `hew` — compiler driver and package manager (Rust), linking LLVM
   statically through `hew-codegen-rs` (inkwell)
 
-The Rust binaries build with `cargo build --release` once LLVM 22
-libraries and headers are available; set `LLVM_PREFIX` (or
-`LLVM_SYS_221_PREFIX`) to point at the install.
+The Rust binaries build once the LLVM development libraries and headers are
+available. `llvm-sys` finds `llvm-config-<major>` or `llvm-config` on `PATH`;
+set `LLVM_SYS_231_PREFIX` to point at any other install root.
 
 Use the Makefile from the repository root rather than invoking `cargo build
 -p hew-cli` directly. The compiler driver is not enough for `hew build`: the
@@ -34,16 +40,20 @@ uses, so a source-built compiler can cross-compile without a test-only setup.
 ### Prerequisites
 
 ```bash
-# LLVM 22 from apt.llvm.org
+# LLVM from apt.llvm.org (the distribution's own packages lag behind)
 sudo mkdir -p /etc/apt/keyrings
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
   | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
 echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] \
-  http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
+  http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
-sudo apt-get install -y llvm-22-dev clang-22
+# libpolly supplies libPolly.a, which `llvm-config --link-static` lists.
+sudo apt-get install -y llvm-23-dev libpolly-23-dev clang-23 lld-23
 ```
+
+CI uses LLVM's official Linux release tarball instead; its version and SHA256
+digests are pinned in `llvm-version.env`.
 
 ### Build
 
@@ -66,7 +76,7 @@ apt.llvm.org repository URL:
 
 ```
 deb [signed-by=/etc/apt/keyrings/llvm.asc] \
-  http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-22 main
+  http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-23 main
 ```
 
 ### Build
@@ -101,30 +111,29 @@ to `c_char`, not `i8`.
 Supported macOS builds target Apple silicon. Intel macOS is no longer a
 supported distribution or qualification target.
 
-macOS source builds need an LLVM 22 installation discoverable by `llvm-sys`.
+macOS source builds need the supported LLVM series discoverable by
+`llvm-sys`. Install the versioned Homebrew formula rather than plain `llvm`,
+which moves to each new LLVM major as soon as Homebrew ships it. `lld@<major>`
+provides `wasm-ld` for WebAssembly targets.
 
 ### Prerequisites
 
 ```bash
-brew install llvm
+brew install llvm@23 lld@23
 ```
 
-Homebrew LLVM is keg-only (not symlinked into `/usr/local/bin`). You need the
-prefix path:
+Homebrew LLVM is keg-only (not symlinked into `/opt/homebrew/bin`). Put its
+`bin` directory first on `PATH` so `llvm-sys` and `hew build` find it:
 
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm)"
-# x86_64: /usr/local/opt/llvm
-# aarch64: /opt/homebrew/opt/llvm
+export PATH="$(brew --prefix llvm@23)/bin:$(brew --prefix lld@23)/bin:$PATH"
 ```
 
 ### Build
 
-Use `make` from the repository root with `LLVM_PREFIX` set:
-
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm)" make
-LLVM_PREFIX="$(brew --prefix llvm)" make release
+make
+make release
 ```
 
 ## FreeBSD x86_64
@@ -143,34 +152,31 @@ FreeBSD 15.1 minimum. Release validation runs on native FreeBSD 15.1.
 
 ### Prerequisites
 
-Install LLVM 22 from the FreeBSD package collection:
+Install LLVM from the FreeBSD package collection (the `latest` branch
+carries new LLVM majors before `quarterly` does):
 
 ```sh
-pkg install llvm22
+pkg install llvm23
 ```
 
-This places the LLVM tools and libraries under `/usr/local/llvm22`.
+This places the LLVM tools and libraries under `/usr/local/llvm23`.
 `llvm-sys` does not discover this path automatically; set
-`LLVM_SYS_221_PREFIX` in your environment before building:
+`LLVM_SYS_231_PREFIX` in your environment before building:
 
 ```sh
-export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+export LLVM_SYS_231_PREFIX=/usr/local/llvm23
 ```
 
 Do **not** add this to a `.cargo/config.toml` `[env]` section — that would
-attempt to use `/usr/local/llvm22` on Linux and macOS where the path does not
+attempt to use `/usr/local/llvm23` on Linux and macOS where the path does not
 exist. Set it in your shell profile (`~/.profile` or `~/.zshenv`) on the
-FreeBSD host, or pass it directly to make:
-
-```sh
-LLVM_SYS_221_PREFIX=/usr/local/llvm22 make
-```
+FreeBSD host, or pass it directly to make.
 
 ### Build
 
 ```sh
-LLVM_SYS_221_PREFIX=/usr/local/llvm22 make
-LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
+LLVM_SYS_231_PREFIX=/usr/local/llvm23 gmake
+LLVM_SYS_231_PREFIX=/usr/local/llvm23 gmake release
 ```
 
 ### Quick Reference (updated table below)
@@ -194,7 +200,7 @@ library receives separate consumer-link checks on Linux.
 
 ## Windows
 
-**Status:** Supported for release builds when LLVM 22 is installed locally
+**Status:** Supported for release builds when LLVM is installed locally
 and discoverable by both `llvm-sys` and PATH. The runtime's low-level memory
 paths have Windows implementations (`VirtualAlloc` / `VirtualFree`). Windows
 is fail-soft / Tier 2 in `release.yml` today: the tag-release Windows job
@@ -212,20 +218,23 @@ cross-built library becomes the packaged authority.
 ### Prerequisites
 
 Install Visual Studio C++ Build Tools with a current Windows SDK, then install
-the prebuilt LLVM 22.1.6 Windows MSVC toolchain and put its `bin` directory on
-`PATH`. Hew uses:
+a prebuilt LLVM Windows MSVC toolchain of the supported series and put its
+`bin` directory on `PATH`. Hew uses:
 
 - `llvm-config.exe` / LLVM libraries for `llvm-sys`
 - `clang.exe` as the `hew build` link driver
 - `lld-link.exe` as the Cargo linker for `x86_64-pc-windows-msvc`
 
-The provisioned validation host uses the upstream release archive:
+CI and tag releases use the
+[hew-lang/llvm-toolchain](https://github.com/hew-lang/llvm-toolchain) build:
+the `toolchain/llvm-<series>-windows-msvc` release (for example
+`toolchain/llvm-23.1-windows-msvc`) always holds the latest maintenance
+release of that series as `hew-llvm-<series>-windows-msvc.tar.gz`, with a
+`.sha256` sidecar. Its archive root is `llvm-<major>\`. LLVM's own Windows
+release archive statically embeds rpmalloc and omits `xml2s.lib`, so it does
+not link with `llvm-sys` without the workarounds described below.
 
-```powershell
-https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz
-```
-
-Set `LLVM_PREFIX` or `LLVM_SYS_221_PREFIX` to the extracted LLVM root and make
+Set `LLVM_PREFIX` and `LLVM_SYS_231_PREFIX` to the extracted LLVM root and make
 sure `where clang` and `where lld-link` both resolve before building. Run the
 build from a Visual Studio Developer PowerShell/Command Prompt, or initialise
 the environment with `VsDevCmd.bat` first, so `WindowsSdkDir`, `INCLUDE`, and
@@ -252,7 +261,7 @@ statically with `lld-link`.
 ```powershell
 choco install ninja cmake -y
 
-git clone --depth 1 --branch llvmorg-22.1.0 `
+git clone --depth 1 --branch llvmorg-23.1.6 `
   --filter=blob:none --sparse `
   https://github.com/llvm/llvm-project.git C:\llvm-src
 Push-Location C:\llvm-src
@@ -261,7 +270,7 @@ Pop-Location
 
 cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
+  -DCMAKE_INSTALL_PREFIX="C:\llvm-23" `
   -DCMAKE_C_COMPILER=cl `
   -DCMAKE_CXX_COMPILER=cl `
   -DLLVM_ENABLE_PROJECTS="clang" `
@@ -286,7 +295,7 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
 cmake --build C:\llvm-build --config Release
 cmake --install C:\llvm-build --config Release
 
-Test-Path 'C:\llvm-22\bin\clang.exe'
+Test-Path 'C:\llvm-23\bin\clang.exe'
 ```
 
 If the host cannot use MSVC, override the validator/compiler environment with
@@ -300,8 +309,8 @@ with `cl` for every native dependency.
 Use a normal PowerShell or cmd.exe session with LLVM and NASM on `PATH`:
 
 ```powershell
-$env:LLVM_SYS_221_PREFIX = 'P:\llvm22'
-$env:Path = 'P:\llvm22\bin;' + $env:Path
+$env:LLVM_SYS_231_PREFIX = 'C:\llvm-23'
+$env:Path = 'C:\llvm-23\bin;' + $env:Path
 
 make hew-native    # debug: target\debug\hew.exe + target\debug\hew.lib
 make release-host  # release compiler + target\release-lib\hew.lib
@@ -339,11 +348,11 @@ compile and run a program through `hew-codegen-rs`, not just print `--version`.
 For a full build of `hew`, prefer `make` / `make release`. The table below
 summarizes the LLVM install shape expected by local release validation.
 
-| Platform       | LLVM discovery                                     | Extra packages                                 |
-| -------------- | -------------------------------------------------- | ---------------------------------------------- |
-| Linux x86_64   | `llvm-config-22` on `PATH` or prefix               | n/a                                            |
-| Linux aarch64  | `llvm-config-22` on `PATH` or prefix               | n/a                                            |
-| macOS x86_64   | `LLVM_PREFIX="$(brew --prefix llvm)"`              | n/a                                            |
-| macOS aarch64  | `LLVM_PREFIX="$(brew --prefix llvm)"`              | n/a                                            |
-| FreeBSD x86_64 | `LLVM_SYS_221_PREFIX=/usr/local/llvm22` (host env) | `pkg install llvm22`                           |
-| Windows        | `LLVM_PREFIX=C:\llvm-22`                           | `cmake`, `ninja` only if building LLVM locally |
+| Platform      | Package                                     | LLVM discovery                                    |
+| ------------- | ------------------------------------------- | ------------------------------------------------- |
+| Linux         | apt.llvm.org `llvm-23-dev libpolly-23-dev`  | `llvm-config-23` on `PATH` or prefix              |
+| macOS aarch64 | `brew install llvm@23 lld@23`               | `$(brew --prefix llvm@23)/bin` on `PATH`          |
+| FreeBSD       | `pkg install llvm23`                        | `LLVM_SYS_231_PREFIX=/usr/local/llvm23`           |
+| Windows       | hew-lang/llvm-toolchain `llvm-23.1` release | `LLVM_SYS_231_PREFIX=C:\llvm-23`, `bin` on `PATH` |
+
+The LLVM major and series come from `llvm-version.env`.

@@ -307,7 +307,7 @@ git log --oneline -5  # confirm expected HEAD
      The iterator still yields `char` values.
    ```
 
-4. **Version:** approved language and stdlib changes may ship in the evolving 0.6.x series. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
+4. **Version** — approved language and stdlib changes may ship in a pre-1.0 patch release. Identify the first supporting compiler version and document affected versions and exact migration steps. See the [specification's version model](specs/HEW-SPEC-2026.md) and [versioning guidance](internal/versioning.md).
 
 **Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
 
@@ -464,9 +464,10 @@ make pre-release
 ```
 
 If your only local arm64 hardware is Debian bookworm (for example pirea51),
-do not treat LLVM 22 apt failures there as a repo regression:
-`apt.llvm.org/bookworm` arm64 may not publish the LLVM 22 development packages
-that `llvm-sys` needs (`llvm-22-dev`, `clang-22`, or `lld-22`). The
+do not treat LLVM apt failures there as a repo regression:
+`apt.llvm.org/bookworm` arm64 may not publish the development packages of the
+LLVM major in `llvm-version.env` that `llvm-sys` needs (`llvm-<major>-dev`,
+`clang-<major>`, or `lld-<major>`). The
 authoritative local/CI-compatible path is Ubuntu 24.04 arm64
 (`ubuntu-24.04-arm` in CI, or an Ubuntu 24.04 arm VM/container locally).
 
@@ -474,8 +475,8 @@ Requires `.env.pre-release` in the repo root (gitignored):
 
 ```bash
 MACOS_HOST=my-mac.local
-# Optional when LLVM 22 is outside the standard Homebrew locations:
-HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
+# Optional when LLVM is outside the standard Homebrew locations:
+HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@23
 LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
 FREEBSD_HOST=user@freebsd-host
 WINDOWS_HOST=user@windows-host
@@ -501,24 +502,27 @@ if that cache is missing, so run `cargo fetch --locked` (online) on the
 Windows host at least once beforehand.
 
 Windows hosts also need Visual Studio C++ Build Tools with a Windows SDK and a
-one-time LLVM 22 install that matches the tag release workflow: install into
-`C:\llvm-22`, verify `vswhere.exe` can find the x64 C++ tools, and verify
-`C:\llvm-22\bin\clang.exe` exists before running `make pre-release`. See
+one-time LLVM install that matches the tag release workflow: install the
+hew-lang/llvm-toolchain build of the series in `llvm-version.env` into
+`C:\llvm-<major>`, verify `vswhere.exe` can find the x64 C++ tools, and verify
+`C:\llvm-<major>\bin\clang.exe` exists before running `make pre-release`. See
 [`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
 for the exact bootstrap command sequence. The validator defaults to
-`LLVM_PREFIX=C:\llvm-22`; it imports `VsDevCmd.bat` for the SDK/CRT environment
-before prepending `C:\llvm-22\bin` to `PATH`. Override with
+`LLVM_PREFIX=C:\llvm-<major>` and accepts any maintenance release of the
+series; it imports `VsDevCmd.bat` for the SDK/CRT environment before
+prepending the LLVM `bin` directory to `PATH`. Override with
 `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
 uses a different compiler driver. Windows validation consumes the configured
 candidate archive without rebuilding it locally. It also runs Cargo offline, so
 the Windows host must have a populated Cargo cache for the locked dependencies.
 
-The macOS validator requires an LLVM 22 root. It first honors
-`HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in `.env.pre-release`), then
-uses `brew --prefix llvm@22` when `brew` is available, and finally probes
-`/opt/homebrew/opt/llvm@22` and `/usr/local/opt/llvm@22` directly. Each
-candidate is accepted only when its `bin/llvm-config --version` reports major
-version 22; an absent or different version fails validation before building.
+The macOS validator requires an LLVM root of the series in `llvm-version.env`.
+It first honors `HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in
+`.env.pre-release`), then uses `brew --prefix llvm@<major>` when `brew` is
+available, and finally probes `/opt/homebrew/opt/llvm@<major>` and
+`/usr/local/opt/llvm@<major>` directly. Each candidate is accepted only when
+its `bin/llvm-config --version` reports that series; an absent or different
+version fails validation before building.
 
 What `make pre-release` does:
 
@@ -529,8 +533,8 @@ What `make pre-release` does:
    - Smoke test: compile and execute a .hew program
    - Linux: verify no dynamic LLVM deps (`ldd` check)
    - Linux aarch64 (optional): stage the local candidate in a fresh remote
-     temporary directory, then build on Ubuntu 24.04 arm64 with LLVM 22
-     provisioned from `apt.llvm.org/noble`
+     temporary directory, then build on Ubuntu 24.04 arm64 with the pinned
+     LLVM major provisioned from `apt.llvm.org/noble`
    - macOS and FreeBSD: stage the local working-tree candidate in a fresh
      remote temporary directory. Windows stages the configured candidate
      archive in its own fresh remote directory. Existing host checkouts are
@@ -752,7 +756,7 @@ that missing evidence or establish safety sign-off.
   paths remain outside its model; review the toolchain and scope of any new
   results before using them as release evidence.
 
-- **Windows codegen**: release-gate and tag workflows provision LLVM 22, build
+- **Windows codegen**: release-gate and tag workflows provision LLVM, build
   the release compiler and `hew.lib`, and execute a Rust-staticlib consumer
   through `hew build --link-lib`. Ordinary PR CI remains the faster workspace
   path; the release workflows are the platform artifact authority.
@@ -773,7 +777,7 @@ that missing evidence or establish safety sign-off.
   aarch64 libraries do not prove a shipped archive. The x86_64 nightly remains
   additional early warning rather than the release authority.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
-  publish the LLVM 22 packages the release build uses. Validate linux-aarch64
+  publish the LLVM packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
   arm VM/container / remote host).
 - **TSan (Rust runtime): current CI evidence unavailable.** The local

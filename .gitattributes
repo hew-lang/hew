@@ -52,3 +52,5 @@
 # Preserve upstream Markdown fixtures: trailing spaces are parser input.
 /vendor/pulldown-cmark/** linguist-vendored=true
 /vendor/pulldown-cmark/tests/suite/*.rs text eol=lf whitespace=-blank-at-eol
+# The LLVM pin is sourced by sh and appended to $GITHUB_ENV on Windows runners.
+llvm-version.env text eol=lf

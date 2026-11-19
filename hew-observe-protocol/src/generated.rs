@@ -738,4 +738,21 @@ pub struct CrashEntry {
     pub msg_type: i32,
     #[serde(with = "uint64_decimal")]
     pub fault_addr: u64,
+    #[serde(default)]
+    pub actor_type: Option<String>,
+    #[serde(default)]
+    pub handler: Option<String>,
+    #[serde(default)]
+    #[serde(with = "optional_uint64_decimal")]
+    pub spawn_serial: Option<u64>,
+    #[serde(default)]
+    pub supervisor: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub col: Option<u32>,
 }

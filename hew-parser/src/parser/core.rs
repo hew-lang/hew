@@ -238,6 +238,7 @@ impl<'src> Parser<'src> {
 
     pub(crate) fn expect_arm_separator(&mut self, body_is_block: bool) {
         if body_is_block {
+            self.eat(&Token::Comma);
             self.refuse_mark_after_body();
         } else if self.peek() == Some(&Token::RightBrace) || self.eat(&Token::Comma) {
             // A final comma is optional in a list.

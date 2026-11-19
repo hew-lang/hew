@@ -6736,6 +6736,33 @@ fn classify(e: IoError) -> string {
     }
 
     #[test]
+    fn drops_optional_block_arm_commas_in_nested_match_and_select() {
+        let source = "\
+fn score() -> i64 {
+    select {
+        reply from fetch() => {
+            match reply {
+                .Some(value) => {
+                    value
+                }, // delivered value
+                .None => 0,
+            }
+        },
+        after 1s => {
+            -1
+        },
+    }
+}
+";
+        let expected = source
+            .replace("}, // delivered value", "} // delivered value")
+            .replace("        },\n", "        }\n");
+        let formatted = roundtrip_source(source);
+        assert_eq!(formatted, expected);
+        assert_eq!(roundtrip_source(&formatted), formatted);
+    }
+
+    #[test]
     fn match_expr_arm_comments_preserved() {
         let src = "\
 fn main() -> string {

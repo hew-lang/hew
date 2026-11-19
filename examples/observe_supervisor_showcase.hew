@@ -1,40 +1,12 @@
 //! Status: runnable
 //! Description: observe_supervisor_showcase.hew — Supervision-focused exemplar for hew-observe
 
-// observe_supervisor_showcase.hew — Supervision-focused exemplar for hew-observe
-//
-// Companion to observe_showcase.hew. Where that program populates the
-// Overview/Actors/Messages/Timeline tabs, THIS program additionally drives
-// the **Supervisors** tab with a live, restartable supervision tree.
-//
-// Run with profiling enabled:
-//   HEW_PPROF=auto hew run examples/observe_supervisor_showcase.hew
-//
-// Then in another terminal:
-//   hew-observe              # auto-discovers via unix socket
-//   hew-observe --list       # shows the running program
-//
-// Or hit the profiler HTTP API directly:
-//   HEW_PPROF=:6060 hew run examples/observe_supervisor_showcase.hew
-//   curl http://localhost:6060/api/supervisors   # live supervision tree
-//   curl http://localhost:6060/api/actors        # the supervised children
-//
-// Exercises the following hew-observe tabs:
-//   ① Overview     — scheduler counters, message rates, memory sparklines
-//   ② Actors       — the supervised children, with per-actor message profiles
-//   ④ Supervisors  — TWO live supervision trees (one_for_one + one_for_all),
-//                    including a child with a NON-ZERO restart count
-//   ⑥ Messages     — trace events: spawns, sends, and the crash/restart
-//   ⑦ Timeline     — same events as a time-density view
-//
-// ── Supervised-child setup ─────────────────────────────────────────
-// The Supervisors tab is fed by the runtime's live supervisor profiler.
-// These children use default field values and constructor arguments, so they
-// boot during supervisor setup and appear in the live tree.
-//
-// NOTE: #[on(start)] does run for a supervised child — on its first start
-//       and again after every restart. Use it for work that should repeat for
-//       each incarnation.
+// Live telemetry: HEW_OBSERVE=hot HEW_PPROF=127.0.0.1:6060 hew run \
+//     examples/observe_supervisor_showcase.hew -- --wait-for-recording
+// Start a recording in Observe, then press Enter to fail one worker.
+
+import std.io;
+import std.os;
 
 // ── Actor types ─────────────────────────────────────────────────────────
 
@@ -97,95 +69,55 @@ supervisor ServiceStack {
     child cache: Service { port: 6379, requests: 0 };
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────
-fn main() {
-    println("=== hew-observe supervisor showcase ===");
-    println("Run hew-observe in another terminal to inspect this program.");
-    println("Watch the Supervisors tab for two live trees and a restart.");
-    println("");
-
-    // Spawn both trees. Each `spawn` registers a supervision tree with the
-    // runtime profiler, so both appear in the Supervisors tab immediately.
-    // (`pool` is a reserved word in Hew, so the handle is named `workers`.)
+fn main() -> i32 {
     let workers = spawn WorkerPool;
     let stack = spawn ServiceStack;
-    sleep(100ms);
-
-    // Typed handles to the supervised children. The compiler knows the field
-    // types from the supervisor declaration.
     let alpha = workers.alpha;
     let beta = workers.beta;
     let gamma = workers.gamma;
     let api = stack.api;
     let cache = stack.cache;
-    println("2 supervisors, 5 supervised children spawned.");
-    println("Exercising the tree, then crashing one worker...");
-    println("");
-
-    // ── Warm up the tree ──
-    // Send a burst of work so the Actors/Messages/Timeline tabs show traffic
-    // before the crash.
-    var i: i32 = 0;
-    while i < 50 {
-        let _ = alpha.process(i);
-        let _ = beta.process(i);
-        let _ = gamma.process(i);
-        let _ = api.handle();
-        let _ = cache.handle();
-        i = i + 1;
+    for item in 0..50 {
+        alpha.process(item as i32).expect("alpha accepts work");
+        beta.process(item as i32).expect("beta accepts work");
+        gamma.process(item as i32).expect("gamma accepts work");
+        api.handle().expect("API accepts requests");
+        cache.handle().expect("cache accepts requests");
     }
-    sleep(200ms);
-
-    // ── Crash + restart ──
-    // Crash `alpha` once. Under one_for_one only `alpha` restarts; beta and
-    // gamma keep their accumulated `processed` counts. After this the
-    // Supervisors tab shows `alpha (restarts: 1)`.
-    println("--- crashing worker 'alpha' (one_for_one restart) ---");
-    let _ = alpha.crash();
-    sleep(300ms);
-
-    // Re-fetch the restarted child's handle and resume work. Its `processed`
-    // counter is reset to the default (0) because the restart spawns a fresh
-    // actor — visible if you compare it against its still-running siblings.
-    let alpha2 = workers.alpha;
-    let _ = alpha2.process(999);
-    sleep(100ms);
-    println("Worker restarted. Supervision tree is intact.");
-    println("Running steady workload for ~60 seconds so you can watch...");
-    println("");
-
-    // ── Steady-state workload ──
-    // ~60 rounds, one per second. The profiler samples once per second, so
-    // each round produces one sparkline point in Overview and one density
-    // band in Timeline. The supervision trees stay live the whole time.
-    var round: i32 = 0;
-    while round < 60 {
-        var j: i32 = 0;
-        while j < 25 {
-            let _ = alpha2.process(round + j);
-            let _ = beta.process(round + j);
-            let _ = gamma.process(round + j);
-            j = j + 1;
+    if os.args().contains("--wait-for-recording") {
+        println("Start recording in Observe, then press Enter to fail alpha.");
+        let line = io.read_line() handle error {
+            io.write_err(f"reading the recording prompt: {error}\n").expect("standard error");
+            return 1;
+        };
+        if line.is_none() {
+            io.write_err("recording prompt needs an input line\n").expect("standard error");
+            return 1;
         }
-        let _ = api.handle();
-        let _ = cache.handle();
-        sleep(1s);
-        round = round + 1;
     }
-    // Final tallies — proves the restarted worker kept processing and the
-    // siblings were undisturbed by the crash.
-    let a_total = match alpha2.stats() {
-        .Ok(v) => v,
-        .Err(_) => -1,
-    };
-    let b_total = match beta.stats() {
-        .Ok(v) => v,
-        .Err(_) => -1,
-    };
-    println("");
-    print("alpha (restarted) processed: ");
-    println(a_total);
-    print("beta  (never crashed) processed: ");
-    println(b_total);
-    println("Supervisor showcase complete.");
+    match alpha.crash() {
+        .Ok(_) => panic("alpha's failing handler unexpectedly replied"),
+        .Err(failure) => println(f"alpha failed: {failure}"),
+    }
+    restarted(alpha);
+    assert(alpha.stats().expect("replacement alpha replies") == 0);
+    assert(beta.stats().expect("beta still replies") == 50);
+    assert(gamma.stats().expect("gamma still replies") == 50);
+    println("Alpha restarted. Beta and gamma kept their counters.");
+    println("Sending a new batch each second for one minute.");
+    for round in 0..60 {
+        for offset in 0..25 {
+            let item = (round + offset) as i32;
+            alpha.process(item).expect("replacement alpha accepts work");
+            beta.process(item).expect("beta accepts work");
+            gamma.process(item).expect("gamma accepts work");
+        }
+        api.handle().expect("API accepts requests");
+        cache.handle().expect("cache accepts requests");
+        sleep(1s);
+    }
+    let recovered = alpha.stats().expect("replacement alpha replies");
+    let unaffected = beta.stats().expect("beta still replies");
+    println(f"Alpha processed {recovered} after restart. Beta processed {unaffected} in total.");
+    0
 }

@@ -1,8 +1,8 @@
 # Hew Language Guide
 
-A guide to Hew's language surface. The current release is
-[v0.9.3](releases/v0.9.3.md); later source changes are listed in
-[Unreleased](releases/UNRELEASED.md). See the
+A guide to Hew's language surface. See the
+[published releases](https://github.com/hew-lang/hew/releases) for released
+toolchains and [Unreleased](releases/UNRELEASED.md) for changes in development. The
 [language specification](specs/HEW-SPEC-2026.md) for the full contract.
 
 An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
@@ -93,6 +93,48 @@ for the documented resolver precedence.
 - `break` and `continue` work in both `loop {}` and `while` loops.
 - Iterate all HashMap keys with `.keys()` → `Vec<string>`; all values with `.values()` → `Vec<V>`.
 - Coming from Rust/Go/TS: there is no `struct` keyword — `type` declares both plain data records and generic containers, so one keyword covers what Rust splits into `struct`/`enum` shapes. Writing `struct` is a parse error with a `write \`type Name { ... }\`` hint.
+
+## Process input and handle failures
+
+[Order totals](../examples/order_totals.hew) reads a JSON file, validates each
+item and prints totals in integer cents. Save this as `order.json`.
+
+```json
+{"items":[{"units":2,"unit_cents":1250},{"units":3,"unit_cents":499}]}
+```
+
+```sh
+hew run examples/order_totals.hew -- order.json
+# 5 units, 3997 cents
+```
+
+The file reader adds the path to I/O and parse failures. The validator adds the
+item number and field name. An absent field is an `Option` from the lookup, so
+`let … else` can report it where the field is required. An explicit JSON
+`null` reaches the value check and fails as the wrong kind. Use `?` when a
+helper already supplies the right context and `handle` when the caller can
+add useful information. Checked multiplication and addition turn an
+oversized order into an input error. The file and JSON values have automatic
+cleanup, including when a check returns early.
+
+Use this straight-line reader for a single file. [Order batch](../examples/order_batch.hew)
+uses the same reader for several independent orders and prints in input
+order. `pipeline.map` caps concurrent reads at four. Each invalid order
+returns an error value, so the batch still reports valid orders and exits
+with status 1 after a mixed result. The enclosing `scope within 5s` bounds
+the batch and starts cancellation if the deadline passes. The scope waits
+for its tasks to clean up before producing its failure. Completion order
+is available when the caller can use results as soon as they arrive.
+The transform takes a `consume` parameter because each job owns its input.
+
+For a long-lived worker with its own state, see the
+[supervision showcase](../examples/observe_supervisor_showcase.hew). Start it
+with `HEW_OBSERVE=hot HEW_PPROF=127.0.0.1:6060` and pass
+`--wait-for-recording` to wait for a connected Observe session. After
+starting a recording, press Enter in the producer terminal. The client
+receives the worker's failed reply, waits with `restarted(alpha)`, and uses
+the same role handle to talk to its replacement. The sibling workers keep
+their state under `one_for_one`.
 
 ## Primitives
 
@@ -356,7 +398,7 @@ fn name_of(day: i64) -> string {
 }
 ```
 
-`match` returns a value. Arms are comma-separated; `_` is the catch-all final arm.
+`match` returns a value. Use commas between expression arms. `_` is the catch-all final arm.
 
 ### match guards and block-bodied arms
 
@@ -373,7 +415,9 @@ fn classify(n: i64) -> string {
 }
 ```
 
-Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` still needs a trailing comma after `}`. Guards do not contribute to exhaustiveness — keep a `_` or unguarded fallback.
+Bind with a name, then add a guard as in `x if cond =>`. A block-bodied arm
+may have a comma after `}`. The formatter omits it. Guards do not contribute
+to exhaustiveness, so keep a `_` or unguarded fallback.
 
 ### match on enum variants binding payloads
 

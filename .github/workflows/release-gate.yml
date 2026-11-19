@@ -62,8 +62,6 @@ permissions:
   checks: write
 
 env:
-  LLVM_VERSION: "22"
-  LLVM_FULL_VERSION: "22.1.5"
   # Pinned wasmtime release tag; every job here provisions the runner from
   # THIS tag's assets (x86_64-linux, aarch64-linux, aarch64-macos,
   # x86_64-windows), so the gate measures the same runtime CI measured. The one
@@ -174,6 +172,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+      - uses: ./.github/actions/llvm-version
 
       - name: Checkout workflow DNS setup
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -191,30 +190,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
+      - name: Install LLVM ${{ env.LLVM_MAJOR }}
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_MAJOR }} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            llvm-${{ env.LLVM_VERSION }} \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            clang-${{ env.LLVM_VERSION }} \
-            lld-${{ env.LLVM_VERSION }} \
+            llvm-${{ env.LLVM_MAJOR }} \
+            llvm-${{ env.LLVM_MAJOR }}-dev \
+            clang-${{ env.LLVM_MAJOR }} \
+            lld-${{ env.LLVM_MAJOR }} \
             libssl-dev pkg-config \
             zlib1g-dev libzstd-dev
 
       - name: Configure sanitizer toolchain
         run: |
           {
-            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
-            echo "CC=clang-${{ env.LLVM_VERSION }}"
-            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
+            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_MAJOR }}"
+            echo "CC=clang-${{ env.LLVM_MAJOR }}"
+            echo "CXX=clang++-${{ env.LLVM_MAJOR }}"
           } >> "$GITHUB_ENV"
-          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> "$GITHUB_PATH"
+          echo "/usr/lib/llvm-${{ env.LLVM_MAJOR }}/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
@@ -273,12 +272,10 @@ jobs:
           sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
+      - name: Install LLVM
         # Official upstream tarball via the pinned setup-llvm action: the
         # apt.llvm.org packages do not ship libPolly.a, which llvm-sys links.
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install build prerequisites
         run: |
@@ -446,12 +443,10 @@ jobs:
           sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
+      - name: Install LLVM
         # Official upstream tarball via the pinned setup-llvm action: the
         # apt.llvm.org packages do not ship libPolly.a, which llvm-sys links.
         uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install build prerequisites
         run: |
@@ -554,6 +549,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+      - uses: ./.github/actions/llvm-version
 
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -568,11 +564,11 @@ jobs:
 
       - name: Install LLVM
         run: |
-          # hew-codegen-rs (inkwell -> llvm-sys-221) needs LLVM 22's static
+          # hew-codegen-rs (inkwell -> llvm-sys) needs LLVM's static
           # libraries during cargo build.
-          brew install llvm@${{ env.LLVM_VERSION }} lld@${{ env.LLVM_VERSION }}
-          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
-          LLD_PREFIX="$(brew --prefix lld@${{ env.LLVM_VERSION }})"
+          brew install llvm@${{ env.LLVM_MAJOR }} lld@${{ env.LLVM_MAJOR }}
+          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_MAJOR }})"
+          LLD_PREFIX="$(brew --prefix lld@${{ env.LLVM_MAJOR }})"
           {
             echo "LLVM_PREFIX=${LLVM_PREFIX}"
             echo "LLD_PREFIX=${LLD_PREFIX}"
@@ -616,8 +612,8 @@ jobs:
           tar -xJf "${WASMTIME_DIR}.tar.xz"
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
-          LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
-          LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_VERSION }})}"
+          LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_MAJOR }})}"
+          LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_MAJOR }})}"
           export PATH="${LLD_PREFIX}/bin:${LLVM_PREFIX}/bin:$PATH"
           command -v wasm-ld
           wasm-ld --version
@@ -700,10 +696,8 @@ jobs:
         shell: pwsh
         run: choco install make --yes --no-progress
 
-      - name: Install LLVM 22
+      - name: Install LLVM
         uses: ./.github/actions/setup-llvm
-        with:
-          version: 22.1.5
 
       - name: Provision Windows debugger
         id: windows-debugger
@@ -877,6 +871,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+      - uses: ./.github/actions/llvm-version
 
       - name: Checkout workflow DNS setup
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -918,7 +913,7 @@ jobs:
             # alternative is building wasmtime from source inside a VM step that
             # already runs near its time limit. Every other runner takes the pinned
             # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} gdb rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 
           run: |
@@ -928,7 +923,7 @@ jobs:
 
             # The VM action connects as root. Finish privileged setup before
             # handing the complete build and test workload to a normal user.
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
+            ln -sf /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/wasm-ld /usr/local/bin/wasm-ld
             chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
             test ! -e "$GITHUB_WORKSPACE/target"
             mkdir -p /home/hew-ci/target
@@ -955,7 +950,7 @@ jobs:
 
             git config --global --add safe.directory "$(pwd)"
 
-            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            export ${{ env.LLVM_SYS_PREFIX_VAR }}=/usr/local/llvm${{ env.LLVM_MAJOR }}
             # Install the repository-pinned toolchain and WASI standard
             # library through rustup, matching the other full-suite hosts.
             /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
@@ -963,16 +958,16 @@ jobs:
             # The debug libhew bootstrap starts the Python freshness helper,
             # which then starts Cargo. Give both child-process levels absolute
             # executables instead of depending on the SSH login environment.
-            export PATH="$HOME/.cargo/bin:/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+            export PATH="$HOME/.cargo/bin:/usr/local/llvm${{ env.LLVM_MAJOR }}/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
             export CARGO="$HOME/.cargo/bin/cargo"
             export PYTHON=/usr/local/bin/python3.12
             test -x "$CARGO"
             test -x "$PYTHON"
             rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
             rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
-            /usr/local/llvm22/bin/llvm-config --version
+            /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
 
-            # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
+            # The wasm codegen tests link with `wasm-ld`; llvm${{ env.LLVM_MAJOR }} ships it in its
             # own bin dir, which is not on PATH. Expose it like the macOS gate's
             # lld@22 so the linker probe and WASI builds use the same explicit
             # linker as the other full-suite hosts.
@@ -1070,6 +1065,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ needs.gate-release-checks.outputs.source_sha }}
+      - uses: ./.github/actions/llvm-version
 
       - name: Checkout workflow DNS setup
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -1099,7 +1095,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2
+            pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -1107,15 +1103,15 @@ jobs:
 
             git config --global --add safe.directory "$(pwd)"
 
-            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            export ${{ env.LLVM_SYS_PREFIX_VAR }}=/usr/local/llvm${{ env.LLVM_MAJOR }}
             # Match the x86_64 guest's explicit child-build environment so a
             # future scope expansion cannot regress to SSH profile discovery.
-            export PATH=/usr/local/llvm22/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+            export PATH=/usr/local/llvm${{ env.LLVM_MAJOR }}/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
             export CARGO=/usr/local/bin/cargo
             export PYTHON=/usr/local/bin/python3.12
             test -x "$CARGO"
             test -x "$PYTHON"
-            /usr/local/llvm22/bin/llvm-config --version
+            /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
 
             # The native smoke shares one release dependency graph. The shipped
             # release-lib profile remains separate for external Rust consumers.

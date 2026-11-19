@@ -832,13 +832,21 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # a generic command from observed compiler output.
 baselines: node-protocol syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: version-locks-check node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: version-locks-check llvm-version-check node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Check every tracked lock containing a local workspace package.
 .PHONY: version-locks-check
 version-locks-check:
 	$(PYTHON) scripts/version-locks.py --check
+
+# llvm-version.env is the LLVM pin; check llvm-sys, the inkwell feature and
+# every LLVM_SYS_<ver>_PREFIX reference agree with it.
+.PHONY: llvm-version-check
+llvm-version-check: ## Check: verify the LLVM pin and its llvm-sys restatements agree
+	$(PYTHON) scripts/lib/llvm_version.py --check
+
+LINT_GATES += llvm-version-check
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
 # node_modules already matches package-lock.json (hash-stamped). Split out
@@ -944,7 +952,7 @@ ci-shard-3: mqtt-broker-e2e sandbox-vm-test sandbox-parity \
 #   STEP ∈ { all preflight lint ci-shard-1 ci-shard-2 ci-shard-3
 #            core-acceptance test-pkg-import test-hew-ratchet sandbox-parity }
 #
-# The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
+# The host must provide CI's toolchain (LLVM via LLVM_SYS_<ver>_PREFIX, the pinned
 # Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
 # HEW_CI_LLVM_PREFIX for byte-faithful parity against CI's upstream LLVM tarball.
 STEP ?= all

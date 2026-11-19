@@ -92,6 +92,15 @@ assert.throws(() => decodeTraceStreamMismatchEnvelope(`{
 
 const crashes = decodeCrashesEnvelope('{"schema_version":"v1","data":[{"time_s":1.5,"actor_id":"18446744073709551615","signal":202,"trap_kind":"Unknown","msg_type":-1,"fault_addr":"0"}]}');
 assert.equal(crashes.data[0].time_s, 1.5);
+assert.equal(crashes.data[0].handler, null);
+assert.equal(crashes.data[0].spawn_serial, null);
+const withSite = decodeCrashesEnvelope(JSON.stringify({ schema_version: "v1", data: [{
+  time_s: 1.5, actor_id: "1", signal: 212, trap_kind: "UserPanic", msg_type: 2, fault_addr: "0",
+  handler: "Worker.crash", spawn_serial: max, file: "./showcase.hew", line: 59, col: 15,
+}] }));
+assert.equal(withSite.data[0].handler, "Worker.crash");
+assert.equal(withSite.data[0].spawn_serial, 18446744073709551615n);
+assert.equal(withSite.data[0].line, 59);
 
 const integerCrashTime = decodeCrashesEnvelope('{"schema_version":"v1","data":[{"time_s":0,"actor_id":"0","signal":0,"trap_kind":"Normal","msg_type":0,"fault_addr":"0"}]}');
 assert.equal(integerCrashTime.data[0].time_s, 0);

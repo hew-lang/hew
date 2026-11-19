@@ -28,7 +28,6 @@ permissions:
   contents: read
 
 env:
-  LLVM_VERSION: "22.1.5"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -73,8 +72,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
       - uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
           cache-shared-key: nightly-link-race
@@ -100,8 +97,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
       - uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
           cache-shared-key: nightly-linear-lowering

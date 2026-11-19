@@ -8318,9 +8318,11 @@ are invalid there. A newline is whitespace and never ends a member.
 
 Commas separate elements of lists and values: arguments, parameters, tuple and
 array elements, record and map literals, record patterns, import selections,
-and attribute arguments. A trailing comma is optional. Match and select arms
-whose bodies are blocks end at their closing brace; expression arms use commas
-between them. Statements and bodyless signatures still end with `;`.
+and attribute arguments. A trailing comma is optional. A block-bodied `match`
+or `select` arm, including a block-bodied `after` arm, may have one comma after
+its closing brace. The formatter omits that comma. An expression arm requires
+a comma before the next arm and may omit its final comma. Statements and
+bodyless signatures still end with `;`.
 An array's `[T; N]` size syntax retains its semicolon.
 
 ```hew

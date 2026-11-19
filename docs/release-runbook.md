@@ -40,8 +40,15 @@ validate ─► build ─────────────► package and pro
    | `publish-github-packages` | GitHub Packages mirror of the same tarballs                        |
    | `publish-ghcr`            | `ghcr.io/hew-lang/hew:<version>` (+ `latest` for finals), attested |
    | `publish-homebrew`        | waits for `hew-lang/homebrew-hew` and verifies formula sources     |
+   | `publish-dist`            | signed stable APT, DNF/Zypper and pacman repositories (finals)     |
 
-   Every publish job names the one `release` environment. GitHub's
+   The distro publisher runs automatically after the tagged GitHub release,
+   using GitHub OIDC. The repository signs the package indexes. Verify that
+   a fresh client using the published repository configuration selects the
+   released version, installs its dependencies and runs a compiled program.
+   [Repository setup and signing fingerprint](https://dist.hewpkg.com/)
+
+   The npm, GitHub Packages, GHCR and Homebrew jobs use the `release` environment. GitHub's
    **Review deployments** dialog approves by environment, so a single click
    releases all four waiting jobs. Prereleases publish npm on dist-tag `next`
    and never move Docker `latest`; finals take `latest` on both.

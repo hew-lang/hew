@@ -442,7 +442,7 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Or(alternatives) => alternatives
             .iter()
             .any(|alternative| pattern_binds_name(&alternative.0, name)),
-        Pattern::Regex { captures, .. } => captures.iter().any(|c| c == name),
+        Pattern::Regex { captures, .. } => captures.iter().any(|c| c.name.name.as_str() == name),
         Pattern::Wildcard | Pattern::Literal(_) => false,
     }
 }
@@ -558,8 +558,8 @@ impl RefsVisitor<'_> {
             }
             Pattern::Regex { captures, .. } => {
                 for capture_name in captures {
-                    if capture_name == self.name {
-                        self.spans.push(span.clone());
+                    if capture_name.name.name.as_str() == self.name {
+                        self.spans.push(capture_name.span.clone());
                     }
                 }
             }
@@ -1100,6 +1100,23 @@ mod tests {
 
     fn parse(source: &str) -> hew_parser::ParseResult {
         hew_parser::parse(source)
+    }
+
+    #[test]
+    fn regex_group_references_point_to_the_name_inside_the_literal() {
+        let source = r#"fn greet(text: string) -> string {
+            match text { re"^\"(?P<name>.+)$" => name, _ => "" }
+        }"#;
+        let pr = parse(source);
+        let definition = source.find("name>").unwrap();
+        let usage = source.find("=> name").unwrap() + 3;
+        let (_, spans) = find_all_references(source, &pr, usage).unwrap();
+        assert!(spans
+            .iter()
+            .any(|span| span.start == definition && span.end == definition + 4));
+        assert!(spans
+            .iter()
+            .any(|span| span.start == usage && span.end == usage + 4));
     }
 
     #[test]

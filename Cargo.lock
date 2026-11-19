@@ -2161,6 +2161,7 @@ version = "0.11.1"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
+ "regex-syntax",
  "serde",
  "serde_json",
  "stacker",
@@ -2364,6 +2365,7 @@ dependencies = [
  "hew-testutil",
  "hew-types",
  "js-sys",
+ "regex",
  "schemars",
  "serde",
  "serde_json",

@@ -16420,6 +16420,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_regex_capture_spans( *const HewRegex, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_capture_spans( *const HewRegex, *const HewString, ) -> *mut HewVec"
+      },
+      "symbol": "hew_regex_capture_spans"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -16549,6 +16564,36 @@
         "wasm32-wasip1": "fn hew_regex_free_capture( *mut HewString)"
       },
       "symbol": "hew_regex_free_capture"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_regex_group_present( *mut HewVec, i64) -> i32",
+        "wasm32-wasip1": "fn hew_regex_group_present( *mut HewVec, i64) -> i32"
+      },
+      "symbol": "hew_regex_group_present"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_regex_group_text( *mut HewVec, i64, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_regex_group_text( *mut HewVec, i64, *const HewString, ) -> *mut HewString"
+      },
+      "symbol": "hew_regex_group_text"
     },
     {
       "availability": [

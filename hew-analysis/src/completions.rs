@@ -1362,8 +1362,8 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
             }
         }
         Pattern::Regex { captures, .. } => {
-            for name in captures {
-                locals.push(local_completion(name));
+            for capture in captures {
+                locals.push(local_completion(capture.name.name.as_str()));
             }
         }
         Pattern::Literal(_) | Pattern::Wildcard => {}

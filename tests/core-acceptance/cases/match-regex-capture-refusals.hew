@@ -1,0 +1,12 @@
+fn invalid(input: string) -> string {
+    let existing = "outer";
+    match input {
+        re"(?P<if>x)" => "keyword",
+        re"(?P<has.dot>x)" => "punctuation",
+        re"(?P<existing>x)" => existing,
+        re"(?P<once>x)" => once,
+        _ => once,
+    }
+}
+
+fn main() { println(invalid("x")); }

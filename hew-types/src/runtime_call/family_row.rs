@@ -5507,6 +5507,76 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::RegexCaptureSpans => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_regex_capture_spans",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Applied(crate::BuiltinType::Vec, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RegexGroupPresent => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_regex_group_present",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Applied(crate::BuiltinType::Vec, &[K::I64]),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RegexGroupText => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "hew_regex_group_text",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Applied(crate::BuiltinType::Vec, &[K::I64]),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::RegexCapture => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_regex_capture",

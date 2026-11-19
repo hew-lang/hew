@@ -167,6 +167,12 @@ export interface SandboxTrace {
   };
 }
 
+export interface CompiledRegex {
+  isMatch(text: string): boolean;
+  captureSpans(text: string): BigInt64Array;
+  free(): void;
+}
+
 export interface RunOptions {
   /** Explicit browser filesystem authority; absent roots grant no access. */
   directoryRoots?: import("./v1/browser-directory.js").DirectoryRoots;
@@ -174,6 +180,7 @@ export interface RunOptions {
   /** Supplied process arguments including argv[0]. Defaults to ["main.hew"]. */
   argv?: readonly string[];
   codecBridge?: (request: string) => string;
+  regexBridge?: (pattern: string) => CompiledRegex;
   calendarBridge?: (request: string) => string;
   propertyInput?: number[];
   fixtureId?: string;

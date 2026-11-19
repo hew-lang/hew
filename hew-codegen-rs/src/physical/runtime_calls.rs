@@ -902,19 +902,56 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let owned = self.runtime_call_value(function, &[handle.into()], "regex.pattern")?;
                 self.store(required_result()?, owned)?;
             }
-            RuntimeCallFamily::RegexMatch => {
-                let handle = self.load_regex_handle(source(0)?)?;
-                let text = self.load(source(1)?, "regex.text")?;
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_regex_match",
-                    self.ctx
-                        .i32_type()
-                        .fn_type(&[ptr.into(), ptr.into()], false),
-                )?;
-                let value = self
-                    .runtime_call_value(function, &[handle.into(), text.into()], "regex.match")?
-                    .into_int_value();
+            RuntimeCallFamily::RegexCaptureSpans | RuntimeCallFamily::RegexGroupText => {
+                let function_type = if action.family == RuntimeCallFamily::RegexCaptureSpans {
+                    ptr.fn_type(&[ptr.into(), ptr.into()], false)
+                } else {
+                    ptr.fn_type(&[ptr.into(), self.ctx.i64_type().into(), ptr.into()], false)
+                };
+                let function =
+                    get_or_declare_external(self.llvm, action.family.c_symbol(), function_type)?;
+                let value = if action.family == RuntimeCallFamily::RegexCaptureSpans {
+                    let handle = self.load_regex_handle(source(0)?)?;
+                    let text = self.load(source(1)?, "regex.text")?;
+                    self.runtime_call_value(function, &[handle.into(), text.into()], "regex.spans")?
+                } else {
+                    let spans = self.load(source(0)?, "regex.spans")?;
+                    let group = self.load(source(1)?, "regex.index")?;
+                    let text = self.load(source(2)?, "regex.text")?;
+                    self.runtime_call_value(
+                        function,
+                        &[spans.into(), group.into(), text.into()],
+                        "regex.group",
+                    )?
+                };
+                self.store(required_result()?, value)?;
+            }
+            RuntimeCallFamily::RegexMatch | RuntimeCallFamily::RegexGroupPresent => {
+                let result = self.ctx.i32_type();
+                let value = if action.family == RuntimeCallFamily::RegexMatch {
+                    let handle = self.load_regex_handle(source(0)?)?;
+                    let text = self.load(source(1)?, "regex.text")?;
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        action.family.c_symbol(),
+                        result.fn_type(&[ptr.into(), ptr.into()], false),
+                    )?;
+                    self.runtime_call_value(function, &[handle.into(), text.into()], "regex.match")?
+                } else {
+                    let spans = self.load(source(0)?, "regex.spans")?;
+                    let group = self.load(source(1)?, "regex.index")?;
+                    let function = get_or_declare_external(
+                        self.llvm,
+                        action.family.c_symbol(),
+                        result.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
+                    )?;
+                    self.runtime_call_value(
+                        function,
+                        &[spans.into(), group.into()],
+                        "regex.participated",
+                    )?
+                }
+                .into_int_value();
                 let truth = self
                     .builder
                     .build_int_compare(

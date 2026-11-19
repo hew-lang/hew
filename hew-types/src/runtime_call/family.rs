@@ -246,6 +246,9 @@ pub enum RuntimeCallFamily {
 
     // --- Regex runtime ABI --------------------------------------------------
     RegexCapture,
+    RegexCaptureSpans,
+    RegexGroupPresent,
+    RegexGroupText,
     RegexCompile,
     RegexFreeCapture,
     /// Value-position regex literal materialisation (`let pat = re"..."`).

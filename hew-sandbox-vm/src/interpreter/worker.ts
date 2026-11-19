@@ -6,7 +6,7 @@ import type { RunOptions } from "./types.js";
 
 type WorkerRunOptions = Omit<
   RunOptions,
-  "signal" | "codecBridge" | "calendarBridge"
+  "signal" | "codecBridge" | "calendarBridge" | "regexBridge"
 >;
 
 interface RunBytecodeRequest {
@@ -47,6 +47,7 @@ worker.addEventListener(
       const trace = await runBytecode(bytecode, {
         ...options,
         codecBridge: globalThis.__hewSandboxExecuteCodec,
+        regexBridge: globalThis.__hewSandboxCompileRegex,
         calendarBridge: globalThis.__hewSandboxExecuteCalendar,
       });
       worker.postMessage({

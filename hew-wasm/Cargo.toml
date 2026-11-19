@@ -39,6 +39,7 @@ hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types", features = ["sandbox-schema"] }
 wasm-bindgen = "0.2.128"
 js-sys = "0.3"
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

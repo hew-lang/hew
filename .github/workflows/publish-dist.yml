@@ -57,6 +57,17 @@ jobs:
             echo "SKIP=1" >>"${GITHUB_ENV}"
             exit 0
           fi
+          receipt="hew-${TAG}-platforms.json"
+          gh release download "${TAG}" --pattern "${receipt}"
+          channel=$(jq -er '.platforms["linux-packages"].state' "${receipt}")
+          case "$channel" in
+            available) ;;
+            unavailable)
+              echo "::notice::${TAG} has no qualified Linux package set; keeping the existing stable repository"
+              echo "SKIP=1" >>"$GITHUB_ENV"
+              exit 0 ;;
+            *) echo "::error::Unexpected Linux package state: $channel"; exit 1 ;;
+          esac
           mkdir pkgs
           gh release download "${TAG}" --dir pkgs \
             --pattern '*.deb' --pattern '*.rpm' --pattern '*.pkg.tar.zst'

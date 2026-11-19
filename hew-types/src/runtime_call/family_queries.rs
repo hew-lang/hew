@@ -898,6 +898,7 @@ impl RuntimeCallFamily {
             | F::StringIsEmpty
             | F::StructuralFormat
             | F::StringFind
+            | F::StringCursorStep
             | F::StringIndex
             | F::StringLen
             | F::StringRepeat

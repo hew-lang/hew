@@ -267,8 +267,11 @@ RELEASE_LIB_BUILD = $(PYTHON) "$(MAKEFILE_ROOT)/scripts/release-lib.py" build --
 ifeq ($(OS),Windows_NT)
 EXE_SUFFIX := .exe
 # An earlier build staged suffixless copies; Git Bash would run a stale
-# `hew` ahead of `hew.exe`, so the incremental staging targets drop them.
-STAGE_DROP_UNSUFFIXED = @rm -f "$(BUILD_DIR)/bin/hew" "$(BUILD_DIR)/bin/hew-debug"
+# `hew` ahead of `hew.exe`, so each incremental staging target drops its own.
+# MSYS rm falls back from `NAME` to `NAME.exe` when only that exists, so a
+# target only ever names the executable it re-stages on the next line.
+# Usage: $(call STAGE_DROP_UNSUFFIXED,hew)
+STAGE_DROP_UNSUFFIXED = @rm -f "$(BUILD_DIR)/bin/$(1)"
 else
 EXE_SUFFIX :=
 STAGE_DROP_UNSUFFIXED =
@@ -464,14 +467,17 @@ build: all
 hew: require-host-cargo-target ## Build: build the release-lib compiler and native archive
 	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib -p hew-cli --profile release-lib $(CARGO_TARGET_FLAG)
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib
-	$(STAGE_DROP_UNSUFFIXED)
+	$(call STAGE_DROP_UNSUFFIXED,hew)
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@# Git Bash's ln copies directories, and a later `ln -sfn` would then
+	@# link inside that copy, so replace build/std rather than relink over it.
+	@rm -rf "$(BUILD_DIR)/std"
 	@ln -sfn ../std "$(BUILD_DIR)/std"
 
 hew-debug: hew-native ## Build: build and stage the debug compiler
 	@mkdir -p $(BUILD_DIR)/bin
-	$(STAGE_DROP_UNSUFFIXED)
+	$(call STAGE_DROP_UNSUFFIXED,hew-debug)
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)" "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@echo "compiler profile: debug"
 	@echo "compiler path: $(DEBUG_HEW)"

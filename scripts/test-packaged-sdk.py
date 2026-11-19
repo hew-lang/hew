@@ -589,7 +589,14 @@ def main():
                 ]
             else:
                 flags = (
-                    ["-framework", "CoreFoundation", "-framework", "Security"]
+                    [
+                        "-framework",
+                        "CoreFoundation",
+                        "-framework",
+                        "Security",
+                        "-framework",
+                        "SystemConfiguration",
+                    ]
                     if sys.platform == "darwin"
                     else []
                 )

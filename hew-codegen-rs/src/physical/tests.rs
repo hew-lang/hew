@@ -681,6 +681,7 @@ fn scalar_entry_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),
@@ -883,6 +884,7 @@ fn bytes_copy_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: hew_sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),

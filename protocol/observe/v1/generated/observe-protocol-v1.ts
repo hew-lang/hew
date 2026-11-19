@@ -284,6 +284,14 @@ export interface CrashEntry {
   trap_kind: string;
   msg_type: number;
   fault_addr: bigint;
+  actor_type?: string | null;
+  handler?: string | null;
+  spawn_serial?: bigint | null;
+  supervisor?: string | null;
+  message?: string | null;
+  file?: string | null;
+  line?: number | null;
+  col?: number | null;
   [key: string]: unknown;
 }
 
@@ -634,6 +642,14 @@ export function decodeCrashEntry(value: unknown): CrashEntry {
     trap_kind: asString(input.trap_kind),
     msg_type: asBoundedNumber(input.msg_type, -2147483648, 2147483647),
     fault_addr: asBoundedBigInt(input.fault_addr, 0n, 18446744073709551615n),
+    actor_type: input.actor_type === undefined ? null : (input.actor_type === null ? null : asString(input.actor_type)),
+    handler: input.handler === undefined ? null : (input.handler === null ? null : asString(input.handler)),
+    spawn_serial: input.spawn_serial === undefined ? null : (input.spawn_serial === null ? null : asBoundedBigInt(input.spawn_serial, 0n, 18446744073709551615n)),
+    supervisor: input.supervisor === undefined ? null : (input.supervisor === null ? null : asString(input.supervisor)),
+    message: input.message === undefined ? null : (input.message === null ? null : asString(input.message)),
+    file: input.file === undefined ? null : (input.file === null ? null : asString(input.file)),
+    line: input.line === undefined ? null : (input.line === null ? null : asBoundedNumber(input.line, 0, 4294967295)),
+    col: input.col === undefined ? null : (input.col === null ? null : asBoundedNumber(input.col, 0, 4294967295)),
   } as CrashEntry;
   return output;
 }

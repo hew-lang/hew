@@ -94,6 +94,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        c_abi: hew_types::c_abi::SourceCAbi::default(),
         coverage: sir::CoveragePlan::default(),
         offloads: Vec::new(),
         defs: hew_types::DefTable::fixture(),

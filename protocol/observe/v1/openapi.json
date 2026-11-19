@@ -1461,11 +1461,38 @@
               "NullPointer",
               "InvalidUtf8",
               "Unreachable",
+              "UserPanic",
               "Unknown"
             ]
           },
           "msg_type": { "$ref": "#/components/schemas/Int32" },
-          "fault_addr": { "$ref": "#/components/schemas/UInt64Decimal" }
+          "fault_addr": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "actor_type": { "type": ["string", "null"] },
+          "handler": { "type": ["string", "null"] },
+          "spawn_serial": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt64Decimal" },
+              { "type": "null" }
+            ],
+            "description": "Actor incarnation at the failure site; zero if unknown."
+          },
+          "supervisor": { "type": ["string", "null"] },
+          "message": { "type": ["string", "null"] },
+          "file": { "type": ["string", "null"] },
+          "line": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt32" },
+              { "type": "null" }
+            ],
+            "description": "One-based source line; zero if unknown."
+          },
+          "col": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt32" },
+              { "type": "null" }
+            ],
+            "description": "One-based source column; zero if unknown."
+          }
         }
       },
       "MetricsEnvelope": { "$ref": "#/components/schemas/EnvelopeMetrics" },

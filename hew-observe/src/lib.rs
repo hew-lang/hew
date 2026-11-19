@@ -32,7 +32,7 @@ use ratatui::Terminal;
 /// TUI actor observer for Hew — inspect actors, messages, and crashes in real time.
 #[derive(clap::Args, Debug)]
 pub struct Options {
-    /// Address of the Hew profiler endpoint (host:port).
+    /// Profiler endpoint as host:port or an HTTP or HTTPS URL.
     #[arg(long)]
     addr: Option<String>,
 

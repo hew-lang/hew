@@ -6,6 +6,7 @@
 //! All returned [`HewYamlValue`] pointers are heap-allocated handles and must
 //! be freed with [`hew_yaml_free`]. Logical copies share their immutable tree
 //! until one handle is mutated.
+use hew_codec::yaml_value as yaml;
 mod checked;
 
 use base64::Engine as _;
@@ -13,14 +14,14 @@ use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use std::sync::Arc;
 
-/// Opaque wrapper around a [`serde_yaml::Value`].
+/// Opaque wrapper around a [`yaml::Value`].
 ///
 /// Returned by [`hew_yaml_parse`], [`hew_yaml_get_field`], and
 /// [`hew_yaml_array_get`].
 /// Must be freed with [`hew_yaml_free`].
 #[derive(Debug)]
 pub struct HewYamlValue {
-    inner: Arc<serde_yaml::Value>,
+    inner: Arc<yaml::Value>,
 }
 
 /// Visit one shared immutable YAML tree's canonical payload.
@@ -55,8 +56,8 @@ mod managed_tests {
     #[test]
     fn managed_yaml_shared_copy_and_detachment_keep_distinct_roots() {
         let mut values = Vec::with_capacity(8);
-        values.push(serde_yaml::Value::Bool(true));
-        let value = boxed_value(serde_yaml::Value::Sequence(values));
+        values.push(yaml::Value::Bool(true));
+        let value = boxed_value(yaml::Value::Sequence(values));
         // SAFETY: the handles and visitors remain live; mutation is exclusive.
         unsafe {
             let mut retained = Capture::default();
@@ -81,7 +82,7 @@ mod managed_tests {
             (*copy)
                 .sequence_mut()
                 .unwrap()
-                .push(serde_yaml::Value::Bool(false));
+                .push(yaml::Value::Bool(false));
             let mut detached = Capture::default();
             assert_eq!(
                 hew_managed_visit_yaml(
@@ -100,17 +101,16 @@ mod managed_tests {
 
     #[test]
     fn managed_yaml_retains_tags_and_mapping_capacity() {
-        let tag = serde_yaml::value::TaggedValue {
-            tag: serde_yaml::value::Tag::new("Kind"),
-            value: serde_yaml::Value::String("x".to_owned()),
+        let tag = yaml::TaggedValue {
+            tag: "!Kind".into(),
+            value: yaml::Value::String("x".to_owned()),
         };
-        let mut tagged = serde_yaml::Value::Tagged(Box::new(tag));
-        hew_codec::managed_tree::normalize_yaml_tags(&mut tagged);
+        let tagged = yaml::Value::Tagged(Box::new(tag));
         let value = boxed_value(tagged);
-        let mut mapping = serde_yaml::Mapping::with_capacity(32);
-        mapping.insert(serde_yaml::Value::Bool(true), serde_yaml::Value::Null);
+        let mut mapping = yaml::Mapping::with_capacity(32);
+        mapping.insert(yaml::Value::Bool(true), yaml::Value::Null);
         let capacity = mapping.capacity() as u64;
-        let map = boxed_value(serde_yaml::Value::Mapping(mapping));
+        let map = boxed_value(yaml::Value::Mapping(mapping));
         // SAFETY: handle slots, providers and visitors are live until free.
         unsafe {
             let mut tags = Capture::default();
@@ -138,27 +138,27 @@ mod managed_tests {
 }
 
 impl HewYamlValue {
-    fn value(&self) -> &serde_yaml::Value {
+    fn value(&self) -> &yaml::Value {
         self.inner.as_ref()
     }
 
     #[cfg(test)]
-    fn value_mut(&mut self) -> &mut serde_yaml::Value {
+    fn value_mut(&mut self) -> &mut yaml::Value {
         Arc::make_mut(&mut self.inner)
     }
 
     #[cfg(test)]
-    fn sequence_mut(&mut self) -> Option<&mut Vec<serde_yaml::Value>> {
-        if !matches!(self.value(), serde_yaml::Value::Sequence(_)) {
+    fn sequence_mut(&mut self) -> Option<&mut Vec<yaml::Value>> {
+        if !matches!(self.value(), yaml::Value::Sequence(_)) {
             return None;
         }
-        let serde_yaml::Value::Sequence(sequence) = self.value_mut() else {
+        let yaml::Value::Sequence(sequence) = self.value_mut() else {
             unreachable!("YAML value kind changed while borrowed")
         };
         Some(sequence)
     }
 
-    fn into_value(self) -> serde_yaml::Value {
+    fn into_value(self) -> yaml::Value {
         Arc::try_unwrap(self.inner).unwrap_or_else(|shared| shared.as_ref().clone())
     }
 }
@@ -170,12 +170,12 @@ std::thread_local! {
     static LIVE_YAML_VALUE_BOXES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Wrap a [`serde_yaml::Value`] into a heap-allocated [`HewYamlValue`].
-fn boxed_value(v: serde_yaml::Value) -> *mut HewYamlValue {
+/// Wrap a [`yaml::Value`] into a heap-allocated [`HewYamlValue`].
+fn boxed_value(v: yaml::Value) -> *mut HewYamlValue {
     boxed_shared_value(Arc::new(v))
 }
 
-fn boxed_shared_value(v: Arc<serde_yaml::Value>) -> *mut HewYamlValue {
+fn boxed_shared_value(v: Arc<yaml::Value>) -> *mut HewYamlValue {
     #[cfg(test)]
     LIVE_YAML_VALUE_BOXES.with(|live| live.set(live.get() + 1));
     Box::into_raw(Box::new(HewYamlValue { inner: v }))
@@ -270,8 +270,7 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewY
     // SAFETY: the caller borrows a live managed string or canonical empty handle.
     let s = unsafe { string_as_str(yaml_str) };
     match hew_codec::yaml_value::parse(s) {
-        Ok(mut val) => {
-            hew_codec::managed_tree::normalize_yaml_tags(&mut val);
+        Ok(val) => {
             clear_parse_last_error();
             boxed_value(val)
         }
@@ -313,7 +312,7 @@ pub unsafe extern "C" fn hew_yaml_stringify(val: *const HewYamlValue) -> *mut He
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
-    match serde_yaml::to_string(v.value()) {
+    match yaml::to_string(v.value()) {
         Ok(s) => {
             clear_parse_last_error();
             string_from_str(&s)
@@ -342,19 +341,19 @@ pub unsafe extern "C" fn hew_yaml_type(val: *const HewYamlValue) -> i32 {
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     match v.value() {
-        serde_yaml::Value::Null => 0,
-        serde_yaml::Value::Bool(_) => 1,
-        serde_yaml::Value::Number(n) => {
+        yaml::Value::Null => 0,
+        yaml::Value::Bool(_) => 1,
+        yaml::Value::Number(n) => {
             if n.is_i64() || n.is_u64() {
                 2
             } else {
                 3
             }
         }
-        serde_yaml::Value::String(_) => 4,
-        serde_yaml::Value::Sequence(_) => 5,
-        serde_yaml::Value::Mapping(_) => 6,
-        serde_yaml::Value::Tagged(_) => 7,
+        yaml::Value::String(_) => 4,
+        yaml::Value::Sequence(_) => 5,
+        yaml::Value::Mapping(_) => 6,
+        yaml::Value::Tagged(_) => 7,
     }
 }
 
@@ -407,27 +406,27 @@ pub unsafe extern "C" fn hew_yaml_get_u64(val: *const HewYamlValue) -> u64 {
     }
     // SAFETY: val is non-null and valid per caller contract.
     match unsafe { &*val }.value() {
-        serde_yaml::Value::Number(n) => n.as_u64().unwrap_or(0),
+        yaml::Value::Number(n) => n.as_u64().unwrap_or(0),
         _ => 0,
     }
 }
 
-fn yaml_int_status_of(value: &serde_yaml::Value) -> i32 {
+fn yaml_int_status_of(value: &yaml::Value) -> i32 {
     match value {
-        serde_yaml::Value::Number(n) if n.is_i64() => 1,
-        serde_yaml::Value::Number(n) if n.is_u64() => 0,
+        yaml::Value::Number(n) if n.is_i64() => 1,
+        yaml::Value::Number(n) if n.is_u64() => 0,
         _ => -1,
     }
 }
 
-fn count_unrepresentable_yaml_ints(value: &serde_yaml::Value) -> i64 {
+fn count_unrepresentable_yaml_ints(value: &yaml::Value) -> i64 {
     match value {
-        serde_yaml::Value::Number(n) => i64::from(!n.is_i64() && n.is_u64()),
-        serde_yaml::Value::Sequence(items) => items
+        yaml::Value::Number(n) => i64::from(!n.is_i64() && n.is_u64()),
+        yaml::Value::Sequence(items) => items
             .iter()
             .map(count_unrepresentable_yaml_ints)
             .fold(0i64, i64::saturating_add),
-        serde_yaml::Value::Mapping(fields) => fields
+        yaml::Value::Mapping(fields) => fields
             .iter()
             .map(|(key, value)| {
                 count_unrepresentable_yaml_ints(key)
@@ -598,10 +597,10 @@ pub unsafe extern "C" fn hew_yaml_get_field(
     let key_str = unsafe { string_as_str(key) };
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
-    let serde_yaml::Value::Mapping(mapping) = v.value() else {
+    let yaml::Value::Mapping(mapping) = v.value() else {
         return std::ptr::null_mut();
     };
-    let yaml_key = serde_yaml::Value::String(key_str.to_owned());
+    let yaml_key = yaml::Value::String(key_str.to_owned());
     match mapping.get(&yaml_key) {
         Some(field) => boxed_value(field.clone()),
         None => std::ptr::null_mut(),
@@ -624,12 +623,10 @@ pub unsafe extern "C" fn hew_yaml_object_keys(val: *const HewYamlValue) -> *mut 
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
-    let serde_yaml::Value::Mapping(mapping) = unsafe { &*val }.value() else {
+    let yaml::Value::Mapping(mapping) = unsafe { &*val }.value() else {
         return std::ptr::null_mut();
     };
-    boxed_value(serde_yaml::Value::Sequence(
-        mapping.keys().cloned().collect(),
-    ))
+    boxed_value(yaml::Value::Sequence(mapping.keys().cloned().collect()))
 }
 
 /// Get the length of a YAML sequence.
@@ -652,7 +649,7 @@ pub unsafe extern "C" fn hew_yaml_array_len(val: *const HewYamlValue) -> i32 {
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
     match v.value() {
-        serde_yaml::Value::Sequence(seq) => seq.len() as i32,
+        yaml::Value::Sequence(seq) => seq.len() as i32,
         _ => -1,
     }
 }
@@ -676,7 +673,7 @@ pub unsafe extern "C" fn hew_yaml_array_get(
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
-    let serde_yaml::Value::Sequence(seq) = v.value() else {
+    let yaml::Value::Sequence(seq) = v.value() else {
         return std::ptr::null_mut();
     };
     #[expect(
@@ -730,7 +727,7 @@ pub unsafe extern "C" fn hew_yaml_string_free(s: *mut HewString) {
 /// Must be freed with [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_object_new() -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    boxed_value(yaml::Value::Mapping(yaml::Mapping::new()))
 }
 
 /// Set a boolean field on a YAML mapping.
@@ -954,7 +951,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *
 /// Must be freed with [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_array_new() -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Sequence(Vec::new()))
+    boxed_value(yaml::Value::Sequence(Vec::new()))
 }
 
 /// Push a boolean onto a YAML sequence.
@@ -1086,7 +1083,7 @@ pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut H
 /// [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_from_bool(val: i32) -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Bool(val != 0))
+    boxed_value(yaml::Value::Bool(val != 0))
 }
 
 /// Create a [`HewYamlValue`] wrapping an integer.
@@ -1095,13 +1092,13 @@ pub extern "C" fn hew_yaml_from_bool(val: i32) -> *mut HewYamlValue {
 /// [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_from_int(val: i64) -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+    boxed_value(yaml::Value::Number(yaml::Number::from(val)))
 }
 
 /// Create a [`HewYamlValue`] containing an exact unsigned integer.
 #[must_use]
 pub extern "C" fn hew_yaml_from_u64(val: u64) -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+    boxed_value(yaml::Value::Number(yaml::Number::from(val)))
 }
 
 /// Create a [`HewYamlValue`] wrapping a float.
@@ -1110,7 +1107,7 @@ pub extern "C" fn hew_yaml_from_u64(val: u64) -> *mut HewYamlValue {
 /// [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+    boxed_value(yaml::Value::Number(yaml::Number::from(val)))
 }
 
 /// Create a [`HewYamlValue`] wrapping a string. The string value is copied.
@@ -1125,7 +1122,7 @@ pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
 pub unsafe extern "C" fn hew_yaml_from_string(val: *const HewString) -> *mut HewYamlValue {
     // SAFETY: val is non-null (checked above) and valid per caller contract.
     let s = unsafe { string_as_str(val) }.to_owned();
-    boxed_value(serde_yaml::Value::String(s))
+    boxed_value(yaml::Value::String(s))
 }
 
 /// Create a [`HewYamlValue`] wrapping null.
@@ -1134,7 +1131,7 @@ pub unsafe extern "C" fn hew_yaml_from_string(val: *const HewString) -> *mut Hew
 /// [`hew_yaml_free`].
 #[must_use]
 pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
-    boxed_value(serde_yaml::Value::Null)
+    boxed_value(yaml::Value::Null)
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,15 +1322,15 @@ mod tests {
 
     #[test]
     fn stringify_nested_tags_reports_serializer_failure_then_clears_error() {
-        use serde_yaml::value::{Tag, TaggedValue};
+        use yaml::TaggedValue;
         let baseline = live_value_boxes();
         // Construct the serde value directly: parsing rejects nested tags, but
         // the runtime must report a serializer failure without losing its cause.
-        let invalid = boxed_value(serde_yaml::Value::Tagged(Box::new(TaggedValue {
-            tag: Tag::new("Outer"),
-            value: serde_yaml::Value::Tagged(Box::new(TaggedValue {
-                tag: Tag::new("Inner"),
-                value: serde_yaml::Value::Null,
+        let invalid = boxed_value(yaml::Value::Tagged(Box::new(TaggedValue {
+            tag: "!Outer".into(),
+            value: yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: "!Inner".into(),
+                value: yaml::Value::Null,
             })),
         })));
         let valid = parse("!Config {7: !Status queued}");
@@ -1343,7 +1340,7 @@ mod tests {
             assert!(hew_yaml_stringify(invalid).is_null());
             let error = read_and_free_string(hew_yaml_last_error());
             assert!(error.contains("yaml stringify"));
-            assert!(error.contains("nested enum"), "{error}");
+            assert!(error.contains("tag"), "{error}");
             assert_eq!(hew_yaml_eq(invalid, copy), 1);
             let encoded = read_and_free_string(hew_yaml_stringify(valid));
             assert!(read_and_free_string(hew_yaml_last_error()).is_empty());
@@ -1520,8 +1517,7 @@ mod tests {
                 let saved = hew_yaml_get_string(field);
                 hew_yaml_free(field);
                 let encoded = hew_yaml_stringify(obj);
-                let native: serde_yaml::Value =
-                    serde_yaml::from_str(string_as_str(encoded)).unwrap();
+                let native: yaml::Value = yaml::parse(string_as_str(encoded)).unwrap();
                 assert_eq!(native[key_text].as_str(), Some(text));
                 assert_eq!(native.as_mapping().unwrap().len(), 1);
                 let reparsed = hew_yaml_parse(encoded);
@@ -1561,7 +1557,7 @@ mod tests {
     fn managed_parser_preserves_native_document_errors() {
         for document in ["", "true\0trailing", "{\"broken\":", "雪\0tail"] {
             let input = ManagedString::new(document);
-            let native = serde_yaml::from_str::<serde_yaml::Value>(document);
+            let native = yaml::parse(document);
             // SAFETY: input is valid UTF-8 in a live managed handle, including canonical empty.
             unsafe {
                 let value = hew_yaml_parse(input.as_ptr());
@@ -1573,10 +1569,7 @@ mod tests {
                     }
                     Err(error) => {
                         assert!(value.is_null());
-                        assert_eq!(
-                            read_and_free_string(hew_yaml_last_error()),
-                            error.to_string()
-                        );
+                        assert_eq!(read_and_free_string(hew_yaml_last_error()), error);
                     }
                 }
                 assert_eq!(string_as_str(input.as_ptr()), document);
@@ -1763,8 +1756,8 @@ mod tests {
             let yaml_str = hew_yaml_stringify(val);
             let result = read_and_free_string(yaml_str);
             // Re-parse both to compare structurally.
-            let v1: serde_yaml::Value = serde_yaml::from_str(original).unwrap();
-            let v2: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
+            let v1: yaml::Value = yaml::parse(original).unwrap();
+            let v2: yaml::Value = yaml::parse(&result).unwrap();
             assert_eq!(v1, v2);
             hew_yaml_free(val);
         }
@@ -2231,8 +2224,7 @@ mod tests {
 
         // SAFETY: hew_yaml_last_error returns a managed string owner.
         let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
-        // serde_yaml's own alias-jump limit catches this shape before the
-        // node budget does; either refusal keeps the tree from being built.
+        // Either the parser or the shared expansion budget may refuse this shape.
         assert!(
             err.contains("alias expansion limit") || err.contains("repetition limit"),
             "got: {err}"
@@ -2994,32 +2986,31 @@ description: a language runtime
         // SAFETY: every handle below is allocated by boxed_value and freed once
         // by hew_yaml_free in the same scope.
         unsafe {
-            let null_val = boxed_value(serde_yaml::Value::Null);
+            let null_val = boxed_value(yaml::Value::Null);
             assert_eq!(hew_yaml_type(null_val), 0);
             hew_yaml_free(null_val);
 
-            let bool_val = boxed_value(serde_yaml::Value::Bool(true));
+            let bool_val = boxed_value(yaml::Value::Bool(true));
             assert_eq!(hew_yaml_type(bool_val), 1);
             hew_yaml_free(bool_val);
 
-            let int_val = boxed_value(serde_yaml::to_value(42_i64).expect("serialize YAML int"));
+            let int_val = boxed_value(yaml::Value::from(42_i64));
             assert_eq!(hew_yaml_type(int_val), 2);
             hew_yaml_free(int_val);
 
-            let float_val =
-                boxed_value(serde_yaml::to_value(3.25_f64).expect("serialize YAML float"));
+            let float_val = boxed_value(yaml::Value::from(3.25_f64));
             assert_eq!(hew_yaml_type(float_val), 3);
             hew_yaml_free(float_val);
 
-            let string_val = boxed_value(serde_yaml::Value::String("hew".to_owned()));
+            let string_val = boxed_value(yaml::Value::String("hew".to_owned()));
             assert_eq!(hew_yaml_type(string_val), 4);
             hew_yaml_free(string_val);
 
-            let array_val = boxed_value(serde_yaml::Value::Sequence(Vec::new()));
+            let array_val = boxed_value(yaml::Value::Sequence(Vec::new()));
             assert_eq!(hew_yaml_type(array_val), 5);
             hew_yaml_free(array_val);
 
-            let object_val = boxed_value(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            let object_val = boxed_value(yaml::Value::Mapping(yaml::Mapping::new()));
             assert_eq!(hew_yaml_type(object_val), 6);
             hew_yaml_free(object_val);
         }

@@ -1429,7 +1429,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     // combined runtime + stdlib staticlib built by `make stdlib` / `cargo
     // build -p hew-lib`) via `find_hew_lib`, applies the per-platform
     // link plan (dead-strip, strip, system libs including `-lpthread
-    // -ldl -lm -lrt` on Linux, CoreFoundation + Security on macOS), and
+    // -ldl -lm -lrt` on Linux, platform frameworks on macOS), and
     // routes through lld when available, so compile binaries use the same
     // linker behaviour as release builds.
     if let Some(obj) = &artefacts.native_obj_path {

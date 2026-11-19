@@ -77,6 +77,7 @@ pub(super) fn build_module_with_host<'ctx>(
     emitter.emit_actor_codec_registration()?;
     emitter.emit_actor_ingress_adapters()?;
     emitter.emit_functions()?;
+    c_export::emit(&emitter)?;
     emitter.emit_entry()?;
     for callable in &physical.callables {
         let body = if callable.is_resumable {
@@ -823,8 +824,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
         self.emit_selected_entry_body(&builder, wrapper, entry_id, plan.action.clone())?;
-        if wasm {
-            self.emit_wasi_entry_adapter(wrapper)?;
+        if self.module.target.triple.contains("wasi") {
+            self.emit_wasi_command_start(wrapper)?;
         }
         if let Some(debug) = &self.debug {
             debug.shim(self.ctx, wrapper, C_ENTRY_DEBUG_NAME);
@@ -1046,30 +1047,54 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// Publish the canonical entry adapter the WASI runtime's `_start` calls.
-    ///
-    /// `main` stays the source-shaped export a freestanding host links against;
-    /// `__hew_wasi_main` is the fixed name `hew_runtime`'s `_start` imports, so
-    /// a WASI command module reaches the same process entry.
-    fn emit_wasi_entry_adapter(&self, process_main: FunctionValue<'ctx>) -> CodegenResult<()> {
-        let adapter = self.llvm.add_function(
-            "__hew_wasi_main",
-            self.ctx.i32_type().fn_type(&[], false),
+    /// A WASI command owns its process entry. A library leaves startup to its host.
+    fn emit_wasi_command_start(&self, process_main: FunctionValue<'ctx>) -> CodegenResult<()> {
+        let start = self.llvm.add_function(
+            "_start",
+            self.ctx.void_type().fn_type(&[], false),
             Some(Linkage::External),
         );
         let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(adapter, "entry"));
+        builder.position_at_end(self.ctx.append_basic_block(start, "entry"));
         let status = builder
-            .build_call(process_main, &[], "wasi.entry.status")
-            .llvm_ctx("call the process entry from the WASI adapter")?
+            .build_call(process_main, &[], "wasi.status")
+            .llvm_ctx("run the WASI command")?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("process entry returned no status for WASI".into())
-            })?;
+            .ok_or_else(|| CodegenError::FailClosed("WASI command returned no status".into()))?
+            .into_int_value();
+        let returned = self.ctx.append_basic_block(start, "returned");
+        let exit = self.ctx.append_basic_block(start, "exit");
+        let ok = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "wasi.ok",
+            )
+            .llvm_ctx("check WASI exit status")?;
         builder
-            .build_return(Some(&status))
-            .llvm_ctx("return the WASI process status")?;
+            .build_conditional_branch(ok, returned, exit)
+            .llvm_ctx("dispatch WASI exit status")?;
+        builder.position_at_end(exit);
+        let terminate = get_or_declare_external(
+            &self.llvm,
+            "hew_exit",
+            self.ctx
+                .void_type()
+                .fn_type(&[self.ctx.i64_type().into()], false),
+        )?;
+        let code = builder
+            .build_int_s_extend(status, self.ctx.i64_type(), "wasi.code")
+            .llvm_ctx("widen process status")?;
+        builder
+            .build_call(terminate, &[code.into()], "")
+            .llvm_ctx("exit WASI command")?;
+        builder.build_unreachable().llvm_ctx("finish WASI exit")?;
+        builder.position_at_end(returned);
+        builder
+            .build_return(None)
+            .llvm_ctx("complete WASI command")?;
         Ok(())
     }
 }

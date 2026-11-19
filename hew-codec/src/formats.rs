@@ -78,17 +78,12 @@ fn position(cursor: &Cursor<&[u8]>) -> usize {
 }
 
 fn parse_yaml(text: &str) -> Result<Value, DecodeError> {
-    let value = crate::yaml_value::check_alias_expansion(text)
-        .and_then(|()| serde_yaml::from_str::<Document>(text))
+    let value = crate::yaml_value::decode::<Document>(text)
         .map(|document| document.0)
         .map_err(|e| {
-            let offset = e.location().map_or(text.len(), |location| location.index());
-            let message = e.to_string();
-            // serde_yaml appends its own position; ours comes from the offset.
-            let reason = message
-                .find(" at line ")
-                .map_or(message.as_str(), |at| &message[..at]);
-            DecodeError::syntax_at(Some(text.as_bytes()), offset, reason)
+            let offset = e.span().map_or(text.len(), |span| span.start().index());
+            let message = e.message();
+            DecodeError::syntax_at(Some(text.as_bytes()), offset, message)
         })?;
     // Text sinks encode a map with non-string keys as a sequence of pairs.
     // Account for that extra container before accepting a document, so the
@@ -145,7 +140,7 @@ fn parse_toml(text: &str) -> Result<Value, DecodeError> {
 pub(crate) fn write(format: Format, value: &Value) -> Vec<u8> {
     let written = match format {
         Format::Json => serde_json::to_vec(value).map_err(|e| e.to_string()),
-        Format::Yaml => serde_yaml::to_string(value)
+        Format::Yaml => ayaml::to_string(value)
             .map(String::into_bytes)
             .map_err(|e| e.to_string()),
         Format::Toml => toml::to_string(value)

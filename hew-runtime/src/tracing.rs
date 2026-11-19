@@ -128,6 +128,15 @@ pub const SPAN_RC_SWEEP: i32 = 23;
 /// Host-authored component code, activation and invocation attribution.
 pub const SPAN_LIVE_EXECUTION: i32 = 24;
 
+/// Whether the event's message type identifies a handler.
+#[cfg(feature = "profiler")]
+pub(crate) const fn event_carries_handler(event_type: i32) -> bool {
+    matches!(
+        event_type,
+        SPAN_BEGIN | SPAN_END | SPAN_SEND | SPAN_DELIVERY_REFUSED
+    )
+}
+
 /// Closed taxonomy of v0.5 concurrency trace event names emitted by this
 /// runtime. The entries pair each `SPAN_*` constant with the canonical
 /// `event_type` string that appears in the JSON drained by
@@ -1883,8 +1892,11 @@ pub fn drain_events_json() -> String {
             // variant releases the lock before returning — a TOCTOU UAF).
             let type_name =
                 crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch_ptr);
-            let hname =
-                crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, ev.msg_type);
+            let hname = if event_carries_handler(ev.event_type) {
+                crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, ev.msg_type)
+            } else {
+                None
+            };
             let actor_type = if type_name == "Actor" && type_id == 0 {
                 None
             } else {

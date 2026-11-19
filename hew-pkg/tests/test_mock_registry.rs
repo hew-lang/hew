@@ -1088,6 +1088,26 @@ fn publish_preserves_registry_rejection_details_and_success_statuses() {
 }
 
 #[test]
+fn registry_metadata_rejects_oversized_json() {
+    let mock = MockRegistry::start();
+    let mut body = br#"{"device_code":"d","user_code":"u","verification_uri":"https://example.com","expires_in":1,"interval":1}"#.to_vec();
+    body.resize(10 * 1024 * 1024 + 1, b' ');
+    mock.add_override(
+        "POST",
+        "/api/v1/login/device",
+        MockResponse::Raw {
+            status: 200,
+            body,
+            content_type: "application/json".to_string(),
+        },
+    );
+    assert!(matches!(
+        RegistryClient::with_url(mock.api_url()).login_device(),
+        Err(ApiError::Parse(_))
+    ));
+}
+
+#[test]
 fn registry_error_excerpts_are_bounded_and_survive_non_json_responses() {
     for (body, expected) in [
         (

@@ -846,30 +846,6 @@ pub use execution_context::{
     HEW_CTX_OFFSET_TRACE, HEW_CTX_OFFSET_TRACE_SPAN, HEW_TRACE_OFFSET_SPAN_ID,
 };
 
-// ── WASM entry point ─────────────────────────────────────────────────────────
-// Provides `_start` for WASI command modules. The compiler keeps the
-// freestanding source-shaped export as `main` and also defines the canonical
-// `__hew_wasi_main() -> i32` adapter for the WASI runtime entry point.
-
-#[cfg(all(target_arch = "wasm32", not(test)))]
-extern "C" {
-    fn __hew_wasi_main() -> i32;
-}
-
-/// WASI entry point — delegates to the compiler-generated canonical adapter.
-#[cfg(all(target_arch = "wasm32", not(test)))]
-#[no_mangle]
-pub extern "C" fn _start() {
-    // SAFETY: `__hew_wasi_main` is emitted by hew-codegen for every WASI-linked
-    // Hew program with this canonical signature, independently of the
-    // source-level main return width.
-    let code = unsafe { __hew_wasi_main() };
-    if code != 0 {
-        std::process::exit(code);
-    }
-}
-// test
-
 /// `hew_exit` is a termination path like any other, so it must consult the same
 /// exit-status authority every other one does.
 ///

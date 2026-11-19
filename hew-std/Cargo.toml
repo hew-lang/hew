@@ -35,7 +35,6 @@ hew-runtime = { path = "../hew-runtime", default-features = false }
 base64.workspace = true
 libc.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9"
 toml.workspace = true
 
 # Native-only module deps (union of the former per-module crates). Gated off the
@@ -77,7 +76,7 @@ tokio = { version = "1", default-features = false, features = [
   "macros",
 ] }
 tungstenite = { version = "0.30", features = ["__rustls-tls"] }
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+reqwest.workspace = true
 url = "2"
 uuid = { version = "1.23.3", features = ["v4", "v7"] }
 webpki-roots = "1.0.10"

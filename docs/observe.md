@@ -398,7 +398,10 @@ hew observe --list
 hew observe --pid 12345
 hew observe --pid 12345 --pid 23456
 hew observe --addr 127.0.0.1:6067
+hew observe --addr https://profiler.example.com
 ```
+
+TCP endpoints use the system proxy settings. Set `NO_PROXY` to bypass the proxy for a particular host. HTTPS verifies the certificate of the profiler or its reverse proxy against the platform trust store.
 
 Repeat `--pid` (or use comma-separated PIDs) to watch several processes in one
 observer. Use `[` and `]` to switch the active process in the per-process views;

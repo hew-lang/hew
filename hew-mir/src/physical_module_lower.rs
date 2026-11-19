@@ -352,6 +352,7 @@ fn lower_physical_with_inventory(
 
     let mut physical =
         PhysicalModule {
+            c_abi: module.c_abi.clone(),
             coverage: module.coverage.clone(),
             releases: ReleaseEffects::default(),
             actor_recipes: actor_value_recipes(module, &ids)?,

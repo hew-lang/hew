@@ -44,8 +44,8 @@ profiler = [
 # without the feature flag, but integration tests must opt in via
 # `--features sim-transport`. Adds no production dependencies.
 sim-transport = []
-# OpenTelemetry OTLP/HTTP trace exporter (no tokio — pure sync HTTP via ureq)
-otel = ["dep:ureq"]
+# OpenTelemetry OTLP/HTTP trace exporter on its own background thread.
+otel = ["dep:reqwest"]
 
 # Deterministic clone-failure injection for the TCP stream-bridge consumed-
 # connection ownership tests (#2650). Lets a test force `tcp_clone_stream`'s
@@ -117,9 +117,7 @@ flate2 = { version = "1", optional = true }
 hyper = { version = "1.10.1", optional = true, features = ["http1", "server"] }
 hyper-util = { version = "0.1", optional = true, features = ["tokio", "http1"] }
 http-body-util = { version = "0.1", optional = true }
-# Sync HTTP client for the OTel OTLP/HTTP exporter (no async runtime needed).
-# TLS is opt-in — most OTel endpoints (Jaeger, Tempo) run on plain HTTP locally.
-ureq = { version = "3", optional = true, default-features = false }
+reqwest = { workspace = true, optional = true }
 
 # QUIC transport dependencies (optional, behind "quic" feature)
 # bytes is a direct dep (not transitive-only) because quic_mesh's datagram
@@ -169,7 +167,7 @@ rand = "0.10.1"
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 # For the OTel integration test mock receiver (direct HTTP POST)
-ureq = { version = "3", default-features = false }
+reqwest.workspace = true
 # For profiler server JSON-escape unit tests
 serde_json.workspace = true
 

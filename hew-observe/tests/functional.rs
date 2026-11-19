@@ -343,6 +343,14 @@ fn validate_supervisor_drill_down(
     let rows: Vec<SupervisorRow> = fetch_json(client, base_url, "/api/supervisors")?;
     let actors: Vec<ActorInfo> = fetch_json(client, base_url, "/api/actors")?;
     let traces: TraceBatch = fetch_json(client, base_url, "/api/traces")?;
+    if traces.events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "spawn" | "crash" | "stop" | "supervisor_restart"
+        ) && event.handler_name.is_some()
+    }) {
+        return Err("lifecycle event reported an unrelated handler".to_owned());
+    }
     for (role, restarts) in [("a", 1), ("b", 3)] {
         let details = rows
             .iter()
@@ -597,8 +605,7 @@ fn fetch_json<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("GET {url} failed: {error}"))?
         .error_for_status()
         .map_err(|error| format!("GET {url} returned non-success status: {error}"))?;
-    let envelope: Envelope<T> = response
-        .json()
+    let envelope: Envelope<T> = serde_json::from_reader(std::io::BufReader::new(response))
         .map_err(|error| format!("GET {url} returned invalid envelope JSON: {error}"))?;
     if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
         return Err(format!(

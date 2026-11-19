@@ -662,7 +662,8 @@ pub struct BuildArgs {
     /// info and diagnostics. Repeatable; the longest matching FROM wins.
     #[arg(long = "remap-path-prefix", value_name = "FROM=TO", value_parser = parse_path_remap)]
     pub remap_path_prefix: Vec<PathRemap>,
-    /// Build with debug info (no optimization, no stripping).
+    /// Keep symbols and source locations for debugging. For an optimized
+    /// profiling build, combine `-g` with `--opt-level 2`.
     ///
     /// Linux and FreeBSD: DWARF in the ELF binary, found by its build-id.
     /// macOS: DWARF gathered into `<out>.dSYM` beside the binary. Windows

@@ -680,6 +680,7 @@ mod non_root_module_inference_scope {
             resource_marker: hew_parser::ast::ResourceMarker::None,
             serial_case: None,
             is_opaque: false,
+            repr_c: false,
             lang_item: None,
         };
         let impl_decl = ImplDecl {
@@ -715,8 +716,7 @@ mod non_root_module_inference_scope {
             module_doc: None,
         };
 
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&program);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
 
         assert!(
             output.errors.is_empty(),

@@ -905,11 +905,13 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
+            # Bring the image libraries onto the same catalogue as the build tools.
+            pkg upgrade -y -r FreeBSD
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
             # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
-            # one wasmtime per quarterly branch and takes no version selector. The
+            # one wasmtime per package branch and takes no version selector. The
             # alternative is building wasmtime from source inside a VM step that
             # already runs near its time limit. Every other runner takes the pinned
             # release asset.
@@ -1095,6 +1097,8 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
+            # Bring the image libraries onto the same catalogue as the build tools.
+            pkg upgrade -y -r FreeBSD
             pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |

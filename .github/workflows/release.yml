@@ -1044,6 +1044,8 @@ jobs:
             # read the catalogue the old one wrote, so every package reports missing.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
+            # Bring the image libraries onto the same catalogue as the build tools.
+            pkg upgrade -y -r FreeBSD
             pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |

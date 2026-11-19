@@ -3584,7 +3584,21 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 - **Lambda parameters infer from context**: When a lambda appears where a specific function type is expected, parameter types are inferred
 - **Explicit annotations when ambiguous**: If types cannot be inferred, the compiler requires explicit annotations
 
-> **Note:** Return type inference via `-> _` is **not yet implemented**. A function annotated `fn f(...) -> _ { ... }` is rejected at HIR with `E_HIR: inferred type reached resolved HIR boundary (UnresolvedInferenceVar)`. All function return types must be written explicitly.
+Write `-> _` to infer a function’s result from its body. A generic result can
+refer to the function’s own type parameters. Each call substitutes its own
+argument types, including calls written before the declaration.
+
+```hew
+fn first<T>(left: T, right: T) -> _ { left }
+fn countdown(n: i64) -> _ {
+    if n == 0 { "done" } else { countdown(n - 1) }
+}
+```
+
+Recursive and mutually recursive functions can infer their results when
+their bodies determine a type. When every path calls back into the same
+cycle, write an explicit result on one function. An unconstrained value
+such as `Option.None` also needs a result type such as `Option<string>`.
 
 **Lambda inference examples:**
 

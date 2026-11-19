@@ -86,6 +86,7 @@ mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
 mod resolution;
+mod return_inference;
 pub mod scope;
 mod serializable;
 mod statements;
@@ -3214,6 +3215,7 @@ impl Checker {
             type_def_inference_holes: self.type_def_inference_holes.clone(),
             fn_sig_inference_holes: self.fn_sig_inference_holes.clone(),
             deferred_inference_holes: self.deferred_inference_holes.clone(),
+            deferred_call_returns: self.deferred_call_returns.clone(),
             deferred_cast_checks: self.deferred_cast_checks.clone(),
             deferred_negate_checks: self.deferred_negate_checks.clone(),
             deferred_is_checks: self.deferred_is_checks.clone(),
@@ -3609,7 +3611,8 @@ impl Checker {
                         self.is_stdlib_source = true;
                     }
 
-                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    for item_idx in return_inference::body_order(&module.items) {
+                        let (item, span) = &module.items[item_idx];
                         self.current_item_source = self
                             .module_item_sources
                             .get(&module_name)
@@ -3679,12 +3682,11 @@ impl Checker {
         {
             self.check_item(item, span);
         }
-        for (item, span) in program
-            .items
-            .iter()
-            .filter(|(item, _)| !matches!(item, Item::Supervisor(_)))
-        {
-            self.check_item(item, span);
+        for idx in return_inference::body_order(&program.items) {
+            let (item, span) = &program.items[idx];
+            if !matches!(item, Item::Supervisor(_)) {
+                self.check_item(item, span);
+            }
         }
     }
 

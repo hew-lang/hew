@@ -2781,6 +2781,7 @@ mod tests {
         let mut fn_sigs = HashMap::from([(
             crate::DefId::for_test("display"),
             FnSig {
+                inferred_return: false,
                 param_defaults: Vec::new(),
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],

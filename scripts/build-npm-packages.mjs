@@ -167,6 +167,16 @@ function buildSandboxVm({ version, source }) {
   return stagingDir;
 }
 
+function stageNotices(directory) {
+  const manifest = join(directory, "package.json");
+  const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+  for (const name of ["LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "THIRD-PARTY-LICENSES"]) {
+    cpSync(join(REPO_ROOT, name), join(directory, name));
+    if (!pkg.files.includes(name)) pkg.files.push(name);
+  }
+  writeFileSync(manifest, JSON.stringify(pkg, null, 2) + "\n");
+}
+
 async function main() {
   const version = workspaceVersion();
   const source = sourceIdentity();
@@ -174,8 +184,8 @@ async function main() {
 
   mkdirSync(STAGING_ROOT, { recursive: true });
 
-  buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version, source });
-  buildSandboxVm({ version, source });
+  stageNotices(buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version, source }));
+  stageNotices(buildSandboxVm({ version, source }));
   if (JSON.stringify(sourceIdentity()) !== JSON.stringify(source)) {
     throw new Error("Source checkout changed while building npm packages.");
   }

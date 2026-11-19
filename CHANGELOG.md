@@ -37,6 +37,19 @@
   `std.encoding.yaml` API. In YAML flow collections, add a space between an
   explicit key indicator and a collection key, as in `? [north, west]`.
 
+- Configure the native package registry client, TCP Observe connections,
+  `std.net.http.client` and the optional OTLP exporter with `HTTP_PROXY`,
+  `HTTPS_PROXY` and `NO_PROXY`. The proxy forwards plain HTTP requests and
+  tunnels HTTPS with `CONNECT`. Add internal hosts to `NO_PROXY` for direct
+  connections. To connect Observe through TLS, use
+  `hew observe --addr https://profiler.example.com`. Install a private CA
+  in the operating system's trust store, or set `SSL_CERT_FILE` to a trusted
+  CA bundle on Linux.
+- Rust callers of `hew_pkg::happy_eyeballs::HappyEyeballsConnector` or
+  `HewTcpTransport` should use `hew_pkg::client::RegistryClient` for registry
+  operations. For other HTTP requests, configure your HTTP client's connector
+  directly. Hew's native client handles IPv4 and IPv6 connection racing.
+
 ## [0.11.0] - 2026-11-12
 
 - Add owned actor failure diagnostics, native debugger launch and symbolization.

@@ -309,7 +309,7 @@ mod tests {
                 .arg("-o")
                 .arg(&executable)
                 .output()
-                .expect("run LLVM 22 clang to link ASan sentinel");
+                .expect("run the build's LLVM clang to link ASan sentinel");
             assert!(
                 link.status.success(),
                 "link {name} ASan sentinel failed:\n{}",
@@ -343,7 +343,7 @@ mod tests {
         let path = PathBuf::from(env!("HEW_LLVM_BINDIR")).join("clang");
         assert!(
             path.is_file(),
-            "LLVM 22 clang resolved by the build's llvm-config is required for the ASan execution proof: {}",
+            "the clang of the LLVM resolved by the build's llvm-config is required for the ASan execution proof: {}",
             path.display()
         );
         path

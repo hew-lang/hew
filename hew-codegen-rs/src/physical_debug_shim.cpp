@@ -38,10 +38,10 @@ template <typename T> static T *unwrapMetadata(LLVMMetadataRef metadata) {
   return dyn_cast<T>(reinterpret_cast<Metadata *>(metadata));
 }
 
-// LLVM 22's AArch64 backend drops the wrong dereference from a spilled frame
-// address with a field offset. Materialize the field address after CoroSplit;
-// remove this normalization when both backends preserve the original
-// expression.
+// LLVM's AArch64 backend (seen in LLVM 22; kept for 23) drops the wrong
+// dereference from a spilled frame address with a field offset. Materialize
+// the field address after CoroSplit; remove this normalization when both
+// backends preserve the original expression.
 extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
   auto *ir = reinterpret_cast<Module *>(module);
   if (!ir->getNamedMetadata("llvm.dbg.cu"))

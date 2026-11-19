@@ -1,0 +1,24 @@
+fn ready_score() -> Option<i64> {
+    .Some(20)
+}
+
+#[test]
+fn block_arm_commas_preserve_nested_value() {
+    let score = select {
+        reply from ready_score() => {
+            match reply {
+                .Some(value) if value > 0 => {
+                    value + 22
+                },
+                .Some(value) => value,
+                .None => {
+                    0
+                },
+            }
+        },
+        after 1s => {
+            -1
+        },
+    };
+    assert(score == 42);
+}

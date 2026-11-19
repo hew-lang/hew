@@ -66,20 +66,41 @@ pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
         .arg(&source)
         .arg("-o")
         .arg(directory.path().join("guest.o")))?;
-    run(Command::new(toolchain.wasi_sdk.join("bin/clang"))
+    link_guest_object(
+        directory.path(),
+        &toolchain.wasi_sdk,
+        &toolchain.wasm_lib_dir,
+    )
+}
+
+/// Link a Hew guest object and its generated router bindings into a validated component.
+///
+/// # Errors
+/// Returns toolchain, linker, file or component-encoding diagnostics.
+pub fn link_guest_object(
+    directory: &Path,
+    wasi_sdk: &Path,
+    wasm_lib_dir: &Path,
+) -> Result<Vec<u8>> {
+    run(Command::new(wasi_sdk.join("bin/clang"))
         .args(["-mexec-model=reactor", "-O2", "-Wall", "-Wextra", "-Werror"])
+        .args(
+            hew_cabi::WASM_SHADOW_STACK_LINK_ARGS
+                .into_iter()
+                .flat_map(|arg| ["-Xlinker", arg]),
+        )
         .arg("-I")
-        .arg(directory.path())
-        .arg(directory.path().join("router.c"))
-        .arg(directory.path().join("router_component_type.o"))
-        .arg(directory.path().join("router_adapter.c"))
-        .arg(directory.path().join("guest.o"))
+        .arg(directory)
+        .arg(directory.join("router.c"))
+        .arg(directory.join("router_component_type.o"))
+        .arg(directory.join("router_adapter.c"))
+        .arg(directory.join("guest.o"))
         .arg("-L")
-        .arg(&toolchain.wasm_lib_dir)
+        .arg(wasm_lib_dir)
         .args(["-lhew_runtime", "-lhew_std", "-o"])
-        .arg(directory.path().join("router.core.wasm")))?;
+        .arg(directory.join("router.core.wasm")))?;
     Ok(wit_component::ComponentEncoder::default()
-        .module(&std::fs::read(directory.path().join("router.core.wasm"))?)?
+        .module(&std::fs::read(directory.join("router.core.wasm"))?)?
         .adapter(
             "wasi_snapshot_preview1",
             wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER,

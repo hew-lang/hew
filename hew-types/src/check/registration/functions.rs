@@ -1010,6 +1010,10 @@ impl Checker {
             declaration.map_or_else(|| name.to_string(), |id| self.defs.path(id).to_string());
         let param_defaults = self.register_default_parameters(&default_owner, &fd.params, skip);
         let sig = FnSig {
+            inferred_return: fd
+                .return_type
+                .as_ref()
+                .is_some_and(|r| matches!(r.0, TypeExpr::Infer)),
             param_defaults,
             type_params: self
                 .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
@@ -1606,6 +1610,7 @@ impl Checker {
                     method.decl_span.clone()
                 },
             }),
+            inferred_return: registered.inferred_return,
             param_defaults: registered.param_defaults.clone(),
             bounds: registered.bounds.clone(),
             type_params: all_type_params,

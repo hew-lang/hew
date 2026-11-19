@@ -19,8 +19,7 @@ or filesystem. The typed wire codecs and YAML values live in
 | `fuzz_calendar`      | instant, text, strftime pattern          | components rebuild the instant; lossless pattern round trip                |
 | `fuzz_net_text`      | URL, IP, CIDR, UUID text                 | URL printing is a fixed point; IP, CIDR and UUID agree with their crates   |
 
-HTTP request, response and chunked parsing belong to `tiny_http` and `ureq`,
-which offer no in-memory entry point; they are not fuzzed here.
+The HTTP server and client delegate wire parsing to `tiny_http` and `reqwest`. Their transport behaviour is exercised with loopback requests.
 
 ## Running
 

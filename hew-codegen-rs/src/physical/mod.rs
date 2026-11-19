@@ -67,6 +67,7 @@ mod shared;
 mod structural;
 
 mod c_abi;
+mod c_export;
 mod collections;
 mod control;
 mod function;

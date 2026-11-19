@@ -1631,6 +1631,10 @@ impl<'a> Formatter<'a> {
                 self.write("#[linear]\n");
             }
         }
+        if decl.repr_c {
+            self.write_indent();
+            self.write("#[repr(C)]\n");
+        }
         if decl.is_opaque {
             self.write_indent();
             self.write("#[opaque]\n");
@@ -2815,7 +2819,8 @@ impl<'a> Formatter<'a> {
                             // If the value contains characters that are not valid
                             // in a bare identifier (e.g. `.` in `"math.sqrt"`),
                             // re-quote it as a string literal so the output round-trips.
-                            let needs_quotes = s.chars().any(|c| !c.is_alphanumeric() && c != '_');
+                            let needs_quotes = attr.name == "export"
+                                || s.chars().any(|c| !c.is_alphanumeric() && c != '_');
                             if needs_quotes {
                                 self.write("\"");
                                 self.write(s);
@@ -6728,6 +6733,33 @@ fn classify(e: IoError) -> string {
 }
 ";
         assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn drops_optional_block_arm_commas_in_nested_match_and_select() {
+        let source = "\
+fn score() -> i64 {
+    select {
+        reply from fetch() => {
+            match reply {
+                .Some(value) => {
+                    value
+                }, // delivered value
+                .None => 0,
+            }
+        },
+        after 1s => {
+            -1
+        },
+    }
+}
+";
+        let expected = source
+            .replace("}, // delivered value", "} // delivered value")
+            .replace("        },\n", "        }\n");
+        let formatted = roundtrip_source(source);
+        assert_eq!(formatted, expected);
+        assert_eq!(roundtrip_source(&formatted), formatted);
     }
 
     #[test]

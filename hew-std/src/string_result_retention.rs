@@ -187,7 +187,13 @@ fn yaml_managed_results_survive_value_destruction() {
         yaml::hew_yaml_stringify,
         yaml::hew_yaml_free,
         yaml::hew_yaml_string_free,
-        |text| serde_yaml::from_str::<String>(text).unwrap(),
+        |text| {
+            hew_codec::yaml_value::parse(text)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned()
+        },
     );
 }
 

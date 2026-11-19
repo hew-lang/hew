@@ -590,6 +590,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            c_abi: hew_types::c_abi::SourceCAbi::default(),
             coverage: crate::CoveragePlan::default(),
             offloads: Vec::new(),
             defs: hew_types::DefTable::fixture(),

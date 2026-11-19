@@ -1,0 +1,10 @@
+[[case]]
+id = "inferred-function-results"
+intent = "Inferred results remain polymorphic across forward calls and mutually recursive functions with different type binders."
+source = "cases/inferred-function-results.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "hello\n17\n4\nmethod\nrecursion\n8\n"
+exit = 0

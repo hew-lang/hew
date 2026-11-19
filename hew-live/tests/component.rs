@@ -47,22 +47,12 @@ fn build_fixture(directory: &Path, source: &str, constructor: &str) -> Vec<u8> {
         .arg(directory.join("router_app.hew"))
         .arg("-o")
         .arg(directory.join("guest.o")));
-    let sdk = environment("HEW_WASI_SDK");
-    run(Command::new(sdk.join("bin/clang"))
-        .args(["-mexec-model=reactor", "-O2", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I")
-        .arg(directory)
-        .arg("-I")
-        .arg(root.join("../hew-cabi/include"))
-        .arg(directory.join("router.c"))
-        .arg(directory.join("router_component_type.o"))
-        .arg(directory.join("router_adapter.c"))
-        .arg(directory.join("guest.o"))
-        .arg("-L")
-        .arg(environment("HEW_LIVE_WASM_LIB_DIR"))
-        .args(["-lhew_runtime", "-lhew_std", "-o"])
-        .arg(directory.join("router.core.wasm")));
-    component_bytes(&std::fs::read(directory.join("router.core.wasm")).unwrap())
+    hew_live::component::build::link_guest_object(
+        directory,
+        &environment("HEW_WASI_SDK"),
+        &environment("HEW_LIVE_WASM_LIB_DIR"),
+    )
+    .unwrap()
 }
 
 fn component_bytes(core: &[u8]) -> Vec<u8> {

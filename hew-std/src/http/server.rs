@@ -1602,9 +1602,10 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::get(&format!("{base}/headers-single"))
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/headers-single"))
                 .header("X-Custom", "hello")
-                .call()
+                .send()
                 .unwrap()
         });
 
@@ -1664,10 +1665,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::get(&format!("{base}/headers-multi"))
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/headers-multi"))
                 .header("X-First", "alpha")
                 .header("X-Second", "beta")
-                .call()
+                .send()
                 .unwrap()
         });
 
@@ -1810,8 +1812,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle =
-            std::thread::spawn(move || ureq::get(&format!("{base}/hello")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/hello"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -1832,7 +1838,7 @@ mod tests {
 
         let resp = handle.join().unwrap();
         assert_eq!(resp.status().as_u16(), 200);
-        let body = resp.into_body().read_to_string().unwrap();
+        let body = resp.text().unwrap();
         assert_eq!(body, "world");
 
         // SAFETY: req was already responded to; free is safe.
@@ -1850,9 +1856,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/submit"))
+            reqwest::blocking::Client::new()
+                .post(format!("{base}/submit"))
                 .header("Content-Type", "application/json")
-                .send(b"{\"key\":\"value\"}" as &[u8])
+                .body(b"{\"key\":\"value\"}" as &[u8])
+                .send()
                 .unwrap()
         });
 
@@ -1902,7 +1910,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle = std::thread::spawn(move || ureq::get(&format!("{base}/raw")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/raw"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -1916,7 +1929,7 @@ mod tests {
 
         let resp = handle.join().unwrap();
         assert_eq!(resp.status().as_u16(), 200);
-        let body_str = resp.into_body().read_to_string().unwrap();
+        let body_str = resp.text().unwrap();
         assert_eq!(body_str, "raw bytes here");
 
         // SAFETY: req and srv are valid.
@@ -1933,8 +1946,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle =
-            std::thread::spawn(move || ureq::get(&format!("{base}/empty")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/empty"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -1962,8 +1979,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle =
-            std::thread::spawn(move || ureq::get(&format!("{base}/stream")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/stream"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -1982,7 +2003,7 @@ mod tests {
 
         let resp = handle.join().unwrap();
         assert_eq!(resp.status().as_u16(), 200);
-        let body = resp.into_body().read_to_string().unwrap();
+        let body = resp.text().unwrap();
         assert_eq!(body, "chunk1chunk2");
 
         // SAFETY: sink was allocated by into_sink_ptr.
@@ -2009,8 +2030,11 @@ mod tests {
         let (done_tx, done_rx) = mpsc::channel();
 
         let client = std::thread::spawn(move || {
-            let result = ureq::get(&format!("{base}/stream-close")).call().unwrap();
-            let body = result.into_body().read_to_string();
+            let result = reqwest::blocking::Client::new()
+                .get(format!("{base}/stream-close"))
+                .send()
+                .unwrap();
+            let body = result.text();
             done_tx
                 .send(body)
                 .expect("server-close test receiver must still be present");
@@ -2072,11 +2096,11 @@ mod tests {
             .map(|idx| {
                 let base = base.clone();
                 std::thread::spawn(move || {
-                    ureq::get(&format!("{base}/stream-load/{idx}"))
-                        .call()
+                    reqwest::blocking::Client::new()
+                        .get(format!("{base}/stream-load/{idx}"))
+                        .send()
                         .unwrap()
-                        .into_body()
-                        .read_to_string()
+                        .text()
                         .unwrap()
                 })
             })
@@ -2215,7 +2239,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle = std::thread::spawn(move || ureq::get(&format!("{base}/hdr")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/hdr"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -2246,9 +2275,10 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::get(&format!("{base}/ci"))
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/ci"))
                 .header("X-My-Header", "found-it")
-                .call()
+                .send()
                 .unwrap()
         });
 
@@ -2284,9 +2314,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/empty"))
+            reqwest::blocking::Client::new()
+                .post(format!("{base}/empty"))
                 .header("Content-Type", "text/plain")
-                .send(b"" as &[u8])
+                .body(b"" as &[u8])
+                .send()
                 .unwrap()
         });
 
@@ -2325,9 +2357,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/big"))
+            reqwest::blocking::Client::new()
+                .post(format!("{base}/big"))
                 .header("Content-Type", "text/plain")
-                .send(b"this body is longer than 5 bytes" as &[u8])
+                .body(b"this body is longer than 5 bytes" as &[u8])
+                .send()
         });
 
         // SAFETY: srv is valid.
@@ -2343,11 +2377,7 @@ mod tests {
         assert!(detail.contains("exceeds 5 bytes"), "{detail}");
 
         let client_result = handle.join().unwrap();
-        match client_result {
-            Ok(resp) => assert_eq!(resp.status().as_u16(), 413),
-            Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 413),
-            Err(e) => panic!("unexpected error: {e}"),
-        }
+        assert_eq!(client_result.unwrap().status().as_u16(), 413);
 
         // SAFETY: req and srv are valid.
         unsafe { hew_http_request_free(req) };
@@ -2485,14 +2515,18 @@ mod tests {
     }
 
     #[test]
-    fn loopback_request_free_drops_connection() {
+    fn freeing_an_unanswered_request_returns_server_error() {
         let addr = ManagedString::new("127.0.0.1:0");
         // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle = std::thread::spawn(move || ureq::get(&format!("{base}/dropped")).call());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/dropped"))
+                .send()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };
@@ -2501,8 +2535,11 @@ mod tests {
         // SAFETY: req was allocated by hew_http_server_recv.
         unsafe { hew_http_request_free(req) };
 
-        let result = handle.join().unwrap();
-        assert!(result.is_err(), "dropped request should cause client error");
+        let response = handle
+            .join()
+            .unwrap()
+            .expect("server completed the unanswered request");
+        assert_eq!(response.status().as_u16(), 500);
 
         // SAFETY: srv was allocated by hew_http_server_new.
         unsafe { hew_http_server_close(srv) };
@@ -2614,9 +2651,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/body-string"))
+            reqwest::blocking::Client::new()
+                .post(format!("{base}/body-string"))
                 .header("Content-Type", "text/plain")
-                .send(b"hello bridge" as &[u8])
+                .body(b"hello bridge" as &[u8])
+                .send()
                 .unwrap()
         });
 
@@ -2654,9 +2693,11 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::post(&format!("{base}/body-string-empty"))
+            reqwest::blocking::Client::new()
+                .post(format!("{base}/body-string-empty"))
                 .header("Content-Type", "text/plain")
-                .send(b"" as &[u8])
+                .body(b"" as &[u8])
+                .send()
                 .unwrap()
         });
 
@@ -2694,7 +2735,10 @@ mod tests {
         let base = server_addr(srv);
 
         let handle = std::thread::spawn(move || {
-            ureq::get(&format!("{base}/bridge-respond")).call().unwrap()
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/bridge-respond"))
+                .send()
+                .unwrap()
         });
 
         // SAFETY: srv is valid.
@@ -2717,7 +2761,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(ct_header, "text/html");
-        let resp_body = resp.into_body().read_to_string().unwrap();
+        let resp_body = resp.text().unwrap();
         assert_eq!(resp_body, "<h1>café\0雪</h1>");
 
         // SAFETY: req was already responded to.
@@ -2734,8 +2778,12 @@ mod tests {
         assert!(!srv.is_null());
         let base = server_addr(srv);
 
-        let handle =
-            std::thread::spawn(move || ureq::get(&format!("{base}/bridge-empty")).call().unwrap());
+        let handle = std::thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .get(format!("{base}/bridge-empty"))
+                .send()
+                .unwrap()
+        });
 
         // SAFETY: srv is valid.
         let req = unsafe { hew_http_server_recv(srv) };

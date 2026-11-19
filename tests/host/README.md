@@ -1,5 +1,11 @@
 # C host components
 
+The independent C11 client in `c_records.c` calls the ordinary named and
+plain `#[export]` functions in `c_records.hew`. It defines its own matching C
+record declarations, receives a nested record by value and supplies a C
+calibration function. Its fault case exercises deferred cleanup and the
+terminal raw C boundary in a separate process.
+
 This experimental, same-build static-link client calls compiled Hew functions,
 edits a copied JSON configuration and inspects owned errors. It uses the opaque
 types and release operations in `hew-cabi/include/hew_host.h`.

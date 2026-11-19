@@ -1334,6 +1334,7 @@ impl Builder {
             resource_marker: ResourceMarker::None,
             serial_case: None,
             is_opaque: false,
+            repr_c: false,
             lang_item: None,
         }
     }

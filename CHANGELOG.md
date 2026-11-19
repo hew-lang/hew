@@ -34,6 +34,12 @@
   directives (`%f`, `%.f`, `%.9f`) or colonized offsets (`%:z`) to
   `to_iso8601` and `parse_iso8601` for lossless timestamp text.
 
+- Native and browser YAML decoding use a pure Rust parser. Rust callers of
+  `hew_codec::yaml_value::parse` can name the returned value through
+  `hew_codec::yaml_value::Value`. Hew programs keep the existing
+  `std.encoding.yaml` API. In YAML flow collections, add a space between an
+  explicit key indicator and a collection key, as in `? [north, west]`.
+
 ## [0.11.0] - 2026-11-12
 
 - Add owned actor failure diagnostics, native debugger launch and symbolization.

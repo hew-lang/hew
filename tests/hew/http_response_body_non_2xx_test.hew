@@ -1,8 +1,5 @@
 //! Regression: a non-2xx HTTP response still carries the body the server
-//! sent. `hew_http_response_body` previously discarded it — ureq's default
-//! `http_status_as_error` config turned 4xx/5xx into `Err(StatusCode)`,
-//! which `send_request` mapped to a hardcoded empty-string body, so
-//! `.body()` silently returned "" even though the server sent real bytes.
+//! sent, including when it returns a 4xx or 5xx status.
 //!
 //! One-process loopback round-trip, same shape as
 //! `http_server_client_roundtrip_test.hew`: the `Client` actor runs the

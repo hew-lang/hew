@@ -416,6 +416,8 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    /// Explicit C entry points and declared value layouts in this compilation.
+    pub c_abi: crate::c_abi::SourceCAbi,
     /// File discriminators for the exact normalized graph admitted by this check.
     /// Every span-key producer and checked consumer shares this allocation.
     pub file_span_indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
@@ -2912,6 +2914,8 @@ pub struct ImplMethodProvenance {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    /// A written return hole is owned by the function body and shared by its callers.
+    pub inferred_return: bool,
     /// Declaration-owned computations for omitted arguments, aligned with `params`.
     pub param_defaults: Vec<Option<DefaultArgumentProvider>>,
     pub impl_method: Option<ImplMethodProvenance>,
@@ -3021,6 +3025,7 @@ pub struct ReceiverObligation {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            inferred_return: false,
             param_defaults: Vec::new(),
             impl_method: None,
             type_params: vec![],
@@ -3608,6 +3613,7 @@ pub struct Checker {
     /// Consumed by `record_clone_admissibility` to detect opaque fields in
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
+    pub(super) c_abi: crate::c_abi::SourceCAbi,
     pub(super) opaque_type_ids: HashSet<crate::NominalId>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
@@ -3640,6 +3646,7 @@ pub struct Checker {
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
+    pub(super) deferred_call_returns: Vec<super::return_inference::CallReturn>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
     pub(super) deferred_negate_checks: Vec<DeferredNegateCheck>,
     /// `is` obligations recorded while an operand type was still an
@@ -4616,6 +4623,7 @@ impl Checker {
             consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::new(),
+            c_abi: crate::c_abi::SourceCAbi::default(),
             opaque_type_ids: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,
@@ -4627,6 +4635,7 @@ impl Checker {
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
+            deferred_call_returns: Vec::new(),
             deferred_cast_checks: Vec::new(),
             deferred_negate_checks: Vec::new(),
             deferred_is_checks: BTreeMap::new(),

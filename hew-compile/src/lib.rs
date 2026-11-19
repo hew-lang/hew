@@ -823,8 +823,10 @@ impl Session {
         if !analysis.diagnostics().is_empty() {
             return Err(SessionError::Hir(analysis.diagnostics().to_vec()));
         }
+        let mut roots = roots.to_vec();
+        roots.extend(tco.c_abi.exports.keys().copied());
         let sir =
-            hew_sir::lower_analyzed_module_with_roots(analysis, tco, roots).map_err(|errors| {
+            hew_sir::lower_analyzed_module_with_roots(analysis, tco, &roots).map_err(|errors| {
                 let Some(error) = errors.into_iter().next() else {
                     return SessionError::Lowering {
                         callable: None,

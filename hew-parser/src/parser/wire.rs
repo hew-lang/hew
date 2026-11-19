@@ -445,6 +445,7 @@ impl Parser<'_> {
             is_indirect: false,
             resource_marker: ResourceMarker::None,
             is_opaque: false,
+            repr_c: false,
             lang_item: attrs
                 .iter()
                 .find(|a| a.name == "lang_item")

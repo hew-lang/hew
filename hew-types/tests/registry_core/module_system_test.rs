@@ -358,6 +358,7 @@ fn test_pub_type_accessible_qualified() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let import = make_user_import(
@@ -404,6 +405,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let imported_type = TypeDecl {
@@ -420,6 +422,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     };
     let import = make_user_import(
@@ -476,6 +479,7 @@ fn pub_struct(name: &str) -> TypeDecl {
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     }
 }
@@ -706,6 +710,7 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     }
 }
@@ -740,6 +745,7 @@ fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDec
         resource_marker: hew_parser::ast::ResourceMarker::None,
         serial_case: None,
         is_opaque: false,
+        repr_c: false,
         lang_item: None,
     }
 }

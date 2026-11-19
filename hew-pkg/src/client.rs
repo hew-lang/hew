@@ -7,7 +7,8 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-use serde::{Deserialize, Serialize};
+use reqwest::blocking::{Client, Response};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::config;
 use crate::config::WireNames;
@@ -40,23 +41,25 @@ impl fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
-/// Convert a [`ureq::Error`] into an [`ApiError`].
-///
-/// Maps `Error::StatusCode` (non-2xx HTTP responses) to [`ApiError::Server`]
-/// and all transport/IO errors to [`ApiError::Http`].
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "used as map_err(map_ureq_error)"
-)]
-fn map_ureq_error(e: ureq::Error) -> ApiError {
-    if let ureq::Error::StatusCode(code) = e {
-        ApiError::Server {
-            status: code,
-            message: format!("HTTP {code}"),
-        }
-    } else {
-        ApiError::Http(e.to_string())
+impl From<reqwest::Error> for ApiError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.to_string())
     }
+}
+
+fn read_registry_json<T: DeserializeOwned>(response: Response) -> Result<T, ApiError> {
+    const MAX_JSON_BYTES: u64 = 10 * 1024 * 1024;
+    let mut body = Vec::new();
+    response
+        .take(MAX_JSON_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| ApiError::Http(error.to_string()))?;
+    if body.len() as u64 > MAX_JSON_BYTES {
+        return Err(ApiError::Parse(
+            "registry JSON exceeds the 10 MiB size limit".to_string(),
+        ));
+    }
+    serde_json::from_slice(&body).map_err(|error| ApiError::Parse(error.to_string()))
 }
 
 // ── API response types ──────────────────────────────────────────────────────
@@ -180,8 +183,8 @@ pub struct RegistryClient {
     /// CDN base URL for package downloads.
     cdn_url: Option<String>,
     token: Option<String>,
-    /// Shared HTTP agent with Happy Eyeballs TCP connector.
-    agent: ureq::Agent,
+    /// Preserve initialization failures for the first network operation.
+    http: Result<Client, reqwest::Error>,
 }
 
 #[derive(Debug)]
@@ -203,14 +206,11 @@ impl RegistryClient {
         identity: &crate::native_prebuilt::NativeIdentity,
     ) -> Result<crate::native_prebuilt::NativeRecord, ApiError> {
         let url = self.native_url(name, version, identity)?;
-        let mut response = self.agent.get(&url).call().map_err(map_ureq_error)?;
+        let response = self.http()?.get(&url).send()?;
         if !response.status().is_success() {
             return Err(self.parse_error_response(response));
         }
-        response
-            .body_mut()
-            .read_json()
-            .map_err(|error| ApiError::Parse(error.to_string()))
+        read_registry_json(response)
     }
 
     fn native_url(
@@ -289,11 +289,11 @@ impl RegistryClient {
             "key_fingerprint": fingerprint,
         });
         let response = self
-            .agent
+            .http()?
             .put(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .bearer_auth(token)
+            .json(&body)
+            .send()?;
         if !matches!(response.status().as_u16(), 200 | 201) {
             return Err(self.parse_error_response(response));
         }
@@ -352,8 +352,17 @@ impl RegistryClient {
             fallback_urls: Vec::new(),
             cdn_url: None,
             token: None,
-            agent: build_agent(),
+            http: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(None)
+                .build(),
         }
+    }
+
+    fn http(&self) -> Result<&Client, ApiError> {
+        self.http
+            .as_ref()
+            .map_err(|error| ApiError::Http(error.to_string()))
     }
 
     /// Add a fallback URL to try when the primary is unavailable.
@@ -416,15 +425,13 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn login_device(&self) -> Result<DeviceFlowResponse, ApiError> {
         let url = format!("{}/login/device", self.api_url);
-        let resp = self.agent.post(&url).send_empty().map_err(map_ureq_error)?;
+        let resp = self.http()?.post(&url).send()?;
 
         if resp.status().as_u16() != 200 {
             return Err(self.parse_error_response(resp));
         }
 
-        resp.into_body()
-            .read_json()
-            .map_err(|e| ApiError::Parse(e.to_string()))
+        read_registry_json(resp)
     }
 
     /// Poll for token exchange.
@@ -436,19 +443,13 @@ impl RegistryClient {
         let url = format!("{}/login/token", self.api_url);
         let body = serde_json::json!({ "device_code": device_code });
 
-        let resp = self
-            .agent
-            .post(&url)
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+        let resp = self.http()?.post(&url).json(&body).send()?;
 
         if !resp.status().is_success() {
             return Err(self.parse_error_response(resp));
         }
 
-        resp.into_body()
-            .read_json()
-            .map_err(|e| ApiError::Parse(e.to_string()))
+        read_registry_json(resp)
     }
 
     /// Publish a package version.
@@ -485,11 +486,11 @@ impl RegistryClient {
         });
 
         let resp = self
-            .agent
+            .http()?
             .put(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .bearer_auth(token)
+            .json(&body)
+            .send()?;
 
         if resp.status().as_u16() != 200 && resp.status().as_u16() != 201 {
             return Err(self.parse_error_response(resp));
@@ -521,11 +522,11 @@ impl RegistryClient {
         }
 
         let resp = self
-            .agent
+            .http()?
             .patch(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .bearer_auth(token)
+            .json(&body)
+            .send()?;
 
         if resp.status().as_u16() != 200 {
             return Err(self.parse_error_response(resp));
@@ -560,16 +561,13 @@ impl RegistryClient {
                 let _ = write!(url, "&category={}", percent_encode(cat));
             }
 
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
 
-            let mut result: SearchResult = resp
-                .into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let mut result: SearchResult = read_registry_json(resp)?;
             let mut names = std::collections::HashSet::new();
             for hit in &mut result.results {
                 hit.name = package_name::from_wire(&hit.name, mode).map_err(ApiError::Parse)?;
@@ -604,16 +602,13 @@ impl RegistryClient {
             let wire_name = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
             let url = format!("{base_url}/packages/{wire_name}");
 
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
 
-            let mut record: PackageRecord = resp
-                .into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let mut record: PackageRecord = read_registry_json(resp)?;
             match record.metadata {
                 Some(metadata) if metadata_identity_matches(&metadata.name, name, mode) => {}
                 None if mode == WireNames::Dotted => {}
@@ -656,14 +651,11 @@ impl RegistryClient {
 
             let wire_name = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
             let url = format!("{base_url}/packages/{wire_name}/{version}");
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
-            let mut record: VersionRecord = resp
-                .into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let mut record: VersionRecord = read_registry_json(resp)?;
             bind_entry_identity(&mut record.version, name, &wire_name, mode)?;
             if record.version.vers != version {
                 return Err(ApiError::Parse(
@@ -683,12 +675,7 @@ impl RegistryClient {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
         let url = format!("{}/namespaces/{}", self.api_url, percent_encode(prefix));
 
-        let resp = self
-            .agent
-            .put(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_empty()
-            .map_err(map_ureq_error)?;
+        let resp = self.http()?.put(&url).bearer_auth(token).send()?;
 
         if resp.status().as_u16() != 200 && resp.status().as_u16() != 201 {
             return Err(self.parse_error_response(resp));
@@ -706,15 +693,13 @@ impl RegistryClient {
         self.try_with_fallback(|base_url, _| {
             let url = format!("{base_url}/namespaces/{}", percent_encode(prefix));
 
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
 
-            resp.into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))
+            read_registry_json(resp)
         })
     }
 
@@ -725,17 +710,7 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError::Parse`] when the API URL has no scheme or host.
     pub fn api_origin(&self) -> Result<String, ApiError> {
-        let uri = self
-            .api_url
-            .parse::<ureq::http::Uri>()
-            .map_err(|e| ApiError::Parse(format!("invalid registry URL {}: {e}", self.api_url)))?;
-        match (uri.scheme_str(), uri.authority()) {
-            (Some(scheme), Some(authority)) => Ok(format!("{scheme}://{authority}")),
-            _ => Err(ApiError::Parse(format!(
-                "registry URL {} has no origin",
-                self.api_url
-            ))),
-        }
+        http_origin(&self.api_url)
     }
 
     /// Request a GitHub Actions OIDC token for `audience` from the runner's
@@ -760,18 +735,11 @@ impl RegistryClient {
             "{request_url}{separator}audience={}",
             percent_encode(audience)
         );
-        let resp = self
-            .agent
-            .get(&url)
-            .header("Authorization", &format!("Bearer {request_token}"))
-            .call()
-            .map_err(map_ureq_error)?;
+        let resp = self.http()?.get(&url).bearer_auth(request_token).send()?;
         if !resp.status().is_success() {
             return Err(self.parse_error_response(resp));
         }
-        let body: OidcResponse = resp
-            .into_body()
-            .read_json()
+        let body: OidcResponse = read_registry_json(resp)
             .map_err(|e| ApiError::Parse(format!("invalid OIDC token response: {e}")))?;
         Ok(body.value)
     }
@@ -792,17 +760,11 @@ impl RegistryClient {
             "oidc_token": oidc_token,
             "public_key": public_key_b64,
         });
-        let resp = self
-            .agent
-            .post(&url)
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+        let resp = self.http()?.post(&url).json(&body).send()?;
         if resp.status().as_u16() != 200 {
             return Err(self.parse_error_response(resp));
         }
-        resp.into_body()
-            .read_json()
-            .map_err(|e| ApiError::Parse(e.to_string()))
+        read_registry_json(resp)
     }
 
     /// Register a signing public key.
@@ -825,19 +787,16 @@ impl RegistryClient {
         });
 
         let resp = self
-            .agent
+            .http()?
             .put(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .bearer_auth(token)
+            .json(&body)
+            .send()?;
 
         if resp.status().as_u16() != 200 && resp.status().as_u16() != 201 {
             return Err(self.parse_error_response(resp));
         }
-        let kr: KeyResponse = resp
-            .into_body()
-            .read_json()
-            .map_err(|e| ApiError::Parse(e.to_string()))?;
+        let kr: KeyResponse = read_registry_json(resp)?;
         Ok(kr.fingerprint)
     }
 
@@ -884,11 +843,11 @@ impl RegistryClient {
         }
 
         let resp = self
-            .agent
+            .http()?
             .patch(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .bearer_auth(token)
+            .json(&body)
+            .send()?;
 
         if resp.status().as_u16() != 200 {
             return Err(self.parse_error_response(resp));
@@ -936,19 +895,13 @@ impl RegistryClient {
         let do_download = |download_url: &str| -> Result<Vec<u8>, ApiError> {
             use std::io::Read as _;
 
-            let resp = self
-                .agent
-                .get(download_url)
-                .call()
-                .map_err(map_ureq_error)?;
+            let resp = self.http()?.get(download_url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
             let mut data = Vec::new();
-            resp.into_body()
-                .into_reader()
-                .take(crate::tarball::MAX_TARBALL_SIZE as u64 + 1)
+            resp.take(crate::tarball::MAX_TARBALL_SIZE as u64 + 1)
                 .read_to_end(&mut data)
                 .map_err(|e| ApiError::Http(e.to_string()))?;
             if data.len() > crate::tarball::MAX_TARBALL_SIZE {
@@ -1024,15 +977,13 @@ impl RegistryClient {
         let encoded_fp = percent_encode(fingerprint);
         self.try_with_fallback(|base_url, _| {
             let url = format!("{base_url}/keys/{encoded_fp}");
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
 
-            resp.into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))
+            read_registry_json(resp)
         })
     }
 
@@ -1044,15 +995,13 @@ impl RegistryClient {
     pub fn get_registry_key(&self) -> Result<RegistryKeyResponse, ApiError> {
         self.try_with_fallback(|base_url, _| {
             let url = format!("{base_url}/registry-key");
-            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.http()?.get(&url).send()?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
 
-            resp.into_body()
-                .read_json()
-                .map_err(|e| ApiError::Parse(e.to_string()))
+            read_registry_json(resp)
         })
     }
 
@@ -1096,7 +1045,7 @@ impl RegistryClient {
 
     /// Parse an error response body.
     #[expect(clippy::unused_self, reason = "method is part of the client API")]
-    fn parse_error_response(&self, resp: ureq::http::Response<ureq::Body>) -> ApiError {
+    fn parse_error_response(&self, resp: Response) -> ApiError {
         #[derive(Deserialize)]
         struct ErrorBody {
             message: Option<String>,
@@ -1110,8 +1059,6 @@ impl RegistryClient {
         let status: u16 = resp.status().into();
         let mut bytes = Vec::new();
         let read = resp
-            .into_body()
-            .into_reader()
             .take((MAX_ERROR_BYTES + 1) as u64)
             .read_to_end(&mut bytes);
         let truncated = bytes.len() > MAX_ERROR_BYTES;
@@ -1217,43 +1164,20 @@ fn mirror_download_url(
     version: &str,
     mode: WireNames,
 ) -> Result<String, ApiError> {
-    let uri = api
-        .parse::<ureq::http::Uri>()
-        .map_err(|error| ApiError::Parse(format!("invalid mirror API URL: {error}")))?;
-    let scheme = uri
-        .scheme_str()
-        .filter(|scheme| matches!(*scheme, "http" | "https"))
-        .ok_or_else(|| ApiError::Parse("mirror API URL must use HTTP or HTTPS".to_string()))?;
-    let authority = uri
-        .authority()
-        .ok_or_else(|| ApiError::Parse("mirror API URL has no authority".to_string()))?;
+    let origin = http_origin(api)?;
     let wire = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
-    Ok(format!(
-        "{scheme}://{authority}/packages/{wire}/{version}.tar.zst"
-    ))
+    Ok(format!("{origin}/packages/{wire}/{version}.tar.zst"))
 }
 
-/// Build a [`ureq::Agent`] whose TCP connector implements Happy Eyeballs
-/// (RFC 8305), racing IPv6/IPv4 connections in parallel.
-fn build_agent() -> ureq::Agent {
-    use ureq::unversioned::resolver::DefaultResolver;
-    use ureq::unversioned::transport::{ConnectProxyConnector, Connector, RustlsConnector};
-
-    use crate::happy_eyeballs::HappyEyeballsConnector;
-
-    let connector =
-        ().chain(ConnectProxyConnector::default())
-            .chain(HappyEyeballsConnector)
-            .chain(RustlsConnector::default());
-
-    ureq::Agent::with_parts(
-        // Preserve responses for the explicit status checks and ApiError parser.
-        ureq::config::Config::builder()
-            .http_status_as_error(false)
-            .build(),
-        connector,
-        DefaultResolver::default(),
-    )
+fn http_origin(api: &str) -> Result<String, ApiError> {
+    let url = reqwest::Url::parse(api)
+        .map_err(|error| ApiError::Parse(format!("invalid registry URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") || !url.has_host() {
+        return Err(ApiError::Parse(
+            "registry URL must have an HTTP or HTTPS origin".to_string(),
+        ));
+    }
+    Ok(url.origin().ascii_serialization())
 }
 
 /// Extract the path component from an absolute URL.

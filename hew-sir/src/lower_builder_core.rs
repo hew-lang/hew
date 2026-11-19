@@ -620,7 +620,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         );
                     }
                     BindingTarget::Value(source) => {
-                        if movable {
+                        // A probe only reads a guaranteed binding. Reuse its
+                        // loan even when the type would also permit a deep copy.
+                        if movable
+                            || (binding_use == OwnedBindingUse::Probe
+                                && self.value_own_kind(source) == Some(OwnKind::Guaranteed))
+                        {
                             if let Some(loan) =
                                 self.read_bound_loan(*binding, source, binding_use)?
                             {

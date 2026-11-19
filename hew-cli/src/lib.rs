@@ -1481,6 +1481,9 @@ struct CompiledTempExecutable {
     /// Every file the compile read, for `hew run --emit-deps`.
     prerequisites: Vec<PathBuf>,
     _cleanup: TempExecutableCleanup,
+    /// Declared after the directory so it is dropped after it: requests keep
+    /// their recorded disposition until the build directory is gone.
+    interrupts: process::BuildInterrupts,
 }
 
 enum TempExecutableCleanup {
@@ -1503,7 +1506,7 @@ fn compile_temp_debug_artifact(
     // DWARF debug info — emit it even though the shared `hew run` path does not.
     compile_temp_artifact(
         input,
-        create_debug_temp_artifact(target),
+        create_debug_temp_artifact(input, target),
         options,
         true,
         extra_libs,
@@ -1519,7 +1522,7 @@ fn compile_temp_run_artifact(
     // `hew run` is the fast-exec path; no debug info.
     compile_temp_artifact(
         input,
-        create_run_temp_artifact(target),
+        create_run_temp_artifact(input, target),
         options,
         false,
         extra_libs,
@@ -1546,19 +1549,17 @@ fn compile_temp_wasi_module(
             std::process::exit(1);
         });
 
-    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
+    let tmp_dir = run_temp::create("run").unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let stem = Path::new(input)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("hew_wasi_run");
-    let wasm_path = target.executable_path(tmp_dir.path(), stem);
+    let stem = run_temp::program_stem(Path::new(input));
+    let wasm_path = target.executable_path(tmp_dir.path(), &stem);
 
     let mut artifact = CompiledTempExecutable {
         path: wasm_path.clone(),
         prerequisites: Vec::new(),
+        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     };
 
@@ -1571,7 +1572,7 @@ fn compile_temp_wasi_module(
         // `link::link_executable` below, which links against libhew_runtime.a.
         let artefacts = emit_module_for_target(
             &pipeline,
-            stem,
+            &stem,
             emit_dir,
             &target_spec,
             false,
@@ -1606,7 +1607,10 @@ fn compile_temp_wasi_module(
     })();
 
     match result {
-        Ok(prerequisites) => artifact.prerequisites = prerequisites,
+        Ok(prerequisites) => {
+            artifact.prerequisites = prerequisites;
+            artifact.interrupts.finish();
+        }
         Err(channel) => {
             drop(artifact);
             if diagnostic_json::json_output_active() {
@@ -1656,6 +1660,7 @@ fn compile_temp_artifact(
     ) {
         Ok(prerequisites) => {
             artifact.prerequisites = prerequisites;
+            artifact.interrupts.finish();
             Ok(artifact)
         }
         Err(channel) => {
@@ -1670,30 +1675,38 @@ fn compile_temp_artifact(
     }
 }
 
-fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
-    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
+fn create_debug_temp_artifact(
+    input: &str,
+    target: &target::ExecutionTarget,
+) -> CompiledTempExecutable {
+    let tmp_dir = run_temp::create("debug").unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let path = target.executable_path(tmp_dir.path(), "hew_debug_bin");
+    let path = target.executable_path(tmp_dir.path(), &run_temp::program_stem(Path::new(input)));
 
     CompiledTempExecutable {
         path,
         prerequisites: Vec::new(),
+        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }
 
-fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
-    let tmp_dir = run_temp::create_hew_run_temp_dir().unwrap_or_else(|e| {
+fn create_run_temp_artifact(
+    input: &str,
+    target: &target::ExecutionTarget,
+) -> CompiledTempExecutable {
+    let tmp_dir = run_temp::create("run").unwrap_or_else(|e| {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let path = target.executable_path(tmp_dir.path(), "hew_run_bin");
+    let path = target.executable_path(tmp_dir.path(), &run_temp::program_stem(Path::new(input)));
 
     CompiledTempExecutable {
         path,
         prerequisites: Vec::new(),
+        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }
@@ -1704,12 +1717,6 @@ fn cmd_run(a: &args::RunArgs) {
     // compile the program runs normally and its own stdout is preserved — no
     // empty array is emitted so program output is never corrupted.
     diagnostic_json::set_output_format(a.format.into());
-
-    // Second cleanup authority for #3132: RAII drop is the fast path for a
-    // normal exit, but a killed `hew run` never reaches it. This best-effort
-    // sweep removes stale `hew-run` artifact dirs left by earlier kills
-    // before this run creates its own; it never fails the run itself.
-    run_temp::sweep_on_startup();
 
     // No input, or a directory: the manifest names the entry point. Resolution
     // happens before any path reaches the compiler, so a directory is never
@@ -1772,13 +1779,23 @@ fn cmd_run(a: &args::RunArgs) {
 
 /// `hew run` has no output file, so its `--emit-deps` file names itself as
 /// the target: Make reruns the recipe whenever a prerequisite changes.
-fn write_run_deps(a: &args::RunArgs, artifact: &CompiledTempExecutable) {
+///
+/// Also the last check before the program starts: a request that arrived as
+/// the compile finished ends the run here. Either way the build directory is
+/// removed before this process exits.
+fn write_run_deps(a: &args::RunArgs, artifact: CompiledTempExecutable) -> CompiledTempExecutable {
+    if let Some(end) = process::take_pending_interrupt() {
+        drop(artifact);
+        process::exit_as_program(end);
+    }
     if let Some(path) = a.emit_deps.as_deref() {
         let code = write_deps(Some(path), path, &artifact.prerequisites);
         if code != 0 {
+            drop(artifact);
             std::process::exit(code);
         }
     }
+    artifact
 }
 
 fn cmd_run_wasi(
@@ -1790,7 +1807,7 @@ fn cmd_run_wasi(
 ) -> ! {
     let artifact = compile_temp_wasi_module(input, options, target)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
-    write_run_deps(a, &artifact);
+    let artifact = write_run_deps(a, artifact);
 
     match wasi_runner::run_module(
         artifact.path(),
@@ -1827,7 +1844,7 @@ fn cmd_run_native(
 ) -> ! {
     let artifact = compile_temp_run_artifact(input, options, target, link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
-    write_run_deps(a, &artifact);
+    let artifact = write_run_deps(a, artifact);
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
@@ -1844,30 +1861,35 @@ fn cmd_run_native(
         command.env("HEW_PPROF", default_profile_endpoint());
     }
 
-    let status = match crate::process::run_command_interactive(&mut command, timeout, false) {
-        Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
-        Ok(crate::process::ChildWaitOutcome::Timeout) => {
-            drop(artifact);
-            eprintln!(
-                "Error: program timed out after {}",
-                crate::process::format_timeout(
-                    timeout.expect("timeout outcome requires a deadline")
-                )
-            );
-            std::process::exit(124);
-        }
-        Err(e) => {
-            drop(artifact);
-            eprintln!("Error: cannot run {input}: {e}");
-            std::process::exit(1);
-        }
-    };
+    // In the foreground of a terminal the program joins this process group,
+    // as `go run`'s does: it stays in the terminal's foreground group, so it
+    // can read and write the terminal and receives Ctrl-C and Ctrl-\
+    // directly. Otherwise (a pipe, a CI harness, a background job) it gets
+    // its own group, which a timeout or termination request cleans as a
+    // whole, descendants included.
+    let shares_terminal = process::in_terminal_foreground();
+    let status =
+        match crate::process::run_command_interactive(&mut command, timeout, shares_terminal) {
+            Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
+            Ok(crate::process::ChildWaitOutcome::Timeout) => {
+                drop(artifact);
+                eprintln!(
+                    "Error: program timed out after {}",
+                    crate::process::format_timeout(
+                        timeout.expect("timeout outcome requires a deadline")
+                    )
+                );
+                std::process::exit(124);
+            }
+            Err(e) => {
+                drop(artifact);
+                eprintln!("Error: cannot run {input}: {e}");
+                std::process::exit(1);
+            }
+        };
 
     drop(artifact);
-    std::process::exit(crate::process::native_run_exit_code(
-        status,
-        &mut std::io::stderr().lock(),
-    ));
+    crate::process::exit_as_program(crate::process::ProgramEnd::of(status));
 }
 
 fn default_profile_endpoint() -> &'static str {
@@ -2114,9 +2136,6 @@ fn cmd_debug(a: &args::DebugArgs) {
         eprintln!("Attaching {debugger} to process {pid}...");
         exit_after_debugger_run(&debugger, &debugger_args, None);
     }
-    // See the matching comment in `cmd_run`: best-effort second cleanup
-    // authority for #3132, never fails the debug session.
-    run_temp::sweep_on_startup();
     let input = a
         .input
         .as_ref()
@@ -2131,6 +2150,10 @@ fn cmd_debug(a: &args::DebugArgs) {
     }
     let artifact = compile_temp_debug_artifact(&input, &options, &target, &a.link_libs)
         .unwrap_or_else(|channel| std::process::exit(channel.exit_code()));
+    if let Some(end) = process::take_pending_interrupt() {
+        drop(artifact);
+        process::exit_as_program(end);
+    }
     let (debugger, debugger_args) =
         match resolve_debugger_invocation(artifact.path(), &a.program_args) {
             Ok(invocation) => invocation,
@@ -2146,8 +2169,8 @@ fn cmd_debug(a: &args::DebugArgs) {
 }
 
 /// Build a durable executable for an external editor and print its launch
-/// configuration. A lease-owned temporary executable would disappear as soon
-/// as this command exits, before the editor can start it.
+/// configuration. A temporary executable would disappear as soon as this
+/// command exits, before the editor can start it.
 fn print_debug_config(
     args: &args::DebugArgs,
     input: &str,
@@ -2331,9 +2354,20 @@ fn exit_after_debugger_run(
     debugger_args: &[String],
     artifact: Option<CompiledTempExecutable>,
 ) -> ! {
+    // The debugger shares the terminal and owns Ctrl-C (it interrupts the
+    // debuggee). This runner outlives those interrupts so it can remove the
+    // temporary build after the debugger exits.
+    #[cfg(unix)]
+    let signals = crate::signal::RunSignals::install();
+    #[cfg(windows)]
+    let console = crate::process::ConsoleInterrupts::install();
     let status = std::process::Command::new(debugger)
         .args(debugger_args)
         .status();
+    #[cfg(unix)]
+    drop(signals);
+    #[cfg(windows)]
+    drop(console);
     drop(artifact);
 
     match status {

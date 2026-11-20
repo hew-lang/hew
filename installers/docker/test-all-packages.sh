@@ -116,8 +116,6 @@ esac
 
 # ── Package paths ─────────────────────────────────────────────────────────────
 DEB_PKG="${DIST_DIR}/hew_${VERSION}-1_${DEB_ARCH}.deb"
-# shellcheck disable=SC2012,SC2086  # ls glob+VERSION for RPM dist-tag wildcard; find doesn't handle this pattern
-RPM_PKG="$(ls "${DIST_DIR}"/hew-${VERSION}-1.*.rpm 2>/dev/null | head -1)"
 ARCH_PKG="${DIST_DIR}/hew-bin-${VERSION}-1-${TARGET_ARCH}.pkg.tar.zst"
 APK_PKG="${DIST_DIR}/hew-${VERSION}.apk"
 
@@ -153,9 +151,15 @@ else
         --only "tarball,debian,rpm,arch"
 fi
 
-# Locate RPM package (dist tag suffix varies: .fc41, .el9, etc.)
-# shellcheck disable=SC2012,SC2086  # ls glob+VERSION for RPM dist-tag wildcard; find doesn't handle this pattern
-RPM_PKG="$(ls "${DIST_DIR}"/hew-${VERSION}-1.*.rpm 2>/dev/null | head -1 || true)"
+# Locate the built RPM for this architecture, with or without a dist tag.
+RPM_PKG=""
+for package in "${DIST_DIR}/hew-${VERSION}-1.${TARGET_ARCH}.rpm" \
+    "${DIST_DIR}/hew-${VERSION}-1."*".${TARGET_ARCH}.rpm"; do
+    if [[ -f "${package}" ]]; then
+        RPM_PKG="${package}"
+        break
+    fi
+done
 
 # ── Smoke-test helper ─────────────────────────────────────────────────────────
 # _run_test LABEL IMAGE INSTALL_CMDS

@@ -584,16 +584,22 @@ fn main() {
         sleep(10s);
         "unreachable"
     } handle failure {
+        println(f"{failure}");
         match failure {
-            .Deadline { message } => "deadline",
+            .Deadline { message } => message,
             .Fault { message } => "wrong failure",
         }
     };
-    println(result);
+    println(f"structured message: {result}");
+    let contextual = ScopeFailure.Deadline { message: "reading purchase orders" };
+    println(f"{contextual}");
 }
 "#,
     );
-    assert_eq!(stdout(&trace), "cleaned\ndeadline\n");
+    assert_eq!(
+        stdout(&trace),
+        "cleaned\nDeadline\nstructured message: Deadline\nDeadline: reading purchase orders\n"
+    );
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 2);
 }
 

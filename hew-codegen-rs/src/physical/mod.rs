@@ -667,6 +667,24 @@ fn emit_physical_to_paths(
     debug_script_dir: Option<&Path>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
+    if debug_source.is_some()
+        && opt_level == OptLevel::O0
+        && matches!(
+            machine.get_target().get_name().to_bytes(),
+            b"aarch64" | b"arm64"
+        )
+    {
+        // LLVM 23's AArch64 GlobalISel inserts immediate materialization ahead
+        // of preceding debug records. A breakpoint on the new line can then
+        // miss an already initialized local. SelectionDAG preserves the order.
+        // SAFETY: this function owns the live machine and has not emitted code.
+        unsafe {
+            inkwell::llvm_sys::target_machine::LLVMSetTargetMachineGlobalISel(
+                machine.as_mut_ptr(),
+                0,
+            );
+        }
+    }
     let ctx = Context::create();
     let llvm_module = build_module_with_host(
         &ctx,

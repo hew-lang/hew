@@ -29,7 +29,7 @@ def check():
         )
     host = (ROOT / "proofs/runtime_protocols/src/environment.rs").read_text()
     source = (ROOT / "hew-runtime/src/coro_state.rs").read_text()
-    traps = (ROOT / "hew-runtime/src/internal/types.rs").read_text()
+    traps = (ROOT / "hew-runtime/src/failure_kinds.rs").read_text()
     trap = r"const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = (-?\d+);"
     if re.search(trap, traps).group(1) != re.search(trap, host).group(1):
         raise SystemExit(

@@ -109,14 +109,29 @@ fn main() -> Result<()> {
                     if case == "failure-supervisor-wide-budget" {
                         let stderr =
                             fs::read_to_string(logs.join(format!("{run_name}.stderr.log")))?;
-                        if stderr.matches("actor crash in ").count() != 41
-                            || stderr.matches("restart budget probe").count() != 41
+                        let failures = stderr
+                            .lines()
+                            .filter(|line| line.starts_with("hew: failure: "));
+                        let requested = failures
+                            .clone()
+                            .filter(|line| {
+                                line.starts_with("hew: failure: UserPanic (")
+                                    && line.ends_with(": restart budget probe")
+                            })
+                            .count();
+                        let total = failures.count();
+                        let terminal = stderr
+                            .lines()
+                            .filter(|line| line.starts_with("hew: exiting 1:"))
+                            .collect::<Vec<_>>();
+                        if requested != 41
+                            || total != 41
+                            || terminal != ["hew: exiting 1: 1 unrecovered actor crash"]
                         {
                             return Err(format!(
-                                "{run_name}: expected exactly 41 requested actor failures; see {}",
+                                "{run_name}: expected 41 requested panics and one unrecovered crash, got {requested} of {total} failures and {terminal:?}; see {}",
                                 logs.display()
-                            )
-                            .into());
+                            ).into());
                         }
                     }
                     verified += 1;

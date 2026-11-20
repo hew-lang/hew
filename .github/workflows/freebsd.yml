@@ -41,7 +41,7 @@ jobs:
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
-      - name: Build and test on FreeBSD
+      - name: Start FreeBSD VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "15.1"
@@ -66,99 +66,102 @@ jobs:
             pkg install -y -r FreeBSD llvm${{ env.LLVM_MAJOR }} gdb rustup-init python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
             pw useradd -n hew-ci -m -s /bin/sh
 
-          run: |
-            set -eux
-            id
-            test "$(id -u)" = 0
+      # The VM shell pulls staged reports before propagating the test exit status.
+      - name: Build and test on FreeBSD
+        shell: freebsd {0}
+        run: |
+          set -eux
+          id
+          test "$(id -u)" = 0
 
-            # The VM action connects as root. Finish privileged setup before
-            # handing the complete build and test workload to a normal user.
-            ln -sf /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/wasm-ld /usr/local/bin/wasm-ld
-            chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
-            test ! -e "$GITHUB_WORKSPACE/target"
-            mkdir -p /home/hew-ci/target
-            chown hew-ci:hew-ci /home/hew-ci/target
-            ln -s /home/hew-ci/target "$GITHUB_WORKSPACE/target"
-            stage_reports() {
-              mkdir -p "$GITHUB_WORKSPACE/ci-reports"
-              for report in \
-                target/nextest/ci/ratchet.xml \
-                target/nextest/ci-cabi/junit.xml \
-                target/nextest/ci-focused/junit.xml \
-                target/hew-test-reports/hew-suite-ratchet.xml; do
-                if test -f "$report"; then
-                  cp "$report" "$GITHUB_WORKSPACE/ci-reports/$(echo "$report" | tr / -)"
-                fi
-              done
-            }
-            trap stage_reports EXIT
-            su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
-            set -eux
-            export HOME=/home/hew-ci
-            id
-            test "$(id -u)" -ne 0
+          # The VM action connects as root. Finish privileged setup before
+          # handing the complete build and test workload to a normal user.
+          ln -sf /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/wasm-ld /usr/local/bin/wasm-ld
+          chown -R hew-ci:hew-ci "$GITHUB_WORKSPACE"
+          test ! -e "$GITHUB_WORKSPACE/target"
+          mkdir -p /home/hew-ci/target
+          chown hew-ci:hew-ci /home/hew-ci/target
+          ln -s /home/hew-ci/target "$GITHUB_WORKSPACE/target"
+          stage_reports() {
+            mkdir -p "$GITHUB_WORKSPACE/ci-reports"
+            for report in \
+              target/nextest/ci/ratchet.xml \
+              target/nextest/ci-cabi/junit.xml \
+              target/nextest/ci-focused/junit.xml \
+              target/hew-test-reports/hew-suite-ratchet.xml; do
+              if test -f "$report"; then
+                cp "$report" "$GITHUB_WORKSPACE/ci-reports/$(echo "$report" | tr / -)"
+              fi
+            done
+          }
+          trap stage_reports EXIT
+          su -m hew-ci -c 'sh -s' <<'HEW_FREEBSD_CI'
+          set -eux
+          export HOME=/home/hew-ci
+          id
+          test "$(id -u)" -ne 0
 
-            git config --global --add safe.directory "$(pwd)"
-            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git config --global --add safe.directory "$(pwd)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
-            export ${{ env.LLVM_SYS_PREFIX_VAR }}=/usr/local/llvm${{ env.LLVM_MAJOR }}
-            # Install the repository-pinned toolchain and WASI standard
-            # library through rustup, matching the other full-suite hosts.
-            /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
-              --default-toolchain 1.96.0 --target wasm32-wasip1
-            # The debug libhew bootstrap starts the Python freshness helper,
-            # which then starts Cargo. Give both child-process levels absolute
-            # executables instead of depending on the SSH login environment.
-            export PATH="$HOME/.cargo/bin:/usr/local/llvm${{ env.LLVM_MAJOR }}/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
-            export CARGO="$HOME/.cargo/bin/cargo"
-            export PYTHON=/usr/local/bin/python3.12
-            test -x "$CARGO"
-            test -x "$PYTHON"
-            rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
-            rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
-            export MAKE=gmake
-            /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
-            command -v gdb || command -v lldb || {
-              echo "No debugger found: install the FreeBSD gdb package or LLVM's lldb package" >&2
-              exit 1
-            }
+          export ${{ env.LLVM_SYS_PREFIX_VAR }}=/usr/local/llvm${{ env.LLVM_MAJOR }}
+          # Install the repository-pinned toolchain and WASI standard
+          # library through rustup, matching the other full-suite hosts.
+          /usr/local/bin/rustup-init -y --no-modify-path --profile minimal \
+            --default-toolchain 1.96.0 --target wasm32-wasip1
+          # The debug libhew bootstrap starts the Python freshness helper,
+          # which then starts Cargo. Give both child-process levels absolute
+          # executables instead of depending on the SSH login environment.
+          export PATH="$HOME/.cargo/bin:/usr/local/llvm${{ env.LLVM_MAJOR }}/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+          export CARGO="$HOME/.cargo/bin/cargo"
+          export PYTHON=/usr/local/bin/python3.12
+          test -x "$CARGO"
+          test -x "$PYTHON"
+          rustup run 1.96.0 rustc --version | grep -q '^rustc 1\.96\.0 '
+          rustup target list --toolchain 1.96.0 --installed | grep -qx wasm32-wasip1
+          export MAKE=gmake
+          /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
+          command -v gdb || command -v lldb || {
+            echo "No debugger found: install the FreeBSD gdb package or LLVM's lldb package" >&2
+            exit 1
+          }
 
-            # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
-            command -v wasmtime && wasmtime --version
-            command -v wasm-ld && wasm-ld --version
-            command -v bash && bash --version
+          # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
+          command -v wasmtime && wasmtime --version
+          command -v wasm-ld && wasm-ld --version
+          command -v bash && bash --version
 
-            # ── Tests ──────────────────────────────────────────────────────
+          # ── Tests ──────────────────────────────────────────────────────
 
-            # Install cargo-nextest for slow-timeout envelope (FreeBSD's pkg
-            # does not yet carry cargo-nextest, so install via cargo).
-            cargo install cargo-nextest --locked --version 0.9.120
+          # Install cargo-nextest for slow-timeout envelope (FreeBSD's pkg
+          # does not yet carry cargo-nextest, so install via cargo).
+          cargo install cargo-nextest --locked --version 0.9.120
 
-            # Default features include "full" (profiler + quic),
-            # so all QUIC transport tests run without an explicit flag.
-            # The ci profile applies the same slow-timeout = 3x60 s envelope
-            # as all other platforms, replacing the previous bare cargo test.
-            gmake test
+          # Default features include "full" (profiler + quic),
+          # so all QUIC transport tests run without an explicit flag.
+          # The ci profile applies the same slow-timeout = 3x60 s envelope
+          # as all other platforms, replacing the previous bare cargo test.
+          gmake test
 
-            # hew-cabi is excluded from the workspace run above because its
-            # cfg(test) runtime stubs collide with hew-runtime's real symbols
-            # at link time. Run it on its own so the C-ABI ownership contract
-            # is actually proven on this platform rather than merely skipped.
-            gmake test-cabi
+          # hew-cabi is excluded from the workspace run above because its
+          # cfg(test) runtime stubs collide with hew-runtime's real symbols
+          # at link time. Run it on its own so the C-ABI ownership contract
+          # is actually proven on this platform rather than merely skipped.
+          gmake test-cabi
 
-            # The authenticated exact checkout must also prove compiled Hew,
-            # including loopback network and resource surfaces. Workspace
-            # nextest alone does not execute these language-level gates.
-            gmake core-acceptance
-            gmake test-hew-ratchet
+          # The authenticated exact checkout must also prove compiled Hew,
+          # including loopback network and resource surfaces. Workspace
+          # nextest alone does not execute these language-level gates.
+          gmake core-acceptance
+          gmake test-hew-ratchet
 
-            # The source-level DWARF debugger proof must execute on FreeBSD,
-            # not merely compile as part of the workspace test build.
-            # A dedicated profile keeps this narrow run's report from
-            # overwriting the workspace run's junit.xml (same class of bug
-            # profile.ci-cabi exists to prevent — see .config/nextest.toml).
-            cargo nextest run -p hew-cli --test dwarf_debugger_locals_e2e --profile ci-focused
-            HEW_FREEBSD_CI
+          # The source-level DWARF debugger proof must execute on FreeBSD,
+          # not merely compile as part of the workspace test build.
+          # A dedicated profile keeps this narrow run's report from
+          # overwriting the workspace run's junit.xml (same class of bug
+          # profile.ci-cabi exists to prevent — see .config/nextest.toml).
+          cargo nextest run -p hew-cli --test dwarf_debugger_locals_e2e --profile ci-focused
+          HEW_FREEBSD_CI
 
       - name: Upload test reports
         # The guest stages only JUnit files for the action's copyback.

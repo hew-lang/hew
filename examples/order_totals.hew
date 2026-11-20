@@ -45,15 +45,9 @@ fn summarize(order: Order) -> Totals fails string {
 }
 
 pub fn read_order(path: string) -> Totals fails string {
-    let input = fs.read(path) handle error {
-        return error f"{path}: {error}";
-    };
-    let order = json.decode<Order>(input) handle error {
-        return error f"{path}: {error}";
-    };
-    summarize(order) handle error {
-        return error f"{path}: {error}";
-    }
+    let input = fs.read(path).map_err(|error| error.fmt());
+    let order = input.and_then(|text| json.decode<Order>(text).map_err(|error| error.fmt()));
+    order.and_then(summarize).map_err(|error| f"{path}: {error}")?
 }
 
 fn main() -> i32 {

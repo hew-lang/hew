@@ -6,53 +6,34 @@ import std.fs;
 import std.io;
 import std.os;
 
+type Order {
+    items: Vec<OrderItem>;
+}
+
+type OrderItem {
+    units: i64;
+    unit_cents: i64;
+}
+
 pub type Totals {
     units: i64;
     cents: i64;
 }
 
-fn required_field(value: json.Value, name: string) -> json.Value fails string {
-    let optional = value.get_field(name) handle error {
-        return error f"reading {name}: {error}";
-    };
-    let field = optional else {
-        return error f"missing {name}";
-    };
-    field
-}
-
-fn read_count(item: json.Value, name: string) -> i64 fails string {
-    let field = required_field(item, name)?;
-    let count = field.get_int() handle error {
-        return error f"{name}: {error}";
-    };
-    if count < 0 {
-        return error f"{name} must be non-negative";
-    }
-    count
-}
-
-fn summarize(document: json.Value) -> Totals fails string {
-    let items = required_field(document, "items")?;
-    let count = items.array_len() handle error {
-        return error f"items: {error}";
-    };
+fn summarize(order: Order) -> Totals fails string {
     var totals = Totals { units: 0, cents: 0 };
-    for index in 0..count {
-        let entry = items.array_get(index) handle error {
-            return error f"item {index + 1}: {error}";
-        };
-        let item = entry.expect("index came from the array length");
-        let units = read_count(item, "units") handle error {
-            return error f"item {index + 1}: {error}";
-        };
-        let cents = read_count(item, "unit_cents") handle error {
-            return error f"item {index + 1}: {error}";
-        };
-        let line_cents = units.checked_mul(cents) else {
+    for index in 0..order.items.len() {
+        let item = order.items[index];
+        if item.units < 0 {
+            return error f"item {index + 1}: units must be non-negative";
+        }
+        if item.unit_cents < 0 {
+            return error f"item {index + 1}: unit_cents must be non-negative";
+        }
+        let line_cents = item.units.checked_mul(item.unit_cents) else {
             return error f"item {index + 1}: line total is too large";
         };
-        let next_units = totals.units.checked_add(units) else {
+        let next_units = totals.units.checked_add(item.units) else {
             return error "order contains too many units";
         };
         let next_cents = totals.cents.checked_add(line_cents) else {
@@ -64,15 +45,9 @@ fn summarize(document: json.Value) -> Totals fails string {
 }
 
 pub fn read_order(path: string) -> Totals fails string {
-    let input = fs.read(path) handle error {
-        return error f"{path}: {error}";
-    };
-    let document = json.parse(input) handle error {
-        return error f"{path}: {error}";
-    };
-    summarize(document) handle error {
-        return error f"{path}: {error}";
-    }
+    let input = fs.read(path).map_err(|error| error.fmt());
+    let order = input.and_then(|text| json.decode<Order>(text).map_err(|error| error.fmt()));
+    order.and_then(summarize).map_err(|error| f"{path}: {error}")?
 }
 
 fn main() -> i32 {

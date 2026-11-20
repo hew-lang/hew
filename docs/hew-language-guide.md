@@ -108,14 +108,12 @@ hew run examples/order_totals.hew -- order.json
 # 5 units, 3997 cents
 ```
 
-The file reader adds the path to I/O and parse failures. The validator adds the
-item number and field name. An absent field is an `Option` from the lookup, so
-`let … else` can report it where the field is required. An explicit JSON
-`null` reaches the value check and fails as the wrong kind. Use `?` when a
-helper already supplies the right context and `handle` when the caller can
-add useful information. Checked multiplication and addition turn an
-oversized order into an input error. The file and JSON values have automatic
-cleanup, including when a check returns early.
+`json.decode<Order>` checks the file against the order record. It reports a missing
+key or a value of the wrong type with its field path, such as `.items[0].units`.
+The reader adds the file name to those errors. The validator then checks that
+units and prices are non-negative and uses checked arithmetic for the totals.
+Resources are cleaned up even when the reader returns an error. Use `json.Value`
+for documents whose shape varies at run time.
 
 Use this straight-line reader for a single file. [Order batch](../examples/order_batch.hew)
 uses the same reader for several independent orders and prints in input
@@ -127,14 +125,25 @@ for its tasks to clean up before producing its failure. Completion order
 is available when the caller can use results as soon as they arrive.
 The transform takes a `consume` parameter because each job owns its input.
 
-For a long-lived worker with its own state, see the
-[supervision showcase](../examples/observe_supervisor_showcase.hew). Start it
-with `HEW_OBSERVE=hot HEW_PPROF=127.0.0.1:6060` and pass
-`--wait-for-recording` to wait for a connected Observe session. After
-starting a recording, press Enter in the producer terminal. The client
-receives the worker's failed reply, waits with `restarted(alpha)`, and uses
-the same role handle to talk to its replacement. The sibling workers keep
-their state under `one_for_one`.
+## Restart a failed worker
+
+[Worker pool](../examples/supervisor_worker_pool.hew) runs two stateful actors
+under `one_for_one`. It sends work to both, triggers a failure in one, and
+shows the other worker's count surviving.
+
+```sh
+hew run examples/supervisor_worker_pool.hew
+# after the restart: alpha 1, beta 7
+```
+
+The call that fails returns an error. `restarted(alpha)` waits for the replacement,
+and the same role handle sends work to the new worker. Alpha counts one new job
+from fresh state. Beta keeps the seven it had already counted.
+
+To inspect a restart in Observe, run the
+[recording showcase](../examples/observe_supervisor_showcase.hew) with
+`HEW_OBSERVE=hot HEW_PPROF=127.0.0.1:6060` and pass `--wait-for-recording`.
+Start a recording, then press Enter in the producer terminal to fail the worker.
 
 ## Primitives
 

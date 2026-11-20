@@ -162,20 +162,6 @@ class Registry(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.server.writes and "wasm" in self.path:
             self.server.published_reads += 1
-            if self.server.delayed_missing_version:
-                self.server.delayed_missing_version -= 1
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps(
-                        {"name": "@hew-lang/wasm", "versions": {}, "dist-tags": {}}
-                    ).encode()
-                )
-                return
-            if self.server.delayed_metadata:
-                self.server.delayed_metadata -= 1
-                self.send_error(503)
-                return
         if self.server.mode == "unreadable":
             self.send_error(503)
             return
@@ -185,23 +171,21 @@ class Registry(BaseHTTPRequestHandler):
         name = "sandbox-vm" if "sandbox-vm" in self.path else "wasm"
         data = self.server.packages[name]
         if "/tarballs/" in self.path:
-            body = data
-        else:
-            manifest = {
-                "name": f"@hew-lang/{name}",
-                "version": VERSION,
-                "dist": {
-                    "tarball": f"{self.server.url}/tarballs/{name}.tgz",
-                    "shasum": hashlib.sha1(data).hexdigest(),
-                },
+            self.send_error(404)
+            return
+        dist = {"tarball": f"{self.server.url}/tarballs/{name}.tgz"}
+        if self.server.mode != "missing-integrity":
+            dist["integrity"] = (
+                "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
+            )
+        manifest = {"name": f"@hew-lang/{name}", "version": VERSION, "dist": dist}
+        body = json.dumps(
+            {
+                **manifest,
+                "versions": {VERSION: manifest},
+                "dist-tags": {"latest": VERSION},
             }
-            body = json.dumps(
-                {
-                    **manifest,
-                    "versions": {VERSION: manifest},
-                    "dist-tags": {"latest": VERSION},
-                }
-            ).encode()
+        ).encode()
         self.send_response(200)
         self.end_headers()
         self.wfile.write(body)
@@ -211,8 +195,6 @@ class Registry(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         attachment = next(iter(payload["_attachments"].values()))
         self.server.packages["wasm"] = base64.b64decode(attachment["data"])
-        if self.server.corrupt_publish:
-            self.server.packages["wasm"] = package("wasm", payload=b"different")
         self.server.mode = "exists"
         if self.server.uncertain_publish:
             self.close_connection = True
@@ -238,10 +220,7 @@ class NpmDelivery(unittest.TestCase):
         self.server.packages = self.packages.copy()
         self.server.writes = 0
         self.server.published_reads = 0
-        self.server.delayed_metadata = False
-        self.server.delayed_missing_version = False
         self.server.uncertain_publish = False
-        self.server.corrupt_publish = False
         self.server.url = f"http://127.0.0.1:{self.server.server_port}"
         (self.root / "user.npmrc").write_text(
             f"//127.0.0.1:{self.server.server_port}/:_authToken={secrets.token_urlsafe(24)}\n@hew-lang:registry=http://127.0.0.1:9\n"
@@ -282,40 +261,20 @@ class NpmDelivery(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.server.writes, 0)
 
-    def test_successful_publish_is_read_back_before_completion(self):
+    def test_successful_publish_completes_before_tarball_visibility(self):
         self.server.mode = "absent"
         result = self.run_adapter()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.server.writes, 1)
         self.assertEqual(self.server.packages["wasm"], self.packages["wasm"])
-        self.assertGreater(self.server.published_reads, 0)
-        self.assertIn("Verified identical tarball: @hew-lang/wasm", result.stdout)
+        self.assertEqual(self.server.published_reads, 0)
 
-    def test_new_publication_waits_for_visibility_without_publishing_again(self):
-        self.server.mode = "absent"
-        self.server.delayed_metadata = 1
-        result = self.run_adapter()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.server.writes, 1)
-        self.assertGreater(self.server.published_reads, 1)
-        self.assertIn("Verified identical tarball: @hew-lang/wasm", result.stdout)
-
-    def test_new_publication_retries_missing_version_without_publishing_again(self):
-        self.server.mode = "absent"
-        self.server.delayed_missing_version = 1
-        result = self.run_adapter()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.server.writes, 1)
-        self.assertGreater(self.server.published_reads, 1)
-        self.assertIn("Verified identical tarball: @hew-lang/wasm", result.stdout)
-
-    def test_new_publication_with_different_bytes_fails_without_overwrite(self):
-        self.server.mode = "absent"
-        self.server.corrupt_publish = True
+    def test_existing_version_without_integrity_fails_without_overwrite(self):
+        self.server.mode = "missing-integrity"
         result = self.run_adapter()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Published bytes differ", result.stderr)
-        self.assertEqual(self.server.writes, 1)
+        self.assertIn("no dist.integrity", result.stderr)
+        self.assertEqual(self.server.writes, 0)
 
     def test_different_tarball_fails_without_overwrite(self):
         self.server.packages["wasm"] = package("wasm", payload=b"other")
@@ -346,64 +305,6 @@ class NpmDelivery(unittest.TestCase):
         result = self.run_adapter()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.server.writes, 0)
-
-
-class NpmReadbackBudget(unittest.TestCase):
-    def test_unavailable_readback_exhausts_its_budget(self):
-        unavailable = subprocess.CompletedProcess(
-            [], 1, json.dumps({"error": {"code": "E503"}}), "unavailable"
-        )
-        with (
-            patch.object(channel, "command", return_value=unavailable) as command,
-            patch.object(channel.time, "monotonic", side_effect=[0, 0, 300]),
-            patch.object(channel.time, "sleep") as sleep,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Timed out verifying"):
-                channel.npm_verify(
-                    "@hew-lang/wasm@1.2.3",
-                    "https://example.invalid",
-                    Path("unused.tgz"),
-                    wait_for_visibility=True,
-                )
-        self.assertEqual(command.call_count, 2)
-        sleep.assert_called_once_with(5)
-
-    def test_missing_published_version_respects_retry_budget(self):
-        missing = subprocess.CompletedProcess(
-            [], 1, json.dumps({"error": {"code": "ETARGET"}}), "not yet visible"
-        )
-        with (
-            patch.object(channel, "command", return_value=missing) as command,
-            patch.object(channel.time, "monotonic", side_effect=[0, 0, 300]),
-            patch.object(channel.time, "sleep") as sleep,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Timed out verifying"):
-                channel.npm_verify(
-                    "@hew-lang/wasm@1.2.3",
-                    "https://example.invalid",
-                    Path("unused.tgz"),
-                    wait_for_visibility=True,
-                )
-        self.assertEqual(command.call_count, 2)
-        sleep.assert_called_once_with(5)
-
-    def test_readback_authentication_refusal_is_not_retried(self):
-        refused = subprocess.CompletedProcess(
-            [], 1, json.dumps({"error": {"code": "E401"}}), "unauthorized"
-        )
-        with (
-            patch.object(channel, "command", return_value=refused) as command,
-            patch.object(channel.time, "sleep") as sleep,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Cannot verify published"):
-                channel.npm_verify(
-                    "@hew-lang/wasm@1.2.3",
-                    "https://example.invalid",
-                    Path("unused.tgz"),
-                    wait_for_visibility=True,
-                )
-        command.assert_called_once()
-        sleep.assert_not_called()
 
 
 class OciDelivery(unittest.TestCase):

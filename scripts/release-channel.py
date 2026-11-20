@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ def digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def npm_dist(spec: str, registry: str) -> dict | None:
+def npm_integrity(spec: str, registry: str) -> str | None:
     result = command(
         "npm",
         "view",
@@ -48,72 +49,10 @@ def npm_dist(spec: str, registry: str) -> dict | None:
             return None
         raise RuntimeError(f"Cannot determine npm publication state: {error}")
     metadata = json.loads(result.stdout)
-    if not isinstance(metadata, dict) or not metadata.get("tarball"):
-        raise RuntimeError("Registry returned no npm tarball")
-    return metadata
-
-
-def npm_verify(
-    spec: str, registry: str, archive: Path, *, wait_for_visibility: bool = False
-) -> None:
-    # A successful publish can precede registry propagation. Bound read-only
-    # retries to five minutes per package within the publisher's job budget.
-    deadline = time.monotonic() + 300 if wait_for_visibility else None
-    while True:
-        with tempfile.TemporaryDirectory(prefix="hew-npm-") as temp:
-            args = [
-                "npm",
-                "pack",
-                spec,
-                "--ignore-scripts",
-                "--json",
-                "--registry",
-                registry,
-                f"--@hew-lang:registry={registry}",
-                "--pack-destination",
-                temp,
-                "--cache",
-                str(Path(temp) / "cache"),
-            ]
-            if wait_for_visibility:
-                # This loop owns the retry budget; do not nest npm's backoff.
-                args += ["--fetch-retries=0", "--fetch-timeout=15000"]
-            result = command(*args, check=False)
-            if result.returncode == 0:
-                packed = json.loads(result.stdout)
-                remote = Path(temp) / packed[0]["filename"]
-                if remote.parent != Path(temp) or digest(remote.read_bytes()) != digest(
-                    archive.read_bytes()
-                ):
-                    raise RuntimeError(
-                        f"Published bytes differ for {spec}; refusing overwrite"
-                    )
-                print(f"Verified identical tarball: {spec} on {registry}")
-                return
-            try:
-                code = json.loads(result.stdout)["error"]["code"]
-            except (ValueError, KeyError, TypeError):
-                code = None
-            if deadline is None or code not in {
-                "E404",
-                "ETARGET",
-                "E502",
-                "E503",
-                "E504",
-                "ETIMEDOUT",
-                "ECONNRESET",
-            }:
-                raise RuntimeError(
-                    f"Cannot verify published tarball for {spec}: "
-                    f"{result.stderr or result.stdout}"
-                )
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(
-                    f"Timed out verifying published tarball for {spec}: "
-                    f"{result.stderr or result.stdout}"
-                )
-        time.sleep(min(5, remaining))
+    integrity = metadata.get("integrity") if isinstance(metadata, dict) else None
+    if not isinstance(integrity, str) or not integrity:
+        raise RuntimeError(f"Registry returned no dist.integrity for {spec}")
+    return integrity
 
 
 def publish_npm() -> None:
@@ -133,27 +72,34 @@ def publish_npm() -> None:
         ):
             raise RuntimeError(f"Producer package source/version mismatch: {archive}")
         spec = f"@hew-lang/{package}@{version}"
-        if npm_dist(spec, registry) is None:
-            args = [
-                "npm",
-                "publish",
-                str(archive.resolve()),
-                "--ignore-scripts",
-                "--access",
-                "public",
-                "--tag",
-                os.environ["DIST_TAG"],
-                "--registry",
-                registry,
-                f"--@hew-lang:registry={registry}",
-            ]
-            if registry == "https://registry.npmjs.org":
-                args.append("--provenance")
-            command(*args)
-            print(f"Published: {spec} on {registry}")
-            npm_verify(spec, registry, archive, wait_for_visibility=True)
-        else:
-            npm_verify(spec, registry, archive)
+        integrity = npm_integrity(spec, registry)
+        if integrity is not None:
+            with archive.open("rb") as payload:
+                sha512 = hashlib.file_digest(payload, "sha512").digest()
+            expected = "sha512-" + base64.b64encode(sha512).decode("ascii")
+            if integrity != expected:
+                raise RuntimeError(
+                    f"Published integrity differs for {spec}; refusing overwrite"
+                )
+            print(f"Already published with matching integrity: {spec} on {registry}")
+            continue
+        args = [
+            "npm",
+            "publish",
+            str(archive.resolve()),
+            "--ignore-scripts",
+            "--access",
+            "public",
+            "--tag",
+            os.environ["DIST_TAG"],
+            "--registry",
+            registry,
+            f"--@hew-lang:registry={registry}",
+        ]
+        if registry == "https://registry.npmjs.org":
+            args.append("--provenance")
+        command(*args)
+        print(f"Published: {spec} on {registry}")
 
 
 def oci_raw(reference: str, *, absent: bool = False) -> str | None:

@@ -284,22 +284,19 @@ fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) 
         "identity display client failed under leaks or the poisoned allocator\n{}",
         describe_output(&client)
     );
-    assert!(
-        !client_stdout.contains("FAIL ") && client_stdout.contains(&sentinel),
-        "identity display client missed its exact completion sentinel\n{}",
-        describe_output(&client)
-    );
-    let program_line_count = client_stdout
-        .lines()
-        .take_while(|line| !line.starts_with("Process:"))
-        .filter(|line| !line.is_empty())
-        .count();
-    assert_eq!(
-        program_line_count,
-        iterations * 10 + 1,
-        "identity display client did not execute every direct, named, and mixed path\n{}",
-        describe_output(&client)
-    );
+    let mut lines = client_stdout.lines();
+    for _ in 0..iterations {
+        let node = lines.next().expect("direct node display length");
+        let location = lines.next().expect("direct location display length");
+        assert!(node.parse::<usize>().is_ok_and(|n| n > 0));
+        assert!(location.parse::<usize>().is_ok_and(|n| n > 0));
+        // Named and mixed lifetimes must display the same identity as the
+        // direct temporaries, then finish the iteration before the sentinel.
+        for expected in [node, location, node, location, "frame"] {
+            assert_eq!(lines.next(), Some(expected), "{client_stdout}");
+        }
+    }
+    assert_eq!(lines.next(), Some(sentinel.as_str()), "{client_stdout}");
 
     // The identity-display scenario is client-only. Once its clean shutdown is
     // observed, terminate the otherwise long-lived fixture server.

@@ -143,7 +143,8 @@ jobs:
   account-windows-nextest:
     name: Nextest ratchet accounting (Windows)
     runs-on: windows-2022
-    timeout-minutes: 120
+    # The full native inventory takes longer than two hours on a cold MSVC runner.
+    timeout-minutes: 180
     env:
       # aws-lc-sys needs NASM for its Windows MSVC bootstrap. The prebuilt
       # assembly path is the regular Windows suite's documented prerequisite.

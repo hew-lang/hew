@@ -352,6 +352,13 @@ impl Slot {
     }
 
     /// The operation a stream selection observes for this slot.
+    #[cfg_attr(
+        not(unix),
+        allow(
+            clippy::unused_self,
+            reason = "all current Windows slot types watch reads"
+        )
+    )]
     pub(crate) fn watch_direction(&self) -> Direction {
         #[cfg(unix)]
         if let IoObject::Foreign(_, direction) = self.object {

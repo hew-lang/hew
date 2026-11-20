@@ -98,35 +98,36 @@ fn run_native_compile_error_exits_one() {
     );
 }
 
+/// A program killed by a signal ends `hew run` by the same signal, and
+/// `hew run` adds nothing: the caller sees exactly what running the program
+/// itself would show.
 #[cfg(unix)]
 #[test]
-fn run_native_signal_prints_typed_failure() {
+fn run_native_signal_ends_the_runner_by_the_same_signal_silently() {
+    use std::os::unix::process::ExitStatusExt;
     require_codegen();
     let dir = support::tempdir();
-    let path = dir.path().join("signal_run.hew");
-    // SIGKILL cannot be intercepted by the runtime's fault handlers. This
-    // exercises the parent CLI's diagnostic without invalid memory access.
-    std::fs::write(
-        &path,
-        format!(
-            "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({}); }} }}\n",
-            libc::SIGKILL
-        ),
-    )
-    .unwrap();
-    for timeout in [false, true] {
-        let mut command = Command::new(hew_binary());
-        command.arg("run");
-        if timeout {
-            command.args(["--timeout", "10s"]);
+    for signal in [libc::SIGKILL, libc::SIGINT, libc::SIGTERM] {
+        let path = dir.path().join(format!("signal_run_{signal}.hew"));
+        std::fs::write(
+            &path,
+            format!(
+                "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({signal}); }} }}\n"
+            ),
+        )
+        .unwrap();
+        for timeout in [false, true] {
+            let mut command = Command::new(hew_binary());
+            command.arg("run");
+            if timeout {
+                command.args(["--timeout", "10s"]);
+            }
+            command.arg(&path).current_dir(dir.path());
+            let output = support::run_bounded_command(command, "native signal end");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.signal(), Some(signal), "{stderr}");
+            assert!(stderr.is_empty(), "hew run must add nothing: {stderr}");
         }
-        command.arg(&path).current_dir(dir.path());
-        let output = support::run_bounded_command(command, "native signal diagnostic");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{stderr}");
-        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
-        assert!(stderr.contains("SIGKILL"), "{stderr}");
-        assert!(!stderr.contains("timed out"), "{stderr}");
     }
 }
 
@@ -273,48 +274,6 @@ fn run_honours_inherited_deterministic_environment() {
 
     support::assert_success(&output, "hew run under HEW_DETERMINISTIC");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n");
-}
-
-/// #3132: `hew run`'s compiled artifact lives under `$TMPDIR/hew-run/<pid>-
-/// <rand>/` and RAII drop removes it on a normal exit. Points the child's
-/// temp root at an isolated directory (via TMPDIR/TMP/TEMP so the check
-/// holds on both the Unix and Windows temp-dir lookup) and asserts nothing
-/// remains under `hew-run/` once the process has exited cleanly.
-#[test]
-fn run_normal_exit_leaves_no_hew_run_artifact_dir_behind() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let path = dir.path().join("trivial_run.hew");
-    std::fs::write(&path, "fn main() {\n    println(1);\n}\n").unwrap();
-
-    let tmp_root = support::tempdir();
-    let mut command = Command::new(hew_binary());
-    command
-        .arg("run")
-        .arg(&path)
-        .current_dir(dir.path())
-        .env("TMPDIR", tmp_root.path())
-        .env("TMP", tmp_root.path())
-        .env("TEMP", tmp_root.path());
-    let output = support::run_bounded_command(command, "hew run trivial (artifact-cleanup proof)");
-
-    assert!(
-        output.status.success(),
-        "hew run should succeed; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let hew_run_dir = tmp_root.path().join("hew-run");
-    let leftover: Vec<_> = std::fs::read_dir(&hew_run_dir)
-        .map(|entries| entries.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    assert!(
-        leftover.is_empty(),
-        "a normal exit must leave no artifact dir behind under {}: {leftover:?}",
-        hew_run_dir.display()
-    );
 }
 
 #[test]

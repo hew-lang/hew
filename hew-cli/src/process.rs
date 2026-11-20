@@ -112,6 +112,19 @@ impl BoundedChild {
     fn spawn_with_group(command: &mut Command, isolated_group: bool) -> Result<Self, String> {
         use std::os::unix::process::CommandExt;
 
+        // The child dies with this process where the platform can arrange it,
+        // so a runner killed outright (SIGKILL) leaves no program behind.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            // SAFETY: getpid has no preconditions.
+            let parent = unsafe { libc::getpid() };
+            // SAFETY: `pre_exec` runs in the child between `fork` and `exec`
+            // and calls only async-signal-safe functions.
+            unsafe {
+                command.pre_exec(move || die_with_parent(parent));
+            }
+        }
+
         if isolated_group {
             // SAFETY: `pre_exec` runs in the child process after `fork` and
             // before `exec`; it changes only that child's process group.
@@ -296,10 +309,23 @@ impl BoundedChild {
         let started = Instant::now();
         let mut interrupted = None;
         loop {
-            if interrupted.is_none() {
-                if let Some(signal) = signals.requested() {
-                    let pid = self.child.id().cast_signed();
-                    let target = if self.isolated_group { -pid } else { pid };
+            if let Some(signal) = signals.take() {
+                let pid = self.child.id().cast_signed();
+                // An isolated group hears nothing from the terminal, so every
+                // request is forwarded to the whole group, once, and the group
+                // is cleaned after a grace period. A child sharing this
+                // process's group (a terminal session) already received the
+                // terminal's SIGINT, SIGQUIT and SIGHUP itself; forwarding them
+                // would deliver each twice. Only SIGTERM, which is addressed to
+                // this process alone, is passed on, and the run then waits for
+                // the program to finish however long its shutdown takes, as
+                // it would without a runner.
+                let target = match (self.isolated_group, interrupted) {
+                    (true, None) => Some(-pid),
+                    (false, _) if signal == libc::SIGTERM => Some(pid),
+                    _ => None,
+                };
+                if let Some(target) = target {
                     // SAFETY: the unreaped child reserves this identity. A
                     // negative target selects only its isolated group; an
                     // inherited group is never signalled as a whole.
@@ -312,7 +338,9 @@ impl BoundedChild {
                             ));
                         }
                     }
-                    interrupted = Some(Instant::now());
+                    if self.isolated_group {
+                        interrupted = Some(Instant::now());
+                    }
                 }
             }
             // Clean the group before reaping its leader so the group ID still
@@ -366,6 +394,220 @@ impl BoundedChild {
     }
 }
 
+/// While installed, console Ctrl-C and Ctrl-Break leave this process running:
+/// the console delivers them to the program too, which decides what they
+/// mean, and the runner then waits for it and cleans up. Removed on drop, and
+/// a handler, unlike an ignored disposition, is not inherited by children.
+#[cfg(windows)]
+pub(crate) struct ConsoleInterrupts;
+
+#[cfg(windows)]
+impl ConsoleInterrupts {
+    pub(crate) fn install() -> Self {
+        // SAFETY: registers a handler with the signature the console expects.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(outlive_console_interrupt),
+                1,
+            );
+        }
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConsoleInterrupts {
+    fn drop(&mut self) {
+        // SAFETY: removes the handler `install` registered.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                Some(outlive_console_interrupt),
+                0,
+            );
+        }
+    }
+}
+
+/// Whether this process is in the foreground process group of the terminal
+/// on any of its standard streams: what a program it runs must share to use
+/// that terminal. Always false where there are no process groups.
+pub(crate) fn in_terminal_foreground() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: getpgrp only queries this process.
+        let group = unsafe { libc::getpgrp() };
+        (0..3).any(|fd| {
+            // SAFETY: tcgetpgrp only queries the descriptor; one that is not
+            // a terminal reports -1.
+            unsafe { libc::tcgetpgrp(fd) == group }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Set by the console handler; taken by a temporary build's watcher.
+#[cfg(windows)]
+static CONSOLE_INTERRUPTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+unsafe extern "system" fn outlive_console_interrupt(kind: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+    let interrupt = kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT;
+    if interrupt {
+        CONSOLE_INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    i32::from(interrupt)
+}
+
+/// How a runner a pending interrupt or termination request stops must end, if
+/// one arrived: by that signal on Unix, and with `STATUS_CONTROL_C_EXIT`, as
+/// a console interrupt ends a process, on Windows.
+pub(crate) fn take_pending_interrupt() -> Option<ProgramEnd> {
+    #[cfg(unix)]
+    {
+        crate::signal::take_pending().map(ProgramEnd::Signalled)
+    }
+    #[cfg(windows)]
+    {
+        const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
+        CONSOLE_INTERRUPTED
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then_some(ProgramEnd::Exited(STATUS_CONTROL_C_EXIT.cast_signed()))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+/// End this process at once as `end` describes, without running exit
+/// handlers: a compile may be in progress on another thread.
+fn end_immediately(end: ProgramEnd) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stderr().flush();
+    match end {
+        #[cfg(unix)]
+        ProgramEnd::Signalled(signal) => die_by_signal(signal),
+        #[cfg(unix)]
+        // SAFETY: `_exit` ends the process without touching shared state.
+        ProgramEnd::Exited(code) => unsafe { libc::_exit(code) },
+        #[cfg(windows)]
+        ProgramEnd::Exited(code) | ProgramEnd::Signalled(code) => {
+            // SAFETY: terminating the current process with an exit code.
+            unsafe {
+                use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                TerminateProcess(GetCurrentProcess(), code.cast_unsigned());
+            }
+            std::process::abort()
+        }
+        #[cfg(not(any(unix, windows)))]
+        ProgramEnd::Exited(code) | ProgramEnd::Signalled(code) => std::process::exit(code),
+    }
+}
+
+/// Interrupts and termination requests while a runner owns a temporary build.
+///
+/// While the build compiles, a request removes the build directory and ends
+/// the runner at once, by the same signal, rather than leaving the directory
+/// behind (the default disposition) or making Ctrl-C wait for a slow compile. Once the build is
+/// done ([`BuildInterrupts::finish`]) the dispositions stay installed and
+/// requests stay pending, so nothing reverts to the default before the run
+/// of the program, whose own wait loop takes them, begins.
+pub(crate) struct BuildInterrupts {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    watcher: Option<JoinHandle<()>>,
+    #[cfg(unix)]
+    _signals: Option<crate::signal::RunSignals>,
+    #[cfg(windows)]
+    _console: ConsoleInterrupts,
+}
+
+impl BuildInterrupts {
+    pub(crate) fn install(directory: &Path) -> Self {
+        #[cfg(unix)]
+        let signals = crate::signal::RunSignals::install().ok();
+        #[cfg(windows)]
+        let console = ConsoleInterrupts::install();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let stop = std::sync::Arc::clone(&stop);
+            let directory = directory.to_path_buf();
+            std::thread::Builder::new()
+                .name("hew-build-interrupts".into())
+                .spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(end) = take_pending_interrupt() {
+                            let _ = std::fs::remove_dir_all(&directory);
+                            end_immediately(end);
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                })
+                .ok()
+        };
+        Self {
+            stop,
+            watcher,
+            #[cfg(unix)]
+            _signals: signals,
+            #[cfg(windows)]
+            _console: console,
+        }
+    }
+
+    /// The build is complete: stop watching, keeping the dispositions.
+    pub(crate) fn finish(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+    }
+}
+
+impl Drop for BuildInterrupts {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// Ask the kernel to kill this (forked, not yet exec'd) child when `parent`
+/// exits. A parent that already died before the request took effect leaves
+/// the child reparented, so that case fails the spawn instead of running an
+/// unowned program.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn die_with_parent(parent: libc::pid_t) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    // SAFETY: PR_SET_PDEATHSIG takes a signal number and changes only this
+    // process's own attribute.
+    let set = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+    #[cfg(target_os = "freebsd")]
+    // SAFETY: PROC_PDEATHSIG_CTL reads one int naming the signal, for this
+    // process (P_PID 0).
+    let set = unsafe {
+        let mut signal: libc::c_int = libc::SIGKILL;
+        libc::procctl(
+            libc::P_PID,
+            0,
+            libc::PROC_PDEATHSIG_CTL,
+            (&raw mut signal).cast(),
+        )
+    };
+    if set != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: getppid has no preconditions.
+    if unsafe { libc::getppid() } != parent {
+        return Err(std::io::Error::other(
+            "the runner exited before its program started",
+        ));
+    }
+    Ok(())
+}
+
 /// Own the complete interactive child lifetime, including errors. Callers may
 /// exit the CLI immediately after this returns: no child cleanup relies on
 /// destructors running after `process::exit`. Inherited groups preserve terminal
@@ -384,6 +626,10 @@ pub(crate) fn run_command_interactive(
     }
     #[cfg(not(unix))]
     {
+        // The console delivers Ctrl-C to every process attached to it; the
+        // program handles its own, and this runner outlives it to clean up.
+        #[cfg(windows)]
+        let _console = ConsoleInterrupts::install();
         match timeout {
             Some(timeout) => child.wait_with_timeout(timeout),
             None => child
@@ -417,58 +663,71 @@ fn terminating_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
-/// Synchronous fault signals the Hew runtime reports itself before the program
-/// dies by them; see `hew-runtime/src/signal/unix.rs`.
-#[cfg(unix)]
-const RUNTIME_REPORTED_SIGNALS: [i32; 5] = [
-    libc::SIGSEGV,
-    libc::SIGBUS,
-    libc::SIGFPE,
-    libc::SIGILL,
-    libc::SIGTRAP,
-];
+/// How a program a runner started ended, as the runner must end in turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgramEnd {
+    /// It exited with this status (on Windows, also how exceptions and
+    /// console interrupts end a process).
+    Exited(i32),
+    /// It was killed by this signal.
+    Signalled(i32),
+}
 
-/// Preserve explicit program exits and report abnormal native termination.
-///
-/// A synchronous fault signal was already reported by the runtime's fault
-/// boundary, which then let the program die by that signal; the wrapper adds
-/// no second record and exits as a shell reports the death, `128 + signal`.
-/// Any other signal (`SIGKILL`, `SIGABRT`, `SIGTERM`, ...) reached the program
-/// from outside or from `abort`, so no Hew record exists: report it as
-/// `UnknownFault` and exit 1. Windows reports exceptions and explicit exits
-/// through the same integer; preserve that integer because the two cannot be
-/// distinguished here.
-pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io::Write) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
-    }
-    #[cfg(unix)]
-    if let Some(signal) = terminating_signal(status) {
-        if RUNTIME_REPORTED_SIGNALS.contains(&signal) {
-            return 128 + signal;
+impl ProgramEnd {
+    pub(crate) fn of(status: ExitStatus) -> Self {
+        match (status.code(), terminating_signal(status)) {
+            (Some(code), _) => Self::Exited(code),
+            (None, Some(signal)) => Self::Signalled(signal),
+            // Neither is possible on supported platforms; fail, quietly.
+            (None, None) => Self::Exited(1),
         }
-        let name = match signal {
-            libc::SIGABRT => "SIGABRT",
-            libc::SIGINT => "SIGINT",
-            libc::SIGHUP => "SIGHUP",
-            libc::SIGKILL => "SIGKILL",
-            libc::SIGPIPE => "SIGPIPE",
-            libc::SIGQUIT => "SIGQUIT",
-            libc::SIGTERM => "SIGTERM",
-            _ => "unknown signal",
-        };
-        // An unavailable stderr must not turn a child failure into a CLI panic.
-        let _ = writeln!(
-            stderr,
-            "hew: failure: UnknownFault ({signal}): native program terminated by signal {signal} ({name})"
-        );
-        return 1;
     }
-    let _ = writeln!(
-        stderr,
-        "hew: failure: UnknownFault: native program terminated abnormally ({status})"
-    );
-    1
+}
+
+/// End this runner the way its program ended, adding nothing, as `go run`
+/// relays a program's end. A program that exited ends the runner with the same
+/// status. A program killed by a signal (Ctrl-C's SIGINT, SIGTERM, SIGPIPE
+/// from a closed pipe, a fault the runtime has already reported) ends the
+/// runner by the same signal, so a shell or script sees exactly what it would
+/// had it run the program itself: no message from the runner, the shell's own
+/// report if it makes one, and a loop over `hew run` stops on Ctrl-C.
+///
+/// Call this only once the runner's own cleanup is done.
+pub(crate) fn exit_as_program(end: ProgramEnd) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    match end {
+        ProgramEnd::Exited(code) => std::process::exit(code),
+        #[cfg(unix)]
+        ProgramEnd::Signalled(signal) => die_by_signal(signal),
+        #[cfg(not(unix))]
+        ProgramEnd::Signalled(signal) => std::process::exit(128 + signal),
+    }
+}
+
+/// Die by `signal` with its default action, without a core file of the
+/// runner: the program's own core, if any, is the one that matters.
+#[cfg(unix)]
+pub(crate) fn die_by_signal(signal: i32) -> ! {
+    // SAFETY: plain process-attribute calls on this process. The default
+    // disposition is restored and the signal unblocked before it is raised,
+    // so it takes effect; `_exit` covers a signal whose default is to
+    // continue.
+    unsafe {
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core);
+        libc::signal(signal, libc::SIG_DFL);
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut set);
+        libc::sigaddset(&raw mut set, signal);
+        libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut());
+        libc::raise(signal);
+        libc::_exit(128 + signal)
+    }
 }
 
 #[cfg(not(unix))]
@@ -995,6 +1254,31 @@ mod windows_job {
         }
     }
 
+    /// Kill every process in the job when its last handle closes, which is
+    /// when this process exits, however it exits. A runner killed outright
+    /// then leaves no program behind. Best effort: without the limit the job
+    /// still terminates the tree on timeout.
+    fn kill_on_close(job: Handle) {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        // SAFETY: an all-zero limit structure is a valid "no limits" value.
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { core::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = u32::try_from(core::mem::size_of_val(&limits)).expect("limit size fits u32");
+        // SAFETY: `job` is a live job handle and `limits` is the structure
+        // this information class reads, of exactly `size` bytes.
+        unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size,
+            );
+        }
+    }
+
     pub(super) struct WindowsJob(Handle);
 
     // SAFETY: The handle is valid until `CloseHandle` is called in `Drop`.
@@ -1013,6 +1297,7 @@ mod windows_job {
                 let code = unsafe { GetLastError() };
                 Err(format!("CreateJobObjectW failed: error {code}"))
             } else {
+                kill_on_close(handle);
                 Ok(Self(handle))
             }
         }
@@ -1180,8 +1465,23 @@ mod tests {
 
     #[cfg(unix)]
     fn status_of_signalled_shell(signal: &str) -> ExitStatus {
+        use std::os::unix::process::CommandExt;
         let mut command = Command::new("sh");
         command.args(["-c", &format!("ulimit -c 0; kill -{signal} $$")]);
+        // A harness that ignores a signal (nohup ignores SIGHUP and, run in
+        // the background, SIGINT) passes that to the shell, and a
+        // non-interactive shell cannot un-ignore it. Give the shell the
+        // default dispositions so it dies by the signal it sends itself.
+        // SAFETY: `pre_exec` runs in the forked child before exec, and
+        // `signal` is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| {
+                for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+                Ok(())
+            });
+        }
         BoundedChild::spawn(&mut command)
             .unwrap()
             .child
@@ -1191,40 +1491,28 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn native_run_adds_nothing_to_a_runtime_reported_fault() {
-        // The runtime already wrote the fault record; the wrapper exits as a
-        // shell reports the death and writes nothing more.
-        for (name, signal) in [("SEGV", libc::SIGSEGV), ("BUS", libc::SIGBUS)] {
-            let mut stderr = Vec::new();
-            let code = native_run_exit_code(status_of_signalled_shell(name), &mut stderr);
-            assert_eq!(code, 128 + signal);
-            assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+    fn a_signalled_program_ends_its_runner_by_the_same_signal() {
+        for (name, signal) in [
+            ("INT", libc::SIGINT),
+            ("TERM", libc::SIGTERM),
+            ("SEGV", libc::SIGSEGV),
+            ("KILL", libc::SIGKILL),
+        ] {
+            assert_eq!(
+                ProgramEnd::of(status_of_signalled_shell(name)),
+                ProgramEnd::Signalled(signal)
+            );
         }
     }
 
     #[test]
-    #[cfg(unix)]
-    fn native_run_reports_an_unreported_signal_once() {
-        let mut stderr = Vec::new();
-        let code = native_run_exit_code(status_of_signalled_shell("TERM"), &mut stderr);
-        assert_eq!(code, 1);
-        let stderr = String::from_utf8(stderr).unwrap();
-        assert_eq!(
-            stderr,
-            "hew: failure: UnknownFault (15): native program terminated by signal 15 (SIGTERM)\n"
-        );
-    }
-
-    #[test]
-    fn native_run_preserves_explicit_child_exits() {
+    fn an_exiting_program_ends_its_runner_with_the_same_status() {
         for code in [0, 1, 37, 124, 212] {
             let status = Command::new("sh")
                 .args(["-c", &format!("exit {code}")])
                 .status()
                 .unwrap();
-            let mut stderr = Vec::new();
-            assert_eq!(native_run_exit_code(status, &mut stderr), code);
-            assert!(stderr.is_empty());
+            assert_eq!(ProgramEnd::of(status), ProgramEnd::Exited(code));
         }
     }
 

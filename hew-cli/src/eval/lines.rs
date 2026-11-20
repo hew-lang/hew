@@ -19,7 +19,7 @@ pub(super) fn eval(
 fn compile(
     args: &crate::args::EvalArgs,
     target: Option<&str>,
-) -> Result<(tempfile::TempDir, PathBuf), CliEvalError> {
+) -> Result<(crate::run_temp::RunTempDir, PathBuf), CliEvalError> {
     let (input, label, project) = input(args).map_err(CliEvalError::Message)?;
     let prefix = "import std.io;\nfn main() {\nwhile let .Some(line) = io.read_line().expect(\"standard input\") {\n";
     let source = format!("{prefix}{input}\n}}\n}}\n");
@@ -60,8 +60,8 @@ fn compile(
             return Err(CliEvalError::DiagnosticsRendered);
         }
     }
-    let directory =
-        tempfile::tempdir().map_err(|error| CliEvalError::Message(error.to_string()))?;
+    let directory = crate::run_temp::create("eval")
+        .map_err(|error| CliEvalError::Message(error.to_string()))?;
     let binary = directory.path().join(if target.is_some() {
         "lines.wasm".into()
     } else {

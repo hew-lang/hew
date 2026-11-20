@@ -102,6 +102,8 @@ def sanitized_failure_symbols(args, root, output, env):
         or b".symtab" in sections.stdout
     ):
         raise RuntimeError("sanitized failure executable was not stripped")
+    # The runtime appends records and the build cache retains this directory.
+    log.unlink(missing_ok=True)
     result = subprocess.run(
         [executable],
         env=env | {"HEW_BACKTRACE": "1", "HEW_FAILURE_LOG": str(log)},

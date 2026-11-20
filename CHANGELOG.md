@@ -48,6 +48,12 @@
   package visibility as free functions. Use `package fn` for calls from other
   modules in the same package and `pub fn` for callers in other packages.
 
+- On Unix, wait for a foreign pipe or socket to accept a write with
+  `std.io.watch_writable(fd)`. The watch owns a duplicate descriptor and
+  leaves the write to your program. When matching `std.io.WatchError`
+  exhaustively, add `.System(message)` for operating system failures such
+  as descriptor exhaustion.
+
 - `std.time.datetime` supports proleptic Gregorian years −999999 through
   +999999 on native and sandbox targets. Custom `format` and `parse`
   patterns use the Rust `time` crate's strftime dialect. Use `%z` for a

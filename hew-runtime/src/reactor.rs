@@ -55,12 +55,12 @@ pub(crate) enum IoObject {
     #[cfg(unix)]
     ChildExit(crate::process::ExitWatch),
     /// The slot's own duplicate of a descriptor the program opened outside
-    /// the runtime, watched for readability only. The slot never reads,
+    /// the runtime, with the interest selected by its owner. The slot never reads,
     /// writes or reconfigures it and closes only the duplicate, so the
     /// program's descriptor and any other watch of it keep their own
     /// registrations.
     #[cfg(unix)]
-    Foreign(std::os::fd::OwnedFd),
+    Foreign(std::os::fd::OwnedFd, Direction),
     /// Standard input: descriptor 0 on Unix, which the slot never owns or
     /// closes. Its one slot lives outside the table; see [`stdin_slot`].
     Stdin,
@@ -126,12 +126,15 @@ impl ByteChannel<'_> {
     }
 }
 
-/// Whether a read on `fd` would not wait. Reads nothing.
+/// Whether the selected operation can make progress. Does not transfer data.
 #[cfg(unix)]
-pub(crate) fn fd_readable(fd: std::os::fd::RawFd) -> bool {
+pub(crate) fn fd_ready(fd: std::os::fd::RawFd, direction: Direction) -> bool {
     let mut poll = libc::pollfd {
         fd,
-        events: libc::POLLIN,
+        events: match direction {
+            Direction::Read => libc::POLLIN,
+            Direction::Write => libc::POLLOUT,
+        },
         revents: 0,
     };
     loop {
@@ -149,7 +152,7 @@ pub(crate) fn fd_readable(fd: std::os::fd::RawFd) -> bool {
 #[cfg(unix)]
 fn listener_readable(listener: &TcpListener) -> bool {
     use std::os::fd::AsRawFd;
-    fd_readable(listener.as_raw_fd())
+    fd_ready(listener.as_raw_fd(), Direction::Read)
 }
 
 /// The Winsock `SOCKET` behind `socket`.
@@ -343,15 +346,23 @@ impl Slot {
             #[cfg(unix)]
             IoObject::ChildExit(watch) => Some(ByteChannel::Exit(watch)),
             #[cfg(unix)]
-            IoObject::Foreign(_) => None,
+            IoObject::Foreign(..) => None,
             IoObject::TcpListener(_) | IoObject::Stdin => None,
         }
     }
 
-    /// Whether a read, or an accept on a listener, would not wait: data, end
-    /// of stream, an error or a pending connection. Takes nothing. Standard
-    /// input is never watched this way.
-    pub(crate) fn readable(&self) -> bool {
+    /// The operation a stream selection observes for this slot.
+    pub(crate) fn watch_direction(&self) -> Direction {
+        #[cfg(unix)]
+        if let IoObject::Foreign(_, direction) = self.object {
+            return direction;
+        }
+        Direction::Read
+    }
+
+    /// Whether the watched operation would make progress, including pending
+    /// terminal conditions. Leaves the descriptor untouched.
+    pub(crate) fn watch_ready(&self) -> bool {
         match &self.object {
             IoObject::TcpStream(stream) => !matches!(
                 stream.peek(&mut [0; 1]),
@@ -361,16 +372,16 @@ impl Slot {
             #[cfg(unix)]
             IoObject::Pipe(pipe) => {
                 use std::os::fd::AsRawFd;
-                fd_readable(pipe.as_raw_fd())
+                fd_ready(pipe.as_raw_fd(), Direction::Read)
             }
             #[cfg(windows)]
             IoObject::Pipe(pipe) => pipe.readable(),
             #[cfg(unix)]
             IoObject::ChildExit(watch) => watch.exited(),
             #[cfg(unix)]
-            IoObject::Foreign(fd) => {
+            IoObject::Foreign(fd, direction) => {
                 use std::os::fd::AsRawFd;
-                fd_readable(fd.as_raw_fd())
+                fd_ready(fd.as_raw_fd(), *direction)
             }
             IoObject::Stdin => true,
         }
@@ -399,7 +410,7 @@ impl Slot {
             #[cfg(unix)]
             IoObject::ChildExit(_) => "process exit watch",
             #[cfg(unix)]
-            IoObject::Foreign(_) => "descriptor watch",
+            IoObject::Foreign(..) => "descriptor watch",
             IoObject::Stdin => "standard input",
         }
     }
@@ -444,7 +455,7 @@ impl Slot {
                 IoObject::ChildExit(_) => {}
                 // Another owner's descriptor keeps its mode; it is only watched.
                 #[cfg(unix)]
-                IoObject::Foreign(_) => {}
+                IoObject::Foreign(..) => {}
             }
             state.nonblocking = true;
         }
@@ -459,7 +470,7 @@ impl Slot {
             IoObject::TcpListener(listener) => listener.as_raw_fd(),
             IoObject::Pipe(pipe) => pipe.as_raw_fd(),
             IoObject::ChildExit(watch) => watch.fd(),
-            IoObject::Foreign(fd) => fd.as_raw_fd(),
+            IoObject::Foreign(fd, _) => fd.as_raw_fd(),
             IoObject::Stdin => libc::STDIN_FILENO,
         }
     }

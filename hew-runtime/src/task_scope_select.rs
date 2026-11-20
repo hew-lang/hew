@@ -10,7 +10,7 @@ use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_prepare, select_alternatives, HewActorWaitEdge,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::async_io::start_tcp_readable;
+use crate::async_io::start_readiness_watch;
 use crate::async_io::{hew_async_io_free, hew_async_io_status, AsyncIoStatus, HewAsyncIo};
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
             #[cfg(not(target_arch = "wasm32"))]
             SelectReadiness::Reactor(connection) => {
                 // SAFETY: the stream retains the connection and the selection its waker.
-                unsafe { start_tcp_readable(connection, selection.waker) }
+                unsafe { start_readiness_watch(connection, selection.waker) }
             }
             SelectReadiness::Unsupported(reason) => {
                 selection.refusal.get_or_insert_with(|| reason.to_string());

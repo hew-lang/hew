@@ -7240,6 +7240,7 @@ shape:
 ```
 listener.incoming(consume)  -> Stream<Connection>                 // std.net
 io.watch_readable(fd: i32)  -> Result<Stream<()>, io.WatchError>  // std.io
+io.watch_writable(fd: i32)  -> Result<Stream<()>, io.WatchError>
 os.shutdown_signal()        -> Stream<()>                         // std.os, §5.9
 ```
 
@@ -7250,15 +7251,24 @@ Each `Connection` it yields is owned by the receiver, and it buffers none:
 `None` at once. It ends once runtime shutdown
 closes listener admission, so `for conn in listener.incoming()` stops
 cleanly; an accept failure traps like a socket read failure (§6.4.4).
-`watch_readable` watches a descriptor the program opened through FFI: each
-receive waits until a read on it would not wait and yields `()`, reading
-nothing, so the program reads the descriptor itself; `try_recv` yields
-`()` exactly when a receive would not wait. The stream watches its own
-duplicate of the descriptor and never closes the program's, so the two
-close in either order and several watches of one descriptor are
-independent. It refuses an unopened descriptor (`NotOpen`) and a regular
-file or a platform without descriptor readiness (`Unsupported`, Windows
-today).
+
+`watch_readable` and `watch_writable` observe foreign descriptors on Unix.
+Each returns a `Stream<()>` that yields when a read or write could make
+progress, including an end-of-stream or error. A receive leaves the data
+transfer to the caller. `try_recv` checks the current state immediately.
+A losing `select` arm withdraws its wait.
+
+For example, when a nonblocking pipe is full, wait for `watch_writable`
+before retrying the write. Another writer can take the available space
+between notification and the retry.
+
+Keep the original descriptor open until watch construction returns. Each
+watch holds a close-on-exec duplicate, so the program and any watches can
+close their handles independently. `WatchError.NotOpen` identifies a closed
+descriptor. `Unsupported` covers an incompatible access mode, a regular
+file or directory, or a platform without descriptor readiness, including
+Windows. `System(detail)` carries an operating-system error such as
+descriptor exhaustion.
 
 ```hew,ignore
 import std.io;

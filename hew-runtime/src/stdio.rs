@@ -58,29 +58,55 @@ fn write_result(result: std::io::Result<()>) -> i32 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+#[cfg(unix)]
+fn watchable_descriptor(
+    fd: std::os::fd::RawFd,
+    direction: crate::reactor::Direction,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstat initializes the local stat on success.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: fstat succeeded.
+    let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if matches!(mode, libc::S_IFREG | libc::S_IFDIR) {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "this file type has no readiness watch",
+        ));
+    }
+    // SAFETY: F_GETFL reads the status flags of this descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(Error::last_os_error());
+    }
+    let access = flags & libc::O_ACCMODE;
+    if matches!(
+        (direction, access),
+        (crate::reactor::Direction::Read, libc::O_WRONLY)
+            | (crate::reactor::Direction::Write, libc::O_RDONLY)
+    ) {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "descriptor access mode does not support this direction",
+        ));
+    }
+    Ok(())
+}
 
-/// Whether `fd` can be watched for readability: 0 when it can, 1 when it is
-/// not an open descriptor, 2 when watching it is unsupported (a regular file,
-/// which is always readable, or a platform without descriptor readiness).
+/// Probe whether a descriptor can be watched for reading. The returned status
+/// describes this instantaneous probe; opening a watch independently pins its descriptor.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_io_watch_check(fd: i32) -> i32 {
     #[cfg(unix)]
-    {
-        // SAFETY: `stat` is plain data; all-zero is a valid value.
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: fstat writes one local stat for any descriptor number.
-        if fd < 0 || unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
-            return 1;
-        }
-        if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
-            return 2;
-        }
-        0
-    }
+    return match watchable_descriptor(fd, crate::reactor::Direction::Read) {
+        Ok(()) => 0,
+        Err(error) if error.raw_os_error() == Some(libc::EBADF) => 1,
+        Err(_) => 2,
+    };
     #[cfg(not(unix))]
     {
         let _ = fd;
@@ -88,24 +114,69 @@ pub extern "C" fn hew_io_watch_check(fd: i32) -> i32 {
     }
 }
 
-/// Watch a descriptor the program owns for readability as a `Stream<()>`;
-/// null when [`hew_io_watch_check`] refuses it. The stream watches its own
-/// duplicate, so the descriptor stays with its owner, who may close it in
-/// either order with the stream.
+#[cfg(unix)]
+fn open_watch(
+    fd: i32,
+    direction: crate::reactor::Direction,
+) -> std::io::Result<*mut crate::stream::HewStreamPair> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // SAFETY: F_DUPFD_CLOEXEC obtains a new owned descriptor or returns -1.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the duplicate is exclusively owned by this constructor.
+    let duplicate = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    watchable_descriptor(duplicate.as_raw_fd(), direction)?;
+    Ok(crate::stream::readiness_stream(duplicate, direction))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn descriptor_watch(
+    fd: i32,
+    direction: crate::reactor::Direction,
+) -> *mut crate::stream::HewStreamPair {
+    #[cfg(unix)]
+    let error = match open_watch(fd, direction) {
+        Ok(pair) => return pair,
+        Err(error) => error,
+    };
+    #[cfg(not(unix))]
+    let error = {
+        let _ = direction;
+        std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "descriptor readiness requires Unix",
+        )
+    };
+    // A missing descriptor and an unsupported watch are stable categories for
+    // the source wrapper. Other OS failures retain their original detail.
+    let errno = error.raw_os_error().unwrap_or(0);
+    let kind = if errno == libc::EBADF {
+        crate::stream_error::IO_ERROR_KIND_NOT_FOUND
+    } else {
+        crate::stream_error::io_error_kind_tag(error.kind())
+    };
+    crate::stream_error::set_last_error_with_errno_and_kind(
+        format!("watch descriptor {fd}: {error}"),
+        errno,
+        kind,
+    );
+    std::ptr::null_mut()
+}
+
+/// Watch a descriptor for readable data, EOF or error without consuming bytes.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_io_watch_readable(fd: i32) -> *mut crate::stream::HewStreamPair {
-    if hew_io_watch_check(fd) != 0 {
-        return std::ptr::null_mut();
-    }
-    #[cfg(unix)]
-    {
-        crate::stream::readiness_stream(fd)
-    }
-    #[cfg(not(unix))]
-    {
-        std::ptr::null_mut()
-    }
+    descriptor_watch(fd, crate::reactor::Direction::Read)
+}
+
+/// Watch for write capacity or a terminal error without writing a byte.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_io_watch_writable(fd: i32) -> *mut crate::stream::HewStreamPair {
+    descriptor_watch(fd, crate::reactor::Direction::Write)
 }
 
 #[cfg(test)]

@@ -115,8 +115,7 @@ pub(crate) enum SelectReadiness {
     Ready,
     /// Drive the existing checked producer until it publishes an owned yield.
     Generator,
-    /// Ready once this reactor handle (a connection or a child process pipe)
-    /// is readable.
+    /// Ready when the reactor handle signals its selected direction.
     #[cfg(not(target_arch = "wasm32"))]
     Reactor(i32),
     /// This stream cannot report readiness without taking an item; the reason
@@ -133,7 +132,7 @@ pub(crate) enum NativeRead {
     Content(i32),
     /// Accept one connection on this listener.
     Accept(i32),
-    /// Wait until this handle is readable, taking nothing: the item is `()`.
+    /// Observe the handle's selected I/O direction without transferring data.
     #[cfg_attr(
         not(unix),
         expect(dead_code, reason = "descriptor readiness streams are Unix-only")
@@ -1116,7 +1115,7 @@ pub(crate) fn incoming_stream(listener: i32) -> *mut HewStreamPair {
 }
 
 /// Readiness of a descriptor the program owns: each receive waits until a
-/// read on it would not wait and yields `()`. The stream watches its own
+/// read or write can make progress and yields `()`. The stream watches its own
 /// duplicate of the descriptor and closes only that, so the program's
 /// descriptor may close first and other watches of it stay independent.
 #[cfg(unix)]
@@ -1147,10 +1146,10 @@ impl StreamBacking for DescriptorReadiness {
         None
     }
 
-    /// `()` when a read on the descriptor would not wait now.
+    /// `()` when the selected direction would not wait now.
     fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
         crate::reactor::lookup(self.handle)
-            .is_some_and(|slot| slot.readable())
+            .is_some_and(|slot| slot.watch_ready())
             .then(Vec::new)
     }
 
@@ -1161,24 +1160,14 @@ impl StreamBacking for DescriptorReadiness {
     }
 }
 
-/// Watch `fd` for readability through a close-on-exec duplicate; `fd` stays
-/// with its owner. Null when the descriptor cannot be duplicated.
+/// Own one close-on-exec duplicate for the lifetime of this readiness stream.
 #[cfg(unix)]
-pub(crate) fn readiness_stream(fd: std::os::fd::RawFd) -> *mut HewStreamPair {
-    use std::os::fd::FromRawFd;
-    // SAFETY: F_DUPFD_CLOEXEC reads no memory; a failure returns -1.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicate < 0 {
-        set_last_error(format!(
-            "watch descriptor {fd}: {}",
-            std::io::Error::last_os_error()
-        ));
-        return ptr::null_mut();
-    }
-    // SAFETY: the duplicate was just opened and nothing else owns it.
-    let duplicate = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+pub(crate) fn readiness_stream(
+    fd: std::os::fd::OwnedFd,
+    direction: crate::reactor::Direction,
+) -> *mut HewStreamPair {
     stream_only(into_stream_ptr(DescriptorReadiness {
-        handle: crate::reactor::register(crate::reactor::IoObject::Foreign(duplicate)),
+        handle: crate::reactor::register(crate::reactor::IoObject::Foreign(fd, direction)),
     }))
 }
 

@@ -280,9 +280,6 @@ pub(crate) fn record_logical_crash(
         text.extend_from_slice(remote_origin(link_target).as_bytes());
         crate::output::write(crate::output::Stream::Err, &text);
     }
-    if record.supervisor[0] == 0 {
-        UNRECOVERED_CRASHES.fetch_add(1, Ordering::Relaxed);
-    }
     crate::observe::record_actor_crash(
         record.kind_name(),
         crate::failure_record::padded_str(&record.actor.actor_type),
@@ -317,8 +314,8 @@ pub(crate) fn record_injected_crash(actor_id: u64) {
     push_crash_to(&RECENT_CRASHES, &record);
 }
 
-/// A supervisor gave up on a child: its crash is now unrecovered.
-pub(crate) fn note_supervisor_giveup() {
+/// Count an unsupervised actor crash or a root supervisor giving up.
+pub(crate) fn note_unrecovered_crash() {
     UNRECOVERED_CRASHES.fetch_add(1, Ordering::Relaxed);
 }
 

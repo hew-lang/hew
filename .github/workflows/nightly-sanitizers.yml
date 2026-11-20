@@ -63,13 +63,12 @@ jobs:
   # Generated-code and runtime ownership cases share the instrumented build.
   # The explicit safety integrations below exercise the C and host-client edges.
   # ─────────────────────────────────────────────────────────────────────────
-  # The safety suite runs one case at a time by design, and its 1,436 cases
-  # take about four hours serially on a hosted runner, so it is split into
-  # stable partitions that each fit the job budget.
+  # On the hosted runners the slowest partition completes about 340 of its
+  # 570 O0/O2 executions in 70 minutes, after toolchain and compiler setup.
   core-safety:
     name: Core safety (generated code and runtime, ${{ matrix.shard }}/6)
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

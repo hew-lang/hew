@@ -3055,6 +3055,7 @@ fn publish_crash_fault_record(
         // shutdown, is still unrecovered.
         let cancelled_by_shutdown = crate::fault::cancelled_by_shutdown(error_code);
         if !cancelled_by_shutdown {
+            crate::crash::note_unrecovered_crash();
             crate::exit_status::record_unrecovered_actor_fault();
         }
         return crate::exit_status::FaultRecord::NONE;

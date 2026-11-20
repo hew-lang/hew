@@ -5703,6 +5703,6 @@ pub(crate) fn report_giveup(sup: *mut HewSupervisor, child: GiveupChild, restart
     );
     crate::observe::record_supervisor_giveup();
     if root {
-        crate::crash::note_supervisor_giveup();
+        crate::crash::note_unrecovered_crash();
     }
 }

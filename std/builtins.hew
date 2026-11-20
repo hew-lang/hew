@@ -1435,7 +1435,16 @@ pub enum ScopeFailure {
 impl Display for ScopeFailure {
     fn fmt(self) -> string {
         match self {
-            ScopeFailure.Deadline { message } => f"Deadline: {message}",
+            ScopeFailure.Deadline { message } => {
+                if message.is_empty() {
+                    "Deadline"
+                } else if message == "Deadline" || message.starts_with("Deadline; ") {
+                    // A recovered message can already start with the kind.
+                    message
+                } else {
+                    f"Deadline: {message}"
+                }
+            }
             ScopeFailure.Fault { message } => f"Fault: {message}",
         }
     }

@@ -303,15 +303,28 @@ fn main() {
         sleep(1s);
         "unreachable"
     } handle failure {
+        println(f"{failure}");
         match failure {
-            .Deadline { message } => "deadline recovered",
+            .Deadline { message } => message,
             .Fault { message } => "unexpected fault",
         }
     };
-    println(result);
+    println(f"structured message: {result}");
+    let contextual = ScopeFailure.Deadline { message: "reading purchase orders" };
+    println(f"{contextual}");
+    let empty = ScopeFailure.Deadline { message: "" };
+    println(f"{empty}");
+
+    scope within 1ms {
+        defer panic("cleanup failed");
+        sleep(1s);
+    } handle failure {
+        println(f"{failure}");
+    };
 }
 "#,
-        "scope cleanup\ndeadline recovered\n",
+        "scope cleanup\nDeadline\nstructured message: Deadline\nDeadline: reading purchase orders\n\
+         Deadline\nDeadline; secondary failure: UserPanic: cleanup failed\n",
         0,
         "",
     );

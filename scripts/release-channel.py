@@ -561,7 +561,26 @@ def publish_homebrew() -> None:
     if run is None:
         raise RuntimeError("Homebrew dispatch has no readable downstream run")
     print(f"Waiting for Homebrew run: {run['url']}", flush=True)
-    command("gh", "run", "watch", str(run["databaseId"]), "-R", repo, "--exit-status")
+    # A successful dispatch can return its run URL before GitHub serves that run.
+    for attempt in range(30):
+        watched = command(
+            "gh",
+            "run",
+            "watch",
+            str(run["databaseId"]),
+            "-R",
+            repo,
+            "--exit-status",
+            check=False,
+        )
+        if watched.returncode == 0:
+            break
+        message = watched.stderr or watched.stdout
+        if "failed to get run: HTTP 404:" not in message or attempt == 29:
+            raise RuntimeError(
+                f"Cannot watch Homebrew run {run['databaseId']}: {message}"
+            )
+        time.sleep(2)
     finish(run, "verified-after-action")
 
 

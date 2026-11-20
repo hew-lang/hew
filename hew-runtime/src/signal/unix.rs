@@ -362,16 +362,12 @@ pub(crate) fn ignore_sigpipe() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
 mod tests {
     use super::*;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
     use crate::signal::stack::StackBounds;
 
-    #[cfg(all(
-        any(target_os = "linux", target_os = "android"),
-        target_arch = "x86_64"
-    ))]
+    #[cfg(target_arch = "x86_64")]
     fn forged_context(pc: usize) -> libc::ucontext_t {
         // SAFETY: ucontext_t is plain data; zero is a valid representation.
         let mut uc: libc::ucontext_t = unsafe { std::mem::zeroed() };
@@ -379,10 +375,7 @@ mod tests {
         uc
     }
 
-    #[cfg(all(
-        any(target_os = "linux", target_os = "android"),
-        target_arch = "aarch64"
-    ))]
+    #[cfg(target_arch = "aarch64")]
     fn forged_context(pc: usize) -> libc::ucontext_t {
         // SAFETY: ucontext_t is plain data; zero is a valid representation.
         let mut uc: libc::ucontext_t = unsafe { std::mem::zeroed() };
@@ -391,7 +384,6 @@ mod tests {
     }
 
     /// A forged fault at `address`, outside any signal frame.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn classify_forged(address: usize, bounds: StackBounds) -> FailureRecord {
         // SAFETY: siginfo_t is plain data; the fields read are set below.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -424,7 +416,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn a_fault_below_the_stack_classifies_as_overflow() {
         let local = 0_usize;
         let here = (&raw const local) as usize;
@@ -449,7 +440,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn a_sent_signal_is_never_overflow() {
         assert!(sent_by_process(0)); // SI_USER
         assert!(!sent_by_process(1));

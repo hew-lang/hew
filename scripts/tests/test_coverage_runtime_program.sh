@@ -9,7 +9,7 @@ source "${ROOT}/scripts/lib/coverage-runtime-program.sh"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-coverage-runtime-program.XXXXXX")"
 trap 'rm -rf "${TEST_DIR}"' EXIT
 
-cat > "${TEST_DIR}/timeout" <<'EOF_TIMEOUT'
+cat >"${TEST_DIR}/timeout" <<'EOF_TIMEOUT'
 #!/usr/bin/env bash
 set -euo pipefail
 test "$1" = "9"
@@ -18,7 +18,7 @@ exec "$@"
 EOF_TIMEOUT
 chmod +x "${TEST_DIR}/timeout"
 
-cat > "${TEST_DIR}/probe" <<'EOF_PROBE'
+cat >"${TEST_DIR}/probe" <<'EOF_PROBE'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s' "${LLVM_PROFILE_FILE:?}|$#"
@@ -29,8 +29,8 @@ printf '\n'
 EOF_PROBE
 chmod +x "${TEST_DIR}/probe"
 
-grep_input="${TEST_DIR}/grep-input.txt"
-printf 'needle\n' > "${grep_input}"
+grep_input="${TEST_DIR}/hew-grep-input.txt"
+printf 'needle\n' >"${grep_input}"
 
 zero_output="$(coverage_runtime_run_program \
     hello \
@@ -38,7 +38,7 @@ zero_output="$(coverage_runtime_run_program \
     "${TEST_DIR}/timeout" \
     9 \
     "${TEST_DIR}/probe" \
-    "${grep_input}")"
+    "${TEST_DIR}")"
 test "${zero_output}" = "${TEST_DIR}/zero.profraw|0"
 
 args_output="$(coverage_runtime_run_program \
@@ -47,7 +47,13 @@ args_output="$(coverage_runtime_run_program \
     "${TEST_DIR}/timeout" \
     9 \
     "${TEST_DIR}/probe" \
-    "${grep_input}")"
+    "${TEST_DIR}")"
 test "${args_output}" = "${TEST_DIR}/args.profraw|2|needle|${grep_input}"
+
+for example in order_totals order_batch; do
+    order_output="$(coverage_runtime_run_program "$example" "${TEST_DIR}/order.profraw" \
+        "${TEST_DIR}/timeout" 9 "${TEST_DIR}/probe" "${TEST_DIR}")"
+    test "$order_output" = "${TEST_DIR}/order.profraw|1|${TEST_DIR}/order.json"
+done
 
 echo "PASS: runtime coverage program invocation supports zero and command arguments"

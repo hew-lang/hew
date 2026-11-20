@@ -1935,14 +1935,24 @@ stdlib-errno-gate:
 #                            Rust-only report cannot see. See
 #                            scripts/coverage-runtime-e2e.sh.
 #
-# Requires: cargo-llvm-cov + the rustc llvm-tools-preview component (the harness
+# Requires: cargo-llvm-cov, cargo-nextest and rustc llvm-tools-preview (the harness
 # auto-discovers version-matched llvm-profdata/llvm-cov from the rust sysroot).
 
-COV_DIR          := coverage-out
+COV_DIR := coverage-out
+COV_TARGET_DIR := $(abspath $(or $(CARGO_LLVM_COV_TARGET_DIR),$(CARGO_TARGET_ROOT)/llvm-cov-target))
 
-# Rust coverage includes native/WASI parity tests that need the WASI archives.
-coverage: wasm-runtime
-	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
+# Nextest isolates process-global runtime tests. Build the shared SDK archives
+# after llvm-cov's clean, beside the instrumented compiler that consumes them.
+# An online merge pool bounds raw-profile storage for thousands of processes.
+coverage: export CARGO_TARGET_DIR := $(COV_TARGET_DIR)
+coverage: export CARGO_LLVM_COV_TARGET_DIR := $(COV_TARGET_DIR)
+coverage: export CARGO_LLVM_COV_BUILD_DIR := $(COV_TARGET_DIR)
+coverage: export HEW_STD := $(CURDIR)/std
+coverage: export LLVM_PROFILE_FILE_NAME = hew-%4m.profraw
+coverage:
+	cargo llvm-cov clean --workspace
+	$(MAKE) test-artifacts
+	cargo llvm-cov nextest --no-clean --workspace --exclude hew-wasm --no-fail-fast --html --output-dir $(COV_DIR)
 	cargo llvm-cov report --lcov --output-path $(COV_DIR)/lcov.info
 	cargo llvm-cov report
 	@echo "==> Open $(COV_DIR)/html/index.html"

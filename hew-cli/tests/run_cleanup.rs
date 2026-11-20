@@ -7,9 +7,13 @@
 
 mod support;
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+#[cfg(unix)]
+use std::process::{Child, Stdio};
+use std::process::{Command, Output};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use support::{describe_output, hew_binary, require_codegen};

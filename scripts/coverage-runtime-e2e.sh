@@ -14,10 +14,9 @@
 #      sections. rustc bundles the profiler *runtime* only when it links the
 #      final artifact — but here clang links the final program, so the runtime
 #      is missing and the counters are never written.
-#   2. The `hew` linker is told (via HEW_COVERAGE=1) to pass clang's
-#      `-fprofile-instr-generate` and to skip dead-strip/strip, which pulls in
-#      `libclang_rt.profile` (honours LLVM_PROFILE_FILE, writes profraw on exit)
-#      and keeps the coverage sections alive. See hew-cli/src/link.rs.
+#   2. The final link uses the profile writer from the same rustc target
+#      library directory as the instrumented runtime. HEW_COVERAGE=1 keeps
+#      the coverage sections and enables the linker's profiler anchor.
 #   3. We compile a set of self-contained example programs to KEPT binaries,
 #      run each with LLVM_PROFILE_FILE set, merge the profraw, and ask llvm-cov
 #      to report against the kept binaries (multi-`-object`). The report object
@@ -84,6 +83,14 @@ pick_tool() {
 }
 LLVM_PROFDATA="$(pick_tool llvm-profdata)"
 LLVM_COV="$(pick_tool llvm-cov)"
+# The Hew backend and rustc can use different LLVM majors. A newer clang
+# writer can crash at exit while walking rustc's older counter records.
+rust_target_libdir="$(rustc --print target-libdir)"
+profilers=("$rust_target_libdir"/libprofiler_builtins-*.rlib)
+if [[ ${#profilers[@]} -ne 1 || ! -f "${profilers[0]}" ]]; then
+    echo "error: expected one rustc profiler runtime in $rust_target_libdir" >&2
+    exit 1
+fi
 
 # Discover top-level example programs with a `main`, skipping two classes:
 #  - peer/port programs (network/server/service/distributed) — they hang or
@@ -128,8 +135,8 @@ mkdir -p "$BIN_DIR" "$PROFRAW_DIR" "$LOG_DIR"
 # Inputs for command-style examples in the otherwise self-contained corpus.
 # Keep these deterministic and local: coverage must not depend on the caller's
 # argv, stdin, network, or filesystem state.
-GREP_INPUT="$RT_DIR/hew-grep-input.txt"
-printf 'alpha\nneedle one\nomega\nneedle two\n' >"$GREP_INPUT"
+printf 'alpha\nneedle one\nomega\nneedle two\n' >"$RT_DIR/hew-grep-input.txt"
+printf '%s\n' '{"items":[{"units":2,"unit_cents":1250},{"units":3,"unit_cents":499}]}' >"$RT_DIR/order.json"
 
 built=0
 ran=0
@@ -139,7 +146,7 @@ for f in "${PROGRAMS[@]}"; do
     stem="$(basename "$f" .hew)"
     bin="$BIN_DIR/$stem.bin"
     build_status=0
-    HEW_COVERAGE=1 "$HEW_BIN" build "$f" -o "$bin" \
+    HEW_COVERAGE=1 "$HEW_BIN" build "$f" --link-lib "${profilers[0]}" -o "$bin" \
         >"$LOG_DIR/$stem.build.stdout" 2>"$LOG_DIR/$stem.build.stderr" || build_status=$?
     printf '%s\n' "$build_status" >"$LOG_DIR/$stem.build.exit"
     if [ "$build_status" -ne 0 ]; then
@@ -155,7 +162,7 @@ for f in "${PROGRAMS[@]}"; do
         "$(command -v timeout)" \
         "$PER_PROG_TIMEOUT" \
         "$bin" \
-        "$GREP_INPUT" \
+        "$RT_DIR" \
         >"$LOG_DIR/$stem.run.stdout" 2>"$LOG_DIR/$stem.run.stderr" || run_status=$?
     printf '%s\n' "$run_status" >"$LOG_DIR/$stem.run.exit"
     expected_status=0

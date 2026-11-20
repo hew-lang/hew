@@ -416,6 +416,6 @@ mod tests {
         assert!(!is_overflow(EXCEPTION_ACCESS_VIOLATION, 8, bounds));
         assert!(exception_name(EXCEPTION_STACK_OVERFLOW).is_some());
         // Rust panics and C++ exceptions are not faults.
-        assert!(exception_name(0xE06D_7363_u32 as i32).is_none());
+        assert!(exception_name(0xE06D_7363_u32.cast_signed()).is_none());
     }
 }

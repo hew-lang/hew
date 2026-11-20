@@ -21,8 +21,8 @@ Pre-built binaries for Linux (x86_64, ARM64), macOS (ARM64), FreeBSD 15.1 or new
 
 Linux users can also install Hew through their package manager and receive
 stable updates alongside system updates. Add the [signed Hew repository](https://dist.hewpkg.com/)
-and verify its signing fingerprint, then install `hew` with APT or DNF,
-or `hew-bin` with pacman.
+and verify its signing fingerprint, then install `hew` with APT, DNF or Zypper on x86_64 or ARM64.
+On x86_64 Arch Linux, install `hew-bin` with pacman.
 
 See the [release notes](https://github.com/hew-lang/hew/releases) for the
 SDK you install and its matching language specification. Changes on `main`

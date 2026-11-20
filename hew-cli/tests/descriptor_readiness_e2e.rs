@@ -43,11 +43,13 @@ fn compile(source: &str, dir: &Path, opt_level: u8) -> PathBuf {
 /// input and return every stdout line.
 fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<String> {
     run_script(
-        binary,
-        Stdio::piped(),
+        Command::new(binary)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped()),
         steps.iter().map(|(prefix, _)| *prefix),
         opt_level,
-        |index, stdin| {
+        |index, child| {
+            let stdin = child.stdin.as_mut().expect("child stdin");
             stdin
                 .write_all(steps[index].1)
                 .expect("write fixture input");
@@ -57,19 +59,15 @@ fn run_scripted(binary: &Path, steps: &[(&str, &[u8])], opt_level: u8) -> Vec<St
 }
 
 fn run_script<'a>(
-    binary: &Path,
-    stderr: Stdio,
+    command: &mut Command,
     prefixes: impl IntoIterator<Item = &'a str>,
     opt_level: u8,
-    mut on_step: impl FnMut(usize, &mut std::process::ChildStdin),
+    mut on_step: impl FnMut(usize, &mut std::process::Child),
 ) -> Vec<String> {
-    let mut child = Command::new(binary)
-        .stdin(Stdio::piped())
+    let mut child = command
         .stdout(Stdio::piped())
-        .stderr(stderr)
         .spawn()
         .expect("spawn fixture");
-    let mut stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");
     let (lines_tx, lines) = mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -85,7 +83,6 @@ fn run_script<'a>(
                 Ok(line) => line,
                 Err(error) => {
                     let _ = child.kill();
-                    drop(stdin);
                     let output = child.wait_with_output().expect("wait for fixture");
                     reader.join().expect("join stdout reader");
                     panic!(
@@ -100,9 +97,8 @@ fn run_script<'a>(
                 break;
             }
         }
-        on_step(index, &mut stdin);
+        on_step(index, &mut child);
     }
-    drop(stdin);
     let output = child.wait_with_output().expect("wait for fixture");
     reader.join().expect("join stdout reader");
     seen.extend(lines.try_iter());
@@ -416,12 +412,24 @@ fn main() {
             }
         }
         assert!(filled > 0);
-        let seen = run_script(&binary, writer.into(), ["DRAIN"], opt, |_, _| {
-            let mut existing = vec![0; filled];
-            reader.read_exact(&mut existing).unwrap();
-            assert!(existing.iter().all(|byte| *byte == 0x5a));
-        });
-        assert_eq!(seen, ["FULL:true true true", "DRAIN", "READY:true"]);
+        // FreeBSD's piped stdin can be read-write. Use an explicitly read-only
+        // descriptor so reusing the original fd exercises wrong-access refusal.
+        let read_only = std::fs::File::open("/dev/null").expect("open read-only descriptor");
+        let seen = run_script(
+            Command::new(&binary).stdin(read_only).stderr(writer),
+            ["DRAIN"],
+            opt,
+            |_, _| {
+                let mut existing = vec![0; filled];
+                reader.read_exact(&mut existing).unwrap();
+                assert!(existing.iter().all(|byte| *byte == 0x5a));
+            },
+        );
+        assert_eq!(
+            seen,
+            ["FULL:true true true", "DRAIN", "READY:true"],
+            "O{opt}"
+        );
         let mut delivered = Vec::new();
         reader.read_to_end(&mut delivered).unwrap();
         assert_eq!(delivered, b"sent");

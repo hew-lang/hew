@@ -258,4 +258,4 @@ jobs:
 
       - name: Clippy (all targets, deny warnings)
         shell: bash
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --keep-going -- -D warnings

@@ -1942,7 +1942,7 @@ COV_DIR          := coverage-out
 
 # Rust coverage includes native/WASI parity tests that need the WASI archives.
 coverage: wasm-runtime
-	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
+	cargo llvm-cov --workspace --exclude hew-wasm --no-fail-fast --html --output-dir $(COV_DIR)/html
 	cargo llvm-cov report --lcov --output-path $(COV_DIR)/lcov.info
 	cargo llvm-cov report
 	@echo "==> Open $(COV_DIR)/html/index.html"

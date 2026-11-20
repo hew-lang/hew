@@ -767,15 +767,12 @@ that missing evidence or establish safety sign-off.
 - **linux-aarch64**: The pre-tag release gate builds and tests on a native
   Ubuntu 24.04 arm runner; the tag workflow additionally runs packaged-archive
   and clean-room smoke checks.
-- **FreeBSD**: x86_64 has a full pre-tag build/test lane; aarch64
-  proves only the release compiler build and compile/run smoke under emulation.
-  Its pre-tag lane does not build the LSP, observe tool or release library, or
-  execute the Rust/compiled-Hew suites. The current tag workflow builds and
-  requires only the x86_64 FreeBSD archive; no aarch64 archive job or required
-  asset exists. Apply the platform policy to failures and track the missing
-  aarch64 archive as a distribution gap rather than a shipped product. Cross-built
-  aarch64 libraries do not prove a shipped archive. The x86_64 nightly remains
-  additional early warning rather than the release authority.
+- **FreeBSD**: x86_64 has a full pre-tag build/test lane. The aarch64 gate
+  builds an optimized compiler and runtime with the non-LTO `release-lib` profile
+  and compiles and runs a program under emulation. The tag workflow builds the
+  x86_64 SDK archive and cross-built aarch64 libraries. Track a native aarch64
+  SDK archive as a separate distribution gap. Apply the platform policy to gate
+  failures. The x86_64 nightly provides early regression evidence.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
   publish the LLVM packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04

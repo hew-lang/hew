@@ -1057,8 +1057,7 @@ jobs:
         with:
           release: "15.1"
           arch: aarch64
-          # The release compiler's LTO peak measured 9.4 GiB. Leave room for
-          # that peak in the guest and for QEMU on the 16 GB hosted runner.
+          # Leave memory for QEMU on the 16 GB hosted runner.
           mem: 12288
           cpu: 4
           # This smoke leg consumes no guest files on the host. Avoid a
@@ -1091,16 +1090,17 @@ jobs:
             test -x "$PYTHON"
             /usr/local/llvm${{ env.LLVM_MAJOR }}/bin/llvm-config --version
 
-            # The native smoke shares one release dependency graph. The shipped
-            # release-lib profile remains separate for external Rust consumers.
+            # Build both optimized artifacts with the existing non-LTO profile
+            # to fit the emulated smoke gate's time budget.
+            export RELEASE_SMOKE_PROFILE=release-lib
             gmake release-smoke-artifacts
 
             # Stage this exact pair so archive discovery cannot select another profile.
             SMOKE_DIR=$(mktemp -d)
             trap 'rm -rf "$SMOKE_DIR"' EXIT
             mkdir -p "$SMOKE_DIR/bin" "$SMOKE_DIR/lib"
-            cp target/release/hew "$SMOKE_DIR/bin/hew"
-            cp target/release/libhew.a "$SMOKE_DIR/lib/libhew.a"
+            cp "target/$RELEASE_SMOKE_PROFILE/hew" "$SMOKE_DIR/bin/hew"
+            cp "target/$RELEASE_SMOKE_PROFILE/libhew.a" "$SMOKE_DIR/lib/libhew.a"
             "$SMOKE_DIR/bin/hew" --version
 
             # Smoke test — compile and run a .hew program with the staged runtime.

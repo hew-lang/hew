@@ -1225,11 +1225,10 @@ release-host: require-host-cargo-target
 	cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_LIB_BUILD) "$(RELEASE_LIBHEW)" -- cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 
-# Plain native smoke needs no external Rust staticlib deduplication. Build its
-# compiler and archive together, reusing release dependencies rather than
-# starting a second profile. Packaging must continue to use release-host.
+# Build the native smoke compiler and archive together in a single profile.
+RELEASE_SMOKE_PROFILE ?= release
 release-smoke-artifacts: require-host-cargo-target ## Release: build the compiler and runtime for native smoke
-	cargo build -p hew-cli -p hew-lib --release $(CARGO_TARGET_FLAG)
+	cargo build -p hew-cli -p hew-lib --profile "$(RELEASE_SMOKE_PROFILE)" $(CARGO_TARGET_FLAG)
 
 # Build everything in release mode and repoint the build/ symlinks. Cargo's
 # workspace config owns platform defaults while allowing caller overrides.

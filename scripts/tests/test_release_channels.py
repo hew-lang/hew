@@ -524,6 +524,7 @@ class HomebrewDelivery(unittest.TestCase):
         self.ancient = False
         self.ambiguous = False
         self.calls = []
+        self.watch_errors = []
         self.terminal = {
             "status": "completed",
             "conclusion": "success",
@@ -599,6 +600,11 @@ class HomebrewDelivery(unittest.TestCase):
                 self.assertEqual(
                     args[args.index("--created") + 1], ">=2026-10-21T00:00:00Z"
                 )
+        elif args[1:3] == ("run", "watch") and self.watch_errors:
+            error = self.watch_errors.pop(0)
+            if check:
+                raise RuntimeError(error)
+            return subprocess.CompletedProcess(args, 1, "", error)
         elif args[1:3] == ("run", "view"):
             if "--log" in args:
                 raise RuntimeError("Expired downstream log")
@@ -698,6 +704,31 @@ class HomebrewDelivery(unittest.TestCase):
         self.assertEqual(self.list_count, 1)
         watch = next(args for args in self.calls if args[1:3] == ("run", "watch"))
         self.assertEqual(watch[3], "42")
+
+    def test_dispatched_run_can_be_temporarily_invisible(self):
+        self.watch_errors = ["failed to get run: HTTP 404: Not Found"]
+        with patch.object(channel.time, "sleep"):
+            self.execute()
+        self.assertEqual(sum(c[1:3] == ("workflow", "run") for c in self.calls), 1)
+        self.assertEqual(
+            [c[3] for c in self.calls if c[1:3] == ("run", "watch")], ["42", "42"]
+        )
+
+    def test_watch_failure_stops_without_reading_formulas(self):
+        self.watch_errors = ["downstream workflow failed"]
+        with self.assertRaisesRegex(RuntimeError, "downstream workflow failed"):
+            self.execute()
+        self.assertFalse(any("/contents/" in c[2] for c in self.calls if c[1] == "api"))
+
+    def test_an_unreadable_dispatch_fails_without_redispatch(self):
+        self.watch_errors = ["failed to get run: HTTP 404: Not Found"] * 100
+        with (
+            patch.object(channel.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "HTTP 404"),
+        ):
+            self.execute()
+        self.assertEqual(sum(c[1:3] == ("workflow", "run") for c in self.calls), 1)
+        self.assertTrue(self.watch_errors)
 
     def test_missing_dispatch_url_uses_unique_new_run(self):
         self.return_url = False

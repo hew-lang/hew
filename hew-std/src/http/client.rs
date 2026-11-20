@@ -16,6 +16,7 @@ use hew_cabi::{
     },
     vec::{ElemKind, HewVec},
 };
+use reqwest::blocking::Client;
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -250,10 +251,11 @@ pub unsafe extern "C" fn hew_http_set_timeout(timeout_ms: i32) {
     HTTP_TIMEOUT_MS.store(timeout_ms, Ordering::Relaxed);
 }
 
-thread_local! {
-    // A calling thread reuses its connection pool and releases the client on exit.
-    static HTTP_CLIENT: Result<reqwest::blocking::Client, String> =
-        reqwest::blocking::Client::builder().timeout(None).build().map_err(|error| error.to_string());
+fn build_http_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(None)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
@@ -282,37 +284,45 @@ fn execute_request(
         "PATCH" => Method::PATCH,
         _ => return Err(format!("unsupported HTTP method: {method}")),
     };
-    HTTP_CLIENT.with(|client| {
-        let client = client.as_ref().map_err(Clone::clone)?;
-        let mut request = client.request(method.clone(), url);
-        for (name, value) in headers {
-            request = request.header(name, value);
+    // Dropping a blocking client joins its worker. Windows holds the loader
+    // lock during thread-local destruction, which prevents the worker exiting.
+    #[cfg(windows)]
+    let client = build_http_client()?;
+    #[cfg(not(windows))]
+    let client = {
+        thread_local! {
+            static HTTP_CLIENT: Result<Client, String> = build_http_client();
         }
-        if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-            request = request.body(body.unwrap_or_default().to_vec());
-        }
-        let timeout = HTTP_TIMEOUT_MS.load(Ordering::Relaxed);
-        if timeout > 0 {
-            request = request.timeout(Duration::from_millis(u64::from(timeout.cast_unsigned())));
-        }
-        let response = request.send().map_err(|error| error.to_string())?;
-        let status = response.status().as_u16();
-        let headers = capture_headers(response.headers())?;
-        let mut body = Vec::new();
-        response
-            .take(MAX_BODY_BYTES + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| format!("failed to read response body: {error}"))?;
-        if body.len() as u64 > MAX_BODY_BYTES {
-            return Err("failed to read response body: exceeds the 10 MiB limit".to_string());
-        }
-        let body = String::from_utf8(body)
-            .map_err(|_| "failed to read response body: invalid UTF-8".to_string())?;
-        Ok(Reply {
-            status,
-            headers,
-            body,
-        })
+        HTTP_CLIENT.with(Clone::clone)?
+    };
+    let mut request = client.request(method.clone(), url);
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
+        request = request.body(body.unwrap_or_default().to_vec());
+    }
+    let timeout = HTTP_TIMEOUT_MS.load(Ordering::Relaxed);
+    if timeout > 0 {
+        request = request.timeout(Duration::from_millis(u64::from(timeout.cast_unsigned())));
+    }
+    let response = request.send().map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let headers = capture_headers(response.headers())?;
+    let mut body = Vec::new();
+    response
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| format!("failed to read response body: {error}"))?;
+    if body.len() as u64 > MAX_BODY_BYTES {
+        return Err("failed to read response body: exceeds the 10 MiB limit".to_string());
+    }
+    let body = String::from_utf8(body)
+        .map_err(|_| "failed to read response body: invalid UTF-8".to_string())?;
+    Ok(Reply {
+        status,
+        headers,
+        body,
     })
 }
 

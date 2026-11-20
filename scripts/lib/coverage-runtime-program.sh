@@ -12,17 +12,21 @@ coverage_runtime_run_program() {
     local timeout_bin="$3"
     local timeout_seconds="$4"
     local program_bin="$5"
-    local grep_input="$6"
+    local input_dir="$6"
 
     case "${stem}" in
-        hew_grep)
-            LLVM_PROFILE_FILE="${profile_file}" \
-                "${timeout_bin}" "${timeout_seconds}" "${program_bin}" \
-                "needle" "${grep_input}"
-            ;;
-        *)
-            LLVM_PROFILE_FILE="${profile_file}" \
-                "${timeout_bin}" "${timeout_seconds}" "${program_bin}"
-            ;;
+    hew_grep)
+        LLVM_PROFILE_FILE="${profile_file}" \
+            "${timeout_bin}" "${timeout_seconds}" "${program_bin}" \
+            "needle" "${input_dir}/hew-grep-input.txt"
+        ;;
+    order_totals | order_batch)
+        LLVM_PROFILE_FILE="${profile_file}" \
+            "${timeout_bin}" "${timeout_seconds}" "${program_bin}" "${input_dir}/order.json"
+        ;;
+    *)
+        LLVM_PROFILE_FILE="${profile_file}" \
+            "${timeout_bin}" "${timeout_seconds}" "${program_bin}"
+        ;;
     esac
 }

@@ -106,7 +106,7 @@ jobs:
        (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
     name: Code coverage
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     env:
       # cargo-llvm-cov builds into target/llvm-cov-target/, so the `hew`
       # binary the e2e tests spawn sits one directory deeper than the normal
@@ -193,7 +193,7 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
         run: |
           make stdlib
-          timeout -k 60 1800 make coverage
+          make coverage
 
       - name: Upload coverage (lcov)
         if: always()

@@ -1,0 +1,19 @@
+[[case]]
+id = "keyed-cache-private-fields"
+intent = "A caller must use cache operations to preserve the configured limits and the relationship between entries and eviction order."
+source = "cases/keyed-cache-private-fields.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 5
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 6
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+line = 7

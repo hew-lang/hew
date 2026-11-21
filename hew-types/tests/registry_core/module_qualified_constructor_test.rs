@@ -404,6 +404,7 @@ fn private_record_fields_refuse_explicit_cross_module_operations() {
         "let e = records.entry(); let value = e.value;",
         "var e = records.entry(); e.value = 3;",
         "let e = records.Entry { label: 1, value: 7 };",
+        "let value = 7; let e = records.Entry { label: 1, value };",
         "let e: records.Entry<i64> = records.Entry { label: 1, value: 7 };",
         "let e = records.Entry { value: 0, ..records.entry() };",
         "let { value, .. } = records.entry();",
@@ -421,6 +422,31 @@ fn private_record_fields_refuse_explicit_cross_module_operations() {
             output.errors
         );
     }
+
+    let associated = r"import myapp.m as records;
+        trait Schema { type Item; }
+        type Provider {}
+        impl Schema for Provider { type Item = records.Entry<i64>; }
+        fn main() { let e = <Provider as Schema>.Item { value: 7, label: 1 }; }";
+    let output = typecheck_with_module(associated, PRIVATE_FIELD_MODULE);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert!(matches!(
+        output.errors[0].kind,
+        TypeErrorKind::VisibilityViolationPrivate { .. }
+    ));
+
+    let aliases = r"import myapp.m as records;
+        type Entry { value: i64; }
+        type Imported = records.Entry<i64>;
+        fn denied(e: Imported) -> i64 { e.value }
+        fn local() -> i64 { let e = Entry { value: 2 }; e.value }
+        fn main() {}";
+    let output = typecheck_with_module(aliases, PRIVATE_FIELD_MODULE);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert!(matches!(
+        output.errors[0].kind,
+        TypeErrorKind::VisibilityViolationPrivate { .. }
+    ));
 }
 
 #[test]

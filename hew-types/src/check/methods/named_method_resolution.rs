@@ -724,10 +724,8 @@ impl Checker {
         let field_ty = type_def.fields.get(method_name)?;
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
-        if let Some(nominal) = head.nominal() {
-            if !self.check_record_field_visible(nominal, method_name, span) {
-                return Some(Ty::Error);
-            }
+        if !self.check_record_field_visible(*head, method_name, span) {
+            return Some(Ty::Error);
         }
         let resolved_field = self.subst.resolve(&field_ty);
         // A record field holding a lambda-actor handle answers a call the same

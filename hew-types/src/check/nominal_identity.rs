@@ -474,6 +474,25 @@ impl Checker {
         }
     }
 
+    /// Check every explicitly named field after selecting the record declaration.
+    pub(super) fn check_record_init_field_visibility(
+        &mut self,
+        fields: &[(
+            hew_parser::ast::Ident,
+            hew_parser::ast::Spanned<hew_parser::ast::Expr>,
+        )],
+        labels: &[hew_parser::ast::FieldLabel],
+        ty: &crate::Ty,
+    ) {
+        let crate::Ty::Named { head, .. } = self.subst.resolve(ty) else {
+            return;
+        };
+        for (index, (field, expr)) in fields.iter().enumerate() {
+            let span = labels.get(index).map_or(&expr.1, |label| &label.span);
+            self.check_record_field_visible(head, field.name.as_str(), span);
+        }
+    }
+
     /// Publish labels after the record constructor has selected its nominal.
     pub(super) fn record_struct_init_field_resolutions(
         &mut self,
@@ -490,10 +509,6 @@ impl Checker {
         let Some(nominal) = head.nominal() else {
             return;
         };
-        for (index, (field, expr)) in fields.iter().enumerate() {
-            let span = labels.get(index).map_or(&expr.1, |label| &label.span);
-            self.check_record_field_visible(nominal, field.name.as_str(), span);
-        }
         let Some(definition) = self.type_defs.get(&nominal) else {
             return;
         };
@@ -710,10 +725,13 @@ impl Checker {
     /// aliases and inferred generic instances.
     pub(super) fn check_record_field_visible(
         &mut self,
-        nominal: crate::NominalId,
+        head: crate::TypeHead,
         field: &str,
         span: &hew_parser::ast::Span,
     ) -> bool {
+        let Some(nominal) = head.nominal() else {
+            return true;
+        };
         let accessor = self
             .scope_site()
             .map(|site| self.scopes.namespace_of(site.file));
@@ -724,18 +742,22 @@ impl Checker {
             return true;
         };
         let declaration = nominal.declaration();
-        let owner = self
-            .defs
-            .module(declaration)
-            .map(|module| self.defs.module_path(self.scopes.namespace_of(module)))
-            .unwrap_or("(root)");
-        self.errors.push(super::TypeError::visibility_violation(
-            hew_parser::ast::Visibility::Private,
+        let file = self.defs.module(declaration);
+        let owner = file.map_or("(root)", |id| {
+            self.defs.module_path(self.scopes.namespace_of(id))
+        });
+        let decl_file = file
+            .filter(|id| self.scopes.namespace_of(*id) != *id)
+            .and_then(|id| self.defs.module_source(id))
+            .and_then(std::path::Path::to_str)
+            .unwrap_or(owner);
+        self.errors.push(super::TypeError::private_access_at(
             span.clone(),
             &format!("{}.{}", self.defs.name(declaration), field),
             owner,
             self.current_module.as_deref().unwrap_or("(root)"),
             declared_at.clone(),
+            decl_file,
             self.current_module.clone(),
         ));
         false

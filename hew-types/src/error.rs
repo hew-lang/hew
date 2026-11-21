@@ -412,6 +412,27 @@ impl TypeError {
         decl_span: Span,
         source_module: Option<String>,
     ) -> Self {
+        Self::private_access_at(
+            acc_span,
+            symbol,
+            decl_module,
+            acc_module,
+            decl_span,
+            decl_module,
+            source_module,
+        )
+    }
+
+    /// Report a private member whose declaration may live in a directory-module peer.
+    pub(crate) fn private_access_at(
+        acc_span: Span,
+        symbol: &str,
+        decl_module: &str,
+        acc_module: &str,
+        decl_span: Span,
+        decl_file: &str,
+        source_module: Option<String>,
+    ) -> Self {
         let mut err = Self::new(
             TypeErrorKind::VisibilityViolationPrivate {
                 symbol: symbol.to_string(),
@@ -427,7 +448,7 @@ impl TypeError {
         .with_note_source(
             decl_span,
             "declared private here",
-            Some(decl_module.to_owned()),
+            Some(decl_file.to_owned()),
         );
         if let Some(m) = source_module {
             err = err.with_source_module(m);

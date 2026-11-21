@@ -131,11 +131,7 @@ fn build_tokens(source: &str, program: Option<&Program>) -> Vec<SemanticToken> {
         && lexer_tokens.windows(3).any(|tokens| {
             matches!(
                 tokens,
-                [
-                    (Token::Identifier("private"), _),
-                    (Token::Identifier(_), _),
-                    (Token::Colon, _)
-                ]
+                [(Token::Identifier("private"), _), _, (Token::Colon, _)]
             )
         }) {
         program.map_or_else(
@@ -319,6 +315,17 @@ enum Mode { Ready { private: i64; } }
                 token_types::VARIABLE,
             ]
         );
+    }
+
+    #[test]
+    fn source_tokens_recognize_private_fields_with_contextual_names() {
+        let source = "type Slot { private state: i64; }";
+        let tokens = build_semantic_tokens(source);
+        let modifier = tokens
+            .iter()
+            .find(|token| &source[token.start..token.start + token.length] == "private")
+            .expect("private modifier token");
+        assert_eq!(modifier.token_type, token_types::KEYWORD);
     }
 
     #[test]

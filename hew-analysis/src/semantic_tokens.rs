@@ -295,6 +295,8 @@ mod tests {
 
     #[test]
     fn failure_words_keep_their_callable_and_expression_context() {
+        use token_types::{FUNCTION, KEYWORD, VARIABLE};
+
         let source = r#"// Erreur 🧪
 fn fails() {}
 fn convert(f: fn(i64) -> i64 fails string) fails string {
@@ -327,7 +329,6 @@ gen fn countdown() -> i64 fails string {
             })
             .map(|token| token.token_type)
             .collect();
-        use token_types::{FUNCTION, KEYWORD, VARIABLE};
         assert_eq!(
             kinds,
             [

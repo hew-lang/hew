@@ -42,7 +42,7 @@ use self::navigation::{
 use self::navigation::{
     build_prepare_rename_response, build_workspace_edit, plan_workspace_rename,
 };
-use self::testing::failure_from_event;
+use self::testing::TestFailureBatch;
 use self::uri::{source_file_key, FileUriExt};
 #[cfg(test)]
 use self::workspace::build_code_lenses;
@@ -744,8 +744,9 @@ impl HewLanguageServer {
     }
 
     fn record_test_failures(&self, events: &[Value], affected: &mut HashSet<Url>) {
+        let mut batch = TestFailureBatch::default();
         for event in events {
-            if let Some(failure) = failure_from_event(event, &self.documents) {
+            if let Some(failure) = batch.failure_from_event(event, &self.documents) {
                 affected.insert(failure.uri.clone());
                 self.test_diagnostics
                     .entry(failure.uri)
@@ -3150,7 +3151,9 @@ impl Worker {
                 "assertion": { "operator": "==", "left": "1", "right": "2" }
             }
         });
-        let failure = failure_from_event(&event, &documents).expect("test failure diagnostic");
+        let failure = TestFailureBatch::default()
+            .failure_from_event(&event, &documents)
+            .expect("test failure diagnostic");
         assert_eq!(failure.uri, uri);
         assert_eq!(failure.diagnostic.range.start.line, 1);
         assert_eq!(failure.diagnostic.range.start.character, 13);

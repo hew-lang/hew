@@ -185,14 +185,17 @@ jobs:
           - rust_target: x86_64-unknown-freebsd
             builder: zig
             archive: libhew.a
+            cargo_archive: libhew_native.a
             build_std: false
           - rust_target: x86_64-pc-windows-msvc
             builder: xwin
             archive: hew.lib
+            cargo_archive: hew_native.lib
             build_std: false
           - rust_target: aarch64-unknown-freebsd
             builder: zig
             archive: libhew.a
+            cargo_archive: libhew_native.a
             build_std: true
             zig_target: aarch64-freebsd
 
@@ -242,7 +245,7 @@ jobs:
         if: matrix.builder == 'zig' && !matrix.build_std
         run: >-
           python3 scripts/release-lib.py build
-          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.cargo_archive }} --
           cargo zigbuild -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Build FreeBSD release library with standard library
@@ -251,7 +254,7 @@ jobs:
           RUSTC_BOOTSTRAP: "1"
         run: >-
           python3 scripts/release-lib.py build
-          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.cargo_archive }} --
           cargo zigbuild -Zbuild-std=std,panic_abort -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Build aarch64 FreeBSD release consumer
@@ -270,7 +273,7 @@ jobs:
           AWS_LC_SYS_PREBUILT_NASM: "1"
         run: >-
           python3 scripts/release-lib.py build
-          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }} --
+          --archive target/${{ matrix.rust_target }}/release-lib/${{ matrix.cargo_archive }} --
           cargo xwin build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Record FreeBSD ABI baseline
@@ -288,14 +291,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="target/${{ matrix.rust_target }}/release-lib/${{ matrix.archive }}"
+          archive="target/${{ matrix.rust_target }}/release-lib/${{ matrix.cargo_archive }}"
           scripts/verify-cross-release-lib.sh "${{ matrix.rust_target }}" "${archive}"
 
           destination="cross-release-libs/${{ matrix.rust_target }}"
           mkdir -p "${destination}"
           cp "${archive}" "${destination}/${{ matrix.archive }}"
           # The shared runtime for --link=dynamic, under its versioned name
-          # (hew-lib's build links it to Cargo's libhew.so); staging ships it
+          # (hew-lib's build links it to Cargo's libhew_native.so); staging ships it
           # from beside the archive.
           for runtime in "$(dirname "${archive}")"/libhew.so.*; do
             [ -e "${runtime}" ] || continue
@@ -552,7 +555,7 @@ jobs:
         # verbatim libstd members against a fat-LTO archive.
         run: >-
           python3 scripts/release-lib.py build
-          --archive target/${{ matrix.rust_target }}/release-lib/libhew.a --
+          --archive target/${{ matrix.rust_target }}/release-lib/libhew_native.a --
           cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
 
       - name: Prove release library consumer linking (Unix)
@@ -560,7 +563,7 @@ jobs:
         run: |
           scripts/test-release-lib-link.sh \
             --hew "target/${{ matrix.rust_target }}/release/hew" \
-            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+            --archive "target/${{ matrix.rust_target }}/release-lib/libhew_native.a"
 
       - name: Prove release library consumer linking (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -593,7 +596,7 @@ jobs:
           sh scripts/stage-release-package.sh \
             --source-dir "$PWD" \
             --bin-dir "target/${{ matrix.rust_target }}/release" \
-            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
+            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew_native.a" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "libhew.a" \
             --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
@@ -932,7 +935,7 @@ jobs:
         run: |
           scripts/test-release-lib-link.sh \
             --hew "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" \
-            --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+            --archive "target/${{ matrix.rust_target }}/release-lib/libhew_native.a"
 
       - name: Verify Linux binaries
         run: |
@@ -940,7 +943,7 @@ jobs:
           "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" --version
           "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" lsp --version
           "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" observe --version
-          test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
+          test -f "target/${{ matrix.rust_target }}/release-lib/libhew_native.a"
 
           if ldd "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" | grep -Eqi 'llvm|mlir'; then
             echo "::error::Linux release binary dynamically links LLVM-family libraries"
@@ -955,14 +958,14 @@ jobs:
           # Only the Linux x86_64 SDK carries the experimental live boundary.
           # Require its matching portable libraries instead of silently omitting them.
           if [ "${{ matrix.live_sdk }}" = true ]; then
-            set -- --live-runtime "target/${{ matrix.rust_target }}/release-lib/libhew.so"
+            set -- --live-runtime "target/${{ matrix.rust_target }}/release-lib/libhew_native.so"
           else
             set -- --optional-wasi
           fi
           sh scripts/stage-release-package.sh \
             --source-dir "$PWD" \
             --bin-dir "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}" \
-            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
+            --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew_native.a" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "libhew.a" \
             --wasi-lib-dir "portable-release-libs/wasm32-wasip1" "$@" \

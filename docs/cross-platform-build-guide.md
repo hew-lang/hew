@@ -312,13 +312,14 @@ Use a normal PowerShell or cmd.exe session with LLVM and NASM on `PATH`:
 $env:LLVM_SYS_231_PREFIX = 'C:\llvm-23'
 $env:Path = 'C:\llvm-23\bin;' + $env:Path
 
-make hew-native    # debug: target\debug\hew.exe + target\debug\hew.lib
-make release-host  # release compiler + target\release-lib\hew.lib
+make hew-native    # debug: target\debug\hew.exe + target\debug\hew_native.lib
+make release-host  # release compiler + target\release-lib\hew_native.lib
 ```
 
 `cargo build -p hew-cli` by itself is intentionally not the build recipe for a
 working source checkout: it does not build `hew-lib`, and `hew build` needs the
-fresh `hew.lib` next to `hew.exe`. If `make` is unavailable, use the equivalent
+fresh `hew_native.lib` in the Cargo output. The installed archive is `hew.lib`.
+If `make` is unavailable, use the equivalent
 Cargo commands:
 
 ```powershell

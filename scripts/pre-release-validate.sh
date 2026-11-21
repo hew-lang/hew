@@ -308,7 +308,7 @@ validate_linux() {
         "${release_dir}/hew" --version
         "${release_dir}/hew" lsp --version
         "${release_dir}/hew" observe --version
-        test -f "${release_lib_dir}/libhew.a"
+        test -f "${release_lib_dir}/libhew_native.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
@@ -357,9 +357,9 @@ validate_linux() {
 
         cp "${release_dir}/hew" "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
-        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
-        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/"
-        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/x86_64-unknown-linux-gnu/"
+        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew_native.a"
+        cp "${release_lib_dir}/libhew_native.a" "${package_root}/lib/libhew.a"
+        cp "${release_lib_dir}/libhew_native.a" "${package_root}/lib/x86_64-unknown-linux-gnu/libhew.a"
         cp -r std/. "${package_root}/std/"
 
         tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
@@ -574,7 +574,7 @@ validate_linux_aarch64() {
             \"\$release_dir/hew\" --version
             \"\$release_dir/hew\" lsp --version
             \"\$release_dir/hew\" observe --version
-            test -f \"\$release_lib_dir/libhew.a\"
+            test -f \"\$release_lib_dir/libhew_native.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
             \"\$release_dir/hew\" build _smoke.hew -o _smoke_bin

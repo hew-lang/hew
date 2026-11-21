@@ -11,9 +11,9 @@ fn persistent_native_authoring_keeps_actor_identity_and_clears_bindings() {
     let compiler = Path::new(env!("CARGO_BIN_EXE_hew"));
     let directory = compiler.parent().unwrap();
     let runtime = directory.join(if cfg!(target_os = "macos") {
-        "libhew.dylib"
+        "libhew_native.dylib"
     } else {
-        "libhew.so"
+        "libhew_native.so"
     });
     let project = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -80,9 +80,9 @@ fn live_service_edits_preserve_state_and_reject_invalid_replacements() {
         .parent()
         .unwrap()
         .join(if cfg!(target_os = "macos") {
-            "libhew.dylib"
+            "libhew_native.dylib"
         } else {
-            "libhew.so"
+            "libhew_native.so"
         });
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/services");
     let mut process = Command::new(compiler)
@@ -139,9 +139,9 @@ fn replacements_preserve_helper_closure_generator_and_impl_scope() {
         .parent()
         .unwrap()
         .join(if cfg!(target_os = "macos") {
-            "libhew.dylib"
+            "libhew_native.dylib"
         } else {
-            "libhew.so"
+            "libhew_native.so"
         });
     let mut process = Command::new(compiler)
         .args(["tool", "live", "--runtime"])

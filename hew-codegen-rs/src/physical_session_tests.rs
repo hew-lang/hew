@@ -2,6 +2,8 @@
 
 use super::*;
 
+const SHARED_RUNTIME: &str = "libhew_native.so";
+
 #[test]
 fn native_session_places_host_retains_mutations_and_fault_occupancy() {
     use std::io::{BufRead, BufReader, Write};
@@ -40,11 +42,7 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let runtime = binaries.join(if cfg!(target_os = "macos") {
-        "libhew.dylib"
-    } else {
-        "libhew.so"
-    });
+    let runtime = binaries.join(SHARED_RUNTIME);
     for (suffix, opt_level) in [("", OptLevel::O0), ("_o2", OptLevel::O2)] {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut child = Worker(Some(
@@ -207,7 +205,7 @@ fn execute(directory: &Path, modules: &[&str]) {
                     .iter()
                     .map(|name| directory.join(format!("{name}{suffix}.o"))),
             )
-            .arg(runtime.join("libhew.so"))
+            .arg(runtime.join(SHARED_RUNTIME))
             .arg(format!("-Wl,-rpath,{}", runtime.display()))
             .arg("-o")
             .arg(&executable)
@@ -669,7 +667,7 @@ fn execute_dynamic(directory: &Path) {
             let linked = std::process::Command::new("cc")
                 .args(["-shared", "-fPIC"])
                 .arg(directory.join(format!("{name}{suffix}.o")))
-                .arg(runtime.join("libhew.so"))
+                .arg(runtime.join(SHARED_RUNTIME))
                 .arg(format!("-Wl,-rpath,{}", runtime.display()))
                 .arg("-o")
                 .arg(directory.join(format!("{name}{suffix}.so")))
@@ -685,7 +683,7 @@ fn execute_dynamic(directory: &Path) {
         let linked = std::process::Command::new("cc")
             .args(["-rdynamic", "-ldl"])
             .arg(directory.join("host.c"))
-            .arg(runtime.join("libhew.so"))
+            .arg(runtime.join(SHARED_RUNTIME))
             .arg(format!("-Wl,-rpath,{}", runtime.display()))
             .arg("-o")
             .arg(&executable)

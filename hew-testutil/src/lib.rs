@@ -769,7 +769,7 @@ fn abandoned_capture_marker(name: &str) -> Vec<u8> {
     format!("\n[{name} capture abandoned after timeout]\n").into_bytes()
 }
 
-/// Return the resolved `libhew.a` / `hew.lib`, building it only outside a test
+/// Return the resolved `libhew_native.a` / `hew_native.lib`, building it only outside a test
 /// run.
 ///
 /// Under nextest, or when `HEW_TEST_NO_BUILD=1`, this is verify-only: the
@@ -840,7 +840,7 @@ pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
     Ok(bin_path)
 }
 
-/// Return a cross-compiled `target/<target>/release-lib/libhew.a`, building it
+/// Return a cross-compiled `target/<target>/release-lib/libhew_native.a`, building it
 /// only outside a test run.
 ///
 /// The cross-target archive is as much a shared-target artifact as the host

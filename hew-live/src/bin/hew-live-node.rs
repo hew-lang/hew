@@ -37,20 +37,18 @@ impl Native {
         )
     }
     fn runtime(&self) -> Result<PathBuf> {
-        let name = if cfg!(target_os = "windows") {
-            "hew.dll"
+        let (installed, cargo) = if cfg!(target_os = "windows") {
+            ("hew.dll", "hew_native.dll")
         } else if cfg!(target_os = "macos") {
-            "libhew.dylib"
+            ("libhew.dylib", "libhew_native.dylib")
         } else {
-            "libhew.so"
+            ("libhew.so", "libhew_native.so")
         };
+        let bin = sdk_bin()?;
         configured(
             self.runtime.as_ref(),
             "HEW_LIVE_RUNTIME",
-            &[
-                sdk_bin()?.join(name),
-                sdk_bin()?.join("../lib/hew").join(name),
-            ],
+            &[bin.join(cargo), bin.join("../lib/hew").join(installed)],
         )
     }
 }

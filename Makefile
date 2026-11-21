@@ -280,12 +280,10 @@ ifeq ($(OS),Windows_NT)
 DEBUG_HEW := $(DEBUG_DIR)/hew.exe
 RELEASE_HEW := $(RELEASE_DIR)/hew.exe
 RELEASE_LIB_HEW := $(RELEASE_LIB_DIR)/hew.exe
-RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib
 else
 DEBUG_HEW := $(DEBUG_DIR)/hew
 RELEASE_HEW := $(RELEASE_DIR)/hew
 RELEASE_LIB_HEW := $(RELEASE_LIB_DIR)/hew
-RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/libhew.a
 endif
 # The wasm archives are always built with an explicit `--target wasm32-wasip1`,
 # which outranks the environment, so they hang off the target root rather than
@@ -362,9 +360,8 @@ endef
 # `cargo build -p hew-cli` produces the compiler DRIVER only; linking a compiled
 # Hew program additionally needs hew-lib's staticlib sitting beside it.
 #
-# Cargo emits `hew.lib` on MSVC and `libhew.a` everywhere else; keep the whole
-# build graph cross-platform so a fresh Windows host uses the same edges as
-# Linux/macOS rather than a bespoke manual `cargo build -p hew-lib` follow-up.
+# The Cargo target name keeps the runtime DLL and compiler PDBs distinct.
+# Use the public archive name only in assembled and installed toolchains.
 #
 # Do not put `$(LIBHEW)` itself in Make's target graph. Cargo permits target
 # directories containing spaces, while Make splits expanded target and
@@ -372,10 +369,13 @@ endef
 # perform its own incremental freshness check without corrupting the graph.
 ifeq ($(OS),Windows_NT)
 LIBHEW_NAME := hew.lib
+CARGO_LIBHEW_NAME := hew_native.lib
 else
 LIBHEW_NAME := libhew.a
+CARGO_LIBHEW_NAME := libhew_native.a
 endif
-LIBHEW := $(DEBUG_DIR)/$(LIBHEW_NAME)
+LIBHEW := $(DEBUG_DIR)/$(CARGO_LIBHEW_NAME)
+RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/$(CARGO_LIBHEW_NAME)
 
 TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 
@@ -519,7 +519,7 @@ hew: require-host-cargo-target ## Build: build the release-lib compiler and nati
 	@mkdir -p "$(BUILD_DIR)/bin" "$(BUILD_DIR)/lib"
 	$(call STAGE_DROP_UNSUFFIXED,hew)
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)" "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)" "$(BUILD_DIR)/lib/$(LIBHEW_NAME)"
 	$(STAGE_STD)
 
 hew-debug: hew-native ## Build: build and stage the debug compiler
@@ -545,9 +545,7 @@ test-debugger: require-host-cargo-target ## Test: run live debugger fixtures wit
 	$(TEST_RUN_ENV) cargo nextest run --profile ci --cargo-profile debugger -p hew-cli --test dwarf_debugger_locals_e2e $(DEBUGGER_TEST_ARGS)
 
 # Build the native artifacts required for `hew build` from a source checkout:
-# the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
-# `target/debug/hew.lib` on Windows). Keep this target cross-platform so fresh
-# Windows hosts use the same build graph as Linux/macOS.
+# the driver plus hew-lib's staticlib in the same Cargo profile.
 shared-host-debug:
 	cargo build -p hew-runtime -p hew-lib -p hew-cli $(CARGO_TARGET_FLAG)
 
@@ -597,7 +595,7 @@ live-node: ## Build: typed node adapter for the portable component host
 	cargo build -p hew-live --features component --bin hew-live-node
 
 LIVE_SDK_DEST ?= $(DEBUG_DIR)/live-sdk
-LIVE_SDK_RUNTIME ?= $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew.dll,$(if $(findstring apple-darwin,$(HOST_TRIPLE)),libhew.dylib,libhew.so))
+LIVE_SDK_RUNTIME ?= $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew_native.dll,$(if $(findstring apple-darwin,$(HOST_TRIPLE)),libhew_native.dylib,libhew_native.so))
 .PHONY: live-sdk
 live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched experimental live execution SDK
 	cargo build -p hew-runtime -p hew-lib -p hew-cli -p hew-live --features hew-live/component $(CARGO_TARGET_FLAG)
@@ -623,7 +621,7 @@ live-sdk-release: live-release-artifacts wasm-runtime-release ## Release: stage 
 		RELEASE_PACKAGE_BIN_DIR="$(RELEASE_LIB_DIR)" \
 		RELEASE_PACKAGE_NATIVE_LIB="$(RELEASE_LIBHEW)" \
 		RELEASE_PACKAGE_WASI_LIB_DIR="$(WASM_RELEASE_DIR)" \
-		RELEASE_PACKAGE_LIVE_RUNTIME="$(RELEASE_LIB_DIR)/libhew.so" \
+		RELEASE_PACKAGE_LIVE_RUNTIME="$(RELEASE_LIB_DIR)/libhew_native.so" \
 		RELEASE_PACKAGE_DEST="$(LIVE_RELEASE_SDK_DEST)"
 
 LIVE_BENCH_SDK ?= $(LIVE_SDK_DEST)
@@ -726,14 +724,14 @@ libhew-debug: shared-host-debug
 libhew-cross-release-lib:
 ifeq ($(shell uname -s),Darwin)
 	@for triple in $(CROSS_NATIVE_LIB_TRIPLES); do \
-		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" -- \
+		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a" -- \
 			cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$$triple" || exit $$?; \
 	done
 else ifeq ($(shell uname -s),Linux)
 	@if [ -z "$(LINUX_CROSS_AVAILABLE)" ]; then \
 		echo "Skipping $(LINUX_CROSS_LIB_TRIPLE) libhew.a: install its cross sysroot at $(LINUX_CROSS_SYSROOT) to include it"; \
 	else \
-		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$(LINUX_CROSS_AVAILABLE)/release-lib/libhew.a" -- \
+		$(RELEASE_LIB_BUILD) "$(CARGO_TARGET_ROOT)/$(LINUX_CROSS_AVAILABLE)/release-lib/libhew_native.a" -- \
 			cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$(LINUX_CROSS_AVAILABLE)"; \
 	fi
 else
@@ -1178,7 +1176,7 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@ln -sfn "$(LINK_UP2)$(DEBUG_HEW)"                    "$(BUILD_DIR)/bin/hew-debug$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(LIBHEW_NAME)"
 	@# Shared runtime for --link=dynamic, under its versioned name.
 	@for runtime in "$(RELEASE_LIB_DIR)"/libhew.so.* "$(RELEASE_LIB_DIR)"/libhew.*.dylib; do \
 		[ -e "$$runtime" ] || continue; \
@@ -1198,15 +1196,15 @@ assemble: require-host-cargo-target | hew assemble-host-debug libhew-cross-relea
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
-			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
-			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a" ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIBHEW)" ]; then \
+			lib_path="$(RELEASE_LIBHEW)"; \
 		else \
 			continue; \
 		fi; \
 		mkdir -p "$(BUILD_DIR)/lib/$$triple"; \
-		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
+		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/$(LIBHEW_NAME)"; \
 	done
 	@# Keep the complete nested standard library available from the staged tree.
 	$(STAGE_STD)
@@ -1303,7 +1301,7 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 	@ln -sfn "$(LINK_UP2)$(RELEASE_HEW)"              "$(BUILD_DIR)/bin/hew$(EXE_SUFFIX)"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
-	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(notdir $(RELEASE_LIBHEW))"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIBHEW)"     "$(BUILD_DIR)/lib/$(LIBHEW_NAME)"
 	@# Shared runtime for --link=dynamic, under its versioned name.
 	@for runtime in "$(RELEASE_LIB_DIR)"/libhew.so.* "$(RELEASE_LIB_DIR)"/libhew.*.dylib; do \
 		[ -e "$$runtime" ] || continue; \
@@ -1320,15 +1318,15 @@ assemble-release: require-host-cargo-target release-host libhew-cross-release-li
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
-			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
-			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a" ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIBHEW)" ]; then \
+			lib_path="$(RELEASE_LIBHEW)"; \
 		else \
 			continue; \
 		fi; \
 		mkdir -p "$(BUILD_DIR)/lib/$$triple"; \
-		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
+		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/$(LIBHEW_NAME)"; \
 	done
 	$(STAGE_STD)
 	@echo "build/ assembled (release)."
@@ -1496,7 +1494,7 @@ core-safety: core-safety-build ## Test: run native ownership cases with generate
 test-host-safety: core-safety-build ## Test: instrument compiled Hew, C/C++ clients and Rust host runtime
 	python3 tests/host/run.py \
 		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
-		--hew-lib "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/libhew.a" \
+		--hew-lib "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/libhew_native.a" \
 		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/host-client" --sanitize $(HOST_CLIENT_ARGS)
 
 # Cross-module package-import oracle: fixtures importing the in-tree
@@ -2041,7 +2039,7 @@ install: require-host-cargo-target ## Develop: install the release toolchain und
 	install -d "$(DESTDIR)$(PREFIX)/completions"
 	install -d "$(DESTDIR)$(PREFIX)/share/hew"
 	install -m 755 "$(RELEASE_HEW)"                    "$(DESTDIR)$(PREFIX)/bin/hew$(EXE_SUFFIX)"
-	install -m 644 "$(RELEASE_LIBHEW)"                 "$(DESTDIR)$(PREFIX)/lib/$(notdir $(RELEASE_LIBHEW))"
+	install -m 644 "$(RELEASE_LIBHEW)"                 "$(DESTDIR)$(PREFIX)/lib/$(LIBHEW_NAME)"
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
 			install -d "$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1"; \
@@ -2054,15 +2052,15 @@ install: require-host-cargo-target ## Develop: install the release toolchain und
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
-			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
-			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a" ]; then \
+			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew_native.a"; \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIBHEW)" ]; then \
+			lib_path="$(RELEASE_LIBHEW)"; \
 		else \
 			continue; \
 		fi; \
 		install -d "$(DESTDIR)$(PREFIX)/lib/$$triple"; \
-		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
+		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/$(LIBHEW_NAME)"; \
 	done
 	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
 	@# Every debugger helper: gdb and lldb scripts, the init files and the natvis.

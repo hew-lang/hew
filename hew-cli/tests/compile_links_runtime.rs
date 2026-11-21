@@ -26,7 +26,7 @@ fn compiler_and_runtime_keep_distinct_pdb_sidecars() {
     use object::Object;
     use std::path::Path;
 
-    fn sidecar_identity(image: &Path, expected_name: &str) -> [u8; 16] {
+    fn sidecar_identity(image: &Path, expected_name: &str) -> hew_symbolize::BuildId {
         let bytes = std::fs::read(image).expect("read PE image");
         let object = object::File::parse(bytes.as_slice()).expect("parse PE image");
         let info = object
@@ -41,19 +41,23 @@ fn compiler_and_runtime_keep_distinct_pdb_sidecars() {
             image.display()
         );
         let sidecar = image.with_file_name(expected_name);
-        assert!(
-            sidecar.metadata().expect("PDB sidecar must exist").len() > 0,
+        let image_symbols = hew_symbolize::Symbolizer::open(image).expect("open PE symbols");
+        let pdb_symbols = hew_symbolize::Symbolizer::open(&sidecar).expect("open adjacent PDB");
+        let image_id = image_symbols.build_id().expect("PE build identity");
+        assert_eq!(
+            Some(image_id),
+            pdb_symbols.build_id(),
             "{}",
             sidecar.display()
         );
-        info.guid()
+        image_id.clone()
     }
 
     require_codegen();
     let compiler = hew_binary();
-    let runtime = compiler.with_file_name("hew.dll");
+    let runtime = compiler.with_file_name("hew_native.dll");
     let compiler_pdb = sidecar_identity(&compiler, "hew.pdb");
-    let runtime_pdb = sidecar_identity(&runtime, "hew-runtime.pdb");
+    let runtime_pdb = sidecar_identity(&runtime, "hew_native.pdb");
     assert_ne!(compiler_pdb, runtime_pdb);
 }
 

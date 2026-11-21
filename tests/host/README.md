@@ -115,7 +115,7 @@ target/debug/hew build tests/host/copy_component.hew --emit-obj \
   --export-c-async create=orders_create \
   --export-c-async run=orders_run \
   --export-c-async shutdown=orders_shutdown -o target/async-orders/copier.o
-clang -shared target/async-orders/copier.o target/debug/libhew.a \
+clang -shared target/async-orders/copier.o target/debug/libhew_native.a \
   -lpthread -lm -ldl -lrt -o target/async-orders/copier.so
 python3 examples/embedding/asyncio_orders.py target/async-orders/copier.so \
   target/async-orders/input target/async-orders/output

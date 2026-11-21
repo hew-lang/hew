@@ -249,11 +249,20 @@ class NativePackage(unittest.TestCase):
                 "NOTICE",
                 "THIRD-PARTY-LICENSES",
                 "README.md",
-                "native.a",
+                "libhew_native.a",
             ]:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("fixture")
+            (root / "Cargo.toml").write_text(
+                '[workspace.package]\nversion = "0.17.3"\n'
+            )
+            # A reused Cargo directory can contain another release and the
+            # pre-rename static archive. Stage only the requested new inputs.
+            (root / "libhew.a").write_bytes(b"stale static")
+            (root / "libhew.so.0.16.0").write_bytes(b"older runtime")
+            (root / "libhew_native.so").write_bytes(b"current runtime")
+            (root / "libhew.so.0.17.3").symlink_to("libhew_native.so")
             (root / "bin").mkdir()
             compiler = root / "bin/hew"
             compiler.write_text('#!/bin/sh\nprintf "complete -c hew\\n"\n')
@@ -266,7 +275,7 @@ class NativePackage(unittest.TestCase):
                 "--bin-dir",
                 str(root / "bin"),
                 "--native-lib",
-                str(root / "native.a"),
+                str(root / "libhew_native.a"),
                 "--native-triple",
                 "x86_64-unknown-linux-gnu",
                 "--native-lib-name",
@@ -286,6 +295,13 @@ class NativePackage(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / "output/lib/libhew.a").read_text(), "fixture")
             self.assertFalse((root / "output/lib/wasm32-wasip1").exists())
+            library = root / "output/lib"
+            self.assertEqual(
+                (library / "libhew.so.0.17.3").read_bytes(), b"current runtime"
+            )
+            self.assertFalse((library / "libhew.so.0.17.3").is_symlink())
+            self.assertFalse((library / "libhew.so.0.16.0").exists())
+            self.assertFalse((library / "libhew_native.a").exists())
             (root / "wasi").mkdir()
             (root / "wasi/libhew_runtime.a").write_bytes(b"partial")
             result = subprocess.run(

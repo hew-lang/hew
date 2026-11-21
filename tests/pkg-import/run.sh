@@ -18,7 +18,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/cargo-output-dir.sh"
 HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
-debug_dir="$(cargo_debug_dir "${ROOT}")"
 DIR="${ROOT}/tests/pkg-import"
 PKGS="${DIR}/pkgs"
 
@@ -27,12 +26,6 @@ if [[ ! -x "${HEW}" ]]; then
     echo "       run 'make test-pkg-import' or set HEW_BIN to a provisioned compiler" >&2
     exit 1
 fi
-if [[ ! -f "${debug_dir}/libhew.a" && ! -f "${debug_dir}/hew.lib" ]]; then
-    echo "error: native Hew library not found under ${debug_dir}" >&2
-    echo "       run 'make test-pkg-import' to provision the complete product" >&2
-    exit 1
-fi
-
 mkdir -p "${ROOT}/.tmp"
 actual_output="${ROOT}/.tmp/pkg-import-actual.txt"
 trap 'rm -f "${actual_output}"' EXIT

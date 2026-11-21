@@ -159,6 +159,21 @@ fn checked_raise_requires_its_exact_producing_failure_edge() {
         "checked raise does not match its producing failure edge",
     );
 
+    // Both successors of the checked addition now reach the same raise.
+    // Its failure slot is valid, but its normal slot cannot produce a fault.
+    let mut shared_target = fixture::module(true);
+    let SemTerminator::CheckedBinary {
+        normal, failures, ..
+    } = &mut fixture::probe(&mut shared_target).blocks[4].terminator
+    else {
+        unreachable!()
+    };
+    normal.target = failures[0].edge.target;
+    rejects(
+        shared_target,
+        "checked raise does not match its producing failure edge",
+    );
+
     let mut invented = fixture::module(true);
     fixture::probe(&mut invented).blocks[2].terminator = SemTerminator::CheckedRaiseFault {
         kind: TrapKind::IntegerOverflow,

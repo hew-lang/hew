@@ -1,6 +1,6 @@
 //! Exact local storage and aggregate projections with complete content partitions.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 
 use hew_types::{ResolvedTy, TypeInstanceKey};
 
@@ -119,6 +119,14 @@ pub(crate) fn place_path(
     places: &[PlaceDecl],
     id: PlaceId,
 ) -> Result<(OwnerRoot, Vec<AggregateProjectionStep>), String> {
+    walk_place_path(id, |id| declaration(places, id), |_, step| step)
+}
+
+fn walk_place_path<'a, Step>(
+    id: PlaceId,
+    lookup: impl Fn(PlaceId) -> Option<&'a PlaceDecl>,
+    step: impl Fn(PlaceBase, AggregateProjectionStep) -> Step,
+) -> Result<(OwnerRoot, Vec<Step>), String> {
     let mut next = PlaceBase::Place(id);
     let mut fields = Vec::new();
     let mut seen = BTreeSet::new();
@@ -130,13 +138,13 @@ pub(crate) fn place_path(
                     if !seen.insert(id) {
                         return Err("aggregate place has a cyclic parent path".into());
                     }
-                    let place = declaration(places, id)
+                    let place = lookup(id)
                         .ok_or_else(|| "aggregate place has an unknown parent".to_string())?;
                     match place.origin {
                         PlaceOrigin::Local => break OwnerRoot::Local(id),
                         PlaceOrigin::Session { .. } => break OwnerRoot::Session(id),
                         PlaceOrigin::Aggregate { base, shape, field } => {
-                            fields.push(AggregateProjectionStep { shape, field });
+                            fields.push(step(base, AggregateProjectionStep { shape, field }));
                             next = base;
                         }
                         _ => return Err(
@@ -185,7 +193,23 @@ pub fn place_plan(
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
 ) -> Result<PlacePlan, String> {
+    if function.places.is_empty() {
+        return Ok(PlacePlan::default());
+    }
     let values = value_definitions(function);
+    let mut declarations = HashMap::with_capacity(function.places.len());
+    // Keep the same first declaration as the linear lookup until the planner
+    // reaches and refuses a duplicate ID.
+    for place in function.places.iter().rev() {
+        declarations.insert(place.id, place);
+    }
+    let mut recipes = ProjectionRecipes {
+        defs,
+        shapes,
+        facts,
+        roots: HashMap::new(),
+        fields: HashMap::new(),
+    };
     let mut plan = PlacePlan::default();
     let mut ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
@@ -227,13 +251,13 @@ pub fn place_plan(
                 plan.bases.insert(place.id, base);
             }
         }
-        let projection = resolve_projection(defs, function, place, &values, shapes, facts)?;
+        let projection = recipes.resolve(place, &declarations, &values)?;
         if !paths.insert((projection.root, projection.path.clone())) {
             return Err("aggregate projection has duplicate places for one field".into());
         }
         plan.projections.insert(place.id, projection);
     }
-    let expanded = verify_partition_coverage(defs, function, &plan, &values, shapes, facts)?;
+    let expanded = verify_partition_coverage(function, &plan, &recipes.fields)?;
     install_partitions(&mut plan, &expanded);
     verify_session_contents(function, &plan)?;
 
@@ -332,15 +356,81 @@ fn plain_field_recipes(
     Ok(recipes)
 }
 
-fn resolve_projection(
-    defs: &hew_types::DefTable,
-    function: &SemFunction,
-    place: &PlaceDecl,
+type FieldGroup = (PlaceBase, AggregateShapeRef);
+type FieldRecipes = HashMap<FieldGroup, Vec<AggregateFieldRecipe>>;
+
+/// Recipes are shared by all projections of the same exact parent in this
+/// function. Each entry still comes from the checked parent type and shape.
+struct ProjectionRecipes<'a> {
+    defs: &'a hew_types::DefTable,
+    shapes: &'a [SemAggregateShape],
+    facts: &'a TypeFactTable,
+    roots: HashMap<OwnerRoot, AggregateFieldRecipe>,
+    fields: FieldRecipes,
+}
+
+impl ProjectionRecipes<'_> {
+    fn resolve(
+        &mut self,
+        place: &PlaceDecl,
+        declarations: &HashMap<PlaceId, &PlaceDecl>,
+        values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
+    ) -> Result<AggregateProjection, String> {
+        let (root, fields) = walk_place_path(
+            place.id,
+            |id| declarations.get(&id).copied(),
+            |base, step| (base, step),
+        )?;
+        let root_recipe = match self.roots.entry(root) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                entry.insert(root_recipe(root, declarations, values, self.facts)?)
+            }
+        };
+        let mut selected: Option<(FieldGroup, usize)> = None;
+        for &(base, step) in &fields {
+            let group = (base, step.shape);
+            let count = if let Some(siblings) = self.fields.get(&group) {
+                siblings.len()
+            } else {
+                let parent_ty = selected.map_or(&root_recipe.ty, |(parent, field)| {
+                    &self.fields[&parent][field].ty
+                });
+                let siblings =
+                    plain_field_recipes(self.defs, step.shape, parent_ty, self.shapes, self.facts)?;
+                let count = siblings.len();
+                self.fields.insert(group, siblings);
+                count
+            };
+            let field = step.field as usize;
+            if field >= count {
+                return Err("aggregate projection field is out of bounds".into());
+            }
+            selected = Some((group, field));
+        }
+        let recipe = selected.map_or_else(
+            || root_recipe.clone(),
+            |(group, field)| self.fields[&group][field].clone(),
+        );
+        if recipe.ty != place.ty {
+            return Err("aggregate projection differs from its exact field type".into());
+        }
+        Ok(AggregateProjection {
+            place: place.id,
+            root,
+            path: fields.into_iter().map(|(_, step)| step).collect(),
+            recipe,
+            leaves: Vec::new(),
+        })
+    }
+}
+
+fn root_recipe(
+    root: OwnerRoot,
+    declarations: &HashMap<PlaceId, &PlaceDecl>,
     values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
-    shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<AggregateProjection, String> {
-    let (root, path) = place_path(&function.places, place.id)?;
+) -> Result<AggregateFieldRecipe, String> {
     let root_ty = match root {
         OwnerRoot::Value(value) => {
             let Some((OwnKind::Owned, ty)) = values.get(&value) else {
@@ -352,7 +442,8 @@ fn resolve_projection(
             ty
         }
         OwnerRoot::Local(id) | OwnerRoot::Session(id) => {
-            &declaration(&function.places, id)
+            &declarations
+                .get(&id)
                 .ok_or_else(|| "local root has no declaration".to_string())?
                 .ty
         }
@@ -360,40 +451,17 @@ fn resolve_projection(
     let row = facts
         .get(&TypeInstanceKey(root_ty.clone()))
         .ok_or_else(|| "local root has no exact type facts".to_string())?;
-    let mut ty = root_ty.clone();
-    let mut selected = AggregateFieldRecipe {
-        ty: ty.clone(),
+    Ok(AggregateFieldRecipe {
+        ty: root_ty.clone(),
         own: OwnKind::of_class(row.class),
         clone: row.clone,
-    };
-    for step in &path {
-        let recipes = plain_field_recipes(defs, step.shape, &ty, shapes, facts)?;
-        let recipe = recipes
-            .get(step.field as usize)
-            .cloned()
-            .ok_or_else(|| "aggregate projection field is out of bounds".to_string())?;
-        ty = recipe.ty.clone();
-        selected = recipe;
-    }
-    if ty != place.ty {
-        return Err("aggregate projection differs from its exact field type".into());
-    }
-    Ok(AggregateProjection {
-        place: place.id,
-        root,
-        path,
-        recipe: selected,
-        leaves: Vec::new(),
     })
 }
 
 fn verify_partition_coverage(
-    defs: &hew_types::DefTable,
     function: &SemFunction,
     plan: &PlacePlan,
-    values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
-    shapes: &[SemAggregateShape],
-    facts: &TypeFactTable,
+    recipes: &FieldRecipes,
 ) -> Result<BTreeSet<(OwnerRoot, PlaceId)>, String> {
     let mut groups = BTreeMap::<_, (AggregateShapeRef, usize, BTreeSet<u32>)>::new();
     for place in &function.places {
@@ -401,18 +469,7 @@ fn verify_partition_coverage(
             continue;
         };
         let root = plan.projections[&place.id].root;
-        let ty = match base {
-            PlaceBase::Place(parent) => {
-                &plan
-                    .projections
-                    .get(&parent)
-                    .ok_or_else(|| "aggregate projection has no parent recipe".to_string())?
-                    .recipe
-                    .ty
-            }
-            PlaceBase::Value(value) => &values[&value].1,
-        };
-        let count = plain_field_recipes(defs, shape, ty, shapes, facts)?.len();
+        let count = recipes[&(base, shape)].len();
         let (previous_shape, expected, fields) = groups
             .entry((root, base))
             .or_insert_with(|| (shape, count, BTreeSet::new()));
@@ -445,9 +502,13 @@ fn install_partitions(plan: &mut PlacePlan, expanded: &BTreeSet<(OwnerRoot, Plac
         .collect();
     leaves.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     for projection in plan.projections.values_mut() {
-        projection.leaves = leaves
+        // All descendants of a projection occupy one range in path order.
+        let start = leaves.partition_point(|(root, path, _)| {
+            (root, path.as_slice()) < (&projection.root, projection.path.as_slice())
+        });
+        projection.leaves = leaves[start..]
             .iter()
-            .filter(|(root, path, _)| {
+            .take_while(|(root, path, _)| {
                 *root == projection.root && path.starts_with(&projection.path)
             })
             .map(|(_, _, id)| *id)

@@ -1581,6 +1581,7 @@ fn check_function_with_context(
     // One cleanup-suffix fixed point serves every terminator in the body. It
     // is a whole-function fact, so recomputing it per terminator costs the
     // square of the block count on a body with many fallible calls.
+    let cfg = crate::build_cfg_index(function);
     let cleanup_suffixes = crate::lifetime::cleanup_suffixes(function);
     let mut failure_paths = FailurePaths::new(&blocks);
     for block in &function.blocks {
@@ -1669,13 +1670,13 @@ fn check_function_with_context(
             block,
             &types,
             &mut failure_paths,
+            &cfg,
             callable_context,
             &variants,
             &cleanup_suffixes,
             &mut diagnostics,
         );
     }
-    let cfg = crate::build_cfg_index(function);
     if blocks.contains_key(&function.entry) {
         let dominators = crate::compute_indexed_dominators(&cfg);
         for block in &function.blocks {
@@ -1703,15 +1704,21 @@ fn check_function_with_context(
     }
     let mut lifetimes = None;
     if let Ok(projections) = projections {
-        let analysis =
-            crate::lifetime::verify(function, &projections, facts, aggregate_shapes, &|ty| {
+        let analysis = crate::lifetime::verify(
+            function,
+            &projections,
+            facts,
+            aggregate_shapes,
+            cleanup_suffixes,
+            &|ty| {
                 crate::resource::release_may_fault(
                     &crate::resource::authored_close_in_module(resources),
                     aggregate_shapes,
                     variant_shapes,
                     ty,
                 )
-            });
+            },
+        );
         diagnostics.extend(analysis.violations.into_iter().map(|violation| {
             if violation.linear_obligation {
                 let binding = violation
@@ -5265,23 +5272,24 @@ fn interceptor_refusal_origin(
 fn checked_raise_origin(
     target: BlockId,
     kind: crate::TrapKind,
-    function: &SemFunction,
+    entry: BlockId,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    cfg: &crate::CfgIndex,
     visiting: &mut BTreeSet<BlockId>,
 ) -> bool {
-    if target == function.entry || !visiting.insert(target) {
+    if target == entry || !visiting.insert(target) {
         return false;
     }
-    let mut found = false;
-    for block in &function.blocks {
-        let mut incoming = Vec::new();
-        block.terminator.visit_successors_with_slots(|slot, edge| {
-            if edge.target == target {
-                incoming.push(slot);
-            }
-        });
-        for slot in incoming {
-            found = true;
-            let valid = match &block.terminator {
+    // The CFG index names each incoming edge; scanning every block per raise
+    // made verification quadratic in the number of checked operations.
+    let predecessors = cfg.predecessors_of(target);
+    for edge in predecessors {
+        let Some(block) = blocks.get(&edge.source) else {
+            return false;
+        };
+        let slot = edge.slot;
+        let valid =
+            match &block.terminator {
                 SemTerminator::Materialize { .. } => {
                     slot.0 == 1 && kind == crate::TrapKind::HeapExceeded
                 }
@@ -5311,17 +5319,16 @@ fn checked_raise_origin(
                                 | SemOpKind::DestroyValue { .. }
                                 | SemOpKind::EndLifetime { .. }
                         )
-                    }) && checked_raise_origin(block.id, kind, function, visiting)
+                    }) && checked_raise_origin(block.id, kind, entry, blocks, cfg, visiting)
                 }
                 _ => false,
             };
-            if !valid {
-                return false;
-            }
+        if !valid {
+            return false;
         }
     }
     visiting.remove(&target);
-    found
+    !predecessors.is_empty()
 }
 
 /// Proofs are valid for this immutable function and this exact exit requirement.
@@ -5651,6 +5658,7 @@ fn verify_terminator_shape(
     block: &crate::SemBlock,
     types: &HashMap<ValueId, ResolvedTy>,
     failure_paths: &mut FailurePaths<'_>,
+    cfg: &crate::CfgIndex,
     callable_context: Option<&CallableContext<'_>>,
     variants: &VariantVerifyContext<'_>,
     cleanup_suffixes: &BTreeMap<BlockId, usize>,
@@ -5810,7 +5818,14 @@ fn verify_terminator_shape(
             let refused_entry = *kind == crate::TrapKind::ActorRefused
                 && interceptor_refusal_origin(function, block.id, callable_context, variants);
             if !refused_entry
-                && !checked_raise_origin(block.id, *kind, function, &mut BTreeSet::new())
+                && !checked_raise_origin(
+                    block.id,
+                    *kind,
+                    function.entry,
+                    failure_paths.blocks,
+                    cfg,
+                    &mut BTreeSet::new(),
+                )
             {
                 diagnostics.push(diag(
                     function,

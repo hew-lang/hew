@@ -417,15 +417,15 @@ impl HewConnMgr {
 /// [`HewConnMgr::pending_registry_flush`]).
 #[derive(Debug)]
 struct PendingRegistryFlush {
-    /// Publication token of the admission that parked these frames; a stale
+    /// Publication token of the admission that parked these intents; a stale
     /// entry (token mismatch) is never consumed by a successor connection
     /// reusing the transport `conn_id`.
     token: u64,
-    /// Encoded control frames, in original flush/broadcast order (per-
+    /// Local name intents, in original flush/broadcast order (per-
     /// connection FIFO: later registry events park BEHIND earlier unsent ones,
     /// so an ADD can never be replayed after a newer REMOVE for the same name
     /// — ordering is preserved end to end).
-    frames: Vec<Vec<u8>>,
+    intents: Vec<crate::envelope::RegistryGossipPayload>,
     /// Failed drain attempts so far (bounded by
     /// [`MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`]).
     attempts: u32,

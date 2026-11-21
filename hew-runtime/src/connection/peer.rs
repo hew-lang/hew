@@ -9,8 +9,49 @@ use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, Posture};
 use crate::util::{CondvarExt, MutexExt};
 
+use super::handshake::supports_gossip;
 use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
+
+pub(super) struct GossipPeer {
+    pub(super) conn_id: c_int,
+    pub(super) publication_token: u64,
+    pub(super) route_slot: u16,
+    identity: NodeId,
+}
+
+/// Snapshot the recipients and their exact publications for outbound gossip.
+/// The connections and claims locks never nest. Senders still claim their
+/// publication before using a candidate.
+pub(super) fn active_gossip_peers(mgr: &HewConnMgr) -> Vec<GossipPeer> {
+    let mut candidates = mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|conn| {
+                conn.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && conn.posture == Posture::Strict
+                    && conn.peer_node_id != 0
+                    && supports_gossip(conn.peer_feature_flags)
+            })
+            .filter_map(|conn| {
+                Some(GossipPeer {
+                    conn_id: conn.conn_id,
+                    publication_token: conn.publication_token,
+                    route_slot: conn.peer_node_id,
+                    identity: conn.peer_identity?,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let claims = mgr.claims.0.lock_or_recover();
+    candidates.retain(|peer| {
+        claims.get(&peer.identity).is_some_and(|claim| {
+            claim.route_slot == peer.route_slot
+                && claim.carrier() == Some((peer.conn_id, peer.publication_token))
+        })
+    });
+    candidates
+}
 
 /// Retire buried members whose retention has ended, then everything this
 /// manager keeps for them.

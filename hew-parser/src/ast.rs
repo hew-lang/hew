@@ -1732,6 +1732,9 @@ pub struct WireFieldMeta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeBodyItem {
     Field {
+        /// Exact source occurrence of the contextual module-private modifier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        private_span: Option<Span>,
         name: Ident,
         ty: Spanned<TypeExpr>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

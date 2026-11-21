@@ -692,6 +692,7 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
@@ -727,6 +728,7 @@ fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDec
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {

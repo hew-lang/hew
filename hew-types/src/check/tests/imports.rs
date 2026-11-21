@@ -1229,6 +1229,7 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
@@ -1716,6 +1717,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new("wrap"),
             ty: (
                 TypeExpr::Named {
@@ -2265,6 +2267,7 @@ fn user_module_registers_types() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new("value"),
             ty: (
                 TypeExpr::Named {
@@ -2852,6 +2855,7 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {

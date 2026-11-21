@@ -1179,6 +1179,15 @@ impl Parser<'_> {
                 }
 
                 self.validate_attributes_for(&attributes, AttrPosition::Field);
+                let private_span = if matches!(self.peek(), Some(Token::Identifier("private")))
+                    && self.peek_at(self.pos + 1) != Some(&Token::Colon)
+                {
+                    let span = self.peek_span();
+                    self.advance();
+                    Some(span)
+                } else {
+                    None
+                };
                 let name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
@@ -1189,6 +1198,7 @@ impl Parser<'_> {
                 // but extract_comments scans the raw source for them).
                 let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Field {
+                    private_span,
                     name,
                     ty,
                     attributes,

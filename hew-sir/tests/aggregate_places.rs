@@ -245,6 +245,29 @@ fn nested_take_preserves_siblings_and_one_root_cleanup() {
 }
 
 #[test]
+fn sparse_nested_places_keep_declaration_order_when_listed_children_first() {
+    let mut module = fixture();
+    let mut function = probe(&mut module).clone();
+    function.places = partition(0, 37);
+    let plan = |function: &SemFunction| {
+        place_plan(
+            &module.defs,
+            function,
+            &module.aggregate_shapes,
+            &module.type_facts,
+        )
+        .unwrap()
+    };
+    let expected = plan(&function);
+    assert_eq!(
+        expected.leaves(OwnerRoot::Value(ValueId(0))).unwrap(),
+        [PlaceId(37), PlaceId(39), PlaceId(40)]
+    );
+    function.places.reverse();
+    assert_eq!(plan(&function), expected);
+}
+
+#[test]
 fn replacing_nested_leaves_restores_a_taken_parent() {
     let mut module = fixture();
     probe(&mut module).blocks[0].ops = vec![

@@ -4,6 +4,8 @@ use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use crate::blocking_pool::PoolUnavailable;
+use crate::internal::types::AskError;
 use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::set_last_error;
@@ -75,30 +77,39 @@ impl SendClaim {
 
     /// Transfer this lease to the existing pool. The caller never waits on the
     /// channel's send lock or on a peer accepting the frame.
+    ///
+    /// # Errors
+    /// Refuses before the frame is prepared: [`AskError::LocalShutdown`] when
+    /// the runtime's pool is missing or stopped, and
+    /// [`AskError::WorkerAtCapacity`] when no pool thread runs and none can be
+    /// started. Neither says anything about the destination.
     pub(crate) fn submit(
         self,
         prepare: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
         complete: impl FnOnce(Result<(), ChannelError>) + Send + 'static,
-    ) -> bool {
-        fn enqueue<F: FnOnce() + Send + 'static>(work: F) -> bool {
+    ) -> Result<(), AskError> {
+        fn enqueue<F: FnOnce() + Send + 'static>(work: F) -> Result<(), AskError> {
             unsafe extern "C" fn run<F: FnOnce()>(context: *mut std::ffi::c_void) {
                 // SAFETY: successful submission transfers this box to one callback.
                 let work = unsafe { Box::from_raw(context.cast::<F>()) };
                 work();
             }
             let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() else {
-                return false;
+                return Err(AskError::LocalShutdown);
             };
             let job = Box::into_raw(Box::new(work));
             // SAFETY: the installed pool receives an owned closure. Its send
             // lease keeps the connection alive until this callback returns.
-            if unsafe { crate::blocking_pool::submit_on_worker(pool, run::<F>, job.cast()) } == 0 {
-                true
-            } else {
-                // SAFETY: failed admission did not transfer the box.
-                drop(unsafe { Box::from_raw(job) });
-                false
-            }
+            unsafe { crate::blocking_pool::submit_on_worker(pool, run::<F>, job.cast()) }.map_err(
+                |reason| {
+                    // SAFETY: the pool only takes ownership on successful admission.
+                    drop(unsafe { Box::from_raw(job) });
+                    match reason {
+                        PoolUnavailable::Stopped => AskError::LocalShutdown,
+                        PoolUnavailable::NoWorker => AskError::WorkerAtCapacity,
+                    }
+                },
+            )
         }
         enqueue(move || complete(self.send_prepared_result(prepare)))
     }

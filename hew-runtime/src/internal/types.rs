@@ -254,11 +254,13 @@ pub enum AskError {
     ConnectionDropped = 6,
     /// The reply payload size did not match the expected reply type size.
     PayloadSizeMismatch = 7,
-    /// The remote destination's pending inbound asks are at capacity.
+    /// A worker that carries the request is at capacity: the remote
+    /// destination's pending inbound asks, or the local sender pool, which
+    /// has no running thread and could not start one.
     ///
     /// The actor was never dispatched. The ask may be retried after a
     /// brief back-off. This is distinct from [`ConnectionDropped`]: the
-    /// connection is healthy, but the remote end shed load deliberately.
+    /// connection is healthy, but a worker on its path shed load.
     WorkerAtCapacity = 8,
     /// The target actor was stopped, or the mailbox rejected the send
     /// (e.g. actor not found, mailbox closed, or `ErrClosed` in WASM).

@@ -401,7 +401,10 @@ pub(crate) fn semantic_tokens_full(
     let Some(doc) = server.documents.get(uri) else {
         return Ok(None);
     };
-    let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
+    let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens_with_program(
+        &doc.source,
+        &doc.parse_result.program,
+    );
     let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens)
         .map_err(|error| internal_error(error.message()))?;
     Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {

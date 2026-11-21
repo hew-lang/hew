@@ -362,3 +362,43 @@ fn package_type_cross_package_rejected() {
         "error must name the symbol; got:\n{stderr}",
     );
 }
+
+#[test]
+fn private_field_note_points_to_the_declaring_peer_file() {
+    let dir = support::tempdir();
+    let vault = dir.path().join("vault");
+    fs::create_dir(&vault).unwrap();
+    fs::write(
+        dir.path().join("hew.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        vault.join("vault.hew"),
+        "pub fn get() -> Entry { Entry { value: 7 } }",
+    )
+    .unwrap();
+    let declaration = vault.join("entry.hew");
+    fs::write(&declaration, "pub type Entry { private value: i64; }").unwrap();
+    let entry = dir.path().join("main.hew");
+    fs::write(
+        &entry,
+        "import sample.vault; fn main() { println(vault.get().value); }",
+    )
+    .unwrap();
+
+    let result = Command::new(hew_binary())
+        .args(["check", "--format", "json"])
+        .arg(entry)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let diagnostics: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let errors = diagnostics.as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{diagnostics}");
+    assert_eq!(errors[0]["code"], "VisibilityViolationPrivate");
+    assert_eq!(
+        std::path::Path::new(errors[0]["notes"][0]["file"].as_str().unwrap()),
+        declaration
+    );
+}

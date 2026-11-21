@@ -4,7 +4,10 @@
 //! LSP encoding.  The caller (e.g. `hew-lsp`) is responsible for converting
 //! these into whatever delta-encoded, UTF-16 form the protocol requires.
 
+use std::collections::HashSet;
+
 use hew_lexer::Token;
+use hew_parser::ast::{Item, Program, TypeBodyItem};
 use hew_types::Ty;
 
 use crate::{token_modifiers, token_types, SemanticToken};
@@ -92,7 +95,52 @@ fn is_type_annotation_context(prev: Option<&Token<'_>>) -> bool {
 /// [`crate::token_modifiers`].
 #[must_use]
 pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
+    build_tokens(source, None)
+}
+
+/// Build tokens with a syntax tree already parsed from the same source.
+#[must_use]
+pub fn build_semantic_tokens_with_program(source: &str, program: &Program) -> Vec<SemanticToken> {
+    build_tokens(source, Some(program))
+}
+
+fn private_field_starts(program: &Program) -> HashSet<usize> {
+    program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::TypeDecl(decl) => Some(&decl.body),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|item| match item {
+            TypeBodyItem::Field {
+                private_span: Some(span),
+                ..
+            } => Some(span.start),
+            _ => None,
+        })
+        .collect()
+}
+
+fn build_tokens(source: &str, program: Option<&Program>) -> Vec<SemanticToken> {
     let lexer_tokens = hew_lexer::lex(source);
+    // The lexer keeps private as an identifier. Only ask the parser for
+    // declaration context when a field modifier is possible.
+    let private_starts = if source.contains("private")
+        && lexer_tokens.windows(3).any(|tokens| {
+            matches!(
+                tokens,
+                [(Token::Identifier("private"), _), _, (Token::Colon, _)]
+            )
+        }) {
+        program.map_or_else(
+            || private_field_starts(&hew_parser::parse(source).program),
+            private_field_starts,
+        )
+    } else {
+        HashSet::new()
+    };
     let mut result = Vec::new();
 
     for (i, (token, span)) in lexer_tokens.iter().enumerate() {
@@ -103,7 +151,9 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
             let prev = i
                 .checked_sub(1)
                 .and_then(|idx| lexer_tokens.get(idx).map(|(prev, _)| prev));
-            if is_function_decl_context(prev) {
+            if *name == "private" && private_starts.contains(&span.start) {
+                token_type = token_types::KEYWORD;
+            } else if is_function_decl_context(prev) {
                 token_type = token_types::FUNCTION;
             } else if is_type_decl_context(prev) {
                 token_type = token_types::TYPE;
@@ -228,6 +278,55 @@ fn scan_comments(source: &str, start: usize, end: usize, out: &mut Vec<SemanticT
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_is_only_a_keyword_at_record_field_modifiers() {
+        let source = r"// Cache créés
+type Slot {
+    private /* module only */ value: i64;
+    private: i64;
+}
+type Other { private private: i64; }
+fn private(slot: Slot) -> i64 { slot.private }
+enum Mode { Ready { private: i64; } }
+";
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let tokens = build_semantic_tokens(source);
+        assert_eq!(
+            tokens,
+            build_semantic_tokens_with_program(source, &parsed.program)
+        );
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|token| &source[token.start..token.start + token.length] == "private")
+            .map(|token| token.token_type)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                token_types::KEYWORD,
+                token_types::VARIABLE,
+                token_types::KEYWORD,
+                token_types::VARIABLE,
+                token_types::FUNCTION,
+                token_types::VARIABLE,
+                token_types::VARIABLE,
+            ]
+        );
+    }
+
+    #[test]
+    fn source_tokens_recognize_private_fields_with_contextual_names() {
+        let source = "type Slot { private state: i64; }";
+        let tokens = build_semantic_tokens(source);
+        let modifier = tokens
+            .iter()
+            .find(|token| &source[token.start..token.start + token.length] == "private")
+            .expect("private modifier token");
+        assert_eq!(modifier.token_type, token_types::KEYWORD);
+    }
 
     #[test]
     fn let_statement_tokens() {

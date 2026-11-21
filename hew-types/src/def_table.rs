@@ -765,6 +765,8 @@ pub struct DefTable {
     members: HashMap<(DefId, Symbol), Vec<DefId>>,
     /// The declared visibility of source items that are not `pub`.
     restricted: HashMap<DefId, hew_parser::ast::Visibility>,
+    /// Module namespace and declaration spans for explicitly private record fields.
+    private_record_fields: HashMap<NominalId, PrivateRecordFields>,
 }
 
 impl std::fmt::Debug for DefTable {
@@ -785,6 +787,12 @@ impl Default for DefTable {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrivateRecordFields {
+    namespace: Option<ModuleId>,
+    fields: HashMap<Symbol, hew_parser::ast::Span>,
+}
+
 impl DefTable {
     /// An empty table holding only the builtin receiver anchors.
     #[must_use]
@@ -797,6 +805,7 @@ impl DefTable {
             defs: Vec::new(),
             by_occurrence: HashMap::new(),
             restricted: HashMap::new(),
+            private_record_fields: HashMap::new(),
             by_path: HashMap::new(),
             default_bodies: HashMap::new(),
             lambda_actor_protocol: None,
@@ -1025,6 +1034,51 @@ impl DefTable {
             .get(&id)
             .copied()
             .unwrap_or(hew_parser::ast::Visibility::Pub)
+    }
+
+    pub(crate) fn register_record_field_visibility(
+        &mut self,
+        declaration: DefId,
+        namespace: Option<ModuleId>,
+        body: &[hew_parser::ast::TypeBodyItem],
+    ) {
+        let fields: HashMap<_, _> = body
+            .iter()
+            .filter_map(|item| match item {
+                hew_parser::ast::TypeBodyItem::Field {
+                    name,
+                    private_span: Some(span),
+                    ..
+                } => Some((name.name, span.clone())),
+                _ => None,
+            })
+            .collect();
+        if !fields.is_empty() {
+            self.private_record_fields.insert(
+                NominalId::of_declaration(declaration),
+                PrivateRecordFields { namespace, fields },
+            );
+        }
+    }
+
+    /// For a private field outside the accessing module namespace, return its
+    /// declaration span. Unmarked fields follow the accessibility of the type.
+    #[must_use]
+    pub fn inaccessible_record_field(
+        &self,
+        nominal: NominalId,
+        name: &str,
+        accessor: Option<ModuleId>,
+    ) -> Option<&hew_parser::ast::Span> {
+        let private = self.private_record_fields.get(&nominal)?;
+        if self.visibility_access_allowed(
+            private.namespace,
+            accessor,
+            hew_parser::ast::Visibility::Private,
+        ) {
+            return None;
+        }
+        private.fields.get(&Symbol::intern(name))
     }
 
     /// Whether a declaration with this visibility is accessible across modules.

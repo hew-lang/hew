@@ -1568,6 +1568,7 @@ impl<'a> Formatter<'a> {
         for item in &decl.body {
             match item {
                 TypeBodyItem::Field {
+                    private_span,
                     name,
                     ty,
                     attributes,
@@ -1583,6 +1584,9 @@ impl<'a> Formatter<'a> {
                     self.write_outer_doc(doc_comment.as_ref());
                     self.format_attributes(attributes);
                     self.write_indent();
+                    if private_span.is_some() {
+                        self.write("private ");
+                    }
                     self.write_ident(*name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);

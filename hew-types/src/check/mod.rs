@@ -2368,6 +2368,10 @@ impl Checker {
                         false,
                     );
                 }
+                if let Some(owner) = owner {
+                    self.defs
+                        .register_record_field_visibility(owner, namespace_module, &decl.body);
+                }
             }
             Item::TypeAlias(decl) => {
                 let name = decl.name;

@@ -610,6 +610,7 @@ fn extract_struct_fields(body: &[TypeBodyItem]) -> Vec<DocField> {
     body.iter()
         .filter_map(|item| {
             if let TypeBodyItem::Field {
+                private_span: None,
                 name,
                 ty,
                 doc_comment,
@@ -900,6 +901,8 @@ pub type Point {
     x: i32;
     /// y coordinate.
     y: i32;
+    /// Internal coordinate cache.
+    private cache: i64;
 }
 ";
         let result = hew_parser::parse(source);

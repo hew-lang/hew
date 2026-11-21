@@ -34,6 +34,21 @@ fn main() {
     assert(timed.get("new", start + 10ms) == .Some(3));
     assert(timed.prune(start + 15ms) == 1);
     assert(timed.len(start + 20ms) == 0);
+    // Explicit timestamps can go backwards. Expiry must not evict a live FIFO head.
+    timed.insert("future", 1, start + 30ms);
+    timed.insert("earlier", 2, start);
+    timed.insert("present", 3, start + 10ms);
+    assert(timed.get("future", start + 10ms) == .Some(1));
+    assert(timed.get("earlier", start + 10ms).is_none());
+    assert(timed.get("present", start + 10ms) == .Some(3));
+    // Enabling expiry on a populated untimed cache still checks every live key.
+    fifo.ttl = .Some(1ms);
+    fifo.insert("from-future", 1, start + 1h);
+    fifo.ttl = .None;
+    fifo.insert("backdated", 2, start);
+    fifo.ttl = .Some(1ms);
+    assert(fifo.prune(start + 1ms) == 1);
+    assert(fifo.get("from-future", start + 1ms) == .Some(1));
     var values: cache.Cache<i64, Vec<string>> = cache.new().expect("unbounded cache");
     values.insert(42, ["original".to_upper()], start);
     var read = values.get(42, start).expect("cached vector");

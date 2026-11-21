@@ -62,6 +62,9 @@ impl Display for CacheError {
 type Entry<V> {
     value: V;
     inserted: instant;
+    // Lower bound for insertion times through this position in FIFO order.
+    // None means a later TTL change must check the entries individually.
+    oldest: Option<instant>;
 }
 
 /// An owning value cache. Eviction and invalidation release retained values
@@ -107,7 +110,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
     /// Insert or replace a value. Expired entries are reclaimed first; a full
     /// bounded cache evicts its oldest insertion. Zero limits retain nothing.
     pub fn insert(var self, consume key: K, consume value: V, now: instant = instant.now()) {
-        self.prune(now);
+        let (_, oldest) = self.prune_entries(now);
         self.invalidate(key);
         if self.capacity == .Some(0) || self.ttl == .Some(0ns) {
             return;
@@ -119,8 +122,13 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
             }
             .None => {}
         }
+        let bound: Option<instant> = if self.ttl.is_some() {
+            .Some(earliest(oldest, now))
+        } else {
+            .None
+        };
         self.order.push(key.clone());
-        self.entries.insert(key, Entry { value: value, inserted: now });
+        self.entries.insert(key, Entry { value: value, inserted: now, oldest: bound });
     }
 
     /// Return a hit or run the explicit loader once. Failed loads retain no
@@ -153,9 +161,22 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
 
     /// Reclaim all entries whose TTL has elapsed. Return the number removed.
     pub fn prune(var self, now: instant = instant.now()) -> i64 {
-        if self.ttl.is_none() {
-            return 0;
+        self.prune_entries(now).0
+    }
+
+    fn prune_entries(var self, now: instant) -> (i64, Option<instant>) {
+        if self.ttl.is_none() || self.order.is_empty() {
+            return (0, .None);
         }
+        let last = self.order[self.order.len() - 1];
+        if let .Some(entry) = self.entries.get(last) {
+            if let .Some(oldest) = entry.oldest {
+                if !self.expired(oldest, now) {
+                    return (0, .Some(oldest));
+                }
+            }
+        }
+        var oldest_retained: Option<instant> = .None;
         let keys = self.order.clone();
         var retained: Vec<K> = Vec.new();
         var removed: i64 = 0;
@@ -165,13 +186,20 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
                     self.entries.remove(key);
                     removed += 1;
                 } else {
+                    oldest_retained = .Some(earliest(oldest_retained, entry.inserted));
                     retained.push(key);
                 }
                 .None => {}
             }
         }
         self.order = retained;
-        removed
+        if !self.order.is_empty() {
+            let key = self.order[self.order.len() - 1];
+            if let .Some(entry) = self.entries.get(key) {
+                self.entries.insert(key, Entry { value: entry.value, inserted: entry.inserted, oldest: oldest_retained });
+            }
+        }
+        (removed, oldest_retained)
     }
 
     /// Count live entries, reclaiming expired entries first.
@@ -191,5 +219,12 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
             .Some(lifetime) => now >= inserted && now.duration_since(inserted) >= lifetime,
             .None => false,
         }
+    }
+}
+
+fn earliest(bound: Option<instant>, time: instant) -> instant {
+    match bound {
+        .Some(previous) if previous <= time => previous,
+        _ => time,
     }
 }

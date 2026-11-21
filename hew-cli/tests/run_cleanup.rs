@@ -1,6 +1,6 @@
 //! `hew run` owns one temporary directory per invocation and removes it on
-//! every path it controls, leaves other invocations' directories alone, and
-//! never leaves its program running after it is gone.
+//! every path it controls. These tests also cover interruption and, on
+//! platforms with parent-death signals, killing the runner outright.
 //!
 //! Each test points the platform temporary directory (TMPDIR, TMP, TEMP) at a
 //! private directory, so "nothing is left behind" observes only its own runs.

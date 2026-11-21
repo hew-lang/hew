@@ -11,10 +11,9 @@
 //!
 //! A process killed outright (`SIGKILL`, `TerminateProcess`) runs no code at
 //! all, so it cannot remove its directory, exactly as `go run` leaves its
-//! build directory behind. What the runner guarantees instead is that the
-//! program it started dies with it where the platform can say so (see
-//! `process::run_command_interactive`), so nothing keeps running from, or
-//! writing into, the leftover directory.
+//! build directory behind. On macOS a program can keep running from that
+//! directory after the runner is killed. See `process::run_command_interactive`
+//! for the child lifetime guarantees on each platform.
 
 use std::path::Path;
 

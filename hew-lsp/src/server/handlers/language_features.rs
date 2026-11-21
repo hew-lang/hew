@@ -502,8 +502,10 @@ pub(crate) fn folding_range(
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
 
-    let analysis_ranges =
-        hew_analysis::folding::build_folding_ranges(&doc.source, &doc.parse_result);
+    let analysis_ranges = hew_analysis::folding::build_folding_ranges_with_offsets(
+        &doc.parse_result,
+        &doc.line_offsets,
+    );
     let lsp_ranges: Vec<FoldingRange> = analysis_ranges
         .into_iter()
         .map(|r| FoldingRange {

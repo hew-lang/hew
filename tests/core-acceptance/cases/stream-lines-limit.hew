@@ -22,5 +22,7 @@ fn main() {
     capped(full + "more\n", "", [limit, 4]);
     capped("x".repeat(limit - 1) + "\r\n", "", [limit - 1]);
     capped(full + "\r", "\n", [limit]);
+    capped(full + "\r", "\nx\ny", [limit, 1, 1]);
+    capped("left", "over\nnext", [8, 4]);
     println("bounded line pieces");
 }

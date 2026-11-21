@@ -5,7 +5,7 @@
 // LOCAL diagnostic at the impl method's span (TraitImplSignatureMismatch),
 // not a confusing downstream "type does not satisfy trait" at the call site.
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostics:
 //   - TraitImplSignatureMismatch
 //   - "return type"

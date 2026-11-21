@@ -223,7 +223,7 @@ fn compiled_node_binary() -> &'static Path {
             let emit_path = emit_dir.path().to_path_buf();
 
             let mut command = Command::new(compiler);
-            command.arg("compile");
+            command.args(["tool", "compile"]);
             let sanitize = std::env::var("HEW_SANITIZE_ADDRESS").is_ok_and(|value| value == "1");
             if sanitize {
                 command.arg("--emit-llvm");
@@ -240,7 +240,7 @@ fn compiled_node_binary() -> &'static Path {
                 .current_dir(repo_root());
             let output = support::try_run_bounded_command(
                 command,
-                format!("hew compile {}", source.display()),
+                format!("hew tool compile {}", source.display()),
                 DIST_NODE_COMPILE_TIMEOUT,
             )
             .unwrap_or_else(|error| panic!("{error}"));

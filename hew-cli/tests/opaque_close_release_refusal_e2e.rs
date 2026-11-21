@@ -33,13 +33,13 @@ fn opaque_close_keeping_its_receiver_is_refused() {
     let source = dir.path().join("keeps.hew");
     std::fs::write(&source, CLOSE_KEEPS_RECEIVER).expect("write hew source");
     let output = hew_command()
-        .arg("compile")
+        .args(["tool", "compile"])
         .arg("--emit-dir")
         .arg(dir.path())
         .arg(&source)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
     assert!(
         !output.status.success(),
         "a close that leaves its receiver owned must be refused;\n{}",

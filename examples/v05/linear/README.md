@@ -3,7 +3,7 @@
 The move checker uses a four-state lattice
 (`Uninit | Live | Consumed | MaybeConsumed`). The `.hew` fixtures below test
 those cases end to end: they confirm that `hew fmt` round-trips
-`#[linear]` and `consume self` correctly and that `hew compile` applies the
+`#[linear]` and `consume self` correctly and that `hew build` applies the
 move checker to user-authored source.
 
 ## Fixtures
@@ -31,10 +31,10 @@ Running `hew fmt` on any fixture in this directory is idempotent.
 
 ```sh
 # Reject cases — each must exit 1 and emit E_MUST_CONSUME
-hew compile examples/v05/linear/reject/linear_unconsumed_fall_through.hew
-hew compile examples/v05/linear/reject/linear_consumed_only_some_branches.hew
+hew build examples/v05/linear/reject/linear_unconsumed_fall_through.hew
+hew build examples/v05/linear/reject/linear_consumed_only_some_branches.hew
 
 # Accept cases — each must exit 0 and produce a binary
-hew compile examples/v05/linear/accept/linear_consumed_both_branches.hew
-hew compile examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew
+hew build examples/v05/linear/accept/linear_consumed_both_branches.hew
+hew build examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew
 ```

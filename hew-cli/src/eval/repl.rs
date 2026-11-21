@@ -691,7 +691,7 @@ impl ReplSession {
             };
 
         // Compile and execute in-process. Import resolution and typecheck are
-        // re-run inside the v0.5 HIR/MIR/codegen-rs path with correct stage
+        // re-run inside native HIR/MIR/codegen with correct stage
         // ordering (resolve imports BEFORE typecheck) so that stdlib type
         // metadata is available to lowering and codegen.
         match run_eval_compiled(
@@ -1672,7 +1672,7 @@ pub fn eval_file(
 
 /// Evaluate a file in REPL context, returning its stdout as a `String`.
 ///
-/// Used by `hew playground verify` to compare program output against a
+/// Used by `hew tool playground-verify` to compare program output against a
 /// checked-in `.expected` file without mixing verification output with
 /// program output.  Unlike [`eval_file`] this does not accept `"-"` for
 /// stdin — playground entries are always on-disk files.
@@ -1995,7 +1995,7 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    /// Regression test: regex literals must lower through the v0.5 native
+    /// Regression test: regex literals must lower through the native
     /// eval path. The old implementation passed a stale `tco` (computed before
     /// import resolution), causing call-site / declaration type mismatches for
     /// runtime-backed helpers such as `hew_regex_new`.

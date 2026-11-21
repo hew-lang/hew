@@ -1078,7 +1078,7 @@ impl Runner<'_> {
         }
         let mut command = Command::new(&self.options.hew_bin);
         command
-            .arg("compile")
+            .args(["tool", "compile"])
             .arg("--emit-dir")
             .arg(emit_dir)
             .arg("--opt-level")

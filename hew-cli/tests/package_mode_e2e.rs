@@ -670,10 +670,10 @@ fn directory_reaching_the_compiler_gets_a_diagnostic() {
     write_package(dir.path(), "diag", "main.hew", "");
 
     let output = Command::new(hew_binary())
-        .args(["compile", "."])
+        .args(["tool", "compile", "."])
         .current_dir(dir.path())
         .output()
-        .expect("run hew compile .");
+        .expect("run hew tool compile .");
 
     assert!(
         !output.status.success(),

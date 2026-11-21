@@ -2,7 +2,7 @@
 //!
 //! # Subcommands
 //!
-//! * `hew playground verify [--manifest PATH] [--timeout DURATION]`
+//! * `hew tool playground-verify [--manifest PATH] [--timeout DURATION]`
 //!
 //!   Iterates the curated manifest, compiles and runs every example whose
 //!   `capabilities.wasi` is `"runnable"`, and checks its stdout against the
@@ -71,7 +71,7 @@ enum EntryOutcome {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Run the `hew playground verify` subcommand.
+/// Run the `hew tool playground-verify` subcommand.
 pub fn cmd_playground_verify(args: &crate::args::PlaygroundVerifyArgs) {
     let timeout = crate::util::parse_timeout(&args.timeout).unwrap_or_else(|e| {
         eprintln!("Error: {e}");

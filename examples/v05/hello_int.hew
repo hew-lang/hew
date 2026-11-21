@@ -1,8 +1,4 @@
-// The first v0.5-ladder source: parse → HIR → MIR → LLVM IR → native + wasm.
-//
-// `hew compile examples/v05/hello_int.hew` emits both a native binary
-// and a standalone wasm module. Both return 42 (the process exit code on
-// Unix is the low 8 bits of `main`'s return value; 42 fits cleanly).
+// Native and WebAssembly smoke program. Both targets return 42.
 fn main() -> i64 {
     42
 }

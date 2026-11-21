@@ -190,12 +190,11 @@ impl CommandDispatcher for MainCommandDispatcher {
 }
 
 pub(crate) fn parse_cli_or_exit() -> Cli {
-    try_parse_cli_with_compile_fallback(std::env::args_os()).unwrap_or_else(|error| error.exit())
+    try_parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit())
 }
 
 pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl CommandDispatcher) {
     match command {
-        Some(Command::Compile(args)) => dispatcher.compile(args),
         Some(Command::Run(args)) => dispatcher.run(args),
         Some(Command::Debug(args)) => dispatcher.debug(args),
         Some(Command::Check(args)) => dispatcher.check(args),
@@ -212,9 +211,6 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Fmt(args)) => dispatcher.fmt(args),
         Some(Command::Init(args)) => dispatcher.init(args),
         Some(Command::New(args)) => dispatcher.new_project(args),
-        Some(Command::Playground(args)) => match &args.command {
-            args::PlaygroundSubcommand::Verify(verify) => dispatcher.playground_verify(verify),
-        },
         Some(Command::Tool(tool)) => match &tool.command {
             ToolSubcommand::Live(args) => dispatcher.live(args),
             ToolSubcommand::Compile(args) => dispatcher.compile(args),
@@ -232,7 +228,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
     }
 }
 
-fn try_parse_cli_with_compile_fallback<I>(args: I) -> Result<Cli, clap::Error>
+fn try_parse_cli<I>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = OsString>,
 {
@@ -247,39 +243,16 @@ where
         raw_args.truncate(1);
         raw_args.extend([OsString::from("version"), OsString::from("--verbose")]);
     }
-    match parse_from(raw_args.clone()) {
-        Ok(cli) => Ok(cli),
-        Err(error) => match compile_fallback_args(&raw_args) {
-            Some(fallback_args) => parse_from(fallback_args),
-            None => Err(error),
-        },
+    if raw_args
+        .get(1)
+        .and_then(|arg| Path::new(arg).extension())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("hew"))
+    {
+        raw_args.splice(1..1, [OsString::from("tool"), OsString::from("compile")]);
     }
-}
 
-/// Parse through [`crate::help::hew_command`] rather than `Cli::try_parse_from`
-/// so the command that answers `--help` is the command that parses.
-fn parse_from(args: Vec<OsString>) -> Result<Cli, clap::Error> {
-    let matches = crate::help::hew_command().try_get_matches_from(args)?;
+    let matches = crate::help::hew_command().try_get_matches_from(raw_args)?;
     Cli::from_arg_matches(&matches)
-}
-
-fn compile_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
-    let input = raw_args.get(1)?.to_str()?;
-    if !looks_like_hew_source_path(input) {
-        return None;
-    }
-
-    let mut fallback_args = Vec::with_capacity(raw_args.len() + 1);
-    fallback_args.push(raw_args[0].clone());
-    fallback_args.push(OsString::from("compile"));
-    fallback_args.extend(raw_args[1..].iter().cloned());
-    Some(fallback_args)
-}
-
-fn looks_like_hew_source_path(arg: &str) -> bool {
-    Path::new(arg)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"))
 }
 
 #[cfg(test)]
@@ -291,34 +264,31 @@ mod tests {
         CompileArgs, CompletionsArgs, ShellChoice, WireCheckArgs, WireCommand, WireSubcommand,
     };
 
-    use super::{
-        compile_fallback_args, dispatch_command, try_parse_cli_with_compile_fallback,
-        CommandDispatcher,
-    };
+    use super::{dispatch_command, try_parse_cli, CommandDispatcher};
 
     #[test]
     fn parse_cli_inserts_compile_for_top_level_hew_file() {
-        let cli = try_parse_cli_with_compile_fallback(
+        let cli = try_parse_cli(
             ["hew", "sample.hew", "--emit-dir", "out"]
                 .into_iter()
                 .map(OsString::from),
         )
         .expect("fallback should parse as compile");
 
-        match cli.command {
-            Some(crate::args::Command::Compile(args)) => {
-                assert_eq!(args.input, PathBuf::from("sample.hew"));
-                assert_eq!(args.emit_dir, Some(PathBuf::from("out")));
-            }
-            other => panic!("expected compile command, got {other:?}"),
-        }
+        let Some(crate::args::Command::Tool(tool)) = cli.command else {
+            panic!("expected compiler tool");
+        };
+        let crate::args::ToolSubcommand::Compile(compile) = tool.command else {
+            panic!("expected compile");
+        };
+        assert_eq!(compile.input, PathBuf::from("sample.hew"));
+        assert_eq!(compile.emit_dir, Some(PathBuf::from("out")));
     }
 
     #[test]
     fn parse_cli_keeps_explicit_subcommand_intact() {
-        let cli =
-            try_parse_cli_with_compile_fallback(["hew", "version"].into_iter().map(OsString::from))
-                .expect("explicit subcommand should parse");
+        let cli = try_parse_cli(["hew", "version"].into_iter().map(OsString::from))
+            .expect("explicit subcommand should parse");
 
         assert!(matches!(
             cli.command,
@@ -334,7 +304,7 @@ mod tests {
             (&["hew", "--verbose", "-V"][..], true),
             (&["hew", "version", "--verbose"][..], true),
         ] {
-            let cli = try_parse_cli_with_compile_fallback(argv.iter().map(OsString::from))
+            let cli = try_parse_cli(argv.iter().map(OsString::from))
                 .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
             match cli.command {
                 Some(crate::args::Command::Version(args)) => {
@@ -344,23 +314,18 @@ mod tests {
             }
         }
         assert!(
-            try_parse_cli_with_compile_fallback(
-                ["hew", "--verbose"].into_iter().map(OsString::from)
-            )
-            .is_err(),
+            try_parse_cli(["hew", "--verbose"].into_iter().map(OsString::from)).is_err(),
             "--verbose alone is not a command"
         );
         // Every subcommand still answers clap's own `--version`.
-        let error = try_parse_cli_with_compile_fallback(
-            ["hew", "lsp", "--version"].into_iter().map(OsString::from),
-        )
-        .unwrap_err();
+        let error =
+            try_parse_cli(["hew", "lsp", "--version"].into_iter().map(OsString::from)).unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 
     #[test]
     fn parse_cli_returns_original_error_when_no_compile_fallback_applies() {
-        assert!(try_parse_cli_with_compile_fallback(
+        assert!(try_parse_cli(
             ["hew", "missing-subcommand"]
                 .into_iter()
                 .map(OsString::from)
@@ -369,82 +334,16 @@ mod tests {
     }
 
     #[test]
-    fn compile_fallback_args_only_rewrites_top_level_hew_paths() {
-        assert_eq!(
-            compile_fallback_args(&[
-                OsString::from("hew"),
-                OsString::from("sample.hew"),
-                OsString::from("--emit-dir"),
-                OsString::from("out"),
-            ]),
-            Some(vec![
-                OsString::from("hew"),
-                OsString::from("compile"),
-                OsString::from("sample.hew"),
-                OsString::from("--emit-dir"),
-                OsString::from("out"),
-            ])
-        );
-        assert_eq!(
-            compile_fallback_args(&[OsString::from("hew"), OsString::from("version")]),
-            None
-        );
-    }
-
-    /// The `hew tool compile` spelling must be the same parse as the old
-    /// top-level one, flags and all - the move is a rename of the surface, not
-    /// a change to the harness.
-    #[test]
-    fn tool_compile_parses_identically_to_the_hidden_compile_alias() {
-        let argv = ["--dump-mir", "physical", "sample.hew"];
-
-        let namespaced = parse_compile(["hew", "tool", "compile"].into_iter().chain(argv));
-        let alias = parse_compile(["hew", "compile"].into_iter().chain(argv));
-
-        assert_eq!(format!("{namespaced:?}"), format!("{alias:?}"));
-        assert_eq!(namespaced.dump_mir.as_deref(), Some("physical"));
-        assert_eq!(namespaced.input, PathBuf::from("sample.hew"));
-    }
-
-    /// The old spellings still parse for the Makefile and the release scripts,
-    /// and the negative control is that a reader is not offered them: the help
-    /// never says `playground`.
-    #[test]
-    fn hidden_aliases_parse_but_are_absent_from_the_help() {
-        let alias = try_parse_cli_with_compile_fallback(
-            ["hew", "playground", "verify"]
-                .into_iter()
-                .map(OsString::from),
-        )
-        .expect("`hew playground verify` should still parse");
-        assert!(matches!(
-            alias.command,
-            Some(crate::args::Command::Playground(_))
-        ));
-
-        let help = crate::help::hew_command().render_help().to_string();
-        assert!(
-            !help.contains("playground"),
-            "the retired spelling should not be offered in help:\n{help}"
-        );
-    }
-
-    fn parse_compile<'a>(argv: impl Iterator<Item = &'a str>) -> CompileArgs {
-        let cli = try_parse_cli_with_compile_fallback(argv.map(OsString::from))
-            .expect("compile arguments should parse");
-        match cli.command {
-            Some(crate::args::Command::Compile(compile)) => compile,
-            Some(crate::args::Command::Tool(tool)) => match tool.command {
-                crate::args::ToolSubcommand::Compile(compile) => compile,
-                other => panic!("expected a compile command, got {other:?}"),
-            },
-            other => panic!("expected a compile command, got {other:?}"),
+    fn retired_entry_points_report_an_unknown_command() {
+        for command in ["compile", "playground"] {
+            let error = try_parse_cli(["hew", command].map(OsString::from)).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
         }
     }
 
     #[test]
     fn build_release_selects_o2_by_default() {
-        let cli = try_parse_cli_with_compile_fallback(
+        let cli = try_parse_cli(
             ["hew", "build", "sample.hew", "--release"]
                 .into_iter()
                 .map(OsString::from),
@@ -462,7 +361,7 @@ mod tests {
 
     #[test]
     fn explicit_build_opt_level_overrides_release_default() {
-        let cli = try_parse_cli_with_compile_fallback(
+        let cli = try_parse_cli(
             [
                 "hew",
                 "build",
@@ -480,28 +379,6 @@ mod tests {
             Some(crate::args::Command::Build(args)) => assert_eq!(args.opt_level, "0"),
             other => panic!("expected build command, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn dispatch_command_routes_compile_to_dispatcher() {
-        let command = crate::args::Command::Compile(CompileArgs {
-            input: PathBuf::from("sample.hew"),
-            emit_dir: None,
-            emit_llvm: false,
-            dump_ast: false,
-            dump_hir: false,
-            dump_mir: None,
-            dump_sir: false,
-            dump_defs: false,
-            target: None,
-            opt_level: "0".to_string(),
-            format: crate::args::DiagnosticFormat::Text,
-        });
-        let mut dispatcher = RecordingDispatcher::default();
-
-        dispatch_command(Some(&command), &mut dispatcher);
-
-        assert_eq!(dispatcher.calls, vec!["compile:sample.hew"]);
     }
 
     #[test]
@@ -551,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_command_routes_tool_namespace_to_the_same_handlers() {
+    fn dispatch_command_routes_the_compiler_tool() {
         let command = crate::args::Command::Tool(crate::args::ToolCommand {
             command: crate::args::ToolSubcommand::Compile(CompileArgs {
                 input: PathBuf::from("sample.hew"),

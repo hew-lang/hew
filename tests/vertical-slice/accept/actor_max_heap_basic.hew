@@ -1,7 +1,7 @@
 // Proves `#[max_heap(N)]` propagates through MIR ActorLayout to codegen.
 //
 // Observation mechanism: two assertions back-to-back.
-//   1. `hew compile --dump-mir raw` emits `max_heap_bytes: Some(65536)` in the
+//   1. `hew tool compile --dump-mir physical` emits `max_heap_bytes: Some(65536)` in the
 //      ActorLayout for Counter. This proves the MIR field is populated from
 //      the annotation.
 //   2. The compiled binary exits 42. This proves codegen routed the spawn

@@ -17,21 +17,15 @@ fn compile_fixture(source: &Path) -> (tempfile::TempDir, PathBuf) {
     require_codegen();
 
     let output_dir = tempfile::tempdir().expect("create native output directory");
+    let executable = hew_testutil::compiled_binary_path(output_dir.path(), "program");
     let output = Command::new(hew_binary())
-        .args(["compile", "--emit-dir"])
-        .arg(output_dir.path())
+        .args(["build", "-o"])
+        .arg(&executable)
         .arg(source)
         .output()
         .expect("compile fixture");
 
     assert!(output.status.success(), "{}", describe_output(&output));
-
-    let stdout = String::from_utf8(output.stdout).expect("compiler output is UTF-8");
-    let executable = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("native: "))
-        .map(PathBuf::from)
-        .expect("compiler reports native executable");
 
     (output_dir, executable)
 }

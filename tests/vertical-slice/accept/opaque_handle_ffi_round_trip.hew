@@ -4,7 +4,7 @@
 // parser attribute -> HIR BitCopy value-class -> MIR codegen-readiness boundary
 // -> codegen `ptr` resolution -> link against the real `hew_deque_*` runtime.
 //
-// Harness verb: hew compile + run
+// Harness verb: hew tool compile + run
 // Expected: clean compile + exit 3 (three elements pushed).
 
 #[opaque]

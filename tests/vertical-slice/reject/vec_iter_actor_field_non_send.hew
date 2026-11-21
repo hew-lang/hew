@@ -10,7 +10,7 @@
 // in actor state, use it after the constructing message returns" escape is
 // statically impossible rather than fixed at runtime.
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostic:
 //   - "cannot send `VecIter<i64>` to actor: type is not Send"
 //   - "keep the resource inside one owning actor and send that actor a message instead"

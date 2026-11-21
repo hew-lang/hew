@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# test-release-binary.sh — Smoke-test the release hew binary via compile.
-#
-# Drives a Make-built release compiler through the IR ladder (`hew compile`)
-# to confirm the release binary
-# produces a working native executable.
+# Build and execute a native program with the release compiler.
 #
 # This guard exists to catch ABI-mismatch aborts (see issue #1606): bugs
 # where the release binary silently crashes at process exit, which debug
@@ -30,25 +26,21 @@ if [[ ! -x "$HEW" ]]; then
     echo "error: $HEW not found — run 'make release-host' first" >&2
     exit 1
 fi
-# Drive the spine fixture through the IR ladder. The compile
-# subcommand emits artefacts under `.tmp/compile-out/` relative to the
-# current working directory, so run it from a scratch directory and then
-# execute the native binary it produced. The fixture's `main` returns 42.
 FIXTURE="$REPO_ROOT/examples/v05/hello_int.hew"
 EXPECTED_EXIT=42
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-release-smoke-XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-cp "$FIXTURE" "$WORK_DIR/hello_int.hew"
-
-echo "==> Running: $HEW compile hello_int.hew (cwd=$WORK_DIR)"
-if ! (cd "$WORK_DIR" && "$HEW" compile hello_int.hew); then
-    echo "FAIL: hew compile exited nonzero (expected 0)" >&2
-    echo "This may be a process-exit SIGABRT — see issue #1606." >&2
+NATIVE_BIN="$WORK_DIR/hello_int"
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) NATIVE_BIN+=".exe" ;;
+esac
+echo "==> Building the release smoke program"
+if ! "$HEW" build "$FIXTURE" -o "$NATIVE_BIN"; then
+    echo "FAIL: hew build exited nonzero (expected 0)" >&2
     exit 1
 fi
 
-NATIVE_BIN="$WORK_DIR/.tmp/compile-out/hello_int"
 if [[ ! -x "$NATIVE_BIN" ]]; then
     echo "FAIL: expected native binary at $NATIVE_BIN, not found" >&2
     exit 1

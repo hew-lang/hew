@@ -6,7 +6,7 @@
 // task-entry adapter. The scope join-all waits for both tasks before the
 // handler returns.
 //
-// Harness verb: hew compile; execute binary
+// Harness verb: hew tool compile; execute binary
 // Expected stdout: (empty — worker returns unit, no output)
 fn worker<T>() {}
 

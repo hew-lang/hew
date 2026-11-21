@@ -11,7 +11,7 @@
 // This fixture pins the fail-closed boundary at:
 //   hew-mir/src/lower.rs scope-deadline-body lowering (execution-context guard)
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostics:
 //   - E_NOT_YET_IMPLEMENTED
 //   - "MIR lowering for scope deadline body is not implemented yet"

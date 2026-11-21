@@ -3,7 +3,7 @@
 // projection must type-check clean. Lock the positive case of Q004
 // (impl-vs-trait signature equivalence).
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected: clean compile, exit 7.
 
 pub trait Container {

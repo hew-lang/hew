@@ -1,4 +1,4 @@
-//! Integration tests: `hew check` and `hew compile` share the frontend pipeline.
+//! Integration tests: `hew check` and `hew tool compile` share the frontend pipeline.
 //!
 //! These tests assert that both commands run the same frontend (parse →
 //! import-graph → typecheck) and therefore produce identical frontend
@@ -42,7 +42,7 @@ fn run_check(path: &str) -> std::process::Output {
         .expect("invoke hew check")
 }
 
-/// Run `hew compile <path>` with a temp emit-dir from the repo root.
+/// Run `hew tool compile <path>` with a temp emit-dir from the repo root.
 fn run_compile(path: &str) -> (std::process::Output, tempfile::TempDir) {
     let emit_dir = tempfile::Builder::new()
         .prefix("frontend-parity-emit-")
@@ -50,6 +50,7 @@ fn run_compile(path: &str) -> (std::process::Output, tempfile::TempDir) {
         .expect("create temp emit dir");
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             emit_dir.path().to_str().expect("valid UTF-8 emit dir"),
@@ -57,11 +58,11 @@ fn run_compile(path: &str) -> (std::process::Output, tempfile::TempDir) {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
     (output, emit_dir)
 }
 
-/// Run `hew compile <path> --target <triple>` with a temp emit-dir.
+/// Run `hew tool compile <path> --target <triple>` with a temp emit-dir.
 fn run_compile_with_target(path: &str, target: &str) -> (std::process::Output, tempfile::TempDir) {
     let emit_dir = tempfile::Builder::new()
         .prefix("frontend-parity-wasm-emit-")
@@ -69,6 +70,7 @@ fn run_compile_with_target(path: &str, target: &str) -> (std::process::Output, t
         .expect("create temp emit dir");
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--target",
             target,
@@ -78,7 +80,7 @@ fn run_compile_with_target(path: &str, target: &str) -> (std::process::Output, t
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile --target");
+        .expect("invoke hew tool compile --target");
     (output, emit_dir)
 }
 
@@ -95,7 +97,7 @@ fn diagnostic_body_from_check_stderr(stderr: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// A manifest-aware project (`hew.toml`) that imports a module not listed in
-/// `[dependencies]` must be rejected by **both** `hew check` and `hew compile`
+/// `[dependencies]` must be rejected by **both** `hew check` and `hew tool compile`
 /// with identical diagnostic output.
 ///
 /// This catches a bypass that skips `validate_imports_against_manifest` on the
@@ -135,7 +137,7 @@ fn manifest_undeclared_import_rejected_identically() {
     );
     assert!(
         !compile_out.status.success(),
-        "hew compile should reject undeclared import:\n{}",
+        "hew tool compile should reject undeclared import:\n{}",
         describe_output(&compile_out),
     );
 
@@ -147,7 +149,7 @@ fn manifest_undeclared_import_rejected_identically() {
     assert_eq!(
         check_body.trim(),
         compile_diag.trim(),
-        "hew check and hew compile produced different frontend diagnostics \
+        "hew check and hew tool compile produced different frontend diagnostics \
          for a manifest-undeclared import.\n\
          check body:\n{check_body}\n\
          compile stderr:\n{compile_diag}",
@@ -209,7 +211,7 @@ fn regex_literal_implicit_import_same_frontend_verdict() {
          got:\n{check_stderr}",
     );
 
-    // `hew compile` runs the same frontend and must also not emit any
+    // `hew tool compile` runs the same frontend and must also not emit any
     // frontend-layer diagnostics (span lines that reference the source file)
     // before handing off to HIR.
     let (compile_out, _emit_dir) = run_compile(path);
@@ -233,7 +235,7 @@ fn regex_literal_implicit_import_same_frontend_verdict() {
         .collect();
     assert!(
         compile_frontend_errors.is_empty(),
-        "hew compile should emit no frontend diagnostics for a re\"...\" literal \
+        "hew tool compile should emit no frontend diagnostics for a re\"...\" literal \
          (implicit std::text::regex injection must resolve on both paths);\n\
          frontend-matching lines in compile stderr:\n{}\n\
          full compile stderr:\n{compile_stderr}",
@@ -246,7 +248,7 @@ fn regex_literal_implicit_import_same_frontend_verdict() {
 // ---------------------------------------------------------------------------
 
 /// A type error in a module imported by the root file must be reported by
-/// **both** `hew check` and `hew compile` with identical span-attributed
+/// **both** `hew check` and `hew tool compile` with identical span-attributed
 /// diagnostic output.
 ///
 /// This catches a bypass that skips multi-file import resolution on the
@@ -291,7 +293,7 @@ fn type_error_in_imported_module_reported_identically() {
     );
     assert!(
         !compile_out.status.success(),
-        "hew compile should reject a type error in a sibling module:\n{}",
+        "hew tool compile should reject a type error in a sibling module:\n{}",
         describe_output(&compile_out),
     );
 
@@ -302,7 +304,7 @@ fn type_error_in_imported_module_reported_identically() {
     assert_eq!(
         check_body.trim(),
         compile_diag.trim(),
-        "hew check and hew compile produced different frontend diagnostics \
+        "hew check and hew tool compile produced different frontend diagnostics \
          for a type error in an imported module.\n\
          check body:\n{check_body}\n\
          compile stderr:\n{compile_diag}",
@@ -323,7 +325,7 @@ fn type_error_in_imported_module_reported_identically() {
 // Scenario 4: WASM target — frontend pipeline consistency
 // ---------------------------------------------------------------------------
 
-/// `hew check` and `hew compile --target wasm32-unknown-unknown` both route
+/// `hew check` and `hew tool compile --target wasm32-unknown-unknown` both route
 /// through `run_file_frontend_to_typecheck`.  For a source that is valid at the
 /// frontend layer, both must accept it with no frontend-layer diagnostics.
 ///
@@ -358,7 +360,7 @@ fn wasm_target_compile_shares_frontend_with_check() {
         "hew check emitted frontend diagnostics for 01-arith.hew:\n{check_stderr}",
     );
 
-    // `hew compile --target wasm32-unknown-unknown` must also not produce any
+    // `hew tool compile --target wasm32-unknown-unknown` must also not produce any
     // frontend-layer diagnostics for this fixture. We only inspect the absence
     // of `: error:` / `: warning:` lines that reference the fixture path.
     let (compile_out, _emit_dir) = run_compile_with_target(path, "wasm32-unknown-unknown");
@@ -372,7 +374,7 @@ fn wasm_target_compile_shares_frontend_with_check() {
         .collect();
     assert!(
         compile_frontend_errors.is_empty(),
-        "hew compile --target wasm32-unknown-unknown emitted frontend diagnostics \
+        "hew tool compile --target wasm32-unknown-unknown emitted frontend diagnostics \
          for 01-arith.hew; this means the WASM target path diverges from hew check \
          at the frontend layer.\n\
          frontend lines:\n{}\n\

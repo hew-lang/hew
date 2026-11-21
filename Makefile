@@ -682,7 +682,7 @@ mqtt-broker-e2e: hew-native
 
 # Real multi-process proof that test-run calls to
 # `hew_testutil::ensure_hew_lib_built` are verify-only: concurrent real
-# `hew compile` links share one NEXTEST_RUN_ID and a fail-closed Cargo spy
+# `hew tool compile` links share one NEXTEST_RUN_ID and a fail-closed Cargo spy
 # proves that none of them attempts to rebuild `libhew.a`.
 # Excluded from routine `cargo nextest run` (see the #[ignore] reasons in
 # hew-testutil/tests/libhew_link_race.rs) because it repeatedly shells real

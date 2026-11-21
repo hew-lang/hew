@@ -128,7 +128,7 @@ fn assert_native_exit(source_text: &str, expected: i32) {
     for optimization in ["0", "2"] {
         let mut compile = Command::new(hew_binary());
         compile
-            .arg("compile")
+            .args(["tool", "compile"])
             .arg(&source)
             .arg("--opt-level")
             .arg(optimization)

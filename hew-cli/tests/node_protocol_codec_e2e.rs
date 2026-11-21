@@ -209,19 +209,15 @@ fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
         )
         .unwrap();
     }
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "codec_probe");
     let mut compile = std::process::Command::new(support::hew_binary());
     compile
-        .args(["compile", "--emit-dir"])
-        .arg(dir.path())
+        .args(["build", "-o"])
+        .arg(&binary)
         .arg(dir.path().join("codec_probe.hew"))
         .current_dir(dir.path());
     let output = support::run_bounded_command(compile, "compile checked node codec probe");
     support::assert_success(&output, "compile checked node codec probe");
-    let binary = dir.path().join(if cfg!(windows) {
-        "codec_probe.exe"
-    } else {
-        "codec_probe"
-    });
     let mut run = std::process::Command::new(binary);
     run.current_dir(dir.path());
     let output = support::run_bounded_command(run, "run checked node codec probe");

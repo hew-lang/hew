@@ -4,7 +4,7 @@
 // param) so the post-receiver-skip arity diverges from the trait. Q004 emits
 // TraitImplSignatureMismatch with `arity` detail at the impl method span.
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostics:
 //   - TraitImplSignatureMismatch
 //   - "parameter(s)"

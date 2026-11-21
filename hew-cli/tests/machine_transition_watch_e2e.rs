@@ -236,7 +236,7 @@ fn pipe_handle_use_after_transfer_refused() {
     )
     .unwrap();
 
-    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+    let output = support::run_hew_in(dir.path(), &["build", source.to_str().unwrap()]);
 
     assert!(
         !output.status.success(),
@@ -516,7 +516,7 @@ fn nested_pipe_handle_in_tuple_use_after_send_refused() {
     )
     .unwrap();
 
-    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+    let output = support::run_hew_in(dir.path(), &["build", source.to_str().unwrap()]);
 
     assert!(
         !output.status.success(),

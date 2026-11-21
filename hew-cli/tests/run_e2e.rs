@@ -801,6 +801,7 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         .join("tests/vertical-slice/reject/for_in_generic_vec_resource_instantiation.hew");
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             dir.path().to_str().expect("emit-dir utf-8"),
@@ -808,7 +809,7 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     assert!(
         !output.status.success(),

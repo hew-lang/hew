@@ -179,7 +179,7 @@ for index in "${!fixtures[@]}"; do
 
     baseline_status=0
     run_compile "$baseline_out" "$baseline_err" \
-        "$HEW_BIN" compile --dump-mir physical "$fixture" || baseline_status=$?
+        "$HEW_BIN" tool compile --dump-mir physical "$fixture" || baseline_status=$?
     physical_dump "$baseline_out" >"$baseline_edges"
 
     fixture_failed=0
@@ -194,7 +194,7 @@ for index in "${!fixtures[@]}"; do
         repeated_edges="$tmpdir/$index.baseline.$run.edges"
         repeated_status=0
         run_compile "$repeated_out" "$repeated_err" \
-            "$HEW_BIN" compile --dump-mir physical "$fixture" || repeated_status=$?
+            "$HEW_BIN" tool compile --dump-mir physical "$fixture" || repeated_status=$?
         physical_dump "$repeated_out" >"$repeated_edges"
         if [[ "$baseline_status" -ne "$repeated_status" ]]; then
             echo "FAIL $label: repeated compile $run changed exit status from $baseline_status to $repeated_status" >&2

@@ -412,6 +412,15 @@ fn stale_reconnect_cannot_replace_newer_publication() {
 
 #[test]
 fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
+    // Advancing the retry clock must not expire another test's deadlines.
+    crate::run_in_isolated_test_process(
+        "connection::tests::reconnect::configured_seed_retries_absence_once_per_target_and_joins_on_stop",
+        "HEW_RECONNECT_RETRY_CLOCK_CHILD",
+        check_seed_retries,
+    );
+}
+
+fn check_seed_retries() {
     struct ManagerGuard(*mut HewConnMgr);
     impl Drop for ManagerGuard {
         fn drop(&mut self) {
@@ -425,7 +434,6 @@ fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
         attempts.send(()).unwrap();
         crate::transport::HEW_CONN_INVALID
     }
-    let _clock = crate::deterministic::TEST_LOCK.lock_or_recover();
     crate::deterministic::hew_simtime_enable(1_000);
     let (attempts, observed) = std::sync::mpsc::channel::<()>();
     let ops = crate::transport::HewTransportOps {
@@ -579,9 +587,16 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
 
 #[test]
 fn connection_attempt_budget_uses_simulated_time_and_nested_scope_restores_it() {
+    crate::run_in_isolated_test_process(
+        "connection::tests::reconnect::connection_attempt_budget_uses_simulated_time_and_nested_scope_restores_it",
+        "HEW_RECONNECT_DEADLINE_CLOCK_CHILD",
+        check_nested_attempt_deadline,
+    );
+}
+
+fn check_nested_attempt_deadline() {
     use crate::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
     use crate::transport::{connection_attempt_remaining, with_connection_attempt_deadline};
-    let _clock = crate::deterministic::TEST_LOCK.lock_or_recover();
     hew_simtime_enable(1_000);
     assert_eq!(connection_attempt_remaining(), None);
     with_connection_attempt_deadline(|| {

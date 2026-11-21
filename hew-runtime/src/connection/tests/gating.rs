@@ -438,7 +438,10 @@ fn unverified_peer_receives_no_outbound_gossip_or_swim() {
 
         // Gossip recipient selection excludes the Unverified connection.
         assert_eq!(
-            active_gossip_connection_ids(&*mgr),
+            active_gossip_peers(&*mgr)
+                .into_iter()
+                .map(|peer| peer.conn_id)
+                .collect::<Vec<_>>(),
             vec![20],
             "only the authenticated connection may receive registry gossip"
         );

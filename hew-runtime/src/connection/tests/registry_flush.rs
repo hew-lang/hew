@@ -172,14 +172,17 @@ fn broadcast_parks_behind_pending_flush_preserving_order() {
 
         let location = test_location(1, 0x88);
         // Start with an unsent ADD owned by this connection's retry queue.
-        let add = super::super::control::encode_registry_gossip_control("svc", location, true)
-            .expect("ADD frame");
+        let add = RegistryGossipPayload {
+            op: REGISTRY_GOSSIP_OP_ADD,
+            name: "svc".to_owned(),
+            location,
+        };
         (*mgr).pending_registry_flush.access(|pending| {
             pending.insert(
                 10,
                 PendingRegistryFlush {
                     token,
-                    frames: vec![add],
+                    intents: vec![add],
                     attempts: 0,
                 },
             );
@@ -208,11 +211,10 @@ fn broadcast_parks_behind_pending_flush_preserving_order() {
         // The retry drains BOTH, in original order: ADD then REMOVE.
         retry_pending_registry_flush(&*mgr, 10, token);
         {
-            let sends = (*state)
+            let ops_seen: Vec<u8> = (*state)
                 .sends
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ops_seen: Vec<u8> = sends
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .map(|(_, bytes)| {
                     let WireFrame::Control(ctrl) = decode_wire_frame(bytes).expect("frame decodes")
@@ -242,6 +244,96 @@ fn broadcast_parks_behind_pending_flush_preserving_order() {
         drop(Box::from_raw(state));
     }
     drop(ops);
+}
+
+#[cfg(feature = "quic")]
+#[test]
+fn registry_retry_uses_current_local_name() {
+    let sends = Mutex::new(Vec::<(c_int, Vec<u8>)>::new());
+    let ops = crate::transport::HewTransportOps {
+        connect: None,
+        listen: None,
+        accept: None,
+        send: Some(record_registry_gossip_send),
+        recv: None,
+        close_conn: None,
+        destroy: None,
+    };
+    let mut transport = HewTransport {
+        ops: &raw const ops,
+        r#impl: (&raw const sends).cast_mut().cast(),
+    };
+    let registry = crate::hew_node::HewRegistry::default();
+    // SAFETY: the borrowed registry and transport outlive the manager.
+    unsafe {
+        let mgr = hew_connmgr_new(
+            &raw mut transport,
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+        );
+        (*mgr).registry = &raw const registry;
+        let mut peer = test_mesh_actor(10);
+        peer.peer_node_id = 2;
+        peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+        peer.posture = Posture::Strict;
+        peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr).connections.access(|conns| conns.push(peer));
+        let token = test_publish_claim(&*mgr, 2, 10);
+        let original = test_location(1, 0x88);
+        let replacement = test_location(1, 0x99);
+        assert!(registry.apply_origin_name("rebound", replacement, true));
+        (*mgr).pending_registry_flush.access(|pending| {
+            pending.insert(
+                10,
+                PendingRegistryFlush {
+                    token,
+                    intents: ["rebound", "removed"]
+                        .map(|name| RegistryGossipPayload {
+                            op: REGISTRY_GOSSIP_OP_ADD,
+                            name: name.to_owned(),
+                            location: original,
+                        })
+                        .into(),
+                    attempts: 0,
+                },
+            );
+        });
+        (*mgr)
+            .pending_registry_flush_count
+            .store(1, Ordering::Release);
+        retry_pending_registry_flush(&*mgr, 10, token);
+        hew_connmgr_free(mgr);
+
+        let sent = sends.into_inner().unwrap();
+        let payloads: Vec<_> = sent
+            .into_iter()
+            .map(|(conn, bytes)| {
+                assert_eq!(conn, 10);
+                let WireFrame::Control(control) = decode_wire_frame(&bytes).unwrap() else {
+                    panic!("expected control frame");
+                };
+                assert_eq!(control.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+                decode_registry_gossip_payload(&control.payload).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            payloads,
+            [
+                RegistryGossipPayload {
+                    op: REGISTRY_GOSSIP_OP_ADD,
+                    name: "rebound".to_owned(),
+                    location: replacement
+                },
+                RegistryGossipPayload {
+                    op: REGISTRY_GOSSIP_OP_REMOVE,
+                    name: "removed".to_owned(),
+                    location: original
+                },
+            ]
+        );
+    }
 }
 
 /// The retry budget is BOUNDED: after `MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS`

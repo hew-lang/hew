@@ -2041,7 +2041,7 @@ pub(crate) fn checked_session(
 
 const DOWN_REASON_ACTOR_STATE: u8 = 1;
 
-fn validate_registry_gossip_payload(
+pub(crate) fn validate_registry_gossip_payload(
     payload: &RegistryGossipPayload,
 ) -> Result<(), RegistryGossipPayloadError> {
     match payload.op {

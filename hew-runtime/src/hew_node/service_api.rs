@@ -295,7 +295,7 @@ fn start_export(
     .map_err(|_| AskError::EncodeFailed)?;
     let table = Arc::clone(&crate::runtime::rt_current().node.reply_table);
     let completion_table = Arc::clone(&table);
-    if !claim.submit(
+    claim.submit(
         move || {
             table
                 .pending
@@ -312,9 +312,7 @@ fn start_export(
                 completion_table.fail(request_id, reason);
             }
         },
-    ) {
-        return Err(AskError::SendFailed);
-    }
+    )?;
     Ok(lease)
 }
 

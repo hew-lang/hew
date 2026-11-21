@@ -567,7 +567,7 @@ fn closed_grant_is_not_retracted_to_a_peer_without_service_sessions() {
         payload: crate::envelope::encode_service_offer_payload(&fence).unwrap(),
     })
     .unwrap();
-    assert!(claim.submit(move || Some(bytes), |_| {}));
+    assert!(claim.submit(move || Some(bytes), |_| {}).is_ok());
     assert!(eventually(|| exports.holds_offer(issuer, fence.grant_id)));
 
     assert!(exports.holds_offer(issuer, offer.grant_id));
@@ -717,5 +717,34 @@ fn closing_an_export_with_a_delayed_offer_does_not_publish_it() {
         "a closed grant must not be offered later"
     );
     drop(next_export);
+    pair.stop();
+}
+
+/// A send the local pool cannot run reports a local capacity failure, never
+/// the destination actor's death. Counterfactual: the refusal surfaced as
+/// `SendFailed`, which callers receive as `ActorError.Dead`.
+#[test]
+fn send_without_a_pool_worker_reports_local_capacity() {
+    let _guard = crate::runtime_test_guard();
+    let pair = Pair::start(387, 388);
+    let claim =
+        connection::claim_send_by_identity(pair.issuer_manager(), pair.recipient_id(), None)
+            .unwrap();
+    // A runtime whose pool has no thread and cannot start one.
+    let runtime = Box::new(crate::runtime::RuntimeInner::new(
+        crate::scheduler::worker_less_scheduler(),
+    ));
+    // SAFETY: the runtime outlives the entered scope, which ends below.
+    let entered = unsafe { crate::runtime::enter(&runtime) };
+    // SAFETY: the entered runtime owns its live pool.
+    unsafe { &*crate::blocking_pool::shared_blocking_pool_opt().unwrap() }
+        .fail_thread_starts_for_test(true);
+    let refused = claim.submit(|| None, |_| {}).unwrap_err();
+    drop(entered);
+    assert_eq!(refused, AskError::WorkerAtCapacity);
+    assert_eq!(
+        refused.public_role(),
+        Some(crate::internal::types::ActorErrorRole::RoutingFailed)
+    );
     pair.stop();
 }

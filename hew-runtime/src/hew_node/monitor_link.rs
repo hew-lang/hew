@@ -134,7 +134,7 @@ unsafe fn send_control_frame_on_claimed_connection(
     let Some(claim) = connection::claim_send(manager, conn_id, Some(claim_token)) else {
         return -1;
     };
-    if claim.submit(move || Some(bytes), |_| {}) {
+    if claim.submit(move || Some(bytes), |_| {}).is_ok() {
         0
     } else {
         -1
@@ -490,7 +490,7 @@ pub(crate) fn fan_out_remote_monitor_down(
                     .ok()
                     .and_then(|payload| encode_node_control_frame(kind, payload))
                 {
-                    claim.submit(move || Some(bytes), |_| {});
+                    let _ = claim.submit(move || Some(bytes), |_| {});
                 }
             } else {
                 // SAFETY: internal unbound observations retain their hosting boundary.
@@ -836,7 +836,7 @@ fn handle_inbound_original_link_req(
     };
     let table = Arc::clone(&rt.node.reply_table);
     let completion = Arc::clone(&table);
-    if !claim.is_some_and(|claim| {
+    let submitted = claim.ok_or(AskError::SendFailed).and_then(|claim| {
         claim.submit(
             move || {
                 table
@@ -851,8 +851,9 @@ fn handle_inbound_original_link_req(
                 }
             },
         )
-    }) {
-        reply_table().fail(setup_id, AskError::SendFailed);
+    });
+    if let Err(reason) = submitted {
+        reply_table().fail(setup_id, reason);
     }
     crate::wake::scheduled::enqueue(job);
     None
@@ -937,7 +938,7 @@ fn send_deferred_setup_control(
         })
     })
     .flatten();
-    if claim.is_some_and(|claim| claim.submit(move || Some(bytes), |_| {})) {
+    if claim.is_some_and(|claim| claim.submit(move || Some(bytes), |_| {}).is_ok()) {
         0
     } else {
         -1
@@ -1399,7 +1400,7 @@ pub(crate) unsafe fn start_imported_observation(
         operation.timer = unsafe { crate::coro_sleep::hew_coro_sleep_new(5_000_000_000, waker) };
         let table = Arc::clone(&rt.node.reply_table);
         let completion_table = Arc::clone(&table);
-        if !claim.submit(
+        if let Err(reason) = claim.submit(
             move || {
                 table
                     .pending
@@ -1413,7 +1414,7 @@ pub(crate) unsafe fn start_imported_observation(
                 }
             },
         ) {
-            reply_table().fail(setup_id, AskError::SendFailed);
+            reply_table().fail(setup_id, reason);
         }
         Ok(())
     });
@@ -1506,7 +1507,7 @@ pub(crate) fn send_admitted_cleanup(
                 payload,
             )
         }) {
-            claim.submit(move || Some(bytes), |_| {});
+            let _ = claim.submit(move || Some(bytes), |_| {});
         }
     });
 }

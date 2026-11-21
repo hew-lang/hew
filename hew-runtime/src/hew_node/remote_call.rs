@@ -212,8 +212,8 @@ fn setup_remote_ask(
                 }
             },
         );
-        if !submitted {
-            reply_table().refuse(request_id, AskError::SendFailed);
+        if let Err(reason) = submitted {
+            reply_table().refuse(request_id, reason);
         }
         RemoteAskSetupResult::Ok((pending, target, publication))
     })

@@ -324,6 +324,12 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
+                if let Some(nominal) = head.nominal() {
+                    if !self.check_record_field_visible(nominal, field, field_span.unwrap_or(span))
+                    {
+                        return Ty::Error;
+                    }
+                }
                 let name = head.registry_key();
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.
@@ -1716,18 +1722,20 @@ impl Checker {
             // so the missing-field check is skipped.
             if let Some((base_expr, base_span)) = base {
                 let base_ty = self.synthesize(base_expr, base_span);
-                let declared_head = self.named_ty_for_key(name, Vec::new()).head();
-                match &base_ty {
-                    Ty::Named { head, .. } if Some(*head) == declared_head => {}
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "functional-update base must be of type `{name}`, found `{base_ty}`"
-                            ),
-                        );
-                    }
+                // Inherited fields contribute their concrete generic arguments.
+                let args = td
+                    .type_params
+                    .iter()
+                    .map(|param| type_arg_map[param].clone())
+                    .collect();
+                let expected =
+                    self.named_ty_for_key(module_local_name.as_deref().unwrap_or(name), args);
+                if crate::unify::unify(&mut self.subst, &expected, &base_ty).is_err() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        base_span,
+                        format!("functional-update base must be of type `{expected}`, found `{base_ty}`"),
+                    );
                 }
             } else {
                 // No base: all fields must be explicitly provided.

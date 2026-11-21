@@ -1187,7 +1187,8 @@ impl Checker {
                     fields,
                     field_labels,
                     type_args,
-                    ..
+                    // Updates must validate and inherit fields from their base.
+                    base: None,
                 },
                 Ty::Named {
                     head: expected_head,

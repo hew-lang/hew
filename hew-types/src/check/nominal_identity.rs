@@ -490,6 +490,10 @@ impl Checker {
         let Some(nominal) = head.nominal() else {
             return;
         };
+        for (index, (field, expr)) in fields.iter().enumerate() {
+            let span = labels.get(index).map_or(&expr.1, |label| &label.span);
+            self.check_record_field_visible(nominal, field.name.as_str(), span);
+        }
         let Some(definition) = self.type_defs.get(&nominal) else {
             return;
         };
@@ -702,8 +706,42 @@ impl Checker {
         })
     }
 
-    /// Whether the current file may name `declaration`; reports the first
-    /// refusal per declaration.
+    /// Check a field after resolving its nominal receiver, including imported
+    /// aliases and inferred generic instances.
+    pub(super) fn check_record_field_visible(
+        &mut self,
+        nominal: crate::NominalId,
+        field: &str,
+        span: &hew_parser::ast::Span,
+    ) -> bool {
+        let accessor = self
+            .scope_site()
+            .map(|site| self.scopes.namespace_of(site.file));
+        let Some(declared_at) = self
+            .defs
+            .inaccessible_record_field(nominal, field, accessor)
+        else {
+            return true;
+        };
+        let declaration = nominal.declaration();
+        let owner = self
+            .defs
+            .module(declaration)
+            .map(|module| self.defs.module_path(self.scopes.namespace_of(module)))
+            .unwrap_or("(root)");
+        self.errors.push(super::TypeError::visibility_violation(
+            hew_parser::ast::Visibility::Private,
+            span.clone(),
+            &format!("{}.{}", self.defs.name(declaration), field),
+            owner,
+            self.current_module.as_deref().unwrap_or("(root)"),
+            declared_at.clone(),
+            self.current_module.clone(),
+        ));
+        false
+    }
+
+    /// Whether a source file may name this declaration.
     pub(super) fn declaration_is_visible_from(
         &self,
         declaration: crate::DefId,

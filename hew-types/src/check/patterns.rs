@@ -694,6 +694,17 @@ impl Checker {
         let mut seen = HashSet::new();
         let mut invalid = false;
         for field in fields {
+            if let Ty::Named { head, .. } = &resolved {
+                if let Some(nominal) = head.nominal() {
+                    if !self.check_record_field_visible(
+                        nominal,
+                        field.name.name.as_str(),
+                        &field.name_span,
+                    ) {
+                        invalid = true;
+                    }
+                }
+            }
             if !seen.insert(field.name.name.as_str()) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

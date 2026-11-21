@@ -385,3 +385,63 @@ fn module_qualified_struct_init_unknown_module_is_fail_closed() {
         "expected diagnostic to reference the unknown alias `nosuch`, got: {msgs:?}",
     );
 }
+
+const PRIVATE_FIELD_MODULE: &str = r"
+pub type Entry<T> {
+    label: i64;
+    private value: T;
+}
+pub fn entry() -> Entry<i64> { Entry { label: 1, value: 7 } }
+pub fn read(e: Entry<i64>) -> i64 { e.value }
+pub type Callback { private run: fn() -> i64; }
+fn seven() -> i64 { 7 }
+pub fn callback() -> Callback { Callback { run: seven } }
+";
+
+#[test]
+fn private_record_fields_refuse_explicit_cross_module_operations() {
+    for body in [
+        "let e = records.entry(); let value = e.value;",
+        "var e = records.entry(); e.value = 3;",
+        "let e = records.Entry { label: 1, value: 7 };",
+        "let e: records.Entry<i64> = records.Entry { label: 1, value: 7 };",
+        "let e = records.Entry { value: 0, ..records.entry() };",
+        "let { value, .. } = records.entry();",
+        "let { value: other, .. } = records.entry();",
+        "let f = records.callback(); let result = f.run();",
+    ] {
+        let root = format!("import myapp.m as records; fn main() {{ {body} }}");
+        let output = typecheck_with_module(&root, PRIVATE_FIELD_MODULE);
+        assert!(
+            output.errors.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                TypeErrorKind::VisibilityViolationPrivate { .. }
+            )),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn public_record_projections_preserve_private_siblings_across_an_import() {
+    let root = r"import myapp.m as records;
+        fn main() {
+            let e: records.Entry<i64> = records.Entry { label: 9, ..records.entry() };
+            let { label, .. } = e;
+            let result = records.read(e) + label;
+        }";
+    let output = typecheck_with_module(root, PRIVATE_FIELD_MODULE);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+
+    let wrong = root.replace("e: records.Entry<i64>", "e: records.Entry<string>");
+    let output = typecheck_with_module(&wrong, PRIVATE_FIELD_MODULE);
+    assert!(
+        output.errors.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            TypeErrorKind::Mismatch { .. } | TypeErrorKind::InvalidOperation
+        )),
+        "{:?}",
+        output.errors
+    );
+}

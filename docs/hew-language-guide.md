@@ -1443,6 +1443,25 @@ fn main() {
 Record fields use `name: T;` with semicolons and no `let`/`var` prefix. A `let`
 binding is immutable; a `var` binding permits field updates.
 
+A module can expose a record while keeping individual fields private. Callers
+can read `label` on this record and obtain `sequence` through the module’s API.
+
+```hew
+pub type Receipt {
+    label: string;
+    private sequence: i64;
+}
+
+pub fn receipt(label: string) -> Receipt {
+    Receipt { label: label, sequence: 1 }
+}
+
+pub fn sequence_of(r: Receipt) -> i64 { r.sequence }
+```
+
+Another module can use `Receipt { label: "paid", ..existing }` to change the
+label while preserving the private sequence.
+
 ### Mutable record via var binding
 
 ```hew

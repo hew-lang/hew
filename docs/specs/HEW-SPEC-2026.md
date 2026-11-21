@@ -1185,6 +1185,16 @@ previously associated with the removed `record` keyword. `record` is not a
 keyword or declaration form; source using it is rejected with a migration hint
 to use `type`.
 
+A named field is accessible wherever its record type is visible. Prefix a field
+with `private` to restrict explicit access to the declaring module, including
+its peer files. The restriction follows the field through generic instantiation,
+type aliases and inference. It applies to projection, assignment, initialization
+and pattern binding. Other modules may update public fields with `..base` and
+match public fields with `..`. An update takes the remaining fields from its
+base. A rest pattern leaves them subject to the ordinary ownership and cleanup
+rules. The identifier `private` remains available: for
+example, `private: i64;` declares an ordinary field named `private`.
+
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. Internal reference-count selection belongs to the compiler and runtime and preserves value semantics and actor isolation.

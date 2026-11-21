@@ -570,7 +570,7 @@ impl Parser<'_> {
                     return None;
                 }
                 let start = success.1.start;
-                self.advance();
+                self.advance_contextual_keyword();
                 let error = self.parse_type_with_context(context)?;
                 let end = error.1.end;
                 if matches!(&success.0, TypeExpr::Tuple(elems) if elems.is_empty()) {
@@ -597,7 +597,7 @@ impl Parser<'_> {
             // `fn f() fails E` is `fn f() -> () fails E`: a function that
             // only fails needs no success type.
             let start = self.peek_span().start;
-            self.advance();
+            self.advance_contextual_keyword();
             let error = self.parse_type_with_context(context)?;
             let end = error.1.end;
             Some(Some((

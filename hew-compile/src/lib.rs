@@ -510,6 +510,7 @@ impl SourceSet {
                 return hew_parser::ParseResult {
                     program: (**program).clone(),
                     errors: Vec::new(),
+                    contextual_keyword_starts: Vec::new(),
                 };
             }
         }

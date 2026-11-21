@@ -1049,9 +1049,9 @@ fn run_analysis(source: &str) -> AnalysisResult {
 
 fn run_analysis_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> AnalysisResult {
     let analysis = parse_and_type_check_with_inputs(source, inputs);
-    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens_with_program(
+    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens_with_parse(
         source,
-        &analysis.parse_result.program,
+        &analysis.parse_result,
     );
     let type_info = analysis
         .type_output

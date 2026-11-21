@@ -81,6 +81,7 @@ impl<'src> Parser<'src> {
             tokens,
             pos: 0,
             errors,
+            contextual_keyword_starts: Vec::new(),
             depth: Rc::new(Cell::new(0)),
             depth_error: None,
             angle_mutations: Vec::new(),
@@ -138,6 +139,12 @@ impl<'src> Parser<'src> {
             Some(tok)
         } else {
             None
+        }
+    }
+
+    pub(crate) fn advance_contextual_keyword(&mut self) {
+        if let Some((_, span)) = self.advance() {
+            self.contextual_keyword_starts.push(span.start);
         }
     }
 
@@ -352,7 +359,7 @@ impl<'src> Parser<'src> {
                      the error type",
                 );
             }
-            self.advance();
+            self.advance_contextual_keyword();
             return true;
         }
         if infix_bp(next).is_some()
@@ -374,7 +381,7 @@ impl<'src> Parser<'src> {
         {
             return false;
         }
-        self.advance();
+        self.advance_contextual_keyword();
         true
     }
 
@@ -1290,6 +1297,7 @@ impl<'src> Parser<'src> {
             pos: self.pos,
             error_count: self.errors.len(),
             angle_mutation_count: self.angle_mutations.len(),
+            contextual_keyword_count: self.contextual_keyword_starts.len(),
             last_token_end: self.last_token_end,
         }
     }
@@ -1301,6 +1309,8 @@ impl<'src> Parser<'src> {
     pub(crate) fn restore_pos(&mut self, saved: SavedPos) {
         self.pos = saved.pos;
         self.errors.truncate(saved.error_count);
+        self.contextual_keyword_starts
+            .truncate(saved.contextual_keyword_count);
         self.last_token_end = saved.last_token_end;
         // Undo any token mutations made by eat_closing_angle since this save point
         while self.angle_mutations.len() > saved.angle_mutation_count {

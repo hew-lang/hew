@@ -120,6 +120,25 @@ or call `failure.backtrace(info)` for the captured frames. A missing site or
 trace is represented by `None`. A bounded actor may also omit diagnostic detail
 when it cannot retain it within its budget.
 
+### A program keeps running after force-quitting `hew run` on macOS
+
+Press Ctrl-C in the terminal, or send SIGTERM to the `hew run` process and
+wait for it to exit. This lets the runner stop the compiled program and
+remove its temporary directory.
+
+Sending SIGKILL (`kill -9`) to the runner PID alone can leave the compiled
+program running. To find it, list processes whose command contains the
+temporary build path.
+
+```sh
+ps -ax -o pid=,command= | grep '[h]ew-run-'
+```
+
+Identify your program by its executable name and directory, then send SIGTERM
+to that PID. If the program remains unresponsive, force-quit that same PID.
+Once it has exited, you can remove that run's directory under
+`$TMPDIR`. Other active runs use their own directories.
+
 ## Type errors & type inference
 
 Common signs:

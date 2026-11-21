@@ -53,6 +53,10 @@ pub enum Command {
     #[command(hide = true)]
     Compile(CompileArgs),
     /// Compile and run a .hew file.
+    ///
+    /// Use Ctrl-C or send SIGTERM to stop a run on macOS. Sending SIGKILL to
+    /// the runner alone can leave the compiled program running and its
+    /// temporary directory on disk.
     Run(RunArgs),
     /// Debug a program or attach to a running process.
     Debug(DebugArgs),

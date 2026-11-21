@@ -24,6 +24,13 @@ pub fn compute_line_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
+/// Find the zero-based line containing a byte offset using the document's line starts.
+pub(crate) fn offset_to_line(line_offsets: &[usize], offset: usize) -> usize {
+    line_offsets
+        .partition_point(|&start| start <= offset)
+        .saturating_sub(1)
+}
+
 /// Convert byte offset to (line, character) — both 0-based, character in UTF-16 code units.
 #[must_use]
 pub fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -> (usize, usize) {
@@ -34,9 +41,7 @@ pub fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -
     // attribution at the diagnostic's origin; this clamp is the last line of
     // defense so one bad span can never take down the LSP.
     let offset = offset.min(source.len());
-    let line = line_offsets
-        .partition_point(|&o| o <= offset)
-        .saturating_sub(1);
+    let line = offset_to_line(line_offsets, offset);
     let line_start = line_offsets[line];
     let byte_col = offset - line_start;
     // Count UTF-16 code units from line start to offset

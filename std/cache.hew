@@ -120,8 +120,8 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
         }
         match self.capacity {
             .Some(limit) => if self.order.len() >= limit {
-                let oldest = self.order[0];
-                self.invalidate(oldest);
+                let victim = self.order[0];
+                self.invalidate(victim);
             }
             .None => {}
         }

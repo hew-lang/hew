@@ -651,7 +651,13 @@ impl Parser<'_> {
             other_item => other_item,
         };
 
-        let end = self.peek_span().start;
+        // An import ends at its semicolon. Following whitespace and comments
+        // may extend all the way to the next declaration's header.
+        let end = if matches!(item, Item::Import(_)) {
+            self.last_token_end
+        } else {
+            self.peek_span().start
+        };
         // Extend span to cover leading attributes if present.
         let item_start = attr_start.unwrap_or(start);
         Some((item, item_start..end))

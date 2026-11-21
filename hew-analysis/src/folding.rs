@@ -199,13 +199,16 @@ mod tests {
 
     #[test]
     fn fold_import_group() {
-        let source = "import std.os;\nimport std.fs;\nimport std.net;\nfn main() {}";
-        let pr = parse(source);
-        let ranges = build_folding_ranges(source, &pr);
-        let imports = ranges.iter().find(|r| r.kind == FoldingKind::Imports);
-        assert!(
-            imports.is_some(),
-            "consecutive imports should create fold range"
+        let source = "import std.os;\r\nimport std.fs.{\r\n    read,\r\n}; // Filesystem helpers.\r\n\r\n/// Entry point.\r\nfn main() {}";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let ranges = build_folding_ranges(source, &parsed);
+        let imports = ranges
+            .iter()
+            .find(|range| range.kind == FoldingKind::Imports);
+        assert_eq!(
+            imports.map(|range| (range.start_line, range.end_line)),
+            Some((0, 3))
         );
     }
 

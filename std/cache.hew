@@ -12,8 +12,11 @@
 //! Insertion removes expired entries before evicting the oldest live insertion.
 //! Replacing a key makes it the newest insertion; reads do not change order.
 //! Expiry is lazy: `get`, `insert`, `prune` and `len` reclaim expired entries;
-//! there is no background task. FIFO removal and TTL pruning are linear in the
-//! retained entry count, while ordinary hits use the backing `HashMap`.
+//! there is no background task. Pruning skips the scan when every entry is
+//! known to be live. Otherwise it visits the retained entries.
+//!
+//! Use the cache methods to insert, replace and invalidate values. The
+//! backing entries and FIFO order are internal and must be updated together.
 //!
 //! `get_or_load(key, || load())` calls its loader only on a miss. Successful
 //! values are cached with a fresh `instant.now()` after loading finishes.

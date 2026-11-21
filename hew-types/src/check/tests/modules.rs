@@ -599,6 +599,7 @@ fn module_graph_body_private_local_type_is_available() {
         where_clause: None,
         kind: TypeDeclKind::Struct,
         body: vec![TypeBodyItem::Field {
+            private_span: None,
             name: Ident::new("x"),
             ty: (
                 TypeExpr::Named {

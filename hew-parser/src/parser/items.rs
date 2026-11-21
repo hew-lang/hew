@@ -651,7 +651,13 @@ impl Parser<'_> {
             other_item => other_item,
         };
 
-        let end = self.peek_span().start;
+        // An import ends at its semicolon. Following whitespace and comments
+        // may extend all the way to the next declaration's header.
+        let end = if matches!(item, Item::Import(_)) {
+            self.last_token_end
+        } else {
+            self.peek_span().start
+        };
         // Extend span to cover leading attributes if present.
         let item_start = attr_start.unwrap_or(start);
         Some((item, item_start..end))
@@ -1179,6 +1185,15 @@ impl Parser<'_> {
                 }
 
                 self.validate_attributes_for(&attributes, AttrPosition::Field);
+                let private_span = if matches!(self.peek(), Some(Token::Identifier("private")))
+                    && self.peek_at(self.pos + 1) != Some(&Token::Colon)
+                {
+                    let span = self.peek_span();
+                    self.advance();
+                    Some(span)
+                } else {
+                    None
+                };
                 let name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
@@ -1189,6 +1204,7 @@ impl Parser<'_> {
                 // but extract_comments scans the raw source for them).
                 let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Field {
+                    private_span,
                     name,
                     ty,
                     attributes,

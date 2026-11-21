@@ -324,6 +324,9 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
+                if !self.check_record_field_visible(*head, field, field_span.unwrap_or(span)) {
+                    return Ty::Error;
+                }
                 let name = head.registry_key();
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.
@@ -1716,18 +1719,20 @@ impl Checker {
             // so the missing-field check is skipped.
             if let Some((base_expr, base_span)) = base {
                 let base_ty = self.synthesize(base_expr, base_span);
-                let declared_head = self.named_ty_for_key(name, Vec::new()).head();
-                match &base_ty {
-                    Ty::Named { head, .. } if Some(*head) == declared_head => {}
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "functional-update base must be of type `{name}`, found `{base_ty}`"
-                            ),
-                        );
-                    }
+                // Inherited fields contribute their concrete generic arguments.
+                let args = td
+                    .type_params
+                    .iter()
+                    .map(|param| type_arg_map[param].clone())
+                    .collect();
+                let expected =
+                    self.named_ty_for_key(module_local_name.as_deref().unwrap_or(name), args);
+                if crate::unify::unify(&mut self.subst, &expected, &base_ty).is_err() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        base_span,
+                        format!("functional-update base must be of type `{expected}`, found `{base_ty}`"),
+                    );
                 }
             } else {
                 // No base: all fields must be explicitly provided.
@@ -1771,7 +1776,9 @@ impl Checker {
             // whose arguments were inferred from the fields above.
             let result_name = module_local_name.as_deref().unwrap_or(name);
             self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
-            self.named_ty_for_key(result_name, type_args)
+            let result = self.named_ty_for_key(result_name, type_args);
+            self.check_record_init_field_visibility(fields, site.field_labels, &result);
+            result
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {

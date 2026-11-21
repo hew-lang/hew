@@ -19,6 +19,7 @@ mod cross_module_same_name {
             body: fields
                 .iter()
                 .map(|(field_name, ty_name)| TypeBodyItem::Field {
+                    private_span: None,
                     name: Ident::new(field_name),
                     ty: (
                         TypeExpr::Named {

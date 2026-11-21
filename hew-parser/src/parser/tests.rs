@@ -6622,3 +6622,22 @@ fn deeply_nested_expressions_reach_the_existing_nesting_diagnostic() {
         assert!(parse("fn main() { println(1); }").errors.is_empty());
     });
 }
+
+#[test]
+fn private_record_fields_round_trip_without_reserving_the_identifier() {
+    let source = "type Entry { private: string; private secret: i64; }";
+    let parsed = crate::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::TypeDecl(decl) = &parsed.program.items[0].0 else {
+        panic!("expected record")
+    };
+    assert!(
+        matches!(&decl.body[0], TypeBodyItem::Field { private_span: None, name, .. } if name.name.as_str() == "private")
+    );
+    assert!(
+        matches!(&decl.body[1], TypeBodyItem::Field { private_span: Some(span), .. } if &source[span.clone()] == "private")
+    );
+    let formatted = crate::fmt::format_program(&parsed.program);
+    assert!(formatted.contains("private: string;"));
+    assert!(formatted.contains("private secret: i64;"));
+}

@@ -243,6 +243,33 @@ macro_rules! cabi_guard {
 pub(crate) mod lifetime;
 pub(crate) mod util;
 
+/// Run a fixture that changes process-wide state in a fresh test process.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
+    if std::env::var_os(env_key).is_some() {
+        body();
+        return;
+    }
+
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("resolve current test binary"))
+            .arg(test_name)
+            .arg("--exact")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(env_key, "1")
+            .output()
+            .expect("spawn isolated test process");
+
+    assert!(
+        output.status.success(),
+        "isolated test process failed for {test_name} (status: {:?})\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 /// Shared stub actors for the wake-edge tests (#3069).
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod test_actor;

@@ -104,6 +104,13 @@ impl Queue {
     }
 }
 
+/// Why a blocking job could not be admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolUnavailable {
+    Stopped,
+    NoWorker,
+}
+
 /// Shared state between the pool handle and worker threads.
 struct PoolInner {
     queue: Mutex<Queue>,
@@ -115,6 +122,8 @@ struct PoolInner {
     /// Jobs that found every thread busy at the cap and had to queue.
     saturations: AtomicU64,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(test)]
+    fail_spawn: std::sync::atomic::AtomicBool,
 }
 
 /// Elastic blocking thread pool.
@@ -156,6 +165,8 @@ fn new_pool(max_threads: usize, idle_timeout: Duration) -> *mut HewBlockingPool 
             idle_timeout,
             saturations: AtomicU64::new(0),
             workers: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            fail_spawn: std::sync::atomic::AtomicBool::new(false),
         }),
     }))
 }
@@ -174,12 +185,20 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
 }
 
 impl PoolInner {
+    fn start_thread(self: &Arc<Self>) -> std::io::Result<JoinHandle<()>> {
+        #[cfg(test)]
+        if self.fail_spawn.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("injected worker start failure"));
+        }
+        let shared = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("hew-blocking".into())
+            .spawn(move || worker_loop(&shared))
+    }
+
     /// Start a thread already counted in `threads`.
     fn spawn_worker(self: &Arc<Self>, queue: &mut Queue) -> bool {
-        let shared = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("hew-blocking".into())
-            .spawn(move || worker_loop(&shared));
+        let spawned = self.start_thread();
         let mut workers = self.workers.lock_or_recover();
         // Reap threads that exited on idle so the list tracks live threads.
         let (finished, live): (Vec<_>, Vec<_>) =
@@ -228,6 +247,11 @@ impl HewBlockingPool {
         self.inner.queue.lock_or_recover().threads
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_thread_starts_for_test(&self, fail: bool) {
+        self.inner.fail_spawn.store(fail, Ordering::Relaxed);
+    }
+
     /// Jobs that had to queue behind a full pool.
     #[cfg(test)]
     pub(crate) fn saturation_count(&self) -> u64 {
@@ -259,6 +283,7 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
             inline_in_driver: true,
         },
     )
+    .map_or(-1, |()| 0)
 }
 
 /// Submit work that must run on a pool thread even under the deterministic
@@ -271,7 +296,7 @@ pub(crate) unsafe fn submit_on_worker(
     pool: *mut HewBlockingPool,
     func: HewBlockingFn,
     arg: *mut c_void,
-) -> i32 {
+) -> Result<(), PoolUnavailable> {
     submit(
         pool,
         Task {
@@ -307,6 +332,7 @@ pub(crate) unsafe fn submit_abandonable(
             inline_in_driver: true,
         },
     )
+    .map_or(-1, |()| 0)
 }
 
 /// Transfer one boxed job to a joined pool callback, or return it on refusal.
@@ -362,15 +388,15 @@ unsafe fn submit_box<T: Send + 'static>(
     }
 }
 
-unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
+unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> Result<(), PoolUnavailable> {
     if pool.is_null() {
-        return -1;
+        return Err(PoolUnavailable::Stopped);
     }
     // SAFETY: caller guarantees `pool` is valid.
     let p = unsafe { &*pool };
     let mut queue = p.inner.queue.lock_or_recover();
     if !queue.running {
-        return -1;
+        return Err(PoolUnavailable::Stopped);
     }
     // The single-thread driver runs offloaded work inline at submission, so
     // its completion enters the ready list in program order.
@@ -379,19 +405,21 @@ unsafe fn submit(pool: *mut HewBlockingPool, task: Task) -> i32 {
         // SAFETY: the caller keeps `arg` valid until `func` completes, which
         // is before this call returns.
         unsafe { (task.func)(task.arg) };
-        return 0;
+        return Ok(());
     }
     queue.tasks.push_back(task);
     let grow = p.inner.should_grow(&mut queue);
     // Keep admission and thread creation under the same lock: a reservation
     // must not look like an available worker to a concurrent submitter.
-    if grow && !p.inner.spawn_worker(&mut queue) {
+    // A failed expansion leaves the task queued when a counted worker can
+    // drain it. An abandoned call can keep a detached thread busy forever.
+    if grow && !p.inner.spawn_worker(&mut queue) && queue.counted() == 0 {
         queue.tasks.pop_back();
-        return -1;
+        return Err(PoolUnavailable::NoWorker);
     }
     drop(queue);
     p.inner.work.notify_one();
-    0
+    Ok(())
 }
 
 thread_local! {
@@ -775,6 +803,91 @@ mod tests {
         // SAFETY: run_job transfers this box to the sole pool callback.
         let (job, done) = *unsafe { Box::from_raw(arg.cast::<Job<T>>()) };
         let _ = done.send(job());
+    }
+
+    /// Submit `job` to run on a pool thread; returns the submission status
+    /// and the channel its value arrives on.
+    fn submit_job<T: Send + 'static>(
+        pool: *mut HewBlockingPool,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> (Result<(), PoolUnavailable>, std::sync::mpsc::Receiver<T>) {
+        let (done, value) = std::sync::mpsc::channel();
+        let boxed: Job<T> = (Box::new(job), done);
+        let boxed = Box::into_raw(Box::new(boxed));
+        // SAFETY: the pool is live; an accepted box goes to one callback.
+        let status = unsafe { submit_on_worker(pool, run_boxed::<T>, boxed.cast()) };
+        if status.is_err() {
+            // SAFETY: a refused submission did not transfer the box.
+            drop(unsafe { Box::from_raw(boxed) });
+        }
+        (status, value)
+    }
+
+    /// A thread that cannot start does not refuse work a running thread will
+    /// take; only a pool with no thread at all refuses, and says so.
+    /// Counterfactual: every failed start refused the job as unavailable, so a
+    /// node send under thread pressure reported its destination actor dead.
+    #[test]
+    fn failed_thread_start_queues_behind_a_running_thread() {
+        let pool = new_pool(4, Duration::from_secs(10));
+        // SAFETY: the test owns this pool until stop below.
+        let handle = unsafe { &*pool };
+        handle.fail_thread_starts_for_test(true);
+        let (status, _) = submit_job(pool, || ());
+        assert_eq!(
+            status,
+            Err(PoolUnavailable::NoWorker),
+            "no thread runs and none can start"
+        );
+        // SAFETY: the pool is live; noop never dereferences its argument.
+        let public_status = unsafe { hew_blocking_pool_submit(pool, noop, std::ptr::null_mut()) };
+        assert_eq!(public_status, -1, "the C ABI preserves its failure status");
+        handle.fail_thread_starts_for_test(false);
+
+        let (gate, opened) = std::sync::mpsc::channel::<()>();
+        let (status, first) = submit_job(pool, move || opened.recv().is_ok());
+        assert_eq!(status, Ok(()));
+        handle.fail_thread_starts_for_test(true);
+        let (status, second) = submit_job(pool, || 2);
+        assert_eq!(status, Ok(()), "the running thread takes the job next");
+        gate.send(()).unwrap();
+        assert!(first.recv_timeout(Duration::from_secs(10)).unwrap());
+        assert_eq!(second.recv_timeout(Duration::from_secs(10)).unwrap(), 2);
+        // SAFETY: both jobs finished; the test owns the pool.
+        unsafe { hew_blocking_pool_stop(pool) };
+    }
+
+    /// A detached offload is allowed to outlive the pool and cannot promise
+    /// progress for a newly submitted job.
+    #[test]
+    fn detached_thread_cannot_accept_a_job_when_replacement_fails() {
+        let pool = new_pool(1, Duration::from_secs(10));
+        let (started, detach) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        let job: Job<()> = (
+            Box::new(move || {
+                started
+                    .send(Detach::current().expect("abandonable job"))
+                    .unwrap();
+                blocked.recv().unwrap();
+            }),
+            done,
+        );
+        // SAFETY: the callback consumes its owned box and only uses these channels.
+        assert!(unsafe { submit_abandonable_owned(pool, run_boxed::<()>, Box::new(job)) }.is_ok());
+        detach
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .detach();
+        // SAFETY: the pool is live until stop below.
+        unsafe { &*pool }.fail_thread_starts_for_test(true);
+        let (status, _) = submit_job(pool, || ());
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(status, Err(PoolUnavailable::NoWorker));
+        // SAFETY: the test owns the pool and its offload finished.
+        unsafe { hew_blocking_pool_stop(pool) };
     }
 
     /// Run `job` on `pool` and wait for its value.

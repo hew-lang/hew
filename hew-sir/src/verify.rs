@@ -1581,7 +1581,9 @@ fn check_function_with_context(
     // One cleanup-suffix fixed point serves every terminator in the body. It
     // is a whole-function fact, so recomputing it per terminator costs the
     // square of the block count on a body with many fallible calls.
+    let cfg = crate::build_cfg_index(function);
     let cleanup_suffixes = crate::lifetime::cleanup_suffixes(function);
+    let mut failure_paths = FailurePaths::new(&blocks);
     for block in &function.blocks {
         for op in block.ops.iter().chain(block.terminator.materialization()) {
             verify_callable_operation(
@@ -1667,14 +1669,14 @@ fn check_function_with_context(
             function,
             block,
             &types,
-            &blocks,
+            &mut failure_paths,
+            &cfg,
             callable_context,
             &variants,
             &cleanup_suffixes,
             &mut diagnostics,
         );
     }
-    let cfg = crate::build_cfg_index(function);
     if blocks.contains_key(&function.entry) {
         let dominators = crate::compute_indexed_dominators(&cfg);
         for block in &function.blocks {
@@ -1702,15 +1704,21 @@ fn check_function_with_context(
     }
     let mut lifetimes = None;
     if let Ok(projections) = projections {
-        let analysis =
-            crate::lifetime::verify(function, &projections, facts, aggregate_shapes, &|ty| {
+        let analysis = crate::lifetime::verify(
+            function,
+            &projections,
+            facts,
+            aggregate_shapes,
+            cleanup_suffixes,
+            &|ty| {
                 crate::resource::release_may_fault(
                     &crate::resource::authored_close_in_module(resources),
                     aggregate_shapes,
                     variant_shapes,
                     ty,
                 )
-            });
+            },
+        );
         diagnostics.extend(analysis.violations.into_iter().map(|violation| {
             if violation.linear_obligation {
                 let binding = violation
@@ -2780,7 +2788,7 @@ fn verify_indirect_call(
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
     facts: &TypeFactTable,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
     context: Option<&CallableContext<'_>>,
 ) -> Result<(), String> {
     let SemTerminator::IndirectCall {
@@ -2797,7 +2805,7 @@ fn verify_indirect_call(
     else {
         unreachable!()
     };
-    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_paths.matches_exit(edge, None))
     {
         return Err(
             "indirect call requires cleanup that propagates the original fault".to_string(),
@@ -2903,7 +2911,7 @@ fn verify_dyn_call(
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
     facts: &TypeFactTable,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
     context: Option<&CallableContext<'_>>,
 ) -> Result<(), String> {
     let SemTerminator::DynCall {
@@ -2923,7 +2931,7 @@ fn verify_dyn_call(
     if signature.failure_domain != hew_types::CallableFailureDomain::HewFault {
         return Err("dynamic dispatch requires the recoverable fault ABI".into());
     }
-    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_paths.matches_exit(edge, None))
     {
         return Err(
             "dynamic dispatch requires cleanup that propagates the original fault".to_string(),
@@ -4788,7 +4796,7 @@ fn verify_runtime_call_terminator(
     normal: &crate::Edge,
     unwind: &crate::CallUnwind,
     types: &HashMap<ValueId, ResolvedTy>,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
     shapes: &VariantVerifyContext<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
@@ -4896,9 +4904,12 @@ fn verify_runtime_call_terminator(
             // The call never returns, so its mandatory normal edge is only
             // a structural continuation: the lifetime pass does not follow it.
             let unreachable_target = normal.args.is_empty()
-                && blocks.get(&normal.target).is_some_and(|block| {
-                    matches!(block.terminator, crate::SemTerminator::Unreachable)
-                });
+                && failure_paths
+                    .blocks
+                    .get(&normal.target)
+                    .is_some_and(|block| {
+                        matches!(block.terminator, crate::SemTerminator::Unreachable)
+                    });
             if !unreachable_target {
                 invalid_operation(
                     function,
@@ -4979,7 +4990,7 @@ fn verify_runtime_call_terminator(
             } else {
                 crate::runtime_failure_trap_kind(failures[0])
             };
-            if !failure_cfg_matches_exit(edge, expected, blocks) {
+            if !failure_paths.matches_exit(edge, expected) {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
@@ -5005,7 +5016,7 @@ fn verify_value_call_terminator(
     function: &SemFunction,
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     let SemTerminator::ValueCall {
@@ -5046,7 +5057,7 @@ fn verify_value_call_terminator(
             diagnostics,
         );
     }
-    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+    if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_paths.matches_exit(edge, None))
     {
         invalid_operation(
             function,
@@ -5083,7 +5094,7 @@ fn verify_checked_binary_terminator(
     normal: &crate::Edge,
     failures: &[crate::CheckedFailure],
     types: &HashMap<ValueId, ResolvedTy>,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     let (Some(lhs_ty), Some(rhs_ty)) = (types.get(&lhs.value), types.get(&rhs.value)) else {
@@ -5142,7 +5153,7 @@ fn verify_checked_binary_terminator(
         );
     }
     for failure in failures {
-        if !failure_cfg_matches_exit(&failure.edge, Some(failure.kind), blocks) {
+        if !failure_paths.matches_exit(&failure.edge, Some(failure.kind)) {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::InvalidTerminator {
@@ -5261,23 +5272,24 @@ fn interceptor_refusal_origin(
 fn checked_raise_origin(
     target: BlockId,
     kind: crate::TrapKind,
-    function: &SemFunction,
+    entry: BlockId,
+    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    cfg: &crate::CfgIndex,
     visiting: &mut BTreeSet<BlockId>,
 ) -> bool {
-    if target == function.entry || !visiting.insert(target) {
+    if target == entry || !visiting.insert(target) {
         return false;
     }
-    let mut found = false;
-    for block in &function.blocks {
-        let mut incoming = Vec::new();
-        block.terminator.visit_successors_with_slots(|slot, edge| {
-            if edge.target == target {
-                incoming.push(slot);
-            }
-        });
-        for slot in incoming {
-            found = true;
-            let valid = match &block.terminator {
+    // The CFG index names each incoming edge; scanning every block per raise
+    // made verification quadratic in the number of checked operations.
+    let predecessors = cfg.predecessors_of(target);
+    for edge in predecessors {
+        let Some(block) = blocks.get(&edge.source) else {
+            return false;
+        };
+        let slot = edge.slot;
+        let valid =
+            match &block.terminator {
                 SemTerminator::Materialize { .. } => {
                     slot.0 == 1 && kind == crate::TrapKind::HeapExceeded
                 }
@@ -5307,144 +5319,158 @@ fn checked_raise_origin(
                                 | SemOpKind::DestroyValue { .. }
                                 | SemOpKind::EndLifetime { .. }
                         )
-                    }) && checked_raise_origin(block.id, kind, function, visiting)
+                    }) && checked_raise_origin(block.id, kind, entry, blocks, cfg, visiting)
                 }
                 _ => false,
             };
-            if !valid {
-                return false;
-            }
+        if !valid {
+            return false;
         }
     }
     visiting.remove(&target);
-    found
+    !predecessors.is_empty()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "recursive fault-cleanup proof covers each permitted terminator"
-)]
-fn failure_cfg_matches_exit(
-    edge: &crate::Edge,
-    expected: Option<crate::TrapKind>,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
-) -> bool {
-    fn reaches_only_matching_exits(
-        block_id: BlockId,
-        expected: Option<crate::TrapKind>,
-        blocks: &BTreeMap<BlockId, &crate::SemBlock>,
-        visiting: &mut std::collections::HashSet<BlockId>,
-        complete: &mut std::collections::HashSet<BlockId>,
-    ) -> bool {
-        if complete.contains(&block_id) {
-            return true;
+/// Proofs are valid for this immutable function and this exact exit requirement.
+struct FailurePaths<'a> {
+    blocks: &'a BTreeMap<BlockId, &'a crate::SemBlock>,
+    proofs: HashMap<(BlockId, Option<crate::TrapKind>), bool>,
+}
+
+impl<'a> FailurePaths<'a> {
+    fn new(blocks: &'a BTreeMap<BlockId, &'a crate::SemBlock>) -> Self {
+        Self {
+            blocks,
+            proofs: HashMap::new(),
         }
-        if !visiting.insert(block_id) {
-            return false;
-        }
-        let Some(block) = blocks.get(&block_id) else {
-            return false;
-        };
-        // Releases, the re-publication of a seat a call took and handed back
-        // on this edge, the rebuilding of an owner opened around it, and the
-        // moves and plain copies that hand a failing `var self` method's
-        // receiver back. Nothing else runs on a failure edge.
-        if block.ops.iter().any(|op| {
-            !matches!(
-                op.kind,
-                SemOpKind::EndBorrow { .. }
-                    | SemOpKind::TaskScopeClose { .. }
-                    | SemOpKind::DestroyValue { .. }
-                    | SemOpKind::EndLifetime { .. }
-                    | SemOpKind::StoreInit { .. }
-                    | SemOpKind::LoadTake { .. }
-                    | SemOpKind::Destructure { .. }
-                    | SemOpKind::AggregateMake { .. }
-            ) && !crate::lifetime::is_plain_copy(op)
-        }) {
-            return false;
-        }
-        let valid = match &block.terminator {
-            SemTerminator::Suspend {
-                kind:
-                    crate::SuspendKind::Join {
-                        mode: crate::TaskScopeJoinMode::PropagateFault,
-                        ..
-                    },
-                resumes,
-                cancel,
-                unwind,
-                ..
-            } => {
-                expected.is_none()
-                    && resumes.iter().chain([cancel, unwind]).all(|edge| {
-                        reaches_only_matching_exits(edge.target, None, blocks, visiting, complete)
-                    })
-            }
-            SemTerminator::EnterDefer { .. }
-            | SemTerminator::FinishDefer { .. }
-            | SemTerminator::RecoverFault { .. }
-            | SemTerminator::ResumeUnwind { .. } => expected.is_none(),
-            SemTerminator::CheckedRaiseFault { kind, .. } => expected == Some(*kind),
-            SemTerminator::CleanupDispatch { fault, .. } => {
-                expected.is_none()
-                    && reaches_only_matching_exits(fault.target, None, blocks, visiting, complete)
-            }
-            SemTerminator::Trap { kind } => Some(*kind) == expected,
-            SemTerminator::Goto(next) => {
-                reaches_only_matching_exits(next.target, expected, blocks, visiting, complete)
-            }
-            SemTerminator::Branch {
-                then_target,
-                else_target,
-                ..
-            } => {
-                reaches_only_matching_exits(
-                    then_target.target,
-                    expected,
-                    blocks,
-                    visiting,
-                    complete,
-                ) && reaches_only_matching_exits(
-                    else_target.target,
-                    expected,
-                    blocks,
-                    visiting,
-                    complete,
-                )
-            }
-            SemTerminator::Return { .. }
-            | SemTerminator::Panic { .. }
-            | SemTerminator::Materialize { .. }
-            | SemTerminator::CheckedBinary { .. }
-            | SemTerminator::SwitchVariant { .. }
-            | SemTerminator::Call { .. }
-            | SemTerminator::WireCodec { .. }
-            | SemTerminator::RtCall { .. }
-            | SemTerminator::ExternCall { .. }
-            | SemTerminator::ActorCall { .. }
-            | SemTerminator::ValueCall { .. }
-            | SemTerminator::IndirectCall { .. }
-            | SemTerminator::DynCall { .. }
-            | SemTerminator::Suspend { .. }
-            | SemTerminator::Safepoint { .. }
-            | SemTerminator::Unreachable => false,
-        };
-        visiting.remove(&block_id);
-        if valid {
-            complete.insert(block_id);
-        }
-        valid
     }
 
-    reaches_only_matching_exits(
-        edge.target,
-        expected,
-        blocks,
-        &mut std::collections::HashSet::new(),
-        &mut std::collections::HashSet::new(),
-    )
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the failure-path proof exhaustively checks cleanup terminators"
+    )]
+    fn matches_exit(&mut self, edge: &crate::Edge, expected: Option<crate::TrapKind>) -> bool {
+        enum Step {
+            Enter(BlockId),
+            Finish(BlockId),
+        }
+        if let Some(known) = self.proofs.get(&(edge.target, expected)) {
+            return *known;
+        }
+        let mut pending = vec![Step::Enter(edge.target)];
+        while let Some(step) = pending.pop() {
+            let id = match step {
+                Step::Enter(id) => id,
+                Step::Finish(id) => {
+                    self.proofs.insert((id, expected), true);
+                    continue;
+                }
+            };
+            // An unfinished proof rejects a backedge. If any successor fails,
+            // every unfinished ancestor reaches it and its false answer is final.
+            // Siblings still queued for entry have no provisional answer.
+            if let Some(&known) = self.proofs.get(&(id, expected)) {
+                if known {
+                    continue;
+                }
+                return false;
+            }
+            self.proofs.insert((id, expected), false);
+            pending.push(Step::Finish(id));
+            let Some(block) = self.blocks.get(&id) else {
+                return false;
+            };
+            // Releases, the re-publication of a seat a call took and handed back
+            // on this edge, the rebuilding of an owner opened around it, and the
+            // moves and plain copies that hand a failing `var self` method's
+            // receiver back. Nothing else runs on a failure edge.
+            if block.ops.iter().any(|op| {
+                !matches!(
+                    op.kind,
+                    SemOpKind::EndBorrow { .. }
+                        | SemOpKind::TaskScopeClose { .. }
+                        | SemOpKind::DestroyValue { .. }
+                        | SemOpKind::EndLifetime { .. }
+                        | SemOpKind::StoreInit { .. }
+                        | SemOpKind::LoadTake { .. }
+                        | SemOpKind::Destructure { .. }
+                        | SemOpKind::AggregateMake { .. }
+                ) && !crate::lifetime::is_plain_copy(op)
+            }) {
+                return false;
+            }
+            match &block.terminator {
+                SemTerminator::Suspend {
+                    kind:
+                        crate::SuspendKind::Join {
+                            mode: crate::TaskScopeJoinMode::PropagateFault,
+                            ..
+                        },
+                    resumes,
+                    cancel,
+                    unwind,
+                    ..
+                } if expected.is_none() => {
+                    pending.extend(
+                        resumes
+                            .iter()
+                            .chain([cancel, unwind])
+                            .rev()
+                            .map(|edge| Step::Enter(edge.target)),
+                    );
+                }
+                SemTerminator::EnterDefer { .. }
+                | SemTerminator::FinishDefer { .. }
+                | SemTerminator::RecoverFault { .. }
+                | SemTerminator::ResumeUnwind { .. } => {
+                    if expected.is_some() {
+                        return false;
+                    }
+                }
+                SemTerminator::CheckedRaiseFault { kind, .. } | SemTerminator::Trap { kind } => {
+                    if expected != Some(*kind) {
+                        return false;
+                    }
+                }
+                SemTerminator::CleanupDispatch { fault, .. } => {
+                    if expected.is_some() {
+                        return false;
+                    }
+                    pending.push(Step::Enter(fault.target));
+                }
+                SemTerminator::Goto(next) => pending.push(Step::Enter(next.target)),
+                SemTerminator::Branch {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push(Step::Enter(else_target.target));
+                    pending.push(Step::Enter(then_target.target));
+                }
+                SemTerminator::Return { .. }
+                | SemTerminator::Panic { .. }
+                | SemTerminator::Materialize { .. }
+                | SemTerminator::CheckedBinary { .. }
+                | SemTerminator::SwitchVariant { .. }
+                | SemTerminator::Call { .. }
+                | SemTerminator::WireCodec { .. }
+                | SemTerminator::RtCall { .. }
+                | SemTerminator::ExternCall { .. }
+                | SemTerminator::ActorCall { .. }
+                | SemTerminator::ValueCall { .. }
+                | SemTerminator::IndirectCall { .. }
+                | SemTerminator::DynCall { .. }
+                | SemTerminator::Suspend { .. }
+                | SemTerminator::Safepoint { .. }
+                | SemTerminator::Unreachable => return false,
+            }
+        }
+        true
+    }
 }
+
+#[cfg(test)]
+mod failure_path_tests;
 
 struct VariantVerifyContext<'a> {
     defs: &'a hew_types::DefTable,
@@ -5631,7 +5657,8 @@ fn verify_terminator_shape(
     function: &SemFunction,
     block: &crate::SemBlock,
     types: &HashMap<ValueId, ResolvedTy>,
-    blocks: &BTreeMap<BlockId, &crate::SemBlock>,
+    failure_paths: &mut FailurePaths<'_>,
+    cfg: &crate::CfgIndex,
     callable_context: Option<&CallableContext<'_>>,
     variants: &VariantVerifyContext<'_>,
     cleanup_suffixes: &BTreeMap<BlockId, usize>,
@@ -5662,7 +5689,7 @@ fn verify_terminator_shape(
         } => {
             if !operation.kind.is_managed_materialization(variants.shapes)
                 || operation.results.len() != 1
-                || !failure_cfg_matches_exit(failure, Some(crate::TrapKind::HeapExceeded), blocks)
+                || !failure_paths.matches_exit(failure, Some(crate::TrapKind::HeapExceeded))
             {
                 invalid_operation(
                     function,
@@ -5676,7 +5703,7 @@ fn verify_terminator_shape(
             cancel: Some(cancel),
             ..
         } => {
-            if !failure_cfg_matches_exit(cancel, None, blocks) {
+            if !failure_paths.matches_exit(cancel, None) {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
@@ -5707,7 +5734,7 @@ fn verify_terminator_shape(
                                 })
                             })
                 });
-            if !valid || !failure_cfg_matches_exit(unwind, None, blocks) {
+            if !valid || !failure_paths.matches_exit(unwind, None) {
                 diagnostics.push(diag(function, SirDiagnosticKind::InvalidTerminator { reason: "scope recovery requires owned Deadline/Fault string variants and a propagating cancellation edge".into() }));
             }
         }
@@ -5754,7 +5781,7 @@ fn verify_terminator_shape(
                             && value.own == OwnKind::of_ty(&value.ty, variants.facts)? => {}
                     _ => return Err("actor boundary result differs from its protocol".into()),
                 }
-                if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+                if !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_paths.matches_exit(edge, None))
                 {
                     return Err("actor boundary requires cleanup that propagates its fault".into());
                 }
@@ -5765,7 +5792,7 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::FinishDefer { next, .. } => {
-            if !defer_drain_suffix(next.target, blocks, &mut BTreeSet::new()) {
+            if !defer_drain_suffix(next.target, failure_paths.blocks, &mut BTreeSet::new()) {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
@@ -5777,7 +5804,7 @@ fn verify_terminator_shape(
             }
         }
         SemTerminator::CleanupDispatch { fault, .. } => {
-            if !failure_cfg_matches_exit(fault, None, blocks) {
+            if !failure_paths.matches_exit(fault, None) {
                 diagnostics.push(diag(
                     function,
                     SirDiagnosticKind::InvalidTerminator {
@@ -5791,7 +5818,14 @@ fn verify_terminator_shape(
             let refused_entry = *kind == crate::TrapKind::ActorRefused
                 && interceptor_refusal_origin(function, block.id, callable_context, variants);
             if !refused_entry
-                && !checked_raise_origin(block.id, *kind, function, &mut BTreeSet::new())
+                && !checked_raise_origin(
+                    block.id,
+                    *kind,
+                    function.entry,
+                    failure_paths.blocks,
+                    cfg,
+                    &mut BTreeSet::new(),
+                )
             {
                 diagnostics.push(diag(
                     function,
@@ -5800,7 +5834,7 @@ fn verify_terminator_shape(
                     },
                 ));
             }
-            if !failure_cfg_matches_exit(cleanup, None, blocks) {
+            if !failure_paths.matches_exit(cleanup, None) {
                 diagnostics.push(diag(function, SirDiagnosticKind::InvalidTerminator { reason: "checked raise requires bounded cleanup preserving its materialized fault".into() }));
             }
         }
@@ -5898,7 +5932,7 @@ fn verify_terminator_shape(
             normal,
             failures,
             types,
-            blocks,
+            failure_paths,
             diagnostics,
         ),
         call @ SemTerminator::IndirectCall { id, .. } => {
@@ -5907,7 +5941,7 @@ fn verify_terminator_shape(
                 call,
                 types,
                 variants.facts,
-                blocks,
+                failure_paths,
                 callable_context,
             ) {
                 invalid_operation(function, *id, reason, diagnostics);
@@ -5915,13 +5949,13 @@ fn verify_terminator_shape(
         }
         call @ SemTerminator::DynCall { id, .. } => {
             if let Err(reason) =
-                verify_dyn_call(call, types, variants.facts, blocks, callable_context)
+                verify_dyn_call(call, types, variants.facts, failure_paths, callable_context)
             {
                 invalid_operation(function, *id, reason, diagnostics);
             }
         }
         call @ SemTerminator::ValueCall { .. } => {
-            verify_value_call_terminator(function, call, types, blocks, diagnostics);
+            verify_value_call_terminator(function, call, types, failure_paths, diagnostics);
         }
         SemTerminator::Panic {
             message,
@@ -5951,7 +5985,7 @@ fn verify_terminator_shape(
                     },
                 ));
             }
-            if !failure_cfg_matches_exit(cleanup, None, blocks)
+            if !failure_paths.matches_exit(cleanup, None)
                 || cleanup_suffixes.get(&cleanup.target) != Some(&0)
             {
                 diagnostics.push(diag(
@@ -6050,7 +6084,7 @@ fn verify_terminator_shape(
             if !valid_input
                 || !valid_result
                 || !text_cases_valid
-                || !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_cfg_matches_exit(edge, None, blocks))
+                || !matches!(unwind, crate::CallUnwind::Cleanup(edge) if failure_paths.matches_exit(edge, None))
             {
                 invalid_operation(function, *id, "wire codec requires its exact borrowed input, complete result and fault cleanup".into(), diagnostics);
             }
@@ -6071,7 +6105,7 @@ fn verify_terminator_shape(
             normal,
             unwind,
             types,
-            blocks,
+            failure_paths,
             variants,
             diagnostics,
         ),

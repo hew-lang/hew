@@ -1654,6 +1654,7 @@ pub unsafe extern "C" fn hew_tcp_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_in_isolated_test_process;
     use std::ffi::CString;
     use std::io;
     use std::sync::{Mutex, PoisonError};
@@ -1739,32 +1740,6 @@ mod tests {
         unsafe { ((*(*server).ops).destroy.unwrap())((*server).r#impl) };
         // SAFETY: reclaim the transport box allocated by hew_transport_tcp_new.
         drop(unsafe { Box::from_raw(server) });
-    }
-
-    fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
-        if std::env::var_os(env_key).is_some() {
-            body();
-            return;
-        }
-
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("resolve current test binary"),
-        )
-        .arg(test_name)
-        .arg("--exact")
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env(env_key, "1")
-        .output()
-        .expect("spawn isolated test process");
-
-        assert!(
-            output.status.success(),
-            "isolated test process failed for {test_name} (status: {:?})\nstdout:\n{}\nstderr:\n{}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
     }
 
     /// The I/O balance check is live: a handle left open at runtime cleanup

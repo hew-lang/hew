@@ -742,10 +742,6 @@ fn parse_and_type_check_with_inputs(
     }
 }
 
-fn build_tokens(source: &str) -> Vec<hew_analysis::SemanticToken> {
-    hew_analysis::semantic_tokens::build_semantic_tokens(source)
-}
-
 fn build_symbols(
     source: &str,
     parse_result: &hew_parser::ParseResult,
@@ -1052,8 +1048,11 @@ fn run_analysis(source: &str) -> AnalysisResult {
 }
 
 fn run_analysis_with_inputs(source: &str, inputs: hew_compile::SourceSet) -> AnalysisResult {
-    let tokens = build_tokens(source);
     let analysis = parse_and_type_check_with_inputs(source, inputs);
+    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens_with_program(
+        source,
+        &analysis.parse_result.program,
+    );
     let type_info = analysis
         .type_output
         .as_ref()

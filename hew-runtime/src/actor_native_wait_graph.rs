@@ -185,17 +185,32 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
         return 0;
     }
     registration.pending = true;
+
+    let is_pending = |registration: &Registration| registration.armed && registration.pending;
+    let can_block = |edge: &HewActorWaitEdge| !edge.external_progress && !edge.targets.is_empty();
+    // An independent or non-pending alternative rules out this edge before
+    // the graph walk. Keep the edge pending so a later confirmation can close
+    // a cycle through it.
+    if !can_block(edge)
+        || edge
+            .targets
+            .iter()
+            .any(|target| !graph.get(target).is_some_and(is_pending))
+    {
+        return 0;
+    }
+
     // A turn is proven blocked only when every alternative is another proven
     // blocked turn. Remove escapes to readiness, independent sources, timers
     // and unregistered actors until the remaining closed set stops shrinking.
     let active: HashMap<_, _> = graph
         .iter()
-        .filter(|(_, registration)| registration.armed && registration.pending)
+        .filter(|(_, registration)| is_pending(registration))
         .filter_map(|(owner, registration)| registration.edge.upgrade().map(|edge| (*owner, edge)))
         .collect();
     let mut blocked: HashSet<_> = active
         .iter()
-        .filter(|(_, edge)| !edge.external_progress && !edge.targets.is_empty())
+        .filter(|(_, edge)| can_block(edge))
         .map(|(owner, _)| *owner)
         .collect();
     loop {

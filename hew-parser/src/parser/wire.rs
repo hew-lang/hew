@@ -383,6 +383,7 @@ impl Parser<'_> {
                 }
             }
             fields.push(TypeBodyItem::Field {
+                private_span: None,
                 name: field_name,
                 ty,
                 attributes,

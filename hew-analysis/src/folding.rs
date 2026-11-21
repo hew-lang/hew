@@ -12,18 +12,26 @@ use crate::{FoldingKind, FoldingRange};
 /// `FoldingRange` values with 0-based line numbers.
 #[must_use]
 pub fn build_folding_ranges(source: &str, parse_result: &ParseResult) -> Vec<FoldingRange> {
-    let lo = crate::util::compute_line_offsets(source);
+    build_folding_ranges_with_offsets(parse_result, &crate::util::compute_line_offsets(source))
+}
+
+/// Build folding ranges using the line starts for the same source snapshot.
+#[must_use]
+pub fn build_folding_ranges_with_offsets(
+    parse_result: &ParseResult,
+    line_offsets: &[usize],
+) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
-    collect_import_groups(source, &lo, &parse_result.program.items, &mut ranges);
+    collect_import_groups(line_offsets, &parse_result.program.items, &mut ranges);
     for (item, span) in &parse_result.program.items {
-        collect_item_folding(source, &lo, item, span, &mut ranges);
+        collect_item_folding(line_offsets, item, span, &mut ranges);
     }
     let mut visitor = FoldingVisitor {
-        source,
-        line_offsets: &lo,
+        line_offsets,
         ranges: &mut ranges,
     };
-    ast_visit::walk_parse_result(Some(source), parse_result, &mut visitor);
+    // Folding uses AST spans only; the visitor needs no source lookup for binding names.
+    ast_visit::walk_parse_result(None, parse_result, &mut visitor);
     ranges
 }
 
@@ -32,7 +40,6 @@ pub fn build_folding_ranges(source: &str, parse_result: &ParseResult) -> Vec<Fol
     reason = "line values will not exceed u32"
 )]
 fn collect_import_groups(
-    source: &str,
     line_offsets: &[usize],
     items: &[(Item, Span)],
     ranges: &mut Vec<FoldingRange>,
@@ -42,8 +49,8 @@ fn collect_import_groups(
     let mut count = 0u32;
     for (item, span) in items {
         if matches!(item, Item::Import(_)) {
-            let (sl, _) = crate::util::offset_to_line_col(source, line_offsets, span.start);
-            let (el, _) = crate::util::offset_to_line_col(source, line_offsets, span.end);
+            let sl = crate::util::offset_to_line(line_offsets, span.start);
+            let el = crate::util::offset_to_line(line_offsets, span.end);
             if import_start.is_none() {
                 import_start = Some(sl);
             }
@@ -79,9 +86,9 @@ fn collect_import_groups(
     clippy::cast_possible_truncation,
     reason = "line values will not exceed u32"
 )]
-fn add_region(source: &str, lo: &[usize], span: &Span, ranges: &mut Vec<FoldingRange>) {
-    let (sl, _) = crate::util::offset_to_line_col(source, lo, span.start);
-    let (el, _) = crate::util::offset_to_line_col(source, lo, span.end.saturating_sub(1));
+fn add_region(lo: &[usize], span: &Span, ranges: &mut Vec<FoldingRange>) {
+    let sl = crate::util::offset_to_line(lo, span.start);
+    let el = crate::util::offset_to_line(lo, span.end.saturating_sub(1));
     if el > sl {
         ranges.push(FoldingRange {
             start_line: sl as u32,
@@ -91,17 +98,11 @@ fn add_region(source: &str, lo: &[usize], span: &Span, ranges: &mut Vec<FoldingR
     }
 }
 
-fn collect_item_folding(
-    source: &str,
-    lo: &[usize],
-    item: &Item,
-    span: &Span,
-    r: &mut Vec<FoldingRange>,
-) {
+fn collect_item_folding(lo: &[usize], item: &Item, span: &Span, r: &mut Vec<FoldingRange>) {
     match item {
         Item::Actor(a) => {
-            add_region(source, lo, span, r);
-            collect_actor_folding(source, lo, a, r);
+            add_region(lo, span, r);
+            collect_actor_folding(lo, a, r);
         }
         Item::Macro(_)
         | Item::MacroCall(_)
@@ -113,20 +114,19 @@ fn collect_item_folding(
         | Item::Supervisor(_)
         | Item::Machine(_)
         | Item::Record(_) => {
-            add_region(source, lo, span, r);
+            add_region(lo, span, r);
         }
         Item::Import(_) | Item::Const(_) | Item::TypeAlias(_) => {}
     }
 }
 
-fn collect_actor_folding(source: &str, lo: &[usize], actor: &ActorDecl, r: &mut Vec<FoldingRange>) {
+fn collect_actor_folding(lo: &[usize], actor: &ActorDecl, r: &mut Vec<FoldingRange>) {
     for recv in &actor.receive_fns {
-        add_region(source, lo, &recv.span, r);
+        add_region(lo, &recv.span, r);
     }
 }
 
 struct FoldingVisitor<'a> {
-    source: &'a str,
     line_offsets: &'a [usize],
     ranges: &'a mut Vec<FoldingRange>,
 }
@@ -148,7 +148,7 @@ impl<'ast> AstVisitor<'ast> for FoldingVisitor<'_> {
                 | Stmt::Loop { .. }
                 | Stmt::WhileLet { .. }
         ) {
-            add_region(self.source, self.line_offsets, span, self.ranges);
+            add_region(self.line_offsets, span, self.ranges);
         }
     }
 
@@ -169,7 +169,7 @@ impl<'ast> AstVisitor<'ast> for FoldingVisitor<'_> {
                 | Expr::Scope { .. }
                 | Expr::UnsafeBlock(_)
         ) {
-            add_region(self.source, self.line_offsets, span, self.ranges);
+            add_region(self.line_offsets, span, self.ranges);
         }
     }
 }
@@ -183,23 +183,32 @@ mod tests {
     }
 
     #[test]
-    fn fold_multiline_function_body() {
-        // Verify folding runs without panicking on multi-line code
-        let source = "fn main() {\n    let x = 1;\n    let y = 2;\n}";
-        let pr = parse(source);
-        let _ranges = build_folding_ranges(source, &pr);
-        // Folding depends on parser item spans; just verify no panic
+    fn fold_crlf_ranges_after_multibyte_text() {
+        let source =
+            "// 🌲\r\nimport std.os;\r\nimport std.fs;\r\nfn main() {\r\n    println(\"é\");\r\n}";
+        let parsed = parse(source);
+        let offsets = crate::util::compute_line_offsets(source);
+        let ranges = build_folding_ranges_with_offsets(&parsed, &offsets);
+        assert_eq!(ranges, build_folding_ranges(source, &parsed));
+        assert!(ranges.contains(&FoldingRange {
+            start_line: 3,
+            end_line: 5,
+            kind: FoldingKind::Region,
+        }));
     }
 
     #[test]
     fn fold_import_group() {
-        let source = "import std.os;\nimport std.fs;\nimport std.net;\nfn main() {}";
-        let pr = parse(source);
-        let ranges = build_folding_ranges(source, &pr);
-        let imports = ranges.iter().find(|r| r.kind == FoldingKind::Imports);
-        assert!(
-            imports.is_some(),
-            "consecutive imports should create fold range"
+        let source = "import std.os;\r\nimport std.fs.{\r\n    read,\r\n}; // Filesystem helpers.\r\n\r\n/// Entry point.\r\nfn main() {}";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let ranges = build_folding_ranges(source, &parsed);
+        let imports = ranges
+            .iter()
+            .find(|range| range.kind == FoldingKind::Imports);
+        assert_eq!(
+            imports.map(|range| (range.start_line, range.end_line)),
+            Some((0, 3))
         );
     }
 

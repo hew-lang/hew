@@ -246,6 +246,11 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "The contextual record field modifier before a field name and colon.",
+          "name": "storage.modifier.private.hew",
+          "match": "\\bprivate\\b(?=[ \\t]+[A-Za-z_][A-Za-z0-9_]*[ \\t]*:)"
+        },
+        {
           "comment": "Failure return `return error <expr>`. After `return`, `error` begins a failure return unless an operator, call, index, `?`, `as`, `else`, `handle` or terminator follows, in which case it stays an ordinary binding.",
           "match": "\\b(return)\\s+(error)(?=\\s+(?!(?:as|else|handle)\\b)[A-Za-z0-9_\"'{.])",
           "captures": {

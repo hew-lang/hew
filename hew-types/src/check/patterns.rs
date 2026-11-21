@@ -580,7 +580,7 @@ impl Checker {
             return;
         }
 
-        let Ty::Named { .. } = resolved else {
+        let Ty::Named { head, .. } = &resolved else {
             return;
         };
         let Some(td) = self.ty_type_def(&resolved).cloned() else {
@@ -694,6 +694,9 @@ impl Checker {
         let mut seen = HashSet::new();
         let mut invalid = false;
         for field in fields {
+            if !self.check_record_field_visible(*head, field.name.name.as_str(), &field.name_span) {
+                invalid = true;
+            }
             if !seen.insert(field.name.name.as_str()) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

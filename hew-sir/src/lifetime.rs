@@ -221,9 +221,17 @@ pub(crate) fn verify(
     projections: &crate::PlacePlan,
     facts: &crate::ownership::TypeFactTable,
     shapes: &[crate::SemAggregateShape],
+    cleanup_suffixes: BTreeMap<BlockId, usize>,
     release_may_fault: &dyn Fn(&hew_types::ResolvedTy) -> bool,
 ) -> Analysis {
-    let flow = Flow::new(function, projections, facts, shapes, release_may_fault);
+    let flow = Flow::new(
+        function,
+        projections,
+        facts,
+        shapes,
+        cleanup_suffixes,
+        release_may_fault,
+    );
     let mut lifetimes = PlaceLifetimes::new();
     if !flow.blocks.contains_key(&function.entry) {
         return Analysis {
@@ -547,6 +555,7 @@ impl<'a> Flow<'a> {
         projections: &'a crate::PlacePlan,
         facts: &crate::ownership::TypeFactTable,
         shapes: &[crate::SemAggregateShape],
+        cleanup_suffixes: BTreeMap<BlockId, usize>,
         release_may_fault: &dyn Fn(&hew_types::ResolvedTy) -> bool,
     ) -> Self {
         let fault_releases = fault_releases(function, release_may_fault);
@@ -799,7 +808,7 @@ impl<'a> Flow<'a> {
             local_indices,
             linear_places,
             linear_values,
-            cleanup_suffixes: cleanup_suffixes(function),
+            cleanup_suffixes,
             places_by_owner: places.iter().enumerate().fold(
                 BTreeMap::<OwnerRoot, Vec<usize>>::new(),
                 |mut grouped, (index, (_, owner))| {
@@ -2366,6 +2375,7 @@ mod tests {
             .unwrap(),
             &crate::ownership::TypeFactTable::new(),
             &[],
+            super::cleanup_suffixes(function),
             &|_| false,
         )
         .violations
@@ -2534,7 +2544,14 @@ mod tests {
         f.blocks[0].ops = entry;
         let rows = facts.into_rows();
         let plan = crate::place_plan(&hew_types::DefTable::new(), &f, &[], &rows).unwrap();
-        super::verify(&f, &plan, &rows, &[], release_may_fault)
+        super::verify(
+            &f,
+            &plan,
+            &rows,
+            &[],
+            super::cleanup_suffixes(&f),
+            release_may_fault,
+        )
     }
 
     /// A release that can run an authored `close` leaves the frame possibly

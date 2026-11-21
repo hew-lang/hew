@@ -401,7 +401,10 @@ pub(crate) fn semantic_tokens_full(
     let Some(doc) = server.documents.get(uri) else {
         return Ok(None);
     };
-    let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
+    let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens_with_program(
+        &doc.source,
+        &doc.parse_result.program,
+    );
     let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens)
         .map_err(|error| internal_error(error.message()))?;
     Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -502,8 +505,10 @@ pub(crate) fn folding_range(
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
 
-    let analysis_ranges =
-        hew_analysis::folding::build_folding_ranges(&doc.source, &doc.parse_result);
+    let analysis_ranges = hew_analysis::folding::build_folding_ranges_with_offsets(
+        &doc.parse_result,
+        &doc.line_offsets,
+    );
     let lsp_ranges: Vec<FoldingRange> = analysis_ranges
         .into_iter()
         .map(|r| FoldingRange {

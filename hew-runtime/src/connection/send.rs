@@ -4,6 +4,8 @@ use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use crate::blocking_pool::PoolUnavailable;
+use crate::internal::types::AskError;
 use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::set_last_error;
@@ -75,36 +77,54 @@ impl SendClaim {
 
     /// Transfer this lease to the existing pool. The caller never waits on the
     /// channel's send lock or on a peer accepting the frame.
+    ///
+    /// # Errors
+    /// Refuses before the frame is prepared: [`AskError::LocalShutdown`] when
+    /// the runtime's pool is missing or stopped, and
+    /// [`AskError::WorkerAtCapacity`] when no pool thread runs and none can be
+    /// started. Neither says anything about the destination.
     pub(crate) fn submit(
         self,
         prepare: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
         complete: impl FnOnce(Result<(), ChannelError>) + Send + 'static,
-    ) -> bool {
-        fn enqueue<F: FnOnce() + Send + 'static>(work: F) -> bool {
+    ) -> Result<(), AskError> {
+        fn enqueue<F: FnOnce() + Send + 'static>(work: F) -> Result<(), AskError> {
             unsafe extern "C" fn run<F: FnOnce()>(context: *mut std::ffi::c_void) {
                 // SAFETY: successful submission transfers this box to one callback.
                 let work = unsafe { Box::from_raw(context.cast::<F>()) };
                 work();
             }
             let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() else {
-                return false;
+                return Err(AskError::LocalShutdown);
             };
             let job = Box::into_raw(Box::new(work));
             // SAFETY: the installed pool receives an owned closure. Its send
             // lease keeps the connection alive until this callback returns.
-            if unsafe { crate::blocking_pool::submit_on_worker(pool, run::<F>, job.cast()) } == 0 {
-                true
-            } else {
-                // SAFETY: failed admission did not transfer the box.
-                drop(unsafe { Box::from_raw(job) });
-                false
-            }
+            unsafe { crate::blocking_pool::submit_on_worker(pool, run::<F>, job.cast()) }.map_err(
+                |reason| {
+                    // SAFETY: the pool only takes ownership on successful admission.
+                    drop(unsafe { Box::from_raw(job) });
+                    match reason {
+                        PoolUnavailable::Stopped => AskError::LocalShutdown,
+                        PoolUnavailable::NoWorker => AskError::WorkerAtCapacity,
+                    }
+                },
+            )
         }
         enqueue(move || complete(self.send_prepared_result(prepare)))
     }
 
     pub(crate) fn send(&self, frame: &[u8]) -> c_int {
         self.send_prepared(|| Some(frame))
+    }
+
+    /// Send a control frame from a local SWIM or registry-gossip encoder.
+    pub(super) fn send_gossip<B: AsRef<[u8]>>(&self, prepare: impl FnOnce() -> Option<B>) -> c_int {
+        if self.send_prepared_with_kind(prepare, true).is_ok() {
+            0
+        } else {
+            -1
+        }
     }
 
     pub(crate) fn send_prepared<B: AsRef<[u8]>>(
@@ -122,6 +142,14 @@ impl SendClaim {
         &self,
         prepare: impl FnOnce() -> Option<B>,
     ) -> Result<(), ChannelError> {
+        self.send_prepared_with_kind(prepare, false)
+    }
+
+    fn send_prepared_with_kind<B: AsRef<[u8]>>(
+        &self,
+        prepare: impl FnOnce() -> Option<B>,
+        known_gossip: bool,
+    ) -> Result<(), ChannelError> {
         if self.publication_removed.load(Ordering::Acquire) {
             return Err(ChannelError::Faulted);
         }
@@ -133,7 +161,7 @@ impl SendClaim {
                 .send_prepared(self.transport.as_ptr(), self.conn_id, || {
                     let frame = prepare()?;
                     if crate::observe::observe_hot_tier_enabled() {
-                        gossip = matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
+                        gossip = known_gossip || matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
                             Ok(crate::envelope::WireFrame::Control(control))
                             if matches!(control.ctrl_kind, crate::envelope::CTRL_SWIM | crate::envelope::CTRL_REGISTRY_GOSSIP));
                     }
@@ -286,7 +314,8 @@ pub(super) fn claim_swim_send_to_route(manager: &HewConnMgr, route_slot: u16) ->
         .find(|owner| owner.state.holds_connection() && owner.route_slot == route_slot)?
         .conn_id;
     let claim = claim_send_admitted(manager, conn_id, None, ClaimState::holds_connection)?;
-    (claim.route_slot == route_slot).then_some(claim)
+    (claim.route_slot == route_slot && super::supports_gossip(claim.peer_feature_flags))
+        .then_some(claim)
 }
 
 pub(super) unsafe fn send_preencoded_on_manager(
@@ -354,33 +383,6 @@ pub(crate) unsafe fn first_active_connection_for_test(
             }
         }
         -1
-    })
-}
-
-/// Return the negotiated feature flags for the active connection to `node_id`,
-/// or `0` if no active connection exists.
-///
-/// Used by membership gossip to check the negotiated control capability.
-///
-/// # Safety
-///
-/// `mgr` must be a valid pointer for the duration of the call.
-pub(crate) unsafe fn hew_connmgr_feature_flags_for_node(
-    mgr: *const HewConnMgr,
-    node_id: u16,
-) -> u32 {
-    if mgr.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `mgr` is valid.
-    let mgr_ref = unsafe { &*mgr };
-    mgr_ref.connections.access(|conns| {
-        for c in conns.iter() {
-            if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
-                return c.peer_feature_flags;
-            }
-        }
-        0
     })
 }
 

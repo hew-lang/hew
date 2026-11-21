@@ -333,7 +333,17 @@ fn try_dot_completions(
         }
     }
     if let Some(type_def) = lookup_type_def_for_receiver(tc, receiver_ty) {
+        let nominal = receiver_ty
+            .head()
+            .and_then(|head| head.declaration(&tc.defs));
         for (field_name, field_ty) in &type_def.fields {
+            if nominal.is_some_and(|id| {
+                tc.defs
+                    .inaccessible_record_field(id, field_name, tc.defs.root_module())
+                    .is_some()
+            }) {
+                continue;
+            }
             items.push(CompletionItem {
                 label: field_name.clone(),
                 kind: CompletionKind::Field,
@@ -686,12 +696,15 @@ fn try_struct_init_completions(
     let type_end = source.get(..brace_pos)?.trim_end().len();
     let checked = crate::identity::resolution_at(tc, 0, type_end.saturating_sub(1))
         .filter(|(span, _)| span.start >= type_end.saturating_sub(type_name.len()));
-    let type_def = match checked {
+    let (type_def, nominal) = match checked {
         Some((_, hew_types::check::scope::Resolution::Nominal(id))) => {
-            tc.type_defs.get(&id).cloned()?
+            (tc.type_defs.get(&id).cloned()?, Some(id))
         }
         Some(_) => return None,
-        None => method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
+        None => (
+            method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
+            tc.defs.lookup_nominal(type_name),
+        ),
     };
     if type_def.fields.is_empty() {
         return None;
@@ -700,6 +713,13 @@ fn try_struct_init_completions(
     let mut items: Vec<_> = type_def
         .fields
         .iter()
+        .filter(|(name, _)| {
+            nominal.is_none_or(|id| {
+                tc.defs
+                    .inaccessible_record_field(id, name, tc.defs.root_module())
+                    .is_none()
+            })
+        })
         .map(|(field_name, field_ty)| CompletionItem {
             label: field_name.clone(),
             kind: CompletionKind::Field,
@@ -1998,6 +2018,30 @@ fn probe(mat: Matcher, s: string) {
         );
 
         assert!(labels.iter().any(|label| label == "receiver_local"));
+    }
+
+    #[test]
+    fn record_completions_respect_the_fields_defining_module() {
+        let declaration = "pub type Entry { label: i64; private hidden: i64; } pub fn entry() -> Entry { Entry { label: 1, hidden: 2 } }";
+        for source in [
+            "fn main() { let e = records.entry(); let x = e./*cursor*/label; }",
+            "fn main() { let e = records.Entry { /*cursor*/label: 4, ..records.entry() }; }",
+        ] {
+            let output = type_check_with_modules(
+                &source.replace(CURSOR, ""),
+                &[(&["records"], None, declaration)],
+            );
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+            let items = items_at_cursor(source, Some(&output));
+            assert!(items.iter().any(|item| item.label == "label"), "{items:?}");
+            assert!(items.iter().all(|item| item.label != "hidden"), "{items:?}");
+        }
+        let local =
+            format!("{declaration} fn main() {{ let e = entry(); let x = e./*cursor*/hidden; }}");
+        let output = type_check(&local.replace(CURSOR, ""));
+        assert!(items_at_cursor(&local, Some(&output))
+            .iter()
+            .any(|item| item.label == "hidden"));
     }
 
     #[test]

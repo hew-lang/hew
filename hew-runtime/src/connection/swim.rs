@@ -16,9 +16,9 @@ use super::control::admitted_peer_identity;
 use super::gossip::reannounce_local_names;
 use super::handshake::supports_gossip;
 use super::identity_claim::publish_refuted_claim;
-use super::peer::authenticated_peer_node_id_for_conn;
-use super::send::{claim_swim_send_to_route, hew_connmgr_feature_flags_for_node};
-use super::{HewConnMgr, CONN_STATE_ACTIVE};
+use super::peer::active_gossip_peers;
+use super::send::claim_swim_send_to_route;
+use super::HewConnMgr;
 use crate::peer_binding::ClaimState;
 
 /// Encode a SWIM control frame from a payload.
@@ -204,11 +204,6 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
         return -1;
     }
 
-    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
-    let flags = unsafe { hew_connmgr_feature_flags_for_node(mgr, peer_node_id) };
-    if !supports_gossip(flags) {
-        return -1;
-    }
     let Some(send_claim) = claim_swim_send_to_route(mgr_ref, peer_node_id) else {
         return -1;
     };
@@ -219,7 +214,7 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     else {
         return -1;
     };
-    if send_claim.send(&bytes) != 0 {
+    if send_claim.send_gossip(|| Some(bytes)) != 0 {
         return -1;
     }
     if msg_type == crate::cluster::SWIM_MSG_PING_REQ {
@@ -270,7 +265,7 @@ pub(crate) unsafe fn hew_connmgr_announce_leave(mgr: *mut HewConnMgr) {
     // SAFETY: caller guarantees manager pointer validity for this call.
     for peer in unsafe { hew_connmgr_active_swim_peers(mgr) } {
         if let Some(claim) = claim_swim_send_to_route(mgr_ref, peer) {
-            if claim.send(&frame) == 0 {
+            if claim.send_gossip(|| Some(&frame)) == 0 {
                 claim.finish_departure();
             }
         }
@@ -291,26 +286,9 @@ pub(crate) unsafe fn hew_connmgr_active_swim_peers(mgr: *const HewConnMgr) -> Ve
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
-    mgr_ref
-        .connections
-        .access(|conns| {
-            conns
-                .iter()
-                .filter(|c| {
-                    c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                        && supports_gossip(c.peer_feature_flags)
-                        && c.peer_node_id != 0
-                })
-                .map(|c| (c.conn_id, c.peer_node_id))
-                .collect::<Vec<(c_int, u16)>>()
-        })
+    active_gossip_peers(mgr_ref)
         .into_iter()
-        // issue #2652 (D9, outbound): SWIM is control-plane traffic — an
-        // `Unverified` (delivery-only) or superseded peer must not be probed or
-        // relayed to. Keep only exact authenticated claim owners. The snapshot above
-        // ensures the claim-lock check never nests inside the `connections` guard.
-        .filter(|&(conn_id, _)| authenticated_peer_node_id_for_conn(mgr_ref, conn_id) != 0)
-        .map(|(_, node)| node)
+        .map(|peer| peer.route_slot)
         .collect()
 }
 

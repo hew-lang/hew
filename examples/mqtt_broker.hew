@@ -226,10 +226,7 @@ actor ClientHandler {
     }
     receive fn on_data(chunk: bytes) -> bool {
         var connected = true;
-        var next_buf = bytes.new();
-        next_buf.append(buf);
-        next_buf.append(chunk);
-        buf = next_buf;
+        buf.append(chunk);
         loop {
             let buf_len = buf.len();
             if buf_len < 2 {

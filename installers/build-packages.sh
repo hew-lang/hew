@@ -507,10 +507,10 @@ build_alpine() {
             warn "musl binary not found: ${musl_release}/hew"
         fi
 
-        if [[ -f "${musl_release_lib}/libhew.a" ]]; then
-            cp "${musl_release_lib}/libhew.a" "${staging}/lib/"
+        if [[ -f "${musl_release_lib}/libhew_native.a" ]]; then
+            cp "${musl_release_lib}/libhew_native.a" "${staging}/lib/libhew.a"
         else
-            warn "musl libhew.a not found: ${musl_release_lib}/libhew.a"
+            warn "musl runtime archive not found: ${musl_release_lib}/libhew_native.a"
         fi
 
         # Standard library sources (all .hew files, including subdirectories)

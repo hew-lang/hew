@@ -629,7 +629,7 @@ fn require_linux_cross_target_library(cross_triple: &str) {
 }
 
 /// Build `hew-lib` for the cross-arch Linux target in its native Cargo target
-/// directory so `find_hew_lib` can probe `target/<triple>/<profile>/libhew.a`
+/// directory so `find_hew_lib` can probe `target/<triple>/<profile>/libhew_native.a`
 /// directly without extra staging. The shared bootstrap validates that the
 /// archive exports current codegen-emitted runtime ABI symbols before reuse.
 #[cfg(target_os = "linux")]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and finish the shipped Hew runtime archive (`libhew.a` / `hew.lib`).
+"""Build and finish the native runtime archive before staging it for release.
 
 The `release-lib` Cargo profile gives `hew-runtime` line tables and every other
 crate none. Two things a profile cannot express are done here, in one place,

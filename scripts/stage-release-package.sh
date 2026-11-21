@@ -8,8 +8,8 @@
 #
 # The shared runtime for `hew build --link=dynamic` ships as
 # lib/libhew.so.<version> (lib/libhew.<version>.dylib on macOS). By default
-# (--shared-runtime auto) it is the versioned library hew-lib's build left
-# beside --native-lib; a target built without one (a staticlib-only cross
+# (--shared-runtime auto) use this source release's library beside --native-lib.
+# A target built without one (a staticlib-only cross
 # build, Windows) ships without it and `--link=dynamic` reports that.
 set -eu
 
@@ -139,11 +139,30 @@ case "$shared_runtime" in
 none) shared_runtime= ;;
 auto)
     shared_runtime=
-    for candidate in "$(dirname "$native_lib")"/libhew.so.* "$(dirname "$native_lib")"/libhew.*.dylib; do
-        [ -e "$candidate" ] || continue
-        [ -z "$shared_runtime" ] || die "more than one shared runtime beside $native_lib"
-        shared_runtime=$candidate
-    done
+    case "$native_triple" in
+    *-apple-darwin)
+        prefix=libhew.
+        suffix=.dylib
+        ;;
+    *-linux-gnu* | *-unknown-freebsd)
+        prefix=libhew.so.
+        suffix=
+        ;;
+    *) prefix= ;;
+    esac
+    if [ -n "$prefix" ]; then
+        # An older alias may still exist in a reused Cargo target directory.
+        version=$(awk -F'"' '
+            /^\[workspace\.package\]/ { package = 1; next }
+            /^\[/ { package = 0 }
+            package && /^version[[:space:]]*=/ { print $2; exit }
+        ' "$source_dir/Cargo.toml")
+        [ -n "$version" ] || die "missing workspace package version"
+        candidate="$(dirname "$native_lib")/$prefix$version$suffix"
+        if [ -f "$candidate" ]; then
+            shared_runtime=$candidate
+        fi
+    fi
     ;;
 *) [ -f "$shared_runtime" ] || die "missing shared runtime: $shared_runtime" ;;
 esac
@@ -228,6 +247,11 @@ if [ -n "$live_runtime" ]; then
         chmod +x "$package_root/bin/$companion$bin_suffix"
     done
     runtime_name=$(basename "$live_runtime")
+    case "$runtime_name" in
+    hew_native.dll) runtime_name=hew.dll ;;
+    libhew_native.dylib) runtime_name=libhew.dylib ;;
+    libhew_native.so) runtime_name=libhew.so ;;
+    esac
     cp -L "$live_runtime" "$package_root/lib/hew/$runtime_name"
     # Live modules record the runtime's versioned name (its SONAME); give it
     # that name too so their `$ORIGIN/..` search finds it.

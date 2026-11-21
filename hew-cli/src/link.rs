@@ -259,8 +259,8 @@ pub(crate) fn link_executable_with_hew_lib(
     // A compiler running from a recognized Cargo profile must link the archive
     // built in that same profile family. This is not instrumentation-specific:
     // `make hew-native` deliberately builds both target/debug/hew and its
-    // target/debug/libhew.a runtime, and selecting an older release-lib sibling
-    // would make ordinary local programs silently execute stale runtime code.
+    // target/debug/libhew_native.a runtime. Selecting an older release-lib
+    // sibling would make local programs silently execute stale runtime code.
     // Release compilers map to the shipped, non-LTO release-lib archive.
     let hew_lib = match hew_lib {
         Some(path) if path.is_file() => path.display().to_string(),
@@ -1618,6 +1618,12 @@ fn hew_lib_candidates(
     triple: &str,
     target_matches_host: bool,
 ) -> Vec<std::path::PathBuf> {
+    // Ignore archives left under the former Cargo name in reused target directories.
+    let cargo_name = match name {
+        "hew.lib" => "hew_native.lib",
+        "libhew.a" => "libhew_native.a",
+        _ => name,
+    };
     let (matching_profile, cargo_profiles): (Option<&str>, &[&str]) =
         match exe_dir.file_name().and_then(|name| name.to_str()) {
             // A debug compiler normally has a matching debug archive. Keep the
@@ -1643,13 +1649,13 @@ fn hew_lib_candidates(
     let mut candidates = Vec::new();
     if let Some(profile) = matching_profile {
         // Cross-target Cargo output first, then the host-profile archive next
-        // to the compiler (`target/debug/hew` + `target/debug/libhew.a`). A
+        // to the compiler (`target/debug/hew` + `target/debug/libhew_native.a`). A
         // release compiler deliberately maps to the sibling `release-lib`
         // profile because the plain release archive is not consumer-linkable.
         if let Some(target_dir) = exe_dir.parent() {
-            candidates.push(target_dir.join(triple).join(profile).join(name));
+            candidates.push(target_dir.join(triple).join(profile).join(cargo_name));
             if target_matches_host {
-                candidates.push(target_dir.join(profile).join(name));
+                candidates.push(target_dir.join(profile).join(cargo_name));
             }
         }
     }
@@ -1669,7 +1675,7 @@ fn hew_lib_candidates(
         candidates.extend(
             cargo_profiles
                 .iter()
-                .map(|profile| target_dir.join(triple).join(profile).join(name)),
+                .map(|profile| target_dir.join(triple).join(profile).join(cargo_name)),
         );
         // A native (non-cross-compiled) build has no `<triple>` segment: Cargo
         // writes straight to `<target-dir>/<profile>/<archive>`. The
@@ -1684,7 +1690,7 @@ fn hew_lib_candidates(
             candidates.extend(
                 cargo_profiles
                     .iter()
-                    .map(|profile| target_dir.join(profile).join(name)),
+                    .map(|profile| target_dir.join(profile).join(cargo_name)),
             );
         }
     }
@@ -1704,24 +1710,24 @@ fn hew_lib_candidates(
             .join("../../target")
             .join(triple)
             .join("release-lib")
-            .join(name),
+            .join(cargo_name),
         exe_dir
             .join("../../target")
             .join(triple)
             .join("release")
-            .join(name),
+            .join(cargo_name),
         exe_dir
             .join("../../target")
             .join(triple)
             .join("debug")
-            .join(name),
+            .join(cargo_name),
         // Same dir as the binary (target/debug/ or target/release/) for
         // host-target dev builds, preferring the release-lib sibling dir.
-        exe_dir.join("../release-lib").join(name),
-        exe_dir.join("../../target/release-lib").join(name),
-        exe_dir.join(name),
-        exe_dir.join("../../target/release").join(name),
-        exe_dir.join("../../target/debug").join(name),
+        exe_dir.join("../release-lib").join(cargo_name),
+        exe_dir.join("../../target/release-lib").join(cargo_name),
+        exe_dir.join(cargo_name),
+        exe_dir.join("../../target/release").join(cargo_name),
+        exe_dir.join("../../target/debug").join(cargo_name),
         // Existing WASI and runtime fallback paths.
         exe_dir
             .join("../../target/wasm32-wasip1/release")
@@ -3462,15 +3468,15 @@ mod tests {
 
         assert_eq!(
             candidates[0],
-            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/debug/libhew.a")
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/debug/libhew_native.a")
         );
         assert_eq!(
             candidates[1],
-            std::path::PathBuf::from("/repo/target/debug/libhew.a")
+            std::path::PathBuf::from("/repo/target/debug/libhew_native.a")
         );
         let release_lib = candidates
             .iter()
-            .position(|candidate| candidate.ends_with("target/release-lib/libhew.a"))
+            .position(|candidate| candidate.ends_with("target/release-lib/libhew_native.a"))
             .expect("release-lib fallback remains available");
         assert!(
             release_lib > 1,
@@ -3485,15 +3491,17 @@ mod tests {
 
         assert_eq!(
             candidates[0],
-            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/release-lib/libhew.a")
+            std::path::PathBuf::from(
+                "/repo/target/aarch64-apple-darwin/release-lib/libhew_native.a"
+            )
         );
         assert_eq!(
             candidates[1],
-            std::path::PathBuf::from("/repo/target/release-lib/libhew.a")
+            std::path::PathBuf::from("/repo/target/release-lib/libhew_native.a")
         );
         let plain_release = candidates
             .iter()
-            .position(|candidate| candidate.ends_with("target/release/libhew.a"))
+            .position(|candidate| candidate.ends_with("target/release/libhew_native.a"))
             .expect("plain release fallback remains available");
         assert!(
             plain_release > 1,
@@ -3509,15 +3517,15 @@ mod tests {
         let host = hew_lib_candidates(exe_dir, "libhew.a", triple, true);
         assert_eq!(
             host[0],
-            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew.a")
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew_native.a")
         );
         assert_eq!(
             host[1],
-            std::path::PathBuf::from("/repo/target/perf/libhew.a")
+            std::path::PathBuf::from("/repo/target/perf/libhew_native.a")
         );
         let stale_release_lib = host
             .iter()
-            .position(|candidate| candidate.ends_with("target/release-lib/libhew.a"))
+            .position(|candidate| candidate.ends_with("target/release-lib/libhew_native.a"))
             .expect("release-lib remains an installed/development fallback");
         assert!(
             stale_release_lib > 1,
@@ -3527,12 +3535,14 @@ mod tests {
         let cross = hew_lib_candidates(exe_dir, "libhew.a", triple, false);
         assert_eq!(
             cross[0],
-            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew.a"),
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew_native.a"),
             "cross compilation must preserve the custom profile below the target triple"
         );
         assert_ne!(
             cross.get(1),
-            Some(&std::path::PathBuf::from("/repo/target/perf/libhew.a")),
+            Some(&std::path::PathBuf::from(
+                "/repo/target/perf/libhew_native.a"
+            )),
             "a host custom-profile archive must not satisfy a cross-target link"
         );
     }
@@ -3545,9 +3555,9 @@ mod tests {
         // when both exist, the linkable release-lib one must win. The ordering
         // must hold for both platform archive names; matching is component-wise
         // (`Path::ends_with`) so `Path::join`'s host separator cannot skew it.
-        for (name, triple) in [
-            ("libhew.a", "aarch64-apple-darwin"),
-            ("hew.lib", "x86_64-pc-windows-msvc"),
+        for (name, cargo_name, triple) in [
+            ("libhew.a", "libhew_native.a", "aarch64-apple-darwin"),
+            ("hew.lib", "hew_native.lib", "x86_64-pc-windows-msvc"),
         ] {
             let exe_dir = std::path::Path::new("/repo/target/release");
             let candidates = hew_lib_candidates(exe_dir, name, triple, true);
@@ -3561,24 +3571,24 @@ mod tests {
             };
 
             // Host-fallback block: release-lib before the plain release archive.
-            // The flat `/repo/target/release-lib/{name}` candidate is the
+            // The flat `/repo/target/release-lib/{cargo_name}` candidate is the
             // earliest release-lib occurrence (pushed once by the
             // matching-profile block and again, redundantly, by the D10
             // flat-per-profile block) — always earlier than any
-            // `.../release/{name}` occurrence.
+            // `.../release/{cargo_name}` occurrence.
             assert!(
-                position(format!("/repo/target/release-lib/{name}"))
-                    < position(format!("/repo/target/release/{name}"))
+                position(format!("/repo/target/release-lib/{cargo_name}"))
+                    < position(format!("/repo/target/release/{cargo_name}"))
             );
             assert!(
-                position(format!("/repo/target/release-lib/{name}"))
-                    < position(format!("../../target/release/{name}"))
+                position(format!("/repo/target/release-lib/{cargo_name}"))
+                    < position(format!("../../target/release/{cargo_name}"))
             );
 
             // Cross-target block: <triple>/release-lib before <triple>/release.
             assert!(
-                position(format!("{triple}/release-lib/{name}"))
-                    < position(format!("{triple}/release/{name}"))
+                position(format!("{triple}/release-lib/{cargo_name}"))
+                    < position(format!("{triple}/release/{cargo_name}"))
             );
         }
     }
@@ -3588,12 +3598,12 @@ mod tests {
         let exe_dir = std::path::Path::new("/repo/target/debug");
         let candidates = hew_lib_candidates(exe_dir, "hew.lib", "x86_64-pc-windows-msvc", false);
         let cross_release = std::path::PathBuf::from(
-            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/release/hew.lib",
+            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/release/hew_native.lib",
         );
         let cross_debug = std::path::PathBuf::from(
-            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/debug/hew.lib",
+            "/repo/target/debug/../../target/x86_64-pc-windows-msvc/debug/hew_native.lib",
         );
-        let host_same_dir = std::path::PathBuf::from("/repo/target/debug/hew.lib");
+        let host_same_dir = std::path::PathBuf::from("/repo/target/debug/hew_native.lib");
         let cross_release_index = candidates
             .iter()
             .position(|path| path == &cross_release)
@@ -3615,9 +3625,10 @@ mod tests {
         let exe_dir = std::path::Path::new("/scratch/cargo-out/debug");
         let triple = "aarch64-unknown-linux-gnu";
         let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple, false);
-        let cross_debug =
-            std::path::PathBuf::from("/scratch/cargo-out/aarch64-unknown-linux-gnu/debug/libhew.a");
-        let host_debug = std::path::PathBuf::from("/scratch/cargo-out/debug/libhew.a");
+        let cross_debug = std::path::PathBuf::from(
+            "/scratch/cargo-out/aarch64-unknown-linux-gnu/debug/libhew_native.a",
+        );
+        let host_debug = std::path::PathBuf::from("/scratch/cargo-out/debug/libhew_native.a");
         let cross_debug_index = candidates
             .iter()
             .position(|path| path == &cross_debug)
@@ -3641,13 +3652,13 @@ mod tests {
         let exe_dir = std::path::Path::new("/scratch/isolated-target/release");
         let triple = "aarch64-apple-darwin";
         let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple, true);
-        let flat_debug = std::path::PathBuf::from("/scratch/isolated-target/debug/libhew.a");
+        let flat_debug = std::path::PathBuf::from("/scratch/isolated-target/debug/libhew_native.a");
         let flat_debug_index = candidates
             .iter()
             .position(|path| path == &flat_debug)
             .expect("flat debug archive under the custom target dir must be a candidate");
         let flat_release_lib =
-            std::path::PathBuf::from("/scratch/isolated-target/release-lib/libhew.a");
+            std::path::PathBuf::from("/scratch/isolated-target/release-lib/libhew_native.a");
         let flat_release_lib_index = candidates
             .iter()
             .position(|path| path == &flat_release_lib)

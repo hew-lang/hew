@@ -6,7 +6,7 @@
 //! `@rpath/libhew.<version>.dylib`. Releases install side by side, and a
 //! program never loads a runtime it was not built against.
 //!
-//! Cargo writes the library as plain `libhew.so` / `libhew.dylib`, so the
+//! Cargo writes the library as `libhew_native.so` / `libhew_native.dylib`, so the
 //! script also links the versioned name to it beside Cargo's output. A program
 //! or test linked against the in-tree runtime then resolves the name it records
 //! exactly as it does against an installed one.
@@ -23,7 +23,7 @@ fn main() {
         "linux" | "freebsd" => {
             let soname = format!("libhew.so.{version}");
             println!("cargo:rustc-link-arg-cdylib=-Wl,-soname,{soname}");
-            link_versioned_name(profile, "libhew.so", &soname);
+            link_versioned_name(profile, "libhew_native.so", &soname);
         }
         "macos" => {
             let name = format!("libhew.{version}.dylib");
@@ -34,18 +34,9 @@ fn main() {
             let numeric = version.split(['-', '+']).next().unwrap_or(&version);
             println!("cargo:rustc-link-arg-cdylib=-Wl,-current_version,{numeric}");
             println!("cargo:rustc-link-arg-cdylib=-Wl,-compatibility_version,{numeric}");
-            link_versioned_name(profile, "libhew.dylib", &name);
+            link_versioned_name(profile, "libhew_native.dylib", &name);
         }
         _ => {}
-    }
-    if std::env::var("TARGET").unwrap().ends_with("-windows-msvc") {
-        // Keep the runtime DLL's PDB beside that image with its own basename;
-        // the driver owns the ordinary hew.pdb. Two concurrent links must not
-        // share a PDB.
-        println!(
-            "cargo:rustc-link-arg-cdylib=/PDB:{}",
-            profile.join("hew-runtime.pdb").display()
-        );
     }
 }
 

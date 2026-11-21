@@ -189,7 +189,7 @@ function Resolve-UniqueCargoArtifact(
 $ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages 'release binary build'
 $ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages 'release-lib build'
 $Hew = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew.exe' 'release binary build' -Executable
-$ReleaseLib = Resolve-UniqueCargoArtifact $ReleaseLibArtifacts 'hew.lib' 'release-lib build'
+$ReleaseLib = Resolve-UniqueCargoArtifact $ReleaseLibArtifacts 'hew_native.lib' 'release-lib build'
 $ReleaseDir = Split-Path -Parent $Hew
 $ReleaseLibDir = Split-Path -Parent $ReleaseLib
 [System.IO.File]::WriteAllText(

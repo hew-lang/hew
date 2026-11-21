@@ -47,17 +47,17 @@ fn native_values_survive_calls_and_generations_retire_by_reachability() {
     let directory = tempfile::tempdir().unwrap();
     let runtime_dir =
         std::env::var_os("HEW_LIVE_RUNTIME_DIR").map_or_else(artifact_dir, PathBuf::from);
-    let runtime_name = if cfg!(target_os = "macos") {
-        "libhew.dylib"
+    let (cargo_name, runtime_name) = if cfg!(target_os = "macos") {
+        ("libhew_native.dylib", "libhew.dylib")
     } else {
-        "libhew.so"
+        ("libhew_native.so", "libhew.so")
     };
     let sdk = directory.path().join("sdk-original");
     let library = sdk.join("lib/hew");
     let modules = library.join("live-node");
     std::fs::create_dir_all(&modules).unwrap();
     let runtime = library.join(runtime_name);
-    std::fs::copy(runtime_dir.join(runtime_name), &runtime).unwrap();
+    std::fs::copy(runtime_dir.join(cargo_name), &runtime).unwrap();
     let object = compile(
         directory.path(),
         include_str!("counter.hew"),

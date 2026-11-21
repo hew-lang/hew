@@ -1,7 +1,7 @@
 # key	kind	package	unix_archive	windows_archive	cargo_args
 hew-bin	host-bin	hew-cli	hew	hew.exe	--bin hew
-hew-lib	host-staticlib	hew-lib	libhew.a	hew.lib	-
-hew-lib-cross	cross-staticlib	hew-lib	libhew.a	hew.lib	-
+hew-lib	host-staticlib	hew-lib	libhew_native.a	hew_native.lib	-
+hew-lib-cross	cross-staticlib	hew-lib	libhew_native.a	hew_native.lib	-
 hew-runtime	host-staticlib	hew-runtime	libhew_runtime.a	hew_runtime.lib	-
 hew-runtime-wasi	wasm-staticlib	hew-runtime	libhew_runtime.a	libhew_runtime.a	--no-default-features
 hew-std-wasi	wasm-staticlib	hew-std	libhew_std.a	libhew_std.a	-

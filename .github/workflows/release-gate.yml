@@ -778,7 +778,7 @@ jobs:
         run: |
           $destination = Join-Path $env:RUNNER_TEMP "release-windows-failure-binaries"
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          $required = @("target/debug/hew.exe", "target/debug/hew.lib")
+          $required = @("target/debug/hew.exe", "target/debug/hew_native.lib")
           $selected = @($required | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Item -LiteralPath $_ })
           $selected += @(Get-ChildItem -Path target/debug/deps -Filter "distributed_two_process_e2e-*.exe" -File -ErrorAction SilentlyContinue)
           # Select only compiled fixtures; temporary credentials and other files are never copied.
@@ -1100,7 +1100,7 @@ jobs:
             trap 'rm -rf "$SMOKE_DIR"' EXIT
             mkdir -p "$SMOKE_DIR/bin" "$SMOKE_DIR/lib"
             cp "target/$RELEASE_SMOKE_PROFILE/hew" "$SMOKE_DIR/bin/hew"
-            cp "target/$RELEASE_SMOKE_PROFILE/libhew.a" "$SMOKE_DIR/lib/libhew.a"
+            cp "target/$RELEASE_SMOKE_PROFILE/libhew_native.a" "$SMOKE_DIR/lib/libhew.a"
             "$SMOKE_DIR/bin/hew" --version
 
             # Smoke test — compile and run a .hew program with the staged runtime.

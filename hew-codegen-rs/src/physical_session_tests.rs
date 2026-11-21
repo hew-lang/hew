@@ -41,9 +41,9 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
         .unwrap()
         .to_path_buf();
     let runtime = binaries.join(if cfg!(target_os = "macos") {
-        "libhew.dylib"
+        "libhew_native.dylib"
     } else {
-        "libhew.so"
+        "libhew_native.so"
     });
     for (suffix, opt_level) in [("", OptLevel::O0), ("_o2", OptLevel::O2)] {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();

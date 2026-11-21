@@ -81,10 +81,10 @@ and shared runtime:
 
 ```sh
 make hew-native live-host
-target/debug/hew tool live --runtime target/debug/libhew.so
+target/debug/hew tool live --runtime target/debug/libhew_native.so
 ```
 
-On macOS the library is `libhew.dylib`. Enter declarations, statements or
+In a macOS source build use `target/debug/libhew_native.dylib`. Enter declarations, statements or
 expressions using ordinary Hew syntax. Values persist between inputs;
 initializers execute once. `:type expression` checks without execution,
 `:session` lists retained bindings, and `:clear` completes cleanup before

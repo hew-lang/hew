@@ -438,9 +438,13 @@ fn main() {
         "libhew.a is the single runtime/stdlib archive — libhew_std.a must \
          never be on the native link line:\n{log}",
     );
+    let runtime = hew_testutil::ensure_hew_lib_built()
+        .expect("compiled runtime archive")
+        .canonicalize()
+        .expect("canonical runtime archive path");
     assert!(
-        tokens.iter().any(|token| token.ends_with("libhew.a")),
-        "the runtime archive libhew.a must be on the link line:\n{log}",
+        tokens.iter().any(|token| Path::new(token) == runtime),
+        "the runtime archive must be on the link line:\n{log}",
     );
 }
 

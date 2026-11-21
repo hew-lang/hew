@@ -114,6 +114,9 @@
       ;; Keywords
       (,kw-re . font-lock-keyword-face)
 
+      ;; The record field modifier is contextual.
+      ("\\_<\\(private\\)\\_>[ \t]+[a-zA-Z_][a-zA-Z0-9_]*[ \t]*:" 1 font-lock-keyword-face)
+
       ;; Built-in types
       (,type-re . font-lock-type-face)
 

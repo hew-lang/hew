@@ -228,7 +228,9 @@ for completion_shell in $completion_shells; do
     *[!A-Za-z0-9_.-]*) die "invalid completion shell name: $completion_shell" ;;
     esac
     completion_path=$package_root/completions/hew.$completion_shell
-    "$package_root/bin/hew$bin_suffix" completions "$completion_shell" >"$completion_path" ||
+    # Launch the original binary. Windows can still hold the executable's
+    # image open during the rename that publishes the completed package.
+    "$bin_dir/hew$bin_suffix" completions "$completion_shell" >"$completion_path" ||
         die "completion generation failed for $completion_shell"
     [ -s "$completion_path" ] ||
         die "completion generation produced empty output for $completion_shell"

@@ -1,0 +1,32 @@
+#[max_heap(8)]
+actor Exact {
+    receive fn accept(value: i64) {
+        assert(value == 42);
+    }
+}
+
+#[max_heap(7)]
+actor Small {
+    receive fn ping() {}
+
+    receive fn accept(value: i64) {
+        panic("over-budget request entered the handler");
+    }
+}
+
+fn main() -> i64 {
+    let exact = spawn Exact;
+    exact.accept(42).expect("an eight-byte argument fits");
+    stop(exact);
+    stopped(exact);
+
+    let small = spawn Small;
+    small.ping().expect("an empty request fits");
+    match small.accept(42) {
+        .Err(.Trapped(info)) => assert(match info.kind { .HeapExceeded => true, _ => false }),
+        _ => return 2,
+    }
+    stopped(small);
+    println("scalar admission limit");
+    0
+}

@@ -211,6 +211,47 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             "hew.actor.{}.message.{}.managed",
             actor.id.0, handler.message_id
         );
+        let mut bytes = 0_u64;
+        let mut fields = Vec::new();
+        for (index, ty) in handler.params.iter().enumerate() {
+            let row = self.module.managed_types.get(ty).ok_or_else(|| {
+                CodegenError::FailClosed("request field lacks canonical managed row".into())
+            })?;
+            bytes = bytes.checked_add(row.slot_bytes).ok_or_else(|| {
+                CodegenError::FailClosed("request payload width overflows".into())
+            })?;
+            if let Some(callback) = self.managed_visit(ty)? {
+                fields.push((index, callback));
+            }
+        }
+        // Scalar slots still count against an actor's owner budget, but a
+        // request without managed children needs no traversal callback.
+        let visit = if fields.is_empty() {
+            pointer.const_null()
+        } else {
+            self.emit_actor_message_visit(&name, handler, structure, fields)?
+        };
+        let descriptor_ty = self
+            .ctx
+            .struct_type(&[self.ctx.i64_type().into(), pointer.into()], false);
+        let descriptor = self.llvm.add_global(descriptor_ty, None, &name);
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
+            self.ctx.i64_type().const_int(bytes, false).into(),
+            visit.into(),
+        ]));
+        Ok(descriptor.as_pointer_value())
+    }
+
+    fn emit_actor_message_visit(
+        &self,
+        name: &str,
+        handler: &hew_mir::physical::SemActorHandler,
+        structure: inkwell::types::StructType<'ctx>,
+        fields: Vec<(usize, FunctionValue<'ctx>)>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let function = self.llvm.add_function(
             &format!("{name}.visit"),
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
@@ -253,20 +294,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             value: function,
             fault_sink: None,
         };
-        let mut bytes = 0_u64;
-        for (index, ty) in handler.params.iter().enumerate() {
-            let row = self.module.managed_types.get(ty).ok_or_else(|| {
-                CodegenError::FailClosed("request field lacks canonical managed row".into())
-            })?;
-            bytes = bytes.checked_add(row.slot_bytes).ok_or_else(|| {
-                CodegenError::FailClosed("request payload width overflows".into())
-            })?;
-            if let Some(callback) = self.managed_visit(ty)? {
-                let slot = builder
-                    .build_struct_gep(structure, source, (index + 1) as u32, "message.field")
-                    .llvm_ctx("address initialized request field")?;
-                self.managed_child(&values, callback, slot, visitor)?;
-            }
+        for (index, callback) in fields {
+            let slot = builder
+                .build_struct_gep(structure, source, (index + 1) as u32, "message.field")
+                .llvm_ctx("address initialized request field")?;
+            self.managed_child(&values, callback, slot, visitor)?;
         }
         builder
             .build_unconditional_branch(done)
@@ -275,17 +307,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(Some(&self.ctx.i32_type().const_zero()))
             .llvm_ctx("complete typed request visit")?;
-        let descriptor_ty = self
-            .ctx
-            .struct_type(&[self.ctx.i64_type().into(), pointer.into()], false);
-        let descriptor = self.llvm.add_global(descriptor_ty, None, &name);
-        descriptor.set_linkage(Linkage::Internal);
-        descriptor.set_constant(true);
-        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
-            self.ctx.i64_type().const_int(bytes, false).into(),
-            function.as_global_value().as_pointer_value().into(),
-        ]));
-        Ok(descriptor.as_pointer_value())
+        Ok(function.as_global_value().as_pointer_value())
     }
 
     pub(super) fn emit_actor_state_managed(

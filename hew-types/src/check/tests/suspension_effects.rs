@@ -1464,6 +1464,23 @@ fn the_trait_object_layout_publishes_closure_slots_and_effects() {
 }
 
 #[test]
+fn cleanup_restores_inline_siblings_after_a_heap_member() {
+    let source = r"
+#[resource]
+type Ticket { id: i64; }
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+fn discard<T>(consume value: T) {}
+fn process(consume batch: (Option<Ticket>, Vec<Option<i64>>)) {
+    discard(batch);
+}
+fn main() {}
+";
+    assert_call_effect(source, "discard(batch)", SuspensionEffect::MaySuspend);
+    let plain = source.replace("sleep(1ms);", "");
+    assert_call_effect(&plain, "discard(batch)", SuspensionEffect::Never);
+}
+
+#[test]
 fn inline_recursive_cleanup_preserves_the_source_diagnostic() {
     let source = r"
 type Grow<T> {

@@ -195,15 +195,26 @@ pub struct TraitRegistry {
     type_params: HashMap<crate::TypeHead, Vec<crate::ParamHead>>,
 }
 
-type MarkerQuery = (Ty, MarkerTrait);
+/// One interned `(type, marker)` question. Derivation state is indexed by
+/// these ids, so recording that a member's answer feeds its container never
+/// clones or hashes the container's type again: a tuple of n members would
+/// otherwise cost n copies of the whole tuple.
+type QueryId = usize;
+
+struct MarkerQuery {
+    ty: std::rc::Rc<Ty>,
+    marker: MarkerTrait,
+    proven: bool,
+    queued: bool,
+    parent: Option<QueryId>,
+    users: HashSet<QueryId>,
+}
 
 struct MarkerDerivation<'a> {
-    facts: HashMap<MarkerQuery, bool>,
-    users: HashMap<MarkerQuery, HashSet<MarkerQuery>>,
-    parents: HashMap<MarkerQuery, Option<MarkerQuery>>,
-    pending: VecDeque<MarkerQuery>,
-    queued: HashSet<MarkerQuery>,
-    current: Option<MarkerQuery>,
+    ids: HashMap<MarkerTrait, HashMap<std::rc::Rc<Ty>, QueryId>>,
+    queries: Vec<MarkerQuery>,
+    pending: VecDeque<QueryId>,
+    current: Option<QueryId>,
     type_param_bound: &'a dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
 }
 
@@ -218,40 +229,63 @@ fn marker_type_contains(ty: &Ty, needle: &Ty) -> bool {
     false
 }
 
-impl MarkerDerivation<'_> {
-    fn schedule(&mut self, key: MarkerQuery) {
-        if self.queued.insert(key.clone()) {
-            self.pending.push_back(key);
+impl<'a> MarkerDerivation<'a> {
+    fn new(type_param_bound: &'a dyn Fn(crate::ParamHead, MarkerTrait) -> bool) -> Self {
+        Self {
+            ids: HashMap::new(),
+            queries: Vec::new(),
+            pending: VecDeque::new(),
+            current: None,
+            type_param_bound,
+        }
+    }
+
+    fn schedule(&mut self, id: QueryId) {
+        if !self.queries[id].queued {
+            self.queries[id].queued = true;
+            self.pending.push_back(id);
         }
     }
 
     fn query(&mut self, ty: &Ty, marker: MarkerTrait) -> bool {
-        let key = (ty.clone(), marker);
-        if let Some(current) = &self.current {
-            self.users
-                .entry(key.clone())
-                .or_default()
-                .insert(current.clone());
+        let known = self.ids.get(&marker).and_then(|ids| ids.get(ty)).copied();
+        let id = known.unwrap_or_else(|| {
+            let id = self.queries.len();
+            let key = std::rc::Rc::new(ty.clone());
+            self.ids.entry(marker).or_default().insert(key.clone(), id);
+            self.queries.push(MarkerQuery {
+                ty: key,
+                marker,
+                proven: true,
+                queued: false,
+                parent: self.current,
+                users: HashSet::new(),
+            });
+            id
+        });
+        if let Some(current) = self.current {
+            self.queries[id].users.insert(current);
         }
-        if let Some(proven) = self.facts.get(&key) {
-            return *proven;
+        if known.is_some() {
+            return self.queries[id].proven;
         }
         let mut ancestor = if matches!(ty, Ty::Named { head, args } if head.nominal().is_some() && !args.is_empty())
         {
-            self.current.as_ref()
+            self.current
         } else {
             None
         };
         let mut growing = false;
         while let Some(previous) = ancestor {
-            if previous.1 == marker {
+            let previous_query = &self.queries[previous];
+            if previous_query.marker == marker {
                 if let (
                     Ty::Named {
                         head: old_head,
                         args: old,
                     },
                     Ty::Named { head, args },
-                ) = (&previous.0, ty)
+                ) = (previous_query.ty.as_ref(), ty)
                 {
                     if old_head == head
                         && old.len() == args.len()
@@ -266,12 +300,11 @@ impl MarkerDerivation<'_> {
                     }
                 }
             }
-            ancestor = self.parents.get(previous).and_then(Option::as_ref);
+            ancestor = previous_query.parent;
         }
-        self.parents.insert(key.clone(), self.current.clone());
-        self.facts.insert(key.clone(), !growing);
+        self.queries[id].proven = !growing;
         if !growing {
-            self.schedule(key);
+            self.schedule(id);
         }
         !growing
     }
@@ -439,33 +472,25 @@ impl TraitRegistry {
         marker: MarkerTrait,
         type_param_bound: &dyn Fn(crate::ParamHead, MarkerTrait) -> bool,
     ) -> bool {
-        let mut visiting = MarkerDerivation {
-            facts: HashMap::new(),
-            users: HashMap::new(),
-            parents: HashMap::new(),
-            pending: VecDeque::new(),
-            queued: HashSet::new(),
-            current: None,
-            type_param_bound,
-        };
-        let root = (ty.clone(), marker);
+        let mut visiting = MarkerDerivation::new(type_param_bound);
+        // The first question interned is the root.
         visiting.query(ty, marker);
-        while let Some(key) = visiting.pending.pop_front() {
-            visiting.queued.remove(&key);
-            if !visiting.facts[&key] {
+        while let Some(id) = visiting.pending.pop_front() {
+            visiting.queries[id].queued = false;
+            if !visiting.queries[id].proven {
                 continue;
             }
-            visiting.current = Some(key.clone());
-            if !self.evaluate_marker(&key.0, key.1, &mut visiting) {
-                visiting.facts.insert(key.clone(), false);
-                if let Some(users) = visiting.users.get(&key).cloned() {
-                    for user in users {
-                        visiting.schedule(user);
-                    }
+            visiting.current = Some(id);
+            let ty = visiting.queries[id].ty.clone();
+            let marker = visiting.queries[id].marker;
+            if !self.evaluate_marker(&ty, marker, &mut visiting) {
+                visiting.queries[id].proven = false;
+                for user in std::mem::take(&mut visiting.queries[id].users) {
+                    visiting.schedule(user);
                 }
             }
         }
-        visiting.facts[&root]
+        visiting.queries[0].proven
     }
 
     /// Coinductive marker facts start true and settle monotonically. Completed
@@ -932,6 +957,18 @@ mod tests {
 
     fn vector(element: Ty) -> Ty {
         Ty::builtin_named(BuiltinType::Vec, vec![element])
+    }
+
+    #[test]
+    fn a_wide_tuple_derives_its_markers_from_every_member() {
+        // Each member records its container as a user by id, so a wide tuple
+        // costs one copy of its type, not one per member.
+        let width = 20_000;
+        let mut members = vec![Ty::I64; width];
+        let registry = TraitRegistry::new();
+        assert!(registry.is_send(&Ty::Tuple(members.clone())));
+        members[width - 1] = Ty::rc(Ty::I64);
+        assert!(!registry.is_send(&Ty::Tuple(members)));
     }
 
     #[test]

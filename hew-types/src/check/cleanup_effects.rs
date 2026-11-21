@@ -570,7 +570,8 @@ struct CleanupPlace {
     ty: Ty,
     path: Vec<String>,
     own_close: bool,
-    inline_ancestors: Vec<Ty>,
+    /// Slice of the current depth-first path since the last heap boundary.
+    inline_ancestors: std::ops::Range<usize>,
     candidates: super::IndirectCallCandidates,
 }
 
@@ -589,41 +590,28 @@ fn cleanup_targets(
         ty: value.ty.substitute_type_params_parallel(substitutions),
         path: Vec::new(),
         own_close: value.own_close,
-        inline_ancestors: Vec::new(),
+        inline_ancestors: 0..0,
         candidates: value.candidates.clone(),
     }];
     let mut seen = HashSet::new();
+    let mut ancestors = Vec::new();
 
     while let Some(CleanupPlace {
         ty,
         path,
         own_close,
-        mut inline_ancestors,
+        inline_ancestors,
         candidates,
     }) = pending.pop()
     {
         // An inline containment cycle has no realizable value. Leave its layout
         // diagnostic to HIR instead of growing symbolic field projections while
         // checking cleanup effects. Heap boundaries start a new inline chain.
-        if inline_ancestors.contains(&ty) {
+        // Children are popped before their siblings. Restore the parent path
+        // and reuse its exact types for every child.
+        ancestors.truncate(inline_ancestors.end);
+        if ancestors[inline_ancestors.clone()].contains(&ty) {
             continue;
-        }
-        let inline = match ty.callable_body() {
-            Ty::Tuple(_) => true,
-            Ty::Named { head, .. } => match head.builtin() {
-                Some(BuiltinType::Option | BuiltinType::Result) => true,
-                None => head
-                    .nominal()
-                    .and_then(|id| model.definition(id))
-                    .is_some_and(|definition| !definition.is_indirect),
-                _ => false,
-            },
-            _ => false,
-        };
-        if inline {
-            inline_ancestors.push(ty.clone());
-        } else {
-            inline_ancestors.clear();
         }
         if value.absent.iter().any(|absent| path.starts_with(absent)) {
             continue;
@@ -663,6 +651,24 @@ fn cleanup_targets(
         if model.trivial(&ty) {
             continue;
         }
+        let inline = match ty.callable_body() {
+            Ty::Tuple(_) => true,
+            Ty::Named { head, .. } => match head.builtin() {
+                Some(BuiltinType::Option | BuiltinType::Result) => true,
+                None => head
+                    .nominal()
+                    .and_then(|id| model.definition(id))
+                    .is_some_and(|definition| !definition.is_indirect),
+                _ => false,
+            },
+            _ => false,
+        };
+        let child_ancestors = if inline {
+            ancestors.push(ty.clone());
+            inline_ancestors.start..ancestors.len()
+        } else {
+            ancestors.len()..ancestors.len()
+        };
         let mut child = |label: String, ty: Ty, candidates| {
             let mut child_path = path.clone();
             child_path.push(label);
@@ -670,7 +676,7 @@ fn cleanup_targets(
                 ty,
                 path: child_path,
                 own_close: false,
-                inline_ancestors: inline_ancestors.clone(),
+                inline_ancestors: child_ancestors.clone(),
                 candidates,
             });
         };

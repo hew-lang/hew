@@ -9,9 +9,9 @@ hew check path/to/main.hew
 hew build path/to/main.hew
 ```
 
-For multi-file compile/typecheck flows, `hew check` and `hew build` operate
-on a single entry-point file and resolve imports recursively from there. Pass
-`main.hew` (or your real top-level entry file), not every file in the tree.
+For a multi-file program, `hew check` and `hew build` follow imports from
+the package entry point. Run them in the package, pass the package directory,
+or give an explicit entry file such as `main.hew`.
 
 For the standard bootstrap flow, start with `hew init <name>` so you get
 `hew.toml`, `main.hew`, and a merged `.gitignore`, then begin with

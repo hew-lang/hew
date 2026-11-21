@@ -153,10 +153,10 @@ See [`std/README.md`](std/README.md) for the canonical index of shipped stdlib m
 
 ### Multi-file programs & modules
 
-When you compile or typecheck a multi-file program with `hew check`,
-`hew build`, or `hew run`, pass one entry `.hew` file. Imports and
-directory-form modules pull in the rest, so pass `main.hew`, not every file in
-the tree.
+`hew check`, `hew build` and `hew run` use the entry point from `hew.toml`
+when run in a package. You can also pass a package directory or one entry
+file such as `main.hew`. The compiler follows its imports and directory-form
+modules.
 
 `hew doc` is different: it accepts either one `.hew` file or a directory tree
 of `.hew` files to document.

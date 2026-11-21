@@ -323,9 +323,10 @@ hew install           # install dependencies into .hew/packages/
 
 ## Multi-file projects
 
-For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
-entry-point file**. The compiler resolves imports recursively from that file,
-so you never need to list every source file on the command line.
+Run `hew check`, `hew build` or `hew run` in a package to use the entry
+point from `hew.toml`. These commands also accept a package directory or
+one entry-point file. When inspecting a file with `hew tool compile`, give
+its entry file explicitly. The compiler follows imports from the entry point.
 
 Given a project with this layout:
 

@@ -24,6 +24,7 @@ struct Frame {
     msg_type: i32,
     incarnation: u64,
     target: u16,
+    target_session: Option<u32>,
     gossip: Vec<(u16, u32, i32, u64)>,
 }
 
@@ -48,6 +49,9 @@ struct Mesh {
     phases_ms: [u64; 3],
     in_flight: Vec<Frame>,
     sent: u64,
+    /// The durable session each live process presents on a new connection.
+    sessions: [u32; 3],
+    next_publication: u64,
     /// A stalled node keeps its connections but neither runs nor reads; frames
     /// to and from it wait in the transport until the stall ends.
     stalled: Option<u16>,
@@ -95,6 +99,8 @@ impl Mesh {
             phases_ms,
             in_flight: Vec::new(),
             sent: 0,
+            sessions: [1; 3],
+            next_publication: 1,
             stalled: None,
             cut: Vec::new(),
             indirect: true,
@@ -123,19 +129,94 @@ impl Mesh {
         });
     }
 
+    /// Redial this pair of surviving nodes. Existing sessions that buried
+    /// each other send the opening refutation PING used on real connections.
+    fn redial(&mut self, a: u16, b: u16) {
+        self.cut.retain(|link| *link != [a, b] && *link != [b, a]);
+        let now = self.clock.load(Ordering::Relaxed);
+        for (observer, subject) in [(a, b), (b, a)] {
+            let session = self.sessions[Self::index(subject)];
+            if self.node(observer).member_session(subject) != Some(session) {
+                self.publish(observer, subject, session, now);
+            } else if self.node(observer).member_state(subject) == MEMBER_DEAD {
+                self.send(now, observer, subject, SWIM_MSG_PING, 0);
+            }
+        }
+    }
+
+    /// Restart `slot` as a fresh process with the next durable session. Its
+    /// connections drop with their frames, and each side then admits the
+    /// other's current session the way connection publication does.
+    fn restart(&mut self, slot: u16) {
+        let index = Self::index(slot);
+        self.in_flight
+            .retain(|frame| frame.from != slot && frame.to != slot);
+        self.sessions[index] += 1;
+        let node = HewCluster::new(make_config(slot));
+        node.upsert_member(slot, MEMBER_ALIVE, 1, &[]);
+        node.events.lock_or_recover().clear();
+        *node.membership_callback_binding.lock_or_recover() = *self.nodes[index]
+            .membership_callback_binding
+            .lock_or_recover();
+        self.nodes[index] = node;
+        if self.stalled == Some(slot) {
+            self.stalled = None;
+        }
+        for peer in SLOTS {
+            if peer != slot && self.stalled != Some(peer) && !self.is_cut(slot, peer) {
+                self.redial(slot, peer);
+            }
+        }
+    }
+
+    /// `observer` admits `subject`'s `session` on a fresh connection.
+    fn publish(&mut self, observer: u16, subject: u16, session: u32, now: u64) {
+        let token = self.next_publication;
+        self.next_publication += 1;
+        let node = &self.nodes[Self::index(observer)];
+        let sync = Arc::new(Mutex::new(()));
+        let removed = Arc::new(AtomicBool::new(false));
+        let cluster = std::ptr::from_ref(node).cast_mut();
+        // SAFETY: the node is live; the publication guards are fresh.
+        let published = unsafe {
+            hew_cluster_notify_connection_established_for_token_if_not_removed(
+                cluster, subject, session, token, &sync, &removed,
+            )
+        };
+        assert!(
+            published >= 0,
+            "slot {observer} rejected session {session} for {subject}"
+        );
+        node.update_last_seen(subject, now);
+    }
+
     /// Queue a frame with a deterministic 1–40 ms one-way latency, draining
     /// the sender's piggybacked gossip exactly as an outbound frame does. A
     /// frame on a cut link is lost after its gossip is spent.
     fn send(&mut self, now: u64, from: u16, to: u16, msg_type: i32, target: u16) {
         let sender = self.node(from);
+        let own_session = self.sessions[Self::index(from)];
         let gossip = sender
             .take_swim_gossip(to, sender.max_gossip_per_msg())
             .into_iter()
-            .map(|(slot, session, state, incarnation)| {
-                (slot, session.unwrap_or(1), state, incarnation)
+            .filter_map(|(slot, session, state, incarnation)| {
+                let session = if slot == from {
+                    Some(own_session)
+                } else {
+                    session
+                };
+                Some((slot, session?, state, incarnation))
             })
             .collect();
         let incarnation = sender.local_incarnation();
+        let target_session = if target == from {
+            Some(own_session)
+        } else {
+            sender.member_session(target)
+        };
+        if target != 0 && target_session.is_none() {
+            return;
+        }
         if self.is_cut(from, to) {
             return;
         }
@@ -147,12 +228,28 @@ impl Mesh {
             msg_type,
             incarnation,
             target,
+            target_session,
             gossip,
         });
     }
 
-    fn deliver(&mut self, now: u64, frame: &Frame) {
+    fn deliver(&mut self, now: u64, mut frame: Frame) {
         let receiver = self.node(frame.to);
+        let admitted_session = |subject| {
+            if subject == frame.to {
+                Some(self.sessions[Self::index(subject)])
+            } else {
+                receiver.member_session(subject)
+            }
+        };
+        if admitted_session(frame.from) != Some(self.sessions[Self::index(frame.from)])
+            || (frame.target != 0 && admitted_session(frame.target) != frame.target_session)
+        {
+            return;
+        }
+        frame
+            .gossip
+            .retain(|&(subject, session, _, _)| admitted_session(subject) == Some(session));
         receiver.apply_swim_gossip(&frame.gossip);
         receiver.refute_if_suspected(&frame.gossip);
         let replies = receiver.receive_swim_at(
@@ -196,7 +293,7 @@ impl Mesh {
                 frame.deliver_at <= now && stalled.is_none_or(|slot| frame.to != slot)
             }) {
                 let frame = self.in_flight.swap_remove(index);
-                self.deliver(now, &frame);
+                self.deliver(now, frame);
             }
             for (slot, phase) in SLOTS.into_iter().zip(self.phases_ms) {
                 if now % PERIOD_MS == phase {
@@ -453,4 +550,88 @@ fn dropped_burial_is_refuted_after_heal() {
         settled,
         "no refutation after rejoining"
     );
+}
+
+/// A restarted member returns on its next durable session: every peer
+/// admits that session and the mesh settles without anyone refuting again.
+#[test]
+fn restarted_member_rejoins_on_its_next_session() {
+    let _guard = crate::runtime_test_guard();
+    let restarted = SLOTS[2];
+    let mut mesh = Mesh::new(ALIGNED_PHASES_MS);
+    mesh.run_until(10_000);
+    mesh.restart(restarted);
+    for observer in [SLOTS[0], SLOTS[1]] {
+        assert_eq!(mesh.node(observer).member_session(restarted), Some(2));
+    }
+    let settle_by = 20_000;
+    mesh.run_until(settle_by);
+    mesh.assert_all_alive();
+    let settled = mesh.incarnations();
+    mesh.run_until(settle_by + 30_000);
+    assert_eq!(mesh.faults_since(settle_by), Vec::new());
+    assert_eq!(mesh.incarnations(), settled);
+}
+
+/// Lost frames and a host-wide clock jump may draw suspicion, but the mesh
+/// settles once traffic flows again.
+#[test]
+fn lost_frames_and_clock_jump_settle() {
+    let _guard = crate::runtime_test_guard();
+    let mut mesh = Mesh::new(SPREAD_PHASES_MS);
+    mesh.run_until(10_005);
+    assert!(
+        !mesh.in_flight.is_empty(),
+        "frames are in flight mid-period"
+    );
+    mesh.in_flight.clear();
+    let resumed_at = 10_005 + 2 * PERIOD_MS;
+    mesh.clock.store(resumed_at, Ordering::Relaxed);
+    let settle_by = resumed_at + 20_000;
+    mesh.run_until(settle_by);
+    mesh.assert_all_alive();
+    mesh.run_until(settle_by + 30_000);
+    assert_eq!(mesh.faults_since(settle_by), Vec::new());
+}
+
+#[test]
+fn cut_peer_learns_restarted_session_only_after_reconnection() {
+    let _guard = crate::runtime_test_guard();
+    let [observer, _, restarted] = SLOTS;
+    let mut mesh = Mesh::new(SPREAD_PHASES_MS);
+    mesh.cut_link(observer, restarted);
+    mesh.restart(restarted);
+    mesh.run_until(4_000);
+    assert_eq!(mesh.node(observer).member_session(restarted), Some(1));
+    mesh.redial(observer, restarted);
+    assert_eq!(mesh.node(observer).member_session(restarted), Some(2));
+    mesh.run_until(20_000);
+    mesh.assert_all_alive();
+}
+
+/// Two peers that buried each other have no live target to probe. Reconnecting
+/// their transports sends the opening obituary PING even with the third peer down.
+#[test]
+fn same_session_redial_rejoins_two_mutually_buried_survivors() {
+    let _guard = crate::runtime_test_guard();
+    let [first, second, down] = SLOTS;
+    let mut mesh = Mesh::new(ALIGNED_PHASES_MS);
+    mesh.run_until(100);
+    mesh.cut_link(first, second);
+    mesh.cut_link(first, down);
+    mesh.cut_link(second, down);
+    mesh.run_until(30_000);
+    for (observer, peer) in [(first, second), (second, first)] {
+        assert_eq!(mesh.node(observer).member_state(peer), MEMBER_DEAD);
+    }
+
+    mesh.redial(first, second);
+    mesh.run_until(40_000);
+    for (observer, peer) in [(first, second), (second, first)] {
+        assert_eq!(mesh.node(observer).member_session(peer), Some(1));
+        assert_eq!(mesh.node(observer).member_state(peer), MEMBER_ALIVE);
+        assert_eq!(mesh.node(observer).member_state(down), MEMBER_DEAD);
+    }
+    mesh.run_until(70_000);
+    assert!(mesh.faults_since(40_000).is_empty());
 }

@@ -2198,15 +2198,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_random_randint",
         },
     ),
-    direct(
-        "random.choices",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::VecAny, BuiltinTy::F64, BuiltinTy::I64],
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_random_choices_vec",
-        },
-    ),
     // Class B: Node namespace — distributed-node lifecycle builtins (A7 S1).
     //
     // Each entry maps the Hew `Node::X` call form to its `hew_node_api_X` C

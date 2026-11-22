@@ -1658,6 +1658,7 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
     host.prng = seededMt(integer(args, 0));
     return UNIT;
   },
+  hew_random_random: (host) => num(host.prng.random()),
   hew_random_randint: (host, args) => {
     const low = integer(args, 0);
     const high = integer(args, 1);

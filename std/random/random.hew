@@ -136,7 +136,7 @@ pub fn crypto_u64() -> u64 fails hash.RandomError {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-// All functions delegate to `hew-runtime/src/random.rs` via C ABI.
+// Scalar draws delegate to `hew-runtime/src/random.rs` via the C ABI.
 // The runtime entry points are thread-local: each OS thread has its own
 // MT state, seeded from OS entropy at first use.
 /// Seed the PRNG so subsequent calls produce a deterministic sequence.
@@ -218,17 +218,31 @@ pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 fails RandomError {
     var previous = 0.0;
     for i in 0..weights.len() {
         let weight = weights[i];
-        if weight <= previous || !weight.is_finite() {
+        if !(weight > previous) {
             return error RandomError.InvalidWeights("weights must be strictly increasing");
         }
         previous = weight;
     }
     if previous != total {
+        // A strictly increasing sequence can reach infinity only on the last step.
+        if !previous.is_finite() {
+            return error RandomError.InvalidWeights("weights must be strictly increasing");
+        }
         return error RandomError.InvalidWeights("total must equal the final cumulative weight");
     }
-    unsafe {
-        hew_random_choices_vec(weights, total, n)
+    // A draw rounded up to the total still selects the last weight.
+    let point = random() * total;
+    var low = 0;
+    var high = weights.len() - 1;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if point < weights[middle] {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
     }
+    low
 }
 
 // ── Runtime externs ───────────────────────────────────────────────────
@@ -237,5 +251,4 @@ extern "C" {
     fn hew_random_random() -> f64;
     fn hew_random_gauss(mu: f64, sigma: f64) -> f64;
     fn hew_random_randint(lo: i64, hi: i64) -> i64;
-    fn hew_random_choices_vec(v: Vec<f64>, total: f64, n: i64) -> i64;
 }

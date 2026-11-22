@@ -419,6 +419,12 @@ fn run_check_deep_gates(
     .map(Some)
 }
 
+#[derive(Clone, Copy)]
+enum ObjectEmission {
+    Monolithic,
+    AllowParallel,
+}
+
 fn emit_module(
     pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
@@ -439,7 +445,7 @@ fn emit_module(
         emit_llvm,
         None,
         source,
-        false,
+        ObjectEmission::Monolithic,
     )
 }
 
@@ -464,7 +470,7 @@ fn emit_module_with_triple(
     emit_llvm: bool,
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
-    allow_parallel_object: bool,
+    emission: ObjectEmission,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     let display_source = source_path.map(compile::debug_source_path);
     let options = hew_codegen_rs::PhysicalEmitOptions {
@@ -492,10 +498,11 @@ fn emit_module_with_triple(
                     .map(Path::to_path_buf)
             }),
     };
-    if allow_parallel_object {
-        hew_codegen_rs::physical::emit_static_executable_object(pipeline, &options)
-    } else {
-        hew_codegen_rs::emit_physical_object(pipeline, &options)
+    match emission {
+        ObjectEmission::Monolithic => hew_codegen_rs::emit_physical_object(pipeline, &options),
+        ObjectEmission::AllowParallel => {
+            hew_codegen_rs::physical::emit_static_executable_object(pipeline, &options)
+        }
     }
     .map_err(|error| {
         let channel = diagnostic::codegen_channel(&error);
@@ -526,7 +533,7 @@ fn emit_module_for_target(
     emit_llvm: bool,
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
-    allow_parallel_object: bool,
+    emission: ObjectEmission,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     emit_module_with_triple(
         pipeline,
@@ -539,7 +546,7 @@ fn emit_module_for_target(
         emit_llvm,
         source_path,
         source,
-        allow_parallel_object,
+        emission,
     )
 }
 
@@ -990,9 +997,14 @@ fn compile_build_binary_with_hew_lib(
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("module");
-    let allow_parallel_object = options.link.runtime == link::RuntimeLink::Static
+    let emission = if options.link.runtime == link::RuntimeLink::Static
         && !debug
-        && std::env::var_os("HEW_COVERAGE").is_none();
+        && std::env::var_os("HEW_COVERAGE").is_none()
+    {
+        ObjectEmission::AllowParallel
+    } else {
+        ObjectEmission::Monolithic
+    };
     let artefacts = emit_module_for_target(
         &physical,
         module_name,
@@ -1004,7 +1016,7 @@ fn compile_build_binary_with_hew_lib(
         emit_llvm,
         Some(input),
         Some(sources.root()),
-        allow_parallel_object,
+        emission,
     )?;
     if target.is_wasm() {
         link_wasm_module_for_target(&artefacts, output_path, target)?;
@@ -1123,7 +1135,7 @@ fn emit_obj_only(
         emit_llvm,
         if debug { Some(input) } else { None },
         Some(sources.root()),
-        false,
+        ObjectEmission::Monolithic,
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -1627,7 +1639,7 @@ fn compile_temp_wasi_module(
             false,
             None,
             Some(sources.root()),
-            false,
+            ObjectEmission::Monolithic,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             emit_semantic_error(

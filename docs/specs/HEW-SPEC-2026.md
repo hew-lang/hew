@@ -4284,7 +4284,7 @@ extern "C" {
 // Safe wrapper (public API)
 #[resource]
 pub type File {
-    fd: i32,
+    fd: i32;
 }
 
 impl File {

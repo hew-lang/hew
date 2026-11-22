@@ -285,11 +285,15 @@ mod tests {
     }
 
     #[test]
-    fn heading() {
+    fn headings_preserve_text_and_render_empty_content() {
+        let md = "# Café {#cafe}\n\nDetails {.topic}\n-------\n\n##  ";
         // SAFETY: test helper uses valid pointers.
-        let html = unsafe { md_to_html("# Hello World") };
-        assert!(html.contains("<h1>"), "expected <h1> in: {html}");
-        assert!(html.contains("Hello World"), "expected text in: {html}");
+        let (raw, safe) = unsafe { (md_to_html(md), md_to_html_safe(md)) };
+        assert_eq!(
+            raw,
+            "<h1 id=\"cafe\">Café</h1>\n<h2 class=\"topic\">Details</h2>\n<h2></h2>\n"
+        );
+        assert_eq!(safe, "<h1>Café</h1>\n<h2>Details</h2>\n<h2></h2>\n");
     }
 
     #[test]

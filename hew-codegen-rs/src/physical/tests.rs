@@ -809,120 +809,6 @@ fn checked_add_entry_module() -> SemModule {
     module
 }
 
-fn bytes_copy_module() -> SemModule {
-    let declaration = DefId::for_test("copy_bytes");
-    let callable = SemCallable {
-        id: CallableId(0),
-        function: ItemId(0),
-        declaration,
-        instance: CallableInstance::Monomorphic,
-        symbol: "copy_bytes".to_string(),
-        source_origin: FunctionSourceOrigin::RootUnit,
-        signature: SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params: vec![],
-            return_ty: ResolvedTy::Bytes,
-        },
-        call_conv: SemCallConv::Default,
-        kind: SemCallableKind::HewDirect,
-    };
-    let function = SemFunction {
-        id: ItemId(0),
-        callable: CallableId(0),
-        declaration,
-        name: "copy_bytes".to_string(),
-        span: 0..0,
-        source_origin: FunctionSourceOrigin::RootUnit,
-        terminal_receiver: None,
-        params: vec![],
-        return_ty: ResolvedTy::Bytes,
-        entry: BlockId(0),
-        blocks: vec![SemBlock {
-            terminator_provenance: hew_sir::Provenance::Synthesized,
-            id: BlockId(0),
-            args: vec![],
-            ops: vec![
-                SemOp {
-                    id: hew_sir::OpId(0),
-                    results: vec![ValueDef {
-                        id: ValueId(0),
-                        ty: ResolvedTy::Bytes,
-                        own: OwnKind::Owned,
-                    }],
-                    kind: SemOpKind::ConstBytes(hew_sir::BytesLiteralId(0)),
-                    provenance: Provenance::Synthesized,
-                },
-                SemOp {
-                    id: hew_sir::OpId(1),
-                    results: vec![ValueDef {
-                        id: ValueId(1),
-                        ty: ResolvedTy::Bytes,
-                        own: OwnKind::Owned,
-                    }],
-                    kind: SemOpKind::CopyValue {
-                        source: Operand { value: ValueId(0) },
-                    },
-                    provenance: Provenance::Synthesized,
-                },
-                SemOp {
-                    id: hew_sir::OpId(2),
-                    results: vec![],
-                    kind: SemOpKind::DestroyValue {
-                        value: Operand { value: ValueId(0) },
-                    },
-                    provenance: Provenance::Synthesized,
-                },
-            ],
-            terminator: SemTerminator::Return {
-                value: Some(BoundaryOperand {
-                    operand: Operand { value: ValueId(1) },
-                    decision: BoundaryDecision::Move,
-                }),
-            },
-        }],
-        places: vec![],
-        bindings: vec![],
-    };
-    SemModule {
-        c_abi: hew_types::c_abi::SourceCAbi::default(),
-        coverage: hew_sir::CoveragePlan::default(),
-        offloads: Vec::new(),
-        defs: hew_types::DefTable::fixture(),
-        structural_display: BTreeMap::new(),
-        debug: hew_sir::SemDebugFacts::default(),
-        regex_patterns: Vec::new(),
-        actors: Vec::new(),
-        supervisors: Vec::new(),
-        resources: BTreeMap::new(),
-        closures: Vec::new(),
-        callable_specializations: Vec::new(),
-        vtables: Vec::new(),
-        callables: vec![callable],
-        generic_templates: vec![],
-        root_unit_callables: vec![CallableId(0)],
-        entry_exit_plan: None,
-        entry_callable: None,
-        test_entries: Vec::new(),
-        functions: vec![function],
-        aggregate_shapes: vec![],
-        variant_shapes: vec![],
-        type_facts: BTreeMap::from([(
-            TypeInstanceKey(ResolvedTy::Bytes),
-            TypeFacts {
-                class: ValueClass::CowValue,
-                clone: CloneKind::Retain,
-                send: SendFact::Known(true),
-                hash: true,
-                eq: true,
-                partial_ord: false,
-            },
-        )]),
-        string_literals: BTreeMap::new(),
-        bytes_literals: BTreeMap::from([(hew_sir::BytesLiteralId(0), b"ok".to_vec())]),
-        value_capabilities: BTreeMap::new(),
-    }
-}
-
 #[test]
 fn windows_uses_the_same_status_result_fault_abi() {
     let triple = "x86_64-pc-windows-msvc";
@@ -1315,14 +1201,27 @@ fn checked_add_emits_a_real_overflow_branch() {
 #[test]
 fn bytes_retain_is_void_and_preserves_the_aggregate() {
     let triple = native_emission_triple();
-    let target = physical_target_for_triple(&triple).expect("target layout");
-    let verified =
-        hew_mir::lower_physical_module(&bytes_copy_module(), target).expect("physical bytes copy");
+    let semantic = lower_source(
+        r#"
+        fn snapshot(input: bytes) -> bytes { input }
+        fn main() { let _copy = snapshot(b""); }
+    "#,
+    );
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).expect("target layout");
+    let verified = hew_mir::lower_physical_module(&semantic, target).expect("physical bytes copy");
     let ctx = Context::create();
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
         .expect("target machine");
     let module = build_module(&ctx, verified.module(), "bytes_copy", &machine)
         .expect("bytes copy LLVM module");
+    assert!(module.get_function("hew_budget_acquire_alias").is_some());
+    assert!(module
+        .get_function("hew_budget_materialize_begin")
+        .is_none());
+    assert!(module
+        .get_function("hew_budget_materialize_commit")
+        .is_none());
     let retain = module
         .get_function("hew_bytes_clone_ref")
         .expect("bytes retain declaration");

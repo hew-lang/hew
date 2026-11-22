@@ -1225,6 +1225,7 @@ non-declarable = [
   "hew_actor_reply_poll_native",
   "hew_actor_reply_start_native",
   "hew_actor_reply_take_cleanup_native",
+  "hew_budget_acquire_alias",
   "hew_budget_materialize_abort",
   "hew_budget_materialize_begin",
   "hew_budget_materialize_commit",

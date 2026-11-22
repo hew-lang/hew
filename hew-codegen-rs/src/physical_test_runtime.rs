@@ -73,6 +73,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
     }
     bind_budget!(
         frame::hew_managed_visit_invocation,
+        materialize::hew_budget_acquire_alias,
         materialize::hew_budget_materialize_begin,
         materialize::hew_budget_materialize_commit,
         materialize::hew_budget_materialize_abort,

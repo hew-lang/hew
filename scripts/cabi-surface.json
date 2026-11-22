@@ -2769,6 +2769,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_budget_acquire_alias( *const HewCoroState, *const HewValueLayout, *const c_void, ) -> i32",
+        "wasm32-wasip1": "fn hew_budget_acquire_alias( *const HewCoroState, *const HewValueLayout, *const c_void, ) -> i32"
+      },
+      "symbol": "hew_budget_acquire_alias"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_budget_materialize_abort( *mut MaterializationPermit)",
         "wasm32-wasip1": "fn hew_budget_materialize_abort( *mut MaterializationPermit)"
       },

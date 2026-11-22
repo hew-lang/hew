@@ -118,15 +118,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
-        if let [operation @ PhysicalOp::Clone { dest, .. }] = operations {
-            // A weak or actor handle still needs its physical retain. Its
-            // descriptor has no managed backing to acquire, even in a bounded actor.
-            let ty = &self.storage(*dest)?.ty;
-            if !self.module.managed_types[ty].shape.has_managed_children() {
-                self.emit_op(operation)?;
-                return self.emit_edge(normal);
-            }
-        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
         let size_ty = self.ctx.ptr_sized_int_type(self.target_data, None);
@@ -134,6 +125,41 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .frame
             .as_ref()
             .map_or(pointer.const_null(), |frame| frame.state);
+        if let [operation @ PhysicalOp::Clone {
+            dest,
+            source,
+            action,
+        }] = operations
+        {
+            let ty = &self.storage(*dest)?.ty;
+            if matches!(action, CloneAction::StringRetain | CloneAction::BytesRetain) {
+                // The result aliases the exact input backing. Acquire that edge
+                // once before an infallible physical retain.
+                let acquire = get_or_declare_external(
+                    self.llvm,
+                    "hew_budget_acquire_alias",
+                    self.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
+                )?;
+                let layout = self.managed_value_layout(ty)?;
+                let slot = self.slots[source.0 as usize];
+                let status = self
+                    .runtime_call_value(
+                        acquire,
+                        &[state.into(), layout.into(), slot.into()],
+                        "budget.alias",
+                    )?
+                    .into_int_value();
+                self.enter_acquired(status, failure)?;
+                self.emit_op(operation)?;
+                return self.emit_edge(normal);
+            }
+            // A weak or actor handle still needs its physical retain, but
+            // owns no budgeted backing.
+            if !self.module.managed_types[ty].shape.has_managed_children() {
+                self.emit_op(operation)?;
+                return self.emit_edge(normal);
+            }
+        }
         // A string literal is its own whole payload: one runtime step reserves,
         // builds and adopts it, keeping every literal site small enough to inline.
         if let [PhysicalOp::Const {
@@ -174,7 +200,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         "budget.literal",
                     )?
                     .into_int_value();
-                return self.route_acquisition(status, normal, failure);
+                self.enter_acquired(status, failure)?;
+                return self.emit_edge(normal);
             }
         }
         let permit = self
@@ -294,23 +321,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.runtime_call_value(overflow, &[state.into()], "budget.overflow")?
                 .into_int_value()
         };
-        let construct = self.ctx.append_basic_block(self.value, "budget.construct");
-        let refused = self.ctx.append_basic_block(self.value, "budget.refused");
-        let success = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_zero(),
-                "budget.accepted",
-            )
-            .llvm_ctx("classify managed acquisition")?;
-        self.builder
-            .build_conditional_branch(success, construct, refused)
-            .llvm_ctx("route checked acquisition")?;
-        self.builder.position_at_end(refused);
-        self.emit_edge(failure)?;
-        self.builder.position_at_end(construct);
+        self.enter_acquired(status, failure)?;
         for operation in operations {
             self.emit_op(operation)?;
         }
@@ -348,12 +359,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     /// Continue on an accepted acquisition; a refusal leaves through `failure`
     /// with nothing published or consumed.
-    fn route_acquisition(
-        &self,
-        status: IntValue<'ctx>,
-        normal: &PhysicalEdge,
-        failure: &PhysicalEdge,
-    ) -> CodegenResult<()> {
+    fn enter_acquired(&self, status: IntValue<'ctx>, failure: &PhysicalEdge) -> CodegenResult<()> {
         let accepted = self.ctx.append_basic_block(self.value, "budget.accepted");
         let refused = self.ctx.append_basic_block(self.value, "budget.refused");
         let success = self
@@ -371,6 +377,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(refused);
         self.emit_edge(failure)?;
         self.builder.position_at_end(accepted);
-        self.emit_edge(normal)
+        Ok(())
     }
 }

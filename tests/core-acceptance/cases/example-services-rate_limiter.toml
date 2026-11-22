@@ -1,0 +1,13 @@
+[[case]]
+id = "example-services-rate_limiter"
+intent = "Two callers share a token limit, and refill never exceeds capacity."
+source = "../../examples/services/rate_limiter.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout_file = "../../examples/services/rate_limiter.expected"
+exit = 0

@@ -1,9 +1,7 @@
-// Basic arithmetic
 fn main() {
-    let x = 10;
-    let y = 20;
-    let sum = x + y;
-    let product = x * y;
-    println(sum);
-    println(product);
+    let boxes = 3;
+    let items_per_box = 8;
+    let loose_items = 5;
+    println(f"{boxes * items_per_box} items in boxes");
+    println(f"{boxes * items_per_box + loose_items} items altogether");
 }

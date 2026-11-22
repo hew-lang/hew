@@ -131,15 +131,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Text: [3, 1, 4, 1, 5, 9, 2, 6]
-    var text: Vec<i64> = Vec.new();
-    text.push(3);
-    text.push(1);
-    text.push(4);
-    text.push(1);
-    text.push(5);
-    text.push(9);
-    text.push(2);
-    text.push(6);
+    let text: Vec<i64> = [3, 1, 4, 1, 5, 9, 2, 6];
     let sa = build_suffix_array(text);
     // Test 1: Suffix array has correct length
     if sa.len() == 8 {
@@ -179,9 +171,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Search for pattern [1, 4] -> should find at index 1
-    var pat1: Vec<i64> = Vec.new();
-    pat1.push(1);
-    pat1.push(4);
+    let pat1: Vec<i64> = [1, 4];
     let pos1 = sa_search(text, sa, pat1);
     if pos1 == 1 {
         println("PASS: search [1,4]");
@@ -192,10 +182,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Search for pattern [9, 2, 6] -> should find at index 5
-    var pat2: Vec<i64> = Vec.new();
-    pat2.push(9);
-    pat2.push(2);
-    pat2.push(6);
+    let pat2: Vec<i64> = [9, 2, 6];
     let pos2 = sa_search(text, sa, pat2);
     if pos2 == 5 {
         println("PASS: search [9,2,6]");
@@ -206,9 +193,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: Search for pattern not in text -> -1
-    var pat3: Vec<i64> = Vec.new();
-    pat3.push(7);
-    pat3.push(7);
+    let pat3: Vec<i64> = [7, 7];
     let pos3 = sa_search(text, sa, pat3);
     if pos3 == 0 - 1 {
         println("PASS: search not found");
@@ -233,13 +218,7 @@ fn main() {
     }
     // Test 8: LCP detects shared prefixes
     // Text with repeated prefix: [1, 2, 3, 1, 2, 4]
-    var text2: Vec<i64> = Vec.new();
-    text2.push(1);
-    text2.push(2);
-    text2.push(3);
-    text2.push(1);
-    text2.push(2);
-    text2.push(4);
+    let text2: Vec<i64> = [1, 2, 3, 1, 2, 4];
     let sa2 = build_suffix_array(text2);
     let lcp2 = build_lcp_array(text2, sa2);
     // Suffixes starting with [1,2,...] should have LCP >= 2
@@ -257,8 +236,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 9: Search single element
-    var pat4: Vec<i64> = Vec.new();
-    pat4.push(5);
+    let pat4: Vec<i64> = [5];
     let pos4 = sa_search(text, sa, pat4);
     if pos4 == 4 {
         println("PASS: search single element");

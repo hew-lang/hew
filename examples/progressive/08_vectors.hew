@@ -1,15 +1,9 @@
-// Test 8: Vectors/Arrays
-// Testing Vec operations
 fn main() {
-    var v: Vec<i64> = Vec.new();
-    v.push(10);
-    v.push(20);
-    v.push(30);
-    println(v.len());
-    let first = v[0];
-    let second = v[1];
-    let third = v[2];
-    println(first);
-    println(second);
-    println(third);
+    var weights_kg = [2, 3];
+    weights_kg.push(5);
+    var total = 0;
+    for weight in weights_kg {
+        total += weight;
+    }
+    println(f"{weights_kg.len()} parcels weigh {total} kg");
 }

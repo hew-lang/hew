@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "positive\nnegative\nzero\nfeeling happy\nfeeling sad\nfeeling neutral\nx is big\nmain: neutral branch\ngot value: 42\nnone branch taken\n"
+stdout_file = "../../examples/playground/basics/stmt_control_flow.expected"
 exit = 0

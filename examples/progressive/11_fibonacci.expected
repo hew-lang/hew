@@ -1,4 +1,4 @@
-0
-1
-5
-55
+fibonacci(0) = 0
+fibonacci(1) = 1
+fibonacci(5) = 5
+fibonacci(10) = 55

@@ -1,21 +1,20 @@
-// Simple counter actor
-actor Counter {
-    var count: i64;
-    receive fn increment(n: i64) {
-        count = count + n;
-    }
-    receive fn get_count() -> i64 {
-        count
+actor TicketDesk {
+    var issued: i64 = 0;
+
+    receive fn take_ticket() -> i64 {
+        issued += 1;
+        issued
     }
 }
 
 fn main() {
-    let counter = spawn Counter { count: 0 };
-    let _ = counter.increment(5);
-    let _ = counter.increment(10);
-    // Actor completion calls return Result<T, ActorError>; match the result to extract the value.
-    match counter.get_count() {
-        .Ok(count) => println(count),
-        .Err(_) => println("ask failed"),
+    let desk = spawn TicketDesk;
+    for name in ["Ada", "Sam"] {
+        match desk.take_ticket() {
+            .Ok(number) => println(f"{name} has ticket {number}"),
+            .Err(reason) => println(f"{name} could not get a ticket: {reason}"),
+        }
     }
+    stop(desk);
+    stopped(desk);
 }

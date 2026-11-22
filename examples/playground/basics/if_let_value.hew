@@ -1,38 +1,16 @@
-//! @name If Let Value
-//! @description Value-position if-let: the matched arm value flows into a binding
+//! @name Price a train ticket
+//! @description Choose a fare from an optional discount using if let.
 
-enum Wrapped {
-    Value(i64);
-    Empty;
-}
-
-// Value position: the if-let is the right-hand side of a `let`, so its result
-// is consumed. The matched arm yields the bound payload; the else arm yields a
-// default. This must produce the matched value, not unit.
-fn unwrap_or(w: Wrapped, fallback: i64) -> i64 {
-    let v = if let .Value(n) = w {
-        n
+fn ticket(fare: i64, discount: Option<i64>) -> string {
+    let price = if let .Some(amount) = discount {
+        fare - amount
     } else {
-        fallback
+        fare
     };
-    v
-}
-
-// Value position as a function's trailing expression: the if-let result is the
-// function's return value.
-fn doubled_or_zero(w: Wrapped) -> i64 {
-    if let .Value(n) = w {
-        n * 2
-    } else {
-        0
-    }
+    f"Ticket: {price} dollars"
 }
 
 fn main() {
-    println(unwrap_or(.Value(7), 0));
-    println(unwrap_or(.Empty, 0));
-    println(unwrap_or(.Value(42), 99));
-    println(unwrap_or(.Empty, 99));
-    println(doubled_or_zero(.Value(5)));
-    println(doubled_or_zero(.Empty));
+    println(ticket(20, .Some(5)));
+    println(ticket(20, .None));
 }

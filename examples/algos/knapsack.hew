@@ -4,17 +4,8 @@
 fn main() {
     let n = 4;
     let capacity = 5;
-    var weights: Vec<i32> = Vec.new();
-    weights.push(2);
-    weights.push(3);
-    weights.push(4);
-    weights.push(5);
-    var values: Vec<i32> = Vec.new();
-    values.push(3);
-    values.push(4);
-    values.push(5);
-    values.push(6);
-
+    let weights: Vec<i32> = [2, 3, 4, 5];
+    let values: Vec<i32> = [3, 4, 5, 6];
     // dp is (n+1) x (capacity+1) flat array
     let rows = n + 1;
     let cols = capacity + 1;

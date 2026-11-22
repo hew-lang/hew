@@ -80,8 +80,8 @@
   {
     "id": "basics/if_let_value",
     "category": "basics",
-    "name": "If Let Value",
-    "description": "Value-position if-let: the matched arm value flows into a binding",
+    "name": "Price a train ticket",
+    "description": "Choose a fare from an optional discount using if let.",
     "source_path": "basics/if_let_value.hew",
     "expected_path": "basics/if_let_value.expected",
     "capabilities": {
@@ -106,8 +106,8 @@
   {
     "id": "basics/stmt_control_flow",
     "category": "basics",
-    "name": "Statement-position Control Flow",
-    "description": "if/match/if-let in statement position with side-effecting branches",
+    "name": "Read the trail board",
+    "description": "Combine match, if and if let to report conditions on a trail.",
     "source_path": "basics/stmt_control_flow.hew",
     "expected_path": "basics/stmt_control_flow.expected",
     "capabilities": {
@@ -119,8 +119,8 @@
   {
     "id": "basics/stmt_if",
     "category": "basics",
-    "name": "Statement If",
-    "description": "Statement-position if with side-effecting branches",
+    "name": "Dress for the weather",
+    "description": "Choose a coat for the temperature and add an umbrella when it rains.",
     "source_path": "basics/stmt_if.hew",
     "expected_path": "basics/stmt_if.expected",
     "capabilities": {
@@ -132,8 +132,8 @@
   {
     "id": "basics/stmt_if_let",
     "category": "basics",
-    "name": "Statement If Let",
-    "description": "Statement-position if-let with side-effecting branches",
+    "name": "Announce a platform",
+    "description": "Announce the confirmed platform or ask passengers to check the board.",
     "source_path": "basics/stmt_if_let.hew",
     "expected_path": "basics/stmt_if_let.expected",
     "capabilities": {
@@ -145,8 +145,8 @@
   {
     "id": "basics/stmt_match",
     "category": "basics",
-    "name": "Statement Match",
-    "description": "Statement-position match with side-effecting arms",
+    "name": "Read a crossing signal",
+    "description": "Match each signal with the action for a pedestrian.",
     "source_path": "basics/stmt_match.hew",
     "expected_path": "basics/stmt_match.expected",
     "capabilities": {

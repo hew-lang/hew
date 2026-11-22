@@ -1,22 +1,19 @@
-// Test 9: Simple Actor
-// First time trying to use actors
-actor Counter {
-    var count: i64;
-    receive fn increment(n: i64) {
-        count = count + n;
-    }
-    receive fn get_count() -> i64 {
-        count
+// The handler updates its own state and replies with the new total.
+actor ParcelCounter {
+    var parcels: i64 = 0;
+
+    receive fn unload(count: i64) -> i64 {
+        parcels += count;
+        parcels
     }
 }
 
 fn main() {
-    let counter = spawn Counter { count: 0 };
-    let _ = counter.increment(5);
-    let _ = counter.increment(10);
-    // Actor completion calls return Result<T, ActorError>; match the result to extract the value.
-    match counter.get_count() {
-        .Ok(count) => println(count),
-        .Err(_) => println("ask failed"),
+    let counter = spawn ParcelCounter;
+    for load in [5, 10] {
+        let total = counter.unload(load).expect("the depot counter is running");
+        println(f"{total} parcels at the depot");
     }
+    stop(counter);
+    stopped(counter);
 }

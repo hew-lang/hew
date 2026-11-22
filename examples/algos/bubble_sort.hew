@@ -72,10 +72,8 @@ fn main() {
 
     // Test 4: single element
     total = total + 1;
-    var single: Vec<i64> = Vec.new();
-    single.push(42);
-    var exp_single: Vec<i64> = Vec.new();
-    exp_single.push(42);
+    let single: Vec<i64> = [42];
+    let exp_single: Vec<i64> = [42];
     passed = passed + run_test("single", single, exp_single);
 
     // Test 5: empty

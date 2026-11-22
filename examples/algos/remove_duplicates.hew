@@ -1,12 +1,6 @@
 // Remove duplicates from sorted array in-place
 fn main() {
-    var arr: Vec<i32> = Vec.new();
-    arr.push(1);
-    arr.push(1);
-    arr.push(2);
-    arr.push(2);
-    arr.push(3);
-
+    var arr: Vec<i32> = [1, 1, 2, 2, 3];
     // Move unique elements to front, return new length
     var write = 1;
     var read = 1;
@@ -36,10 +30,7 @@ fn main() {
         println("FAIL [2]");
     }
     // Test 2: [1,1,1] -> [1]
-    var arr2: Vec<i32> = Vec.new();
-    arr2.push(1);
-    arr2.push(1);
-    arr2.push(1);
+    var arr2: Vec<i32> = [1, 1, 1];
     var w2 = 1;
     var r2 = 1;
     while r2 < arr2.len() {

@@ -1,22 +1,13 @@
-// Lesson 3: Mutable variables and loops
-//
-// `for` iterates a range and binds the loop variable each iteration.
-// `while` loops until a condition is false.
-// `var` is needed for accumulator/state variables that you declare
-// *outside* a loop and reassign across iterations.
+// Use a range for a known number of trips and a condition for the countdown.
 fn main() {
-    // for-loop: `i` is the loop variable, rebound on every iteration
-    println("for loop 0..5:");
-    for i in 0..5 {
-        println(i);
+    var delivered = 0;
+    for trip in 1..=3 {
+        delivered += 2;
+        println(f"Trip {trip}: {delivered} parcels delivered");
     }
-    // while-loop with a `var` accumulator — shows real reassignment
-    println("while loop sum:");
-    var sum = 0;
-    var n = 1;
-    while n <= 5 {
-        sum = sum + n;
-        n = n + 1;
+    var seconds = 3;
+    while seconds > 0 {
+        println(f"Departing in {seconds}");
+        seconds -= 1;
     }
-    println(sum);
 }

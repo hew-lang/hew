@@ -1,14 +1,11 @@
-// HashMap test
 fn main() {
-    var map: HashMap<string, i64> = HashMap.new();
-    map.insert("a", 100);
-    map.insert("b", 200);
-    match map.get("a") {
-        .Some(v) => println(v),
-        .None => println("missing"),
-    }
-    match map.get("b") {
-        .Some(v) => println(v),
-        .None => println("missing"),
+    var platforms: HashMap<string, i64> = HashMap.new();
+    platforms.insert("Jasper", 2);
+    platforms.insert("Churchill", 4);
+    for destination in ["Jasper", "Churchill", "Moncton"] {
+        match platforms.get(destination) {
+            .Some(number) => println(f"{destination} leaves from platform {number}"),
+            .None => println(f"No train to {destination} today"),
+        }
     }
 }

@@ -1,11 +1,8 @@
-// Vec operations
 fn main() {
-    var v: Vec<i64> = Vec.new();
-    v.push(10);
-    v.push(20);
-    v.push(30);
-    println(v.len());
-    println(v[0]);
-    println(v[1]);
-    println(v[2]);
+    var stops = ["Library", "Park"];
+    stops.push("Market");
+    println(f"{stops.len()} stops on the route:");
+    for stop_name in stops {
+        println(stop_name);
+    }
 }

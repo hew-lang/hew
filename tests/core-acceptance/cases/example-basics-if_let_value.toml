@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "7\n0\n42\n99\n10\n0\n"
+stdout_file = "../../examples/playground/basics/if_let_value.expected"
 exit = 0

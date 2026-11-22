@@ -39,23 +39,7 @@ fn main() {
         }
     }
     // Expected
-    var expected: Vec<i32> = Vec.new();
-    expected.push(0);
-    expected.push(3);
-    expected.push(5);
-    expected.push(6);
-    expected.push(10);
-    expected.push(0);
-    expected.push(2);
-    expected.push(3);
-    expected.push(8);
-    expected.push(11);
-    expected.push(0);
-    expected.push(1);
-    expected.push(7);
-    expected.push(10);
-    expected.push(12);
-    expected.push(0);
+    let expected: Vec<i32> = [0, 3, 5, 6, 10, 0, 2, 3, 8, 11, 0, 1, 7, 10, 12, 0];
     var ok = 1;
     for i in 0..n {
         for j in 0..n {

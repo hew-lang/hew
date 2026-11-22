@@ -1,11 +1,9 @@
-// Simple record type
 type Point {
     x: i64;
     y: i64;
 }
 
 fn main() {
-    let p = Point { x: 10, y: 20 };
-    println(p.x);
-    println(p.y);
+    let entrance = Point { x: 10, y: 20 };
+    println(f"Entrance at ({entrance.x}, {entrance.y})");
 }

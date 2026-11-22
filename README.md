@@ -95,11 +95,11 @@ See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 
 ### Learning Paths
 
-The [`examples/`](examples/) directory contains structured learning paths for new users:
+Run [the first lesson](examples/progressive/01_hello.hew) with `hew run examples/progressive/01_hello.hew`, then try these paths.
 
-- **[`examples/ux/`](examples/ux/)** — 15 quick-start lessons (hello world through hashmaps), each paired with an `.expected` output file; ideal for a first 20-minute tour
-- **[`examples/progressive/`](examples/progressive/)** — 11 numbered lessons building from variables to actors, also with `.expected` files
-- **[`examples/playground/`](examples/playground/)** — Topic-grouped snippets covering basics, concurrency, and types, with checked-in metadata in [`manifest.json`](examples/playground/manifest.json)
+- [12 progressive lessons](examples/progressive/) introduce values, functions, collections and actors. Each has a matching output file.
+- [15 quick examples](examples/ux/) answer focused questions, from printing a value to handling a missing map entry.
+- [Playground examples](examples/playground/) show expressions, pattern matching and concurrency.
 
 See [`examples/README.md`](examples/README.md) for the complete directory guide.
 If you're looking specifically for multi-file/module layouts, start with

@@ -1,20 +1,9 @@
-// Lesson 6: Records
-// Defining and using record types with `type`
-type Person {
-    age: i64;
-    id: i64;
-}
-
-type Point {
-    x: i64;
-    y: i64;
+type Parcel {
+    destination: string;
+    weight_kg: i64;
 }
 
 fn main() {
-    let person = Person { age: 25, id: 101 };
-    println(person.age);
-    println(person.id);
-    let point = Point { x: 10, y: 20 };
-    println(point.x);
-    println(point.y);
+    let parcel = Parcel { destination: "Regina", weight_kg: 8 };
+    println(f"{parcel.weight_kg} kg to {parcel.destination}");
 }

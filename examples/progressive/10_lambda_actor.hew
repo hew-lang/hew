@@ -1,22 +1,10 @@
-// Test 10: Lambda Actor
-// Trying a simple lambda-based actor
 fn main() {
-    // Create a simple counter lambda actor
-    let counter = actor |msg: i64| {
-        println(msg * 2);
+    let label = actor |destination: string| {
+        println(f"Ship to {destination}");
     };
-    match counter(5) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 5"),
+    for city in ["Regina", "Montréal"] {
+        label(city).expect("the label printer is running");
     }
-    match counter(10) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 10"),
-    }
-    match counter(15) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 15"),
-    }
-    stop(counter);
-    stopped(counter);
+    stop(label);
+    stopped(label);
 }

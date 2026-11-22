@@ -89,15 +89,7 @@ fn main() {
     var data2: Vec<i64> = Vec.new();
     var mins2: Vec<i64> = Vec.new();
     // Push values: 50, 40, 60, 30, 70, 20, 80, 10
-    var vals: Vec<i64> = Vec.new();
-    vals.push(50);
-    vals.push(40);
-    vals.push(60);
-    vals.push(30);
-    vals.push(70);
-    vals.push(20);
-    vals.push(80);
-    vals.push(10);
+    let vals: Vec<i64> = [50, 40, 60, 30, 70, 20, 80, 10];
     for i in 0..8 {
         let v = vals[i];
         data2.push(v);

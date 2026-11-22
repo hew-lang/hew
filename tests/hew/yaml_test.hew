@@ -146,6 +146,16 @@ fn test_parse_error_then_successful_encoding() {
 }
 
 #[test]
+fn test_indented_multiline_string_round_trips() {
+    let text = " 7\n";
+    let value = yaml.from_string(text);
+    let encoded = value.stringify().expect("stringify succeeds");
+    let decoded = yaml.parse(encoded).expect("parse succeeds");
+    assert(decoded.get_string().expect("the value stays a string") == text);
+    assert(yaml.decode<string>(yaml.encode(text)).expect("decode succeeds") == text);
+}
+
+#[test]
 fn test_yaml_tags_arbitrary_keys_and_mapping_order_survive_copy() {
     let original = yaml.parse("? [a, b]\n: !Custom [1, 2]\nz: 3\na: 4\n").expect("parse succeeds");
     let copy = original;

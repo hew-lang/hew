@@ -31,7 +31,26 @@ pub fn parse(input: &str) -> Result<Value, String> {
 ///
 /// Returns the emitter diagnostic for an unsupported value or size limit.
 pub fn to_string(value: &Value) -> Result<String, Error> {
-    ayaml::to_string_value(&ayaml::Value::try_from(value)?)
+    encode(&ayaml::Value::try_from(value)?)
+}
+
+pub(crate) fn encode(value: &ayaml::Value) -> Result<String, Error> {
+    let scalar = match value {
+        ayaml::Value::Tagged(tagged) => &tagged.value,
+        value => value,
+    };
+    // ayaml's root block indent is relative to column -1. The libyaml reader
+    // counts from column 0, so an explicit indent would eat a content column.
+    match scalar {
+        ayaml::Value::String(text)
+            if text.contains('\n') && text.trim_start_matches('\n').starts_with([' ', '\t']) =>
+        {
+            let options = ayaml::EmitterOptions::default()
+                .with_scalar_style(Some(ayaml::ScalarStyle::DoubleQuoted));
+            ayaml::to_string_value_with_options(value, &options)
+        }
+        _ => ayaml::to_string_value(value),
+    }
 }
 
 /// Expansion units any one document may use. Each expanded node costs at

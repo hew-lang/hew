@@ -175,6 +175,33 @@ pub unsafe fn invocation_owner(state: *const HewCoroState) -> Option<ValueOwner>
         .map_or_else(current_owner, |state| state.execution().value_owner.clone())
 }
 
+/// Acquire an account edge for an infallible retain of the same backing.
+/// The input can be foreign to this actor, so even a shallow copy checks the
+/// current account before the compiler publishes its new physical reference.
+///
+/// # Safety
+/// The current invocation, layout and initialized source slot remain live.
+/// On success the caller immediately retains that backing and owns its charge.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_acquire_alias(
+    state: *const HewCoroState,
+    layout: *const HewValueLayout,
+    source: *const c_void,
+) -> i32 {
+    // SAFETY: the caller retains its invocation across the acquisition.
+    let Some(owner) = (unsafe { invocation_owner(state) }) else {
+        return 0;
+    };
+    // SAFETY: this is the canonical descriptor for the live source slot.
+    match unsafe { owner.acquire_value(&*layout, source) } {
+        Ok(acquired) => {
+            acquired.commit();
+            0
+        }
+        Err(status) => status,
+    }
+}
+
 /// Reserve all materialization charges before any input slot is consumed.
 /// Unbounded execution returns immediately without inspecting input graphs.
 ///
@@ -382,6 +409,42 @@ mod tests {
                 .release_value(layout, (&raw const text).cast())
                 .unwrap();
             hew_cabi::string::string_release(text);
+        }
+    }
+
+    #[test]
+    fn shallow_copies_share_one_charge_and_refuse_an_unaccounted_backing() {
+        let owner = ValueOwner::new(Some(6));
+        let layout = &crate::layout_intrinsics::hew_layout_val_string;
+        let text = hew_cabi::string::string_from_str("shared");
+        let foreign = hew_cabi::string::string_from_str("x");
+        super::super::with_value_owner(&Some(owner.clone()), || {
+            // SAFETY: both source handles stay live; each successful account
+            // acquisition is paired with a physical retain and a managed drop.
+            unsafe {
+                let acquire = |value: &*mut hew_cabi::string::HewString| {
+                    hew_budget_acquire_alias(
+                        core::ptr::null(),
+                        layout,
+                        core::ptr::from_ref(value).cast(),
+                    )
+                };
+                assert_eq!(acquire(&text), 0);
+                let first = crate::string::hew_string_clone(text);
+                assert_eq!(acquire(&text), 0);
+                let second = crate::string::hew_string_clone(text);
+                assert_eq!(acquire(&foreign), HEAP_EXCEEDED);
+                assert_eq!(owner.live_bytes(), 6);
+                crate::string::hew_string_drop_managed(first);
+                assert_eq!(owner.live_bytes(), 6);
+                crate::string::hew_string_drop_managed(second);
+                assert_eq!(owner.live_bytes(), 0);
+            }
+        });
+        // SAFETY: both original, uncharged source handles remain live.
+        unsafe {
+            hew_cabi::string::string_release(text);
+            hew_cabi::string::string_release(foreign);
         }
     }
 

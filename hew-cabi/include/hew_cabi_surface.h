@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1803u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1804u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1803] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1804] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -1145,6 +1145,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1803] = {
      "{\"native\": \"fn hew_bool_to_string( bool) -> *mut HewString\", "
      "\"wasm32-wasip1\": \"fn hew_bool_to_string( bool) -> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_budget_acquire_alias",
+     "{\"native\": \"fn hew_budget_acquire_alias( *const HewCoroState, *const "
+     "HewValueLayout, *const c_void, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_budget_acquire_alias( *const HewCoroState, *const HewValueLayout, "
+     "*const c_void, ) -> i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_budget_materialize_abort",
      "{\"native\": \"fn hew_budget_materialize_abort( *mut "

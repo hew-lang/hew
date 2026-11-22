@@ -285,3 +285,11 @@ fn test_decode_single_char_fails() {
 fn test_decode_rejects_trailing_single_base64_digit() {
     assert(decode_error("AAAAA") == "InvalidLength: 5");
 }
+
+#[test]
+fn unicode_reports_the_offending_scalar() {
+    match base64.decode("AQ雪D") {
+        .Err(.InvalidCharacter { index, text }) => assert(index == 2 && text == "雪"),
+        _ => panic("expected a non-Base64 character"),
+    }
+}

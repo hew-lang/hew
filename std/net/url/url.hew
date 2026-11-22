@@ -213,16 +213,19 @@ fn encode_impl(s: string) -> string {
     // RFC 3986 percent-encoding operates on the UTF-8 byte stream, not on
     // codepoints: each non-unreserved byte becomes %XX.
     let data = s.to_bytes();
-    var out = "";
+    let digits = "0123456789ABCDEF".to_bytes();
+    var out = bytes.new();
     for i in 0..data.len() {
         let b = data[i];
         if is_unreserved_byte(b) {
-            out = out + f"{(b as i64).try_to_char().expect("valid Unicode scalar")}";
+            out.push(b);
         } else {
-            out = out + percent_encode_byte(b);
+            out.push(37); // '%'
+            out.push(digits[(b / 16) as i64]);
+            out.push(digits[(b % 16) as i64]);
         }
     }
-    out
+    utf8.decode(out).expect("percent encoding produces ASCII")
 }
 
 /// Decode a percent-encoded component exactly once.
@@ -357,14 +360,6 @@ fn encode_query_impl(params: string) -> string {
 /// RFC 3986 unreserved bytes: `A-Z a-z 0-9 - . _ ~`.
 fn is_unreserved_byte(b: u8) -> bool {
     b >= 65 && b <= 90 || b >= 97 && b <= 122 || b >= 48 && b <= 57 || b == 45 || b == 46 || b == 95 || b == 126
-}
-
-/// Render one byte as `%XX` with uppercase hex digits.
-fn percent_encode_byte(b: u8) -> string {
-    let hex = "0123456789ABCDEF";
-    let hi = (b / 16) as i64;
-    let lo = (b % 16) as i64;
-    "%" + hex[hi .. hi + 1] + hex[lo .. lo + 1]
 }
 
 fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; internal URL percent-decoder helper

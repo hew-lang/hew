@@ -177,3 +177,11 @@ fn test_round_trip_all_256_byte_values() {
     let decoded = must_decode(encoded);
     assert_bytes_eq(decoded, buf);
 }
+
+#[test]
+fn non_hex_unicode_reports_the_scalar_and_its_position() {
+    match hex.decode("01雪F") {
+        .Err(.InvalidCharacter { index, text }) => assert(index == 2 && text == "雪"),
+        _ => panic("expected a non-hexadecimal character"),
+    }
+}

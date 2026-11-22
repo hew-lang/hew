@@ -1815,6 +1815,8 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
                 .managed_frame
                 .as_ref()
                 .unwrap();
+            assert!(view.child.is_null());
+            assert_eq!(view.count, 0);
             let root = view.operation.as_ref().unwrap();
             let address = root.slot as usize;
             assert!(
@@ -1823,6 +1825,9 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
             );
             assert_eq!(root.slot.cast::<*mut c_void>().read(), expected);
             hew_runtime::cont::hew_cont_resume(handle);
+            assert!((*state.cast::<hew_cabi::coro::HewCoroInvocation>())
+                .managed_frame
+                .is_null());
             hew_runtime::cont::hew_cont_destroy(handle);
             hew_runtime::coro_state::hew_coro_state_free(state);
         }

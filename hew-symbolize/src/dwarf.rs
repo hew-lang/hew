@@ -121,10 +121,15 @@ impl ObjectSymbols {
     pub(crate) fn lookup(&self, offset: u64, path: &Path) -> Result<Vec<Location>> {
         let address = self.static_base.wrapping_add(offset);
         if let Some(dwarf) = &self.dwarf {
-            let locations = dwarf
+            let mut locations = dwarf
                 .lookup(address)
                 .map_err(|error| format_error(path, error))?;
-            if !locations.is_empty() {
+            if let Some(outer) = locations.last_mut() {
+                // LLVM names split coroutine parts separately in DWARF. The
+                // image maps their machine ranges to one authored function.
+                if let Some(authored) = self.hew.name_at(address) {
+                    outer.function = Some(authored.to_owned());
+                }
                 return Ok(locations);
             }
         }

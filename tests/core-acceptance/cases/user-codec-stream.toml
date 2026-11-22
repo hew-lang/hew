@@ -6,7 +6,9 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]
-HEW_WORKERS = "1"
+# Advance deadlines at scheduler and compute safepoints so the encoder can
+# publish its entry marker before cancellation, even on a busy host.
+HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "user codec frames\n"

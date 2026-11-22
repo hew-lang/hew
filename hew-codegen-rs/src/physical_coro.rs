@@ -19,6 +19,7 @@ pub(super) struct Frame<'ctx> {
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
     entry: BasicBlock<'ctx>,
+    start: BasicBlock<'ctx>,
     suspend: FunctionValue<'ctx>,
     exit: BasicBlock<'ctx>,
     pub invalid_destroy: BasicBlock<'ctx>,
@@ -432,7 +433,6 @@ pub(super) fn begin<'ctx>(
         ))
     };
     builder.position_at_end(finish);
-    bind_managed_frame(ctx, builder, state, pointer.const_null())?;
     let is_destroying = builder
         .build_load(ctx.bool_type(), destroying, "frame.is.destroying")
         .llvm_ctx("inspect destruction entry")?
@@ -510,13 +510,14 @@ pub(super) fn begin<'ctx>(
         .build_unreachable()
         .llvm_ctx("terminate invalid coroutine entry")?;
     builder.position_at_end(body);
-    let frame = Frame {
+    Ok(Frame {
         state,
         completion_state: state,
         budget,
         destroying,
         finish,
         entry,
+        start,
         suspend,
         exit,
         invalid_destroy,
@@ -525,9 +526,7 @@ pub(super) fn begin<'ctx>(
         managed_view: Cell::new(None),
         managed_operation: Cell::new(None),
         managed_frame_type: managed_frame_type(ctx, target_data),
-    };
-    frame.bind_managed_roots(ctx, builder, pointer.const_null(), 0)?;
-    Ok(frame)
+    })
 }
 
 impl<'ctx> Frame<'ctx> {
@@ -579,6 +578,9 @@ impl<'ctx> Frame<'ctx> {
     ) -> CodegenResult<()> {
         let pointer = ctx.ptr_type(AddressSpace::default());
         let row_ty = ctx.struct_type(&[pointer.into(); 3], false);
+        if roots.is_empty() {
+            return Ok(());
+        }
         let count = u32::try_from(roots.len())
             .map_err(|_| CodegenError::FailClosed("too many frame roots".into()))?;
         let table_ty = row_ty.array_type(count);
@@ -611,49 +613,76 @@ impl<'ctx> Frame<'ctx> {
                     .llvm_ctx("bind typed root metadata")?;
             }
         }
-        self.bind_managed_roots(ctx, builder, table, u64::from(count))?;
+        let view = self.root_view(ctx)?;
+        let view_ty = self.managed_frame_type;
+        let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
+        let fields: [BasicValueEnum<'ctx>; 2] =
+            [table.into(), size.const_int(u64::from(count), false).into()];
+        for (index, value) in fields.into_iter().enumerate() {
+            let field = builder
+                .build_struct_gep(view_ty, view, index as u32, "managed.frame.field")
+                .llvm_ctx("address managed slot table")?;
+            builder
+                .build_store(field, value)
+                .llvm_ctx("bind managed slot table")?;
+        }
         Ok(())
     }
 
-    pub(super) fn bind_managed_roots(
+    fn ramp_builder(&self, ctx: &'ctx Context) -> Builder<'ctx> {
+        let builder = ctx.create_builder();
+        builder.position_before(&self.start.get_terminator().expect("closed coroutine ramp"));
+        builder
+    }
+
+    /// Publish only the roots this callable can actually retain. Frame addresses
+    /// become persistent after coro.begin, and must dominate every suspend edge.
+    fn root_view(&self, ctx: &'ctx Context) -> CodegenResult<PointerValue<'ctx>> {
+        if let Some(view) = self.managed_view.get() {
+            return Ok(view);
+        }
+        let view = self.storage(ctx, self.managed_frame_type.into(), "managed.frame")?;
+        let builder = self.ramp_builder(ctx);
+        builder
+            .build_store(view, self.managed_frame_type.const_zero())
+            .llvm_ctx("initialize managed roots")?;
+        bind_managed_frame(ctx, &builder, self.state, view)?;
+        builder.position_before(
+            &self
+                .finish
+                .get_first_instruction()
+                .expect("nonempty coroutine finish"),
+        );
+        bind_managed_frame(
+            ctx,
+            &builder,
+            self.state,
+            ctx.ptr_type(AddressSpace::default()).const_null(),
+        )?;
+        self.managed_view.set(Some(view));
+        Ok(view)
+    }
+
+    fn bind_protocol_root(
         &self,
         ctx: &'ctx Context,
-        builder: &Builder<'ctx>,
-        table: PointerValue<'ctx>,
-        count: u64,
+        index: u32,
+        slot: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
-        let view_ty = self.managed_frame_type;
-        let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
-        // Entry publishes this view once. Later root tables update that same
-        // view in place, without republishing it to the invocation.
-        let (view, published) = if let Some(view) = self.managed_view.get() {
-            (view, true)
-        } else {
-            let view = self.storage(ctx, view_ty.into(), "managed.frame")?;
-            self.managed_view.set(Some(view));
-            (view, false)
-        };
-        let (operation, _) = self.operation_storage(ctx)?;
-        let child = self.child_storage(ctx)?.0;
-        let entries: [BasicValueEnum<'ctx>; 4] = [
-            table.into(),
-            size.const_int(count, false).into(),
-            child.into(),
-            operation.into(),
-        ];
-        for (index, entry) in entries.into_iter().enumerate() {
-            let field = builder
-                .build_struct_gep(view_ty, view, index as u32, "managed.frame.field")
-                .llvm_ctx("address canonical invocation roots")?;
-            builder
-                .build_store(field, entry)
-                .llvm_ctx("bind canonical invocation roots")?;
-        }
-        if published {
-            Ok(())
-        } else {
-            bind_managed_frame(ctx, builder, self.state, view)
-        }
+        let view = self.root_view(ctx)?;
+        let builder = self.ramp_builder(ctx);
+        let field = builder
+            .build_struct_gep(
+                self.managed_frame_type,
+                view,
+                index,
+                "managed.frame.protocol",
+            )
+            .llvm_ctx("address protocol root")?;
+        builder
+            .build_store(field, slot)
+            .llvm_ctx("bind protocol root")?;
+        Ok(())
     }
 
     fn operation_storage(
@@ -667,12 +696,7 @@ impl<'ctx> Frame<'ctx> {
         let row = ctx.struct_type(&[pointer.into(); 2], false);
         let metadata = self.storage(ctx, row.into(), "managed.operation")?;
         let owner = self.storage(ctx, pointer.into(), "managed.operation.owner")?;
-        let builder = ctx.create_builder();
-        if let Some(end) = self.entry.get_terminator() {
-            builder.position_before(&end);
-        } else {
-            builder.position_at_end(self.entry);
-        }
+        let builder = self.ramp_builder(ctx);
         let layout = builder
             .build_struct_gep(row, metadata, 0, "managed.operation.layout")
             .llvm_ctx("address active operation descriptor")?;
@@ -689,6 +713,7 @@ impl<'ctx> Frame<'ctx> {
             .build_store(owner, pointer.const_null())
             .llvm_ctx("initialize protocol owner")?;
         let result = (metadata, owner);
+        self.bind_protocol_root(ctx, 3, metadata)?;
         self.managed_operation.set(Some(result));
         Ok(result)
     }
@@ -830,15 +855,11 @@ impl<'ctx> Frame<'ctx> {
             self.storage(ctx, pointer.into(), "call.child.state")?,
             self.storage(ctx, pointer.into(), "call.child.frame")?,
         );
-        let builder = ctx.create_builder();
-        if let Some(terminator) = self.entry.get_terminator() {
-            builder.position_before(&terminator);
-        } else {
-            builder.position_at_end(self.entry);
-        }
+        let builder = self.ramp_builder(ctx);
         builder
             .build_store(slots.0, pointer.const_null())
             .llvm_ctx("initialize child root view")?;
+        self.bind_protocol_root(ctx, 2, slots.0)?;
         self.child.set(Some(slots));
         Ok(slots)
     }

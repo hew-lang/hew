@@ -48,14 +48,24 @@ impl HewTables {
         Self { functions }
     }
 
-    /// The Hew function containing static address `address`.
-    pub(crate) fn lookup(&self, address: u64) -> Option<Location> {
+    fn function_at(&self, address: u64) -> Option<&HewFunction> {
         let index = self
             .functions
             .partition_point(|function| function.start <= address)
             .checked_sub(1)?;
         let function = &self.functions[index];
-        (address < function.end).then(|| Location {
+        (address < function.end).then_some(function)
+    }
+
+    /// The authored function containing this machine instruction.
+    pub(crate) fn name_at(&self, address: u64) -> Option<&str> {
+        self.function_at(address)
+            .map(|function| function.name.as_str())
+    }
+
+    pub(crate) fn lookup(&self, address: u64) -> Option<Location> {
+        let function = self.function_at(address)?;
+        Some(Location {
             function: Some(function.name.clone()),
             file: function.file.clone(),
             line: (function.decl_line != 0).then_some(function.decl_line),

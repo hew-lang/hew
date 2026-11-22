@@ -102,8 +102,13 @@ fn json_import_cycle_notes_locate_their_own_source_files() {
 #[test]
 fn check_and_compile_type_errors_emit_structured_json_and_exit_1() {
     let (_dir, path) = write_fixture("fn main() {\n    let x: i64 = \"not a number\";\n}\n");
-    for verb in ["check", "compile"] {
-        let output = run(&[verb, "--format=json", path.to_str().unwrap()]);
+    let path = path.to_str().unwrap();
+    for args in [
+        &["check", "--format=json", path][..],
+        &["build", "--format=json", path],
+        &["tool", "compile", "--format=json", path],
+    ] {
+        let output = run(args);
 
         assert_eq!(
             output.status.code(),
@@ -143,7 +148,7 @@ fn check_and_compile_type_errors_emit_structured_json_and_exit_1() {
         ] {
             assert!(
                 !stdout.contains(forbidden),
-                "{verb} JSON contains compiler internals `{forbidden}`: {stdout}",
+                "{args:?} JSON contains compiler internals `{forbidden}`: {stdout}",
             );
         }
     }

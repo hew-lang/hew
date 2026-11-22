@@ -145,7 +145,7 @@ impl Session {
                 // The new item goes at the top level; we still need a main —
                 // unless the combined source (remembered items plus this
                 // input) already defines one. That covers both a whole file
-                // evaluated in one shot (e.g. `hew playground verify`, whose
+                // evaluated in one shot (e.g. `hew tool playground-verify`, whose
                 // sole item is its own `fn main`) and a `main` remembered
                 // from an earlier REPL item: checking `input` alone missed
                 // the latter, so a later item eval always got the synthetic
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn item_input_defining_main_is_not_duplicated() {
-        // A whole-file eval (e.g. `hew playground verify` on a program whose
+        // A whole-file eval (e.g. `hew tool playground-verify` on a program whose
         // sole item is its own `fn main`) must not get a second synthetic
         // `fn main() {}` appended — that duplicate definition is a compile
         // error the user's file never had.

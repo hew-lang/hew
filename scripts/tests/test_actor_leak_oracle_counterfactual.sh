@@ -47,7 +47,7 @@ fn main() {
 }
 HEW
 
-"$HEW_BIN" compile --emit-dir "$WORK/emit" "$WORK/probe.hew" >"$WORK/compile.log" 2>&1 || {
+"$HEW_BIN" tool compile --emit-dir "$WORK/emit" "$WORK/probe.hew" >"$WORK/compile.log" 2>&1 || {
     echo "FAIL: the probe program does not build" >&2
     cat "$WORK/compile.log" >&2
     exit 1

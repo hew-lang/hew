@@ -1,7 +1,7 @@
 // Accept fixture: free_fn_actor_scope_spawn - actor-handler scope{} can fork a
 // no-argument unit-returning free function through the TaskEntry adapter.
 //
-// Harness verb: hew compile; execute binary
+// Harness verb: hew tool compile; execute binary
 // Expected stdout: free-fn task-entry
 fn worker() {
     println("free-fn task-entry");

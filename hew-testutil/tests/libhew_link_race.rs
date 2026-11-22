@@ -3,7 +3,7 @@
 //!
 //! The test gate builds the archive before this binary starts.
 //! Every child then shares one nextest run id, verifies that archive through
-//! `ensure_hew_lib_built`, and performs a real `hew compile` link. `CARGO`
+//! `ensure_hew_lib_built`, and performs a real `hew tool compile` link. `CARGO`
 //! points at a fail-closed spy, so any attempted bootstrap is both recorded and
 //! rejected. The load-bearing verdict is zero spy records plus every real link
 //! succeeding.
@@ -64,19 +64,19 @@ fn run_child() {
 
     let mut command = Command::new(hew_binary());
     command
-        .arg("compile")
+        .args(["tool", "compile"])
         .arg(&source)
         .arg("--emit-dir")
         .arg(&emit);
     let output = hew_testutil::run_command_bounded(
         &mut command,
-        "verify-only hew compile",
+        "verify-only hew tool compile",
         Duration::from_secs(30),
     )
-    .expect("real hew compile must complete");
+    .expect("real hew tool compile must complete");
     assert!(
         output.status.success(),
-        "real hew compile failed\nstdout:\n{}\nstderr:\n{}",
+        "real hew tool compile failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

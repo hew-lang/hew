@@ -57,6 +57,7 @@ fn arith_program_emits_wasm() {
     // WASM emission is requested explicitly through --target.
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--target",
             "wasm32-unknown-unknown",
@@ -66,11 +67,11 @@ fn arith_program_emits_wasm() {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     assert!(
         output.status.success(),
-        "hew compile (arith, with WASM) failed:\n{}",
+        "hew tool compile (arith, with WASM) failed:\n{}",
         describe_output(&output),
     );
 
@@ -115,14 +116,14 @@ fn bare_compile_skips_wasm() {
     let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
 
     let output = Command::new(hew_binary())
-        .args(["compile", "--emit-dir", emit_dir_str, fixture_str])
+        .args(["tool", "compile", "--emit-dir", emit_dir_str, fixture_str])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     assert!(
         output.status.success(),
-        "hew compile (native default, arith) failed:\n{}",
+        "hew tool compile (native default, arith) failed:\n{}",
         describe_output(&output),
     );
 

@@ -1078,7 +1078,7 @@ impl Runner<'_> {
         }
         let mut command = Command::new(&self.options.hew_bin);
         command
-            .arg("compile")
+            .args(["tool", "compile"])
             .arg("--emit-dir")
             .arg(emit_dir)
             .arg("--opt-level")
@@ -2279,7 +2279,17 @@ mod tests {
         let fake_hew = directory.path().join("fake-hew");
         fs::write(
             &fake_hew,
-            "#!/bin/sh\nsleep 2\nprintf '#!/bin/sh\\nsleep 2\\n' > \"$3/probe\"\nchmod +x \"$3/probe\"\n",
+            r#"#!/bin/sh
+while [ "$#" -ge 2 ]; do
+    if [ "$1" = "--emit-dir" ]; then
+        sleep 2
+        printf '#!/bin/sh\nsleep 2\n' > "$2/probe" || exit 1
+        exec chmod +x "$2/probe"
+    fi
+    shift
+done
+exit 1
+"#,
         )
         .unwrap();
         fs::set_permissions(&fake_hew, fs::Permissions::from_mode(0o700)).unwrap();

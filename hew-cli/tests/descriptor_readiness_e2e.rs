@@ -17,25 +17,22 @@ const LINE_TIMEOUT: Duration = Duration::from_secs(12);
 fn compile(source: &str, dir: &Path, opt_level: u8) -> PathBuf {
     let path = dir.join("descriptor_readiness.hew");
     std::fs::write(&path, source).expect("write fixture");
+    let binary = hew_testutil::compiled_binary_path(dir, "descriptor_readiness");
     let output = Command::new(hew_binary())
-        .args(["compile", "--emit-dir"])
-        .arg(dir)
+        .args(["build", "-o"])
+        .arg(&binary)
         .arg(&path)
         .arg("--opt-level")
         .arg(opt_level.to_string())
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew build");
     assert!(
         output.status.success(),
         "compile failed\n{}",
         describe_output(&output)
     );
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("native: "))
-        .map(PathBuf::from)
-        .expect("compiler reported a native artifact")
+    binary
 }
 
 /// Run `binary` with a piped standard input: once a stdout line starts with

@@ -6,16 +6,16 @@ Start with the smallest command that still reproduces the problem:
 
 ```sh
 hew check path/to/main.hew
-hew compile path/to/main.hew
+hew build path/to/main.hew
 ```
 
-For multi-file compile/typecheck flows, `hew check` and `hew compile` operate
-on a single entry-point file and resolve imports recursively from there. Pass
-`main.hew` (or your real top-level entry file), not every file in the tree.
+For a multi-file program, `hew check` and `hew build` follow imports from
+the package entry point. Run them in the package, pass the package directory,
+or give an explicit entry file such as `main.hew`.
 
 For the standard bootstrap flow, start with `hew init <name>` so you get
 `hew.toml`, `main.hew`, and a merged `.gitignore`, then begin with
-`hew check main.hew` / `hew compile main.hew`.
+`hew check main.hew` / `hew build main.hew`.
 
 ## Build & linking
 
@@ -59,7 +59,7 @@ What to check:
 
 - `Error: cannot find libhew.a. Build with: make stdlib` only happens on a
   **source checkout**: `cargo build -p hew-cli --bin hew` builds the driver
-  alone, and `hew build` / `hew compile` also need the combined runtime +
+  alone, and `hew build` also need the combined runtime +
   stdlib staticlib (`libhew_native.a` on Unix, `hew_native.lib` on Windows) in
   the Cargo output. Run
   `make stdlib` (equivalent to `cargo build -p hew-lib`) once, or use
@@ -175,7 +175,7 @@ Common signs:
 
 What to check:
 
-- Run `hew check <file.hew>` or `hew compile <file.hew>` against the real
+- Run `hew check <file.hew>` or `hew build <file.hew>` against the real
   entry file, not a peer file inside a module directory.
 - For `import greeting;`, Hew looks for `greeting.hew` beside the importer or,
   inside a package, `greeting/greeting.hew` in a directory-form module. The

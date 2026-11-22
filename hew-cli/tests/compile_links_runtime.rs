@@ -1,4 +1,4 @@
-/// Integration tests for `hew compile` native linking.
+/// Integration tests for `hew tool compile` native linking.
 ///
 /// These tests verify that `cmd_compile` routes the native link step
 /// through `link::link_executable`, which resolves `libhew.a` (the combined
@@ -62,7 +62,7 @@ fn compiler_and_runtime_keep_distinct_pdb_sidecars() {
 }
 
 /// Compile `source` to a native binary and return its path (kept alive by the
-/// returned `TempDir`). Mirrors the `hew compile --emit-dir` + `native:` stdout
+/// returned `TempDir`). Mirrors the `hew tool compile --emit-dir` + `native:` stdout
 /// parsing used by `compile_native_link_produces_runnable_binary`.
 fn compile_to_native(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let emit_dir = tempfile::Builder::new()
@@ -74,6 +74,7 @@ fn compile_to_native(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 
     let compile_output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             emit_dir.path().to_str().expect("emit dir is valid UTF-8"),
@@ -81,17 +82,17 @@ fn compile_to_native(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
     assert!(
         compile_output.status.success(),
-        "hew compile failed:\n{}",
+        "hew tool compile failed:\n{}",
         describe_output(&compile_output),
     );
     let stdout = String::from_utf8_lossy(&compile_output.stdout);
     let binary_path = stdout
         .lines()
         .find_map(|line| line.strip_prefix("native: "))
-        .unwrap_or_else(|| panic!("hew compile stdout had no `native:` line:\n{stdout}"));
+        .unwrap_or_else(|| panic!("hew tool compile stdout had no `native:` line:\n{stdout}"));
     (emit_dir, std::path::PathBuf::from(binary_path))
 }
 
@@ -127,7 +128,7 @@ fn native_link_supplies_the_runtime_unwinder() {
     assert_eq!(run.status.code(), Some(7), "{}", describe_output(&run));
 }
 
-/// `hew compile` on a trivial arithmetic program links without
+/// `hew tool compile` on a trivial arithmetic program links without
 /// error and produces a binary that runs to completion.
 ///
 /// This test exercises the full path:
@@ -158,14 +159,14 @@ fn compile_native_link_produces_runnable_binary() {
 
     // Compile the fixture to a native binary. Native is the default target.
     let compile_output = Command::new(hew_binary())
-        .args(["compile", "--emit-dir", emit_dir_str, fixture_str])
+        .args(["tool", "compile", "--emit-dir", emit_dir_str, fixture_str])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     assert!(
         compile_output.status.success(),
-        "hew compile failed:\n{}",
+        "hew tool compile failed:\n{}",
         describe_output(&compile_output),
     );
 
@@ -175,7 +176,7 @@ fn compile_native_link_produces_runnable_binary() {
         .lines()
         .find_map(|line| line.strip_prefix("native: "))
         .unwrap_or_else(|| {
-            panic!("hew compile stdout did not contain a `native:` line:\n{stdout}")
+            panic!("hew tool compile stdout did not contain a `native:` line:\n{stdout}")
         });
 
     // Verify the binary exists and runs to completion. The arith fixture
@@ -203,7 +204,7 @@ fn compile_native_link_produces_runnable_binary() {
 /// The linked binary carries the host's executable extension.
 ///
 /// `hew build` names its output through `TargetSpec::executable_suffix`;
-/// `hew compile` used the bare module stem, so on Windows it produced (and
+/// `hew tool compile` used the bare module stem, so on Windows it produced (and
 /// reported) an extensionless file that the shell does not treat as a program.
 #[test]
 fn compiled_binary_carries_the_host_executable_extension() {

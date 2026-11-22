@@ -1,6 +1,6 @@
 // Accept fixture: HashMap::get clones a heap-owned string value into Option<V>.
 //
-// Harness verb: hew compile + run
+// Harness verb: hew tool compile + run
 // Expected: clean compile + exit 0 after using the returned value post-remove.
 
 fn main() -> i64 {

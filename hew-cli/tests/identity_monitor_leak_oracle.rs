@@ -38,6 +38,7 @@ fn compile_fixture(dir: &Path) -> PathBuf {
     let source = repo_root().join("hew-cli/tests/fixtures/distributed/dist_node.hew");
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit directory is UTF-8"),
@@ -45,7 +46,7 @@ fn compile_fixture(dir: &Path) -> PathBuf {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
     assert!(
         output.status.success(),
         "compiling identity monitor leak fixture failed\n{}",

@@ -94,7 +94,7 @@ fn owned_program_preserves_exit_across_compile_build_and_run() {
     }
     let mut compile = Command::new(hew_binary());
     compile
-        .arg("compile")
+        .args(["tool", "compile"])
         .arg(&source)
         .arg("--emit-dir")
         .arg(dir.path());

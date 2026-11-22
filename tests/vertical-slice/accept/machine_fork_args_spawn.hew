@@ -4,7 +4,7 @@
 // rides the fork-entry shim env like any other scope-body spawn. HIR unit
 // coverage continues to pin the Item::Machine task-gate walker directly.
 //
-// Harness verb: hew compile (must succeed; compile-only — main never
+// Harness verb: hew tool compile (must succeed; compile-only — main never
 // instantiates the machine)
 fn worker(x: i64) {}
 

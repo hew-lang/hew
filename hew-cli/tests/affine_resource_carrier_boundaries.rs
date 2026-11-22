@@ -351,7 +351,7 @@ fn compile_rejected(name: &str, body: &str, code: &str) {
     let input = dir.path().join(format!("{name}.hew"));
     std::fs::write(&input, source(body)).expect("write rejection fixture");
     let output = Command::new(hew_binary())
-        .arg("compile")
+        .args(["tool", "compile"])
         .args(["--format", "json"])
         .arg(&input)
         .current_dir(repo_root())
@@ -422,6 +422,7 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
     let emit_dir = dir.path().join("emit");
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--format",
             "json",

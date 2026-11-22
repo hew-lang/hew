@@ -49,6 +49,7 @@ fn wire_optional_field_without_option_leaves_no_codegen_artifact() {
 
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             emit_dir.to_str().expect("emit path is UTF-8"),
@@ -56,7 +57,7 @@ fn wire_optional_field_without_option_leaves_no_codegen_artifact() {
         ])
         .current_dir(fixture.path())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     assert!(
         !output.status.success(),

@@ -3,13 +3,13 @@
 //! ```text
 //! hew run [file.hew|DIR] [-- args...]
 //!                                  # Compile and run a package or explicit file
-//! hew debug file.hew [-- args...]  # Compile through v0.5 native codegen and launch a debugger
+//! hew debug file.hew [-- args...]  # Build a native program and launch a debugger
 //! hew check [file.hew|DIR]          # Type-check a package or explicit file
 //! hew build [file.hew|DIR]          # Build a package or explicit file
 //! hew watch file_or_dir [options]  # Watch for changes and re-check
-//! hew eval                         # Interactive eval through the v0.5 native path
-//! hew eval "<expression>"          # Evaluate through the v0.5 native path
-//! hew eval -f file.hew             # Evaluate a file through the v0.5 native path
+//! hew eval                         # Interactive eval with the native compiler
+//! hew eval "<expression>"          # Evaluate with the native compiler
+//! hew eval -f file.hew             # Evaluate a file with the native compiler
 //! hew wire check file.hew --against baseline.hew
 //!                                  # Validate wire compatibility
 //! hew fmt file.hew                 # Format source file in-place
@@ -18,7 +18,7 @@
 //! hew fmt --check file.hew         # Check formatting (CI mode)
 //! hew init [name] [--lib|--actor]  # Scaffold a manifest-first project (hew.toml + source)
 //! hew add <pkg> / hew install / …  # Package-manager commands (see hew --help)
-//! hew tool compile file.hew        # Run the v0.5 IR ladder and emit native or WASM
+//! hew tool compile file.hew        # Inspect compiler stages or emit native or WebAssembly artefacts
 //! hew tool playground-verify       # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
@@ -1333,10 +1333,6 @@ fn cmd_compile(a: &args::CompileArgs) {
     }
 }
 
-/// Body of `hew compile`. Returns the process exit code; MUST NOT call
-/// `std::process::exit` (that bypasses the [`JsonDiagnosticFlush`] guard its
-/// caller holds and would drop accumulated advisories). Every failure path is a
-/// `return <code>`, so the caller's single flush chokepoint runs regardless.
 fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     let sir = match lower_file_to_sir(
         &a.input,
@@ -1356,6 +1352,10 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     0
 }
 
+/// Body of `hew tool compile`. Returns the process exit code; MUST NOT call
+/// `std::process::exit` (that bypasses the [`JsonDiagnosticFlush`] guard its
+/// caller holds and would drop accumulated advisories). Every failure path is a
+/// `return <code>`, so the caller's single flush chokepoint runs regardless.
 fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
     if a.dump_sir {
@@ -1435,7 +1435,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     if let Some(obj) = &artefacts.native_obj_path {
         // Name the executable through the same authority `hew build` uses
         // (`resolve_output` → `TargetSpec::executable_suffix`).
-        // `hew compile` links for the host, and on Windows the linker writes
+        // `hew tool compile` links for the host, and on Windows the linker writes
         // `<stem>.exe` whatever stem it is given — so a suffixless name made
         // the reported `native:` path name a file that does not exist.
         let bin_path = target.executable_path(emit_dir, module_name);

@@ -1,5 +1,5 @@
 //! Machine-readable JSON diagnostics for `hew check`, `hew run`, and
-//! `hew compile`.
+//! `hew tool compile`.
 //!
 //! This is the `--format=json` surface. It reuses the same diagnostic
 //! substrate that already feeds the LSP: each diagnostic carries a stable

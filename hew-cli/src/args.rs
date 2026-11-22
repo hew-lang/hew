@@ -45,13 +45,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Compile a .hew file through the v0.5 IR ladder.
-    ///
-    /// Superseded by `hew tool compile`. Kept as a hidden alias so the
-    /// Makefile, release scripts, and the bare `hew <file>.hew` fallback keep
-    /// working while they migrate.
-    #[command(hide = true)]
-    Compile(CompileArgs),
     /// Compile and run a .hew file.
     ///
     /// Use Ctrl-C or send SIGTERM to stop a run on macOS. Sending SIGKILL to
@@ -96,12 +89,6 @@ pub enum Command {
     /// sits inside a repository. Use `hew init` to scaffold the current
     /// directory in place without touching git.
     New(NewArgs),
-    /// Curated playground example tools.
-    ///
-    /// Superseded by `hew tool playground-verify`. Kept as a hidden alias so
-    /// CI keeps working while it migrates.
-    #[command(hide = true)]
-    Playground(PlaygroundCommand),
     /// Compiler-internal tools.
     Tool(ToolCommand),
     /// Print shell completion script.
@@ -1196,19 +1183,6 @@ pub struct CompletionsArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
-pub struct PlaygroundCommand {
-    #[command(subcommand)]
-    pub command: PlaygroundSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PlaygroundSubcommand {
-    /// Compile and run each runnable playground example and verify its stdout
-    /// against the checked-in `.expected` file.
-    Verify(PlaygroundVerifyArgs),
-}
-
-#[derive(Debug, Args)]
 pub struct PlaygroundVerifyArgs {
     /// Path to the playground manifest JSON.
     /// Defaults to `examples/playground/manifest.json` (relative to cwd).
@@ -1238,7 +1212,7 @@ pub enum ToolSubcommand {
     Live(LiveArgs),
     /// Show macro-expanded source with hygiene context annotations.
     Expand(ExpandArgs),
-    /// Compile a .hew file through the v0.5 IR ladder.
+    /// Inspect compiler stages or emit native and WebAssembly artefacts for a .hew file.
     Compile(CompileArgs),
     /// Compile and run each runnable playground example and verify its stdout
     /// against the checked-in `.expected` file.

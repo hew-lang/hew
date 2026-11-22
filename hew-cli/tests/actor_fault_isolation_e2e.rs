@@ -645,13 +645,11 @@ fn compile_fixture(source: &str, dir: &Path, name: &str) -> PathBuf {
     let source_path = dir.join(format!("{name}.hew"));
     std::fs::write(&source_path, source).expect("write chat-room fixture");
 
+    let binary = hew_testutil::compiled_binary_path(dir, name);
     let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("fixture directory is utf-8"),
-            source_path.to_str().expect("fixture path is utf-8"),
-        ])
+        .args(["build", "-o"])
+        .arg(&binary)
+        .arg(&source_path)
         .current_dir(repo_root())
         .output()
         .expect("compile chat-room fixture");
@@ -662,12 +660,7 @@ fn compile_fixture(source: &str, dir: &Path, name: &str) -> PathBuf {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let binary = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("native: "))
-        .unwrap_or_else(|| panic!("compile {name} did not report a native binary:\n{stdout}"));
-    PathBuf::from(binary)
+    binary
 }
 
 fn run_fixture(binary: &Path) -> Output {

@@ -51,6 +51,7 @@ fn main() {
 
     let output = Command::new(hew_binary())
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             emit_dir.to_str().expect("emit path utf-8"),
@@ -58,7 +59,7 @@ fn main() {
         ])
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew tool compile");
 
     let combined = format!(
         "{}{}",

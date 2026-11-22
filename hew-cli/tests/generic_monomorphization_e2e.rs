@@ -206,7 +206,7 @@ fn generic_record_enum_overwrites_and_scope_exit_preserve_value() {
     let emit_dir = support::tempdir();
     let mut command = std::process::Command::new(hew_binary());
     command
-        .args(["compile", "--emit-dir"])
+        .args(["tool", "compile", "--emit-dir"])
         .arg(emit_dir.path())
         .arg(&source)
         .current_dir(repo_root());

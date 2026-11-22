@@ -2292,10 +2292,10 @@ fn run_native(source_path: &Path, stdin: &str, environment: &BTreeMap<String, St
     let output_dir = tempfile::tempdir().expect("native parity output directory");
     // Compare execution output on both paths. The sandbox API returns frontend
     // warnings as diagnostics, so native compiler warnings are separate too.
+    let binary = output_dir.path().join("program");
     let compiled = Command::new(hew_binary())
-        .arg("compile")
-        .arg("--emit-dir")
-        .arg(output_dir.path())
+        .args(["build", "-o"])
+        .arg(&binary)
         .arg("--opt-level")
         .arg("0")
         .arg(source_path)
@@ -2311,9 +2311,6 @@ fn run_native(source_path: &Path, stdin: &str, environment: &BTreeMap<String, St
         source_path.display(),
         describe_output(&compiled),
     );
-    let binary = output_dir
-        .path()
-        .join(source_path.file_stem().expect("native parity source name"));
     Command::new(binary)
         .current_dir(repo_root())
         .env("HEW_STD", repo_root().join("std"))

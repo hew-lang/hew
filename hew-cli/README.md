@@ -5,8 +5,6 @@ The Hew programming language compiler driver.
 ## Usage
 
 ```sh
-hew compile file.hew [--emit-dir DIR] [--target wasm32-unknown-unknown]
-                                   # Compile through HIR, SIR, MIR, and LLVM
 hew run file.hew [-- args...]     # Compile and run
 hew build file.hew -o app         # Build a native program (runtime linked in)
 hew build --link=dynamic file.hew # Load the shared runtime libhew.so.<version> instead
@@ -32,18 +30,19 @@ hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
 hew check file.hew --format json  # Structured JSON diagnostics (for tooling/CI)
-hew compile file.hew --format json
-                                  # Structured JSON diagnostics on compile
+hew build file.hew --format json  # Structured build diagnostics
+hew tool compile file.hew --dump-sir # Inspect verified ownership IR
 hew observe                       # Launch the built-in actor observer TUI
 hew lsp                           # Serve the built-in language server
-hew init [name]                   # Scaffold main.hew + README.md in new dir (no hew.toml)
-hew init                          # Scaffold main.hew + README.md in current dir
+hew init [name]                   # Scaffold a package in a new directory
+hew init                          # Scaffold a package in the current directory
 hew init [name] --force           # Overwrite existing scaffold files
 hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
 
-`hew file.hew` is shorthand for `hew compile file.hew`.
+`hew file.hew` is shorthand for `hew tool compile file.hew`. It writes compiler artefacts under
+`.tmp/compile-out/` by default. Use `hew build -o app file.hew` to choose the executable path.
 
 ### WASI runner prototype
 
@@ -324,9 +323,10 @@ hew install           # install dependencies into .hew/packages/
 
 ## Multi-file projects
 
-For `hew check`, `hew compile`, `hew run`, and `hew debug`, pass a **single
-entry-point file**. The compiler resolves imports recursively from that file,
-so you never need to list every source file on the command line.
+Run `hew check`, `hew build` or `hew run` in a package to use the entry
+point from `hew.toml`. These commands also accept a package directory or
+one entry-point file. When inspecting a file with `hew tool compile`, give
+its entry file explicitly. The compiler follows imports from the entry point.
 
 Given a project with this layout:
 
@@ -343,7 +343,7 @@ All three commands below operate on the whole project through `main.hew`:
 
 ```sh
 hew check myapp/main.hew
-hew compile myapp/main.hew --emit-dir .tmp/myapp
+hew build myapp/main.hew -o myapp-bin
 hew run   myapp/main.hew
 ```
 
@@ -361,7 +361,7 @@ For the current wildcard-import warning caveat, see the
 
 `hew test` discovers and runs test functions declared with `#[test]` in one or
 more `.hew` files or directories. Each test is compiled to a native binary via
-the standard `hew compile` pipeline and executed in a child process for
+the native compiler pipeline and executed in a child process for
 isolation. A per-test timeout prevents hung tests from blocking the suite.
 
 ```sh
@@ -475,13 +475,13 @@ For full documentation see [`../hew-lsp/README.md`](../hew-lsp/README.md).
 
 ## Structured JSON diagnostics (`--format json`)
 
-`hew check`, `hew compile`, and `hew run` accept `--format json` to emit
+`hew check`, `hew build`, `hew run`, and `hew tool compile` accept `--format json` to emit
 diagnostics as a machine-readable JSON array on stdout instead of the default
 human-readable text.
 
 ```sh
 hew check   myapp.hew --format json
-hew compile myapp.hew --format json
+hew build   myapp.hew --format json
 hew run     myapp.hew --format json
 ```
 

@@ -2,7 +2,7 @@
 # examples/distributed/run-node-e2e.sh
 #
 # Pre-compile both kv_server and kv_client, then start the server in the
-# background, wait for it to register its actor, run the client, and report
+# background, wait for its listener, run the enrolled client, and report
 # the result.
 #
 # Compiling first (sequentially) avoids two parallel LLVM codegen processes
@@ -20,6 +20,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HEW="${1:-$REPO_ROOT/target/debug/hew}"
+if [[ "$HEW" != /* ]]; then HEW="$PWD/$HEW"; fi
 PORT="${2:-9100}"
 
 SERVER_HEW="$REPO_ROOT/examples/distributed/kv_server.hew"
@@ -38,8 +39,7 @@ cleanup() {
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
         # Bounded wait: give the server up to 3 s to exit after SIGTERM, then
-        # SIGKILL to ensure the trap never hangs (the server's sleep_ms(120000)
-        # would otherwise block `wait` for two minutes).
+        # SIGKILL if the server is still holding its export open.
         local deadline=$(($(date +%s) + 3))
         while kill -0 "$SERVER_PID" 2>/dev/null && [[ $(date +%s) -lt $deadline ]]; do
             sleep 0.1
@@ -67,19 +67,19 @@ fi
 # Compile from REPO_ROOT so the module resolver finds this worktree's std/
 # rather than a sibling worktree's (the CWD candidate is checked before the
 # in-worktree tier-2 probe).
-HEW_COMPILE() { (cd "$REPO_ROOT" && "$HEW" compile --emit-dir "$BIN_DIR" "$@"); }
+HEW_BUILD() { (cd "$REPO_ROOT" && "$HEW" build "$1" -o "$2"); }
 
 # Pre-compile both programs sequentially.  This keeps peak CPU under control
 # and ensures the server binary starts in < 1 s so the readiness window is
 # not wasted on compilation.
 echo "[harness] compiling server..."
 COMPILE_START=$(date +%s)
-HEW_COMPILE "$SERVER_HEW" 2>&1
+HEW_BUILD "$SERVER_HEW" "$SERVER_BIN" 2>&1
 echo "[harness] server compiled in $(($(date +%s) - COMPILE_START))s"
 
 echo "[harness] compiling client..."
 COMPILE_START=$(date +%s)
-HEW_COMPILE "$CLIENT_HEW" 2>&1
+HEW_BUILD "$CLIENT_HEW" "$CLIENT_BIN" 2>&1
 echo "[harness] client compiled in $(($(date +%s) - COMPILE_START))s"
 
 if [[ ! -x "$SERVER_BIN" || ! -x "$CLIENT_BIN" ]]; then
@@ -88,20 +88,25 @@ if [[ ! -x "$SERVER_BIN" || ! -x "$CLIENT_BIN" ]]; then
     exit 1
 fi
 
-# Start the server in the background.
+# Each program opens its named key in its working directory. Enrol both
+# credentials under the same temporary authority before running either node.
+"$HEW" node authority --key "$BIN_DIR/authority.key" >/dev/null
+for role in server client; do
+    credential=$("$HEW" node identity --key "$BIN_DIR/kv-$role.key" --transport tcp)
+    "$HEW" node admit --authority "$BIN_DIR/authority.key" --credential "$credential" \
+        --transport tcp --output "$BIN_DIR/$role.enrolment"
+done
+
 echo "[harness] starting server..."
-HEW_TRANSPORT=tcp "$SERVER_BIN" "$PORT" >"$SERVER_LOG" 2>&1 &
+(cd "$BIN_DIR" && HEW_NODE_CLUSTER="$BIN_DIR/server.enrolment" exec "$SERVER_BIN" "$PORT") >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "[harness] server PID=$SERVER_PID"
 
-# Wait for the server to report the actor is registered (up to 15 s).
-# Once compiled, the server starts in well under 1 s; 15 s is generous.
-# Wall-clock tracking via `date +%s` avoids the original `elapsed += 1 per
-# 0.2 s` bug that gave only ~2 s of effective timeout.
-READY_MSG="actor registered"
+# Node.start has bound the listener when the server prints its credential.
+READY_MSG="[kv-server] public credential:"
 READY_TIMEOUT=15
 SERVER_START_S=$(date +%s)
-while ! grep -q "$READY_MSG" "$SERVER_LOG" 2>/dev/null; do
+while ! grep -Fq "$READY_MSG" "$SERVER_LOG" 2>/dev/null; do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
         echo "[harness] ERROR: server exited before becoming ready"
         echo "--- server log ---"
@@ -122,14 +127,11 @@ echo "[harness] server is ready"
 # Run the client and time the round-trip.
 echo "[harness] starting client..."
 CLIENT_START=$(date +%s)
-HEW_TRANSPORT=tcp "$CLIENT_BIN" "127.0.0.1" "$PORT" >"$CLIENT_LOG" 2>&1
-CLIENT_EXIT=$?
+CLIENT_EXIT=0
+(cd "$BIN_DIR" && HEW_NODE_CLUSTER="$BIN_DIR/client.enrolment" exec "$CLIENT_BIN" "127.0.0.1" "$PORT") >"$CLIENT_LOG" 2>&1 || CLIENT_EXIT=$?
 CLIENT_ELAPSED=$(($(date +%s) - CLIENT_START))
 
 echo "[harness] client exit=$CLIENT_EXIT  duration=${CLIENT_ELAPSED}s"
-
-# Allow the server a moment to finish its own cleanup.
-sleep 2
 
 echo ""
 echo "=== SERVER OUTPUT ==="

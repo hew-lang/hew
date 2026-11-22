@@ -233,7 +233,7 @@ pub struct CompileWithIr {
     pub ll_path: PathBuf,
 }
 
-/// Run a configured `hew compile` command with textual LLVM IR explicitly emitted.
+/// Run a configured `hew tool compile` command with textual LLVM IR explicitly emitted.
 ///
 /// The caller configures the source, output directory, and any target-specific
 /// arguments before calling this helper. `ll_path` identifies the expected

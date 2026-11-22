@@ -7,7 +7,7 @@
 // This fixture pins the fail-closed boundary at:
 //   hew-types/src/check/statements.rs (for iterable type gate)
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostics:
 //   - "type is not iterable"
 

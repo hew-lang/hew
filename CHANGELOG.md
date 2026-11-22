@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Use `hew build` to produce an executable. Scripts using `hew compile` for
+  intermediate artefacts or IR dumps can switch to `hew tool compile` with
+  the same arguments. Bare `hew file.hew` keeps its existing artefact paths.
+  Playground verification is available as `hew tool playground-verify`.
+
 - `hew build --link=dynamic` and `hew run --link=dynamic` link programs
   against the shared Hew runtime instead of copying it in. The shared runtime
   is `libhew.so.<version>` on Linux (glibc) and FreeBSD and

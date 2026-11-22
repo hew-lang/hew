@@ -135,7 +135,7 @@ fn parse_leaks_summary_line(report: &str) -> Option<(&str, usize, usize)> {
     })
 }
 
-/// Compile `source` to a native binary via `hew compile --emit-dir` and return
+/// Compile `source` to a native binary via `hew tool compile --emit-dir` and return
 /// the binary path. Panics with the captured compiler output on failure.
 pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
     let hew_src = dir.join(format!("{name}.hew"));
@@ -144,6 +144,7 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
     let mut command = Command::new(hew_binary());
     command
         .args([
+            "tool",
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
@@ -151,12 +152,12 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
         ])
         .current_dir(repo_root());
     let output = hew_testutil::compile_with_ir(&mut command, dir.join(format!("{name}.ll")))
-        .expect("invoke hew compile")
+        .expect("invoke hew tool compile")
         .output;
 
     assert!(
         output.status.success(),
-        "hew compile failed for {name}:\n{}",
+        "hew tool compile failed for {name}:\n{}",
         describe_output(&output)
     );
 

@@ -21,7 +21,7 @@ SCRIPT = ROOT / "scripts" / "compile-determinism-corpus.sh"
 FIXTURE_COUNT = 16
 
 STUB = r"""#!/usr/bin/env bash
-# Stub compiler: accepts `compile --dump-mir physical <fixture>` and varies its
+# Stub compiler: accepts `tool compile --dump-mir physical <fixture>` and varies its
 # output across repeated invocations according to $STUB_MODE.
 set -u
 fixture="${!#}"

@@ -68,31 +68,22 @@ fn main() {{
 fn compile_fixture(source: &str, dir: &Path, opt_level: u8) -> PathBuf {
     let source_path = dir.join("shutdown_drain_tcp.hew");
     std::fs::write(&source_path, source).expect("write shutdown drain fixture");
+    let binary = hew_testutil::compiled_binary_path(dir, "shutdown_drain_tcp");
     let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("emit directory is UTF-8"),
-            source_path.to_str().expect("fixture path is UTF-8"),
-        ])
+        .args(["build", "-o"])
+        .arg(&binary)
+        .arg(&source_path)
         .arg("--opt-level")
         .arg(opt_level.to_string())
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
+        .expect("invoke hew build");
     assert!(
         output.status.success(),
         "compiling shutdown drain fixture failed\n{}",
         describe_output(&output)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("native: "))
-        .map_or_else(
-            || panic!("compiler reported no native artifact:\n{stdout}"),
-            PathBuf::from,
-        )
+    binary
 }
 
 struct RunningFixture {

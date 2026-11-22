@@ -10,7 +10,7 @@
 // This fixture pins the checker's fork-block body coverage: a bad argument is
 // a real type error, not a blunt shape reject.
 //
-// Harness verb: hew compile
+// Harness verb: hew tool compile
 // Expected diagnostics:
 //   - "type mismatch: expected `bool`, found `i64`"
 //   - NOT E_CODEGEN_FRONT

@@ -15,6 +15,7 @@ pub(super) struct Frame<'ctx> {
     /// An authored close executes in private cleanup ancestry but completes
     /// the invocation supplied by its caller.
     pub completion_state: PointerValue<'ctx>,
+    handle: PointerValue<'ctx>,
     pub budget: PointerValue<'ctx>,
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
@@ -512,6 +513,7 @@ pub(super) fn begin<'ctx>(
     builder.position_at_end(body);
     Ok(Frame {
         state,
+        handle,
         completion_state: state,
         budget,
         destroying,
@@ -530,6 +532,48 @@ pub(super) fn begin<'ctx>(
 }
 
 impl<'ctx> Frame<'ctx> {
+    /// Keep authored instructions and their fault attribution in the named
+    /// resume body when LLVM inlines the placement ramp into its parent.
+    /// The ramp enters the first segment immediately on the current thread.
+    pub(super) fn start_in_resume_body(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<()> {
+        let f = self.entry.get_parent().unwrap();
+        let start = ctx.append_basic_block(f, "coro.first.resume");
+        let body = ctx.append_basic_block(f, "coro.first.segment");
+        let outcome = self.nonfinal_suspend(ctx, builder);
+        builder
+            .build_switch(
+                outcome,
+                start,
+                &[
+                    (ctx.i8_type().const_zero(), body),
+                    (ctx.i8_type().const_int(1, false), self.invalid_destroy),
+                ],
+            )
+            .llvm_ctx("select first coroutine segment")?;
+        builder.position_at_end(start);
+        builder
+            .build_call(
+                intrinsic(module, "llvm.coro.resume", &[])?,
+                &[self.handle.into()],
+                "",
+            )
+            .llvm_ctx("enter coroutine without yielding")?
+            .add_attribute(
+                AttributeLoc::Function,
+                ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noinline"), 0),
+            );
+        builder
+            .build_unconditional_branch(self.exit)
+            .llvm_ctx("return started coroutine")?;
+        builder.position_at_end(body);
+        Ok(())
+    }
+
     /// The caller observes completion while authored cleanup uses shielded
     /// execution ancestry. Keep that private execution in the same live view.
     pub(super) fn bind_cleanup_execution(
@@ -873,6 +917,24 @@ impl<'ctx> Frame<'ctx> {
         entry_storage(ctx, self.entry, ty, name)
     }
 
+    fn nonfinal_suspend(&self, ctx: &'ctx Context, builder: &Builder<'ctx>) -> IntValue<'ctx> {
+        // SAFETY: the token constant belongs to this context.
+        let none = unsafe {
+            inkwell::llvm_sys::core::LLVMConstNull(inkwell::llvm_sys::core::LLVMTokenTypeInContext(
+                ctx.as_ctx_ref(),
+            ))
+        };
+        token_call(
+            builder,
+            self.suspend,
+            &mut [none, ctx.bool_type().const_zero().as_value_ref()],
+        )
+        .try_as_basic_value()
+        .basic()
+        .unwrap()
+        .into_int_value()
+    }
+
     pub fn suspend(
         &self,
         ctx: &'ctx Context,
@@ -891,21 +953,7 @@ impl<'ctx> Frame<'ctx> {
             .build_conditional_branch(destroying, self.invalid_destroy, suspend)
             .llvm_ctx("permit suspension only during resume")?;
         builder.position_at_end(suspend);
-        // SAFETY: the token constant belongs to this context.
-        let none = unsafe {
-            inkwell::llvm_sys::core::LLVMConstNull(inkwell::llvm_sys::core::LLVMTokenTypeInContext(
-                ctx.as_ctx_ref(),
-            ))
-        };
-        let outcome = token_call(
-            builder,
-            self.suspend,
-            &mut [none, ctx.bool_type().const_zero().as_value_ref()],
-        )
-        .try_as_basic_value()
-        .basic()
-        .unwrap()
-        .into_int_value();
+        let outcome = self.nonfinal_suspend(ctx, builder);
         builder
             .build_switch(
                 outcome,

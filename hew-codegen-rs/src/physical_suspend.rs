@@ -593,6 +593,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         callee: CallableId,
         args: &[BasicMetadataValueEnum<'ctx>],
         moved: &[StorageId],
+        place_frame: bool,
     ) -> CodegenResult<IntValue<'ctx>> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("resumable call requires a resumable caller".into())
@@ -612,13 +613,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let mut args = args.to_vec();
         args.push(child.into());
-        let child_frame = call_value(
+        let ramp = c_abi::emit_call(
             &self.builder,
             self.ramps[&callee],
             &args,
             "call.child.frame",
-        )?
-        .into_pointer_value();
+        )?;
+        // This direct call parks only together with its parent. Both completion
+        // and cancellation destroy the child before the parent frame retires.
+        if place_frame {
+            ramp.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                self.ctx.create_enum_attribute(
+                    inkwell::attributes::Attribute::get_named_enum_kind_id("coro_elide_safe"),
+                    0,
+                ),
+            );
+        }
+        let child_frame = ramp
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("child ramp returned no frame".into()))?
+            .into_pointer_value();
         for source in moved {
             self.clear_owned(*source)?;
         }

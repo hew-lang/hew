@@ -21,6 +21,14 @@ fn parked(ready: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
     lease.name.len()
 }
 
+// The losing task owns a child suspended inside its loop. Cancellation must
+// retire that child, including when the compiler embeds its frame in the task.
+fn waiting(ready: stream.Sink<i64>, gate: stream.Stream<i64>) -> i64 {
+    var sum = 0;
+    for _n in 0..8 { sum += parked(ready, gate); }
+    sum
+}
+
 fn winner(ready: stream.Stream<i64>) -> i64 {
     ready.recv();
     println("winner done");
@@ -32,7 +40,7 @@ fn main() {
     let (ready_tx, ready): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
     let picked = await race [
         winner(ready),
-        parked(ready_tx, gate),
+        waiting(ready_tx, gate),
     ];
     println("picked " + to_string(picked));
 }

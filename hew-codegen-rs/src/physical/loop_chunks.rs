@@ -362,7 +362,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             for op in &block.ops {
                 emitter.emit_op(op)?;
             }
-            emitter.emit_terminator(block)?;
+            emitter.emit_terminator(block, false)?;
         }
         emitter.blocks = original_blocks;
         for block in self
@@ -378,7 +378,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 for op in &block.ops {
                     emitter.emit_op(op)?;
                 }
-                emitter.emit_terminator(block)?;
+                emitter.emit_terminator(block, false)?;
             }
         }
         emitter.builder.position_at_end(poll);

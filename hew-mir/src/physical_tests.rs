@@ -3616,7 +3616,8 @@ fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
                 module.defs.path(callable.declaration) == name
             })
             .unwrap()
-            .loop_chunks(module)
+            .loop_plan(module)
+            .chunks
     };
     let scalar = chunks("scalar");
     assert_eq!(scalar.len(), 1);
@@ -3701,7 +3702,7 @@ fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
             .unwrap()
     };
     let scan = function("scan");
-    let chunks = scan.loop_chunks(module);
+    let chunks = scan.loop_plan(module).chunks;
     assert_eq!(chunks.len(), 1);
     let chunk = &chunks[0];
     let read = scan
@@ -3732,8 +3733,8 @@ fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
         panic!("indexed read must preserve its bounds failure");
     };
     assert!(chunk.exits.contains_key(&failure.target));
-    assert!(function("mutating").loop_chunks(module).is_empty());
-    assert!(function("owned").loop_chunks(module).is_empty());
+    assert!(function("mutating").loop_plan(module).chunks.is_empty());
+    assert!(function("owned").loop_plan(module).chunks.is_empty());
 }
 
 #[test]
@@ -3776,7 +3777,7 @@ fn loop_chunks_carry_a_scalar_vector_append_and_restore_its_handle() {
             .unwrap()
     };
     let build = function("build");
-    let chunks = build.loop_chunks(module);
+    let chunks = build.loop_plan(module).chunks;
     assert_eq!(chunks.len(), 1);
     let chunk = &chunks[0];
     let push = build
@@ -3819,11 +3820,11 @@ fn loop_chunks_carry_a_scalar_vector_append_and_restore_its_handle() {
         .expect("the vector place is carried into the chunk");
     assert!(build.place_storage.contains_key(place));
     assert!(
-        function("mixed").loop_chunks(module).is_empty(),
+        function("mixed").loop_plan(module).chunks.is_empty(),
         "an appended vector is not also an invariant read receiver"
     );
     assert!(
-        function("strings").loop_chunks(module).is_empty(),
+        function("strings").loop_plan(module).chunks.is_empty(),
         "only scalar elements append without glue"
     );
 }
@@ -3869,7 +3870,7 @@ fn loop_chunks_retain_immutable_aggregate_constants_without_freezing_mutable_fie
                 module.defs.path(callable.declaration) == name
             })
             .unwrap();
-        let chunks = function.loop_chunks(module);
+        let chunks = function.loop_plan(module).chunks;
         assert_eq!(chunks.len(), 1, "{name}");
         assert_eq!(
             chunks[0].constants.iter().any(|op| matches!(
@@ -3978,7 +3979,7 @@ fn loop_constants_respect_accepted_physical_terminator_overwrites() {
         .iter()
         .find(|function| function.callable == callable)
         .unwrap();
-    let chunks = function.loop_chunks(&module);
+    let chunks = function.loop_plan(&module).chunks;
     assert_eq!(chunks.len(), 1);
     assert!(
         !chunks[0].constants.iter().any(|op| matches!(

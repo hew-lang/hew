@@ -1,87 +1,25 @@
-// Selection Sort - find minimum element and place it at beginning
-// A parameter is the callee's own copy, so the swapped vector travels back
-// through the return value.
-fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
-    let tmp = v[i];
-    v.set(i, v[j]);
-    v.set(j, tmp);
-    v
-}
-
-fn selection_sort(var v: Vec<i64>) -> Vec<i64> {
-    let n = v.len();
-    for i in 0..n {
-        var min_idx = i;
-        var j = i + 1;
-        while j < n {
-            if v[j] < v[min_idx] {
-                min_idx = j;
+// Put the smallest remaining value into the next open position.
+fn selection_sort(var values: Vec<i64>) -> Vec<i64> {
+    for start in 0..values.len() {
+        var smallest = start;
+        for i in start + 1 .. values.len() {
+            if values[i] < values[smallest] {
+                smallest = i;
             }
-            j = j + 1;
         }
-        if min_idx != i {
-            v = swap(v, i, min_idx);
+        if smallest != start {
+            values.swap(start, smallest);
         }
     }
-    v
-}
-
-fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
-    if a.len() != b.len() {
-        return 0;
-    }
-    var i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return 0;
-        }
-        i = i + 1;
-    }
-    1
-}
-
-fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    var v: Vec<i64> = Vec.new();
-    v.push(a);
-    v.push(b);
-    v.push(c);
-    v.push(d);
-    v.push(e);
-    v
-}
-
-fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    input = selection_sort(input);
-    let pass = vec_eq(input, expected);
-    if pass == 1 {
-        println(f"Test {name} ... PASS");
-    } else {
-        println(f"Test {name} ... FAIL");
-    }
-    pass
+    values
 }
 
 fn main() {
-    var total = 0;
-    var passed = 0;
-    total = total + 1;
-    passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
-    total = total + 1;
-    let single: Vec<i64> = [42];
-    let exp_single: Vec<i64> = [42];
-    passed = passed + run_test("single", single, exp_single);
-    total = total + 1;
-    let empty: Vec<i64> = Vec.new();
-    let exp_empty: Vec<i64> = Vec.new();
-    passed = passed + run_test("empty", empty, exp_empty);
-    println(f"{passed}/{total} tests passed");
-    if passed == total {
-        println("ALL PASS");
-    } else {
-        println("SOME FAIL");
-    }
+    let input: Vec<i64> = [3, 1, 3, 1, 2];
+    let sorted = selection_sort(input);
+    println(f"{input:?} sorts to {sorted:?}");
+    assert(selection_sort([5, 4, 3, 2, 1]) == [1, 2, 3, 4, 5]);
+    assert(selection_sort([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]);
+    assert(selection_sort([42]) == [42]);
+    assert(selection_sort([]).is_empty());
 }

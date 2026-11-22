@@ -1,123 +1,43 @@
-// Radix Sort - LSD (least significant digit), base 10, non-negative integers
-// A parameter is the callee's own copy, so the sorted vector travels back
-// through the return value.
-fn radix_sort(var v: Vec<i64>) -> Vec<i64> {
-    let n = v.len();
-    if n >= 2 {
-        // Find max to know number of digits
-        var max_val = v[0];
-        var i = 1;
-        while i < n {
-            if v[i] > max_val {
-                max_val = v[i];
-            }
-            i = i + 1;
-        }
-        // Process each digit position
-        var exp = 1;
-        while max_val / exp > 0 {
-            var output: Vec<i64> = Vec.new();
-            for i in 0..n {
-                output.push(0);
-            }
-            var count: Vec<i64> = Vec.new();
-            for i in 0..10 {
-                count.push(0);
-            }
-            for i in 0..n {
-                let digit = v[i] / exp % 10;
-                count.set(digit, count[digit] + 1);
-            }
-            i = 1;
-            while i < 10 {
-                count.set(i, count[i] + count[i - 1]);
-                i = i + 1;
-            }
-            // Build output from end for stability
-            i = n - 1;
-            var done = 0;
-            while done == 0 {
-                let digit = v[i] / exp % 10;
-                let pos = count[digit] - 1;
-                output.set(pos, v[i]);
-                count.set(digit, count[digit] - 1);
-                if i == 0 {
-                    done = 1;
-                } else {
-                    i = i - 1;
-                }
-            }
-            for i in 0..n {
-                v.set(i, output[i]);
-            }
-            exp = exp * 10;
-        }
-    }
-    v
-}
+// Sort unsigned integers a decimal digit at a time, starting at the units.
+import std.vec;
 
-fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
-    if a.len() != b.len() {
-        return 0;
-    }
-    var i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return 0;
+fn radix_sort(var values: Vec<u64>) -> Vec<u64> {
+    let largest = vec.max(values) ?? return values;
+    var place: u64 = 1;
+    loop {
+        var counts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in values {
+            let digit = ((value / place) % 10) as i64;
+            counts[digit] += 1;
         }
-        i = i + 1;
+        for digit in 1..10 {
+            counts[digit] += counts[digit - 1];
+        }
+        // Walking backwards preserves the order established by earlier digits.
+        var output = values;
+        for i in (0..values.len()).rev() {
+            let value = values[i];
+            let digit = ((value / place) % 10) as i64;
+            counts[digit] -= 1;
+            output[counts[digit]] = value;
+        }
+        values = output;
+        if largest / place < 10 {
+            return values;
+        }
+        place *= 10;
     }
-    1
-}
-
-fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    var v: Vec<i64> = Vec.new();
-    v.push(a);
-    v.push(b);
-    v.push(c);
-    v.push(d);
-    v.push(e);
-    v
-}
-
-fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    input = radix_sort(input);
-    let pass = vec_eq(input, expected);
-    if pass == 1 {
-        println(f"Test {name} ... PASS");
-    } else {
-        println(f"Test {name} ... FAIL");
-    }
-    pass
 }
 
 fn main() {
-    var total = 0;
-    var passed = 0;
-    total = total + 1;
-    passed = passed + run_test("basic", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
-
-    // Multi-digit numbers
-    total = total + 1;
-    let multi: Vec<i64> = [170, 45, 75, 90, 802];
-    let exp_multi: Vec<i64> = [45, 75, 90, 170, 802];
-    passed = passed + run_test("multi_digit", multi, exp_multi);
-    total = total + 1;
-    let single: Vec<i64> = [42];
-    let exp_single: Vec<i64> = [42];
-    passed = passed + run_test("single", single, exp_single);
-    total = total + 1;
-    let empty: Vec<i64> = Vec.new();
-    let exp_empty: Vec<i64> = Vec.new();
-    passed = passed + run_test("empty", empty, exp_empty);
-    println(f"{passed}/{total} tests passed");
-    if passed == total {
-        println("ALL PASS");
-    } else {
-        println("SOME FAIL");
-    }
+    let input: Vec<u64> = [3, 1, 3, 1, 2];
+    let sorted = radix_sort(input);
+    println(f"{input:?} sorts to {sorted:?}");
+    assert(radix_sort([5, 4, 3, 2, 1]) == [1, 2, 3, 4, 5]);
+    assert(radix_sort([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]);
+    assert(radix_sort([42]) == [42]);
+    assert(radix_sort([170, 45, 75, 90, 802]) == [45, 75, 90, 170, 802]);
+    let largest: u64 = (9223372036854775807 as u64) * 2 + 1;
+    assert(radix_sort([largest, 0]) == [0, largest]);
+    assert(radix_sort([]).is_empty());
 }

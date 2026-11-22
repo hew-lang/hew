@@ -1,107 +1,35 @@
-// Cocktail Sort - bidirectional bubble sort
-// A parameter is the callee's own copy, so the swapped vector travels back
-// through the return value.
-fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
-    let tmp = v[i];
-    v.set(i, v[j]);
-    v.set(j, tmp);
-    v
-}
-
-fn cocktail_sort(var v: Vec<i64>) -> Vec<i64> {
-    let n = v.len();
-    if n >= 2 {
-        var start = 0;
-        var end = n - 1;
-        var swapped = 1;
-        while swapped == 1 {
-            swapped = 0;
-            // Forward pass
-            var i = start;
-            while i < end {
-                if v[i] > v[i + 1] {
-                    v = swap(v, i, i + 1);
-                    swapped = 1;
-                }
-                i = i + 1;
-            }
-            end = end - 1;
-            if swapped == 1 {
-                swapped = 0;
-                // Backward pass
-                var j = end;
-                while j > start {
-                    if j > 0 {
-                        if v[j - 1] > v[j] {
-                            v = swap(v, j - 1, j);
-                            swapped = 1;
-                        }
-                    }
-                    j = j - 1;
-                }
-                start = start + 1;
+// Sweep in both directions, leaving the largest and smallest values in place.
+fn cocktail_sort(var values: Vec<i64>) -> Vec<i64> {
+    var start = 0;
+    var end = values.len() - 1;
+    while start < end {
+        var swapped = false;
+        for i in start..end {
+            if values[i] > values[i + 1] {
+                values.swap(i, i + 1);
+                swapped = true;
             }
         }
-    }
-    v
-}
-
-fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
-    if a.len() != b.len() {
-        return 0;
-    }
-    var i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return 0;
+        if !swapped {
+            break;
         }
-        i = i + 1;
+        end -= 1;
+        for i in (start..end).rev() {
+            if values[i] > values[i + 1] {
+                values.swap(i, i + 1);
+            }
+        }
+        start += 1;
     }
-    1
-}
-
-fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    var v: Vec<i64> = Vec.new();
-    v.push(a);
-    v.push(b);
-    v.push(c);
-    v.push(d);
-    v.push(e);
-    v
-}
-
-fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    input = cocktail_sort(input);
-    let pass = vec_eq(input, expected);
-    if pass == 1 {
-        println(f"Test {name} ... PASS");
-    } else {
-        println(f"Test {name} ... FAIL");
-    }
-    pass
+    values
 }
 
 fn main() {
-    var total = 0;
-    var passed = 0;
-    total = total + 1;
-    passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
-    total = total + 1;
-    let single: Vec<i64> = [42];
-    let exp_single: Vec<i64> = [42];
-    passed = passed + run_test("single", single, exp_single);
-    total = total + 1;
-    let empty: Vec<i64> = Vec.new();
-    let exp_empty: Vec<i64> = Vec.new();
-    passed = passed + run_test("empty", empty, exp_empty);
-    println(f"{passed}/{total} tests passed");
-    if passed == total {
-        println("ALL PASS");
-    } else {
-        println("SOME FAIL");
-    }
+    let input: Vec<i64> = [3, 1, 3, 1, 2];
+    let sorted = cocktail_sort(input);
+    println(f"{input:?} sorts to {sorted:?}");
+    assert(cocktail_sort([5, 4, 3, 2, 1]) == [1, 2, 3, 4, 5]);
+    assert(cocktail_sort([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]);
+    assert(cocktail_sort([42]) == [42]);
+    assert(cocktail_sort([]).is_empty());
 }

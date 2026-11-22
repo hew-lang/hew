@@ -17,6 +17,7 @@ impl Parser<'_> {
         crate::ParseResult {
             program,
             errors: self.errors,
+            contextual_keyword_starts: self.contextual_keyword_starts,
         }
     }
 

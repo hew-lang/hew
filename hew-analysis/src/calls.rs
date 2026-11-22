@@ -79,6 +79,7 @@ pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
             module_graph: None,
         },
         errors: Vec::new(),
+        contextual_keyword_starts: Vec::new(),
     };
     ast_visit::walk_parse_result(None, &parse_result, &mut visitor);
     calls.extend(visitor.calls);

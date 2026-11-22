@@ -55,6 +55,7 @@ pub fn parse_generated(
     ParseResult {
         program,
         errors: parser.errors,
+        contextual_keyword_starts: parser.contextual_keyword_starts,
     }
 }
 

@@ -7,7 +7,8 @@
 use std::collections::HashSet;
 
 use hew_lexer::Token;
-use hew_parser::ast::{Item, Program, TypeBodyItem};
+use hew_parser::ast::{Item, TypeBodyItem};
+use hew_parser::ParseResult;
 use hew_types::Ty;
 
 use crate::{token_modifiers, token_types, SemanticToken};
@@ -98,14 +99,15 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
     build_tokens(source, None)
 }
 
-/// Build tokens with a syntax tree already parsed from the same source.
+/// Build tokens using the parser's context for the same source snapshot.
 #[must_use]
-pub fn build_semantic_tokens_with_program(source: &str, program: &Program) -> Vec<SemanticToken> {
-    build_tokens(source, Some(program))
+pub fn build_semantic_tokens_with_parse(source: &str, parsed: &ParseResult) -> Vec<SemanticToken> {
+    build_tokens(source, Some(parsed))
 }
 
-fn private_field_starts(program: &Program) -> HashSet<usize> {
-    program
+fn contextual_keyword_starts(parsed: &ParseResult) -> HashSet<usize> {
+    parsed
+        .program
         .items
         .iter()
         .filter_map(|(item, _)| match item {
@@ -120,23 +122,33 @@ fn private_field_starts(program: &Program) -> HashSet<usize> {
             } => Some(span.start),
             _ => None,
         })
+        .chain(parsed.contextual_keyword_starts.iter().copied())
         .collect()
 }
 
-fn build_tokens(source: &str, program: Option<&Program>) -> Vec<SemanticToken> {
+fn build_tokens(source: &str, parsed: Option<&ParseResult>) -> Vec<SemanticToken> {
     let lexer_tokens = hew_lexer::lex(source);
-    // The lexer keeps private as an identifier. Only ask the parser for
-    // declaration context when a field modifier is possible.
-    let private_starts = if source.contains("private")
-        && lexer_tokens.windows(3).any(|tokens| {
-            matches!(
-                tokens,
-                [(Token::Identifier("private"), _), _, (Token::Colon, _)]
-            )
-        }) {
-        program.map_or_else(
-            || private_field_starts(&hew_parser::parse(source).program),
-            private_field_starts,
+    // Avoid parsing for token-only clients when no contextual word could
+    // occur. The parser decides what those words mean when they are present.
+    let has_contextual_candidate =
+        lexer_tokens
+            .iter()
+            .enumerate()
+            .any(|(index, (token, _))| match token {
+                Token::Identifier("fails") => true,
+                Token::Identifier("private") => {
+                    matches!(lexer_tokens.get(index + 2), Some((Token::Colon, _)))
+                }
+                Token::Return => matches!(
+                    lexer_tokens.get(index + 1),
+                    Some((Token::Identifier("error"), _))
+                ),
+                _ => false,
+            });
+    let contextual_starts = if has_contextual_candidate {
+        parsed.map_or_else(
+            || contextual_keyword_starts(&hew_parser::parse(source)),
+            contextual_keyword_starts,
         )
     } else {
         HashSet::new()
@@ -151,7 +163,9 @@ fn build_tokens(source: &str, program: Option<&Program>) -> Vec<SemanticToken> {
             let prev = i
                 .checked_sub(1)
                 .and_then(|idx| lexer_tokens.get(idx).map(|(prev, _)| prev));
-            if *name == "private" && private_starts.contains(&span.start) {
+            if matches!(*name, "private" | "fails" | "error")
+                && contextual_starts.contains(&span.start)
+            {
                 token_type = token_types::KEYWORD;
             } else if is_function_decl_context(prev) {
                 token_type = token_types::FUNCTION;
@@ -280,6 +294,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failure_words_keep_their_callable_and_expression_context() {
+        use token_types::{FUNCTION, KEYWORD, VARIABLE};
+
+        let source = r#"// Erreur 🧪
+fn fails() {}
+fn convert(f: fn(i64) -> i64 fails string) fails string {
+    let fails = 4;
+    let error = "failed";
+    let fail = |value: i64| -> i64 fails string {
+        if value == fails { return /* context */ error "unlucky"; }
+        value
+    };
+    if fails == 4 { return error error; }
+}
+fn ordinary(error: i64) -> i64 { return error; }
+gen fn countdown() -> i64 fails string {
+    yield 1;
+    return error "closed";
+}
+"#;
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let tokens = build_semantic_tokens(source);
+        assert_eq!(tokens, build_semantic_tokens_with_parse(source, &parsed));
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|token| {
+                matches!(
+                    &source[token.start..token.start + token.length],
+                    "fails" | "error"
+                )
+            })
+            .map(|token| token.token_type)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                FUNCTION, KEYWORD, KEYWORD, VARIABLE, VARIABLE, KEYWORD, VARIABLE, KEYWORD,
+                VARIABLE, KEYWORD, VARIABLE, VARIABLE, VARIABLE, KEYWORD, KEYWORD,
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unfinished_failure_clause_keeps_its_keyword() {
+        let source = "fn read() -> i64 fails";
+        let parsed = hew_parser::parse(source);
+        assert!(!parsed.errors.is_empty());
+        let tokens = build_semantic_tokens_with_parse(source, &parsed);
+        let marker = tokens.last().expect("failure marker token");
+        assert_eq!(&source[marker.start..marker.start + marker.length], "fails");
+        assert_eq!(marker.token_type, token_types::KEYWORD);
+    }
+
+    #[test]
     fn private_is_only_a_keyword_at_record_field_modifiers() {
         let source = r"// Cache créés
 type Slot {
@@ -293,10 +363,7 @@ enum Mode { Ready { private: i64; } }
         let parsed = hew_parser::parse(source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let tokens = build_semantic_tokens(source);
-        assert_eq!(
-            tokens,
-            build_semantic_tokens_with_program(source, &parsed.program)
-        );
+        assert_eq!(tokens, build_semantic_tokens_with_parse(source, &parsed));
 
         let kinds: Vec<_> = tokens
             .iter()

@@ -799,6 +799,7 @@ pub(crate) struct SavedPos {
     pos: usize,
     error_count: usize,
     angle_mutation_count: usize,
+    contextual_keyword_count: usize,
     /// Preserves `last_token_end` so a backtracking restore does not leave a
     /// stale end position that would corrupt EOF-based span calculations.
     last_token_end: usize,
@@ -813,6 +814,7 @@ pub struct Parser<'src> {
     pub(crate) tokens: Vec<(Token<'src>, Span)>,
     pub(crate) pos: usize,
     pub(crate) errors: Vec<ParseError>,
+    pub(crate) contextual_keyword_starts: Vec<usize>,
     pub(crate) depth: Rc<Cell<usize>>,
     /// Index in `errors` of the one "maximum nesting depth exceeded" report.
     /// Past the limit every nested construct fails, so later failures add
@@ -1020,6 +1022,8 @@ pub struct ParseError {
 pub struct ParseResult {
     pub program: Program,
     pub errors: Vec<ParseError>,
+    /// Byte starts of `fails` and `return error` markers admitted by this parse.
+    pub contextual_keyword_starts: Vec<usize>,
 }
 
 // ── Public API ──
@@ -1032,6 +1036,7 @@ pub fn parse(source: &str) -> ParseResult {
     ParseResult {
         program,
         errors: parser.errors,
+        contextual_keyword_starts: parser.contextual_keyword_starts,
     }
 }
 

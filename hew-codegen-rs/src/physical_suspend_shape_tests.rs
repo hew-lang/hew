@@ -38,6 +38,21 @@ fn ir_of(source: &str) -> String {
     module.print_to_string().to_string()
 }
 
+#[test]
+fn a_refused_string_result_drains_without_a_child_suspension() {
+    let ir = ir_of(
+        r#"fn main() {
+        sleep(1ms);
+        let text = "ready";
+        println(text[1..4]);
+    }"#,
+    );
+    let ramp = function(&ir, "@\"__hew_main_body$resume\"(");
+    assert!(ramp.contains("@hew_budget_publish_value("));
+    assert!(ramp.contains("@hew_release_sync("));
+    assert!(!ramp.contains("@__hew_release_handle_cursor("));
+}
+
 /// The text of the one function whose definition names `symbol`.
 fn function<'a>(ir: &'a str, symbol: &str) -> &'a str {
     let start = ir

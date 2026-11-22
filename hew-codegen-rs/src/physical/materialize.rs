@@ -10,7 +10,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let layout = self.managed_value_layout(&self.storage(result)?.ty)?;
+        let ty = &self.storage(result)?.ty;
+        let layout = self.managed_value_layout(ty)?;
         let cleanup = self
             .value_emitter()
             .entry_scratch(pointer.into(), "publication.cleanup")?;
@@ -58,7 +59,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, cleanup, "publication.cleanup")
             .llvm_ctx("take unpublished result cleanup")?
             .into_pointer_value();
-        release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+        // Refusal transfers only this result into the cursor. A non-observable
+        // drop can drain synchronously even inside a resumable caller.
+        let effects = &self.module.releases;
+        let frame = self.frame.as_ref().filter(|_| {
+            self.module.managed_types[ty]
+                .recipe
+                .destroy
+                .is_some_and(|action| {
+                    effects.suspends(action)
+                        || effects.raises_fault(action)
+                        || effects.runs_user_code(action)
+                })
+        });
+        release::drain(&self.value_emitter(), frame, cursor)?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(accepted);
         Ok(())

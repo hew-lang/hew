@@ -780,6 +780,11 @@ is_separately_gated_or_reject_fixture() {
         # and test-live-network compile them in their actual service context.
         return 0
         ;;
+    hew-live/examples/telemetry.hew)
+        # test-live-component compiles and exercises this monitor with its
+        # WIT-generated calibration module.
+        return 0
+        ;;
     hew-sandbox-vm/fixtures/09-compile-type-error/main.hew | hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew)
         # The VM fixture manifest expects a compile error for each source.
         return 0

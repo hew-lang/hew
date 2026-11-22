@@ -1,9 +1,15 @@
 // SDK lifecycle adapter. Service carriers are generated from the WIT contract.
-#include "router.h"
-#include "guest.h"
 #include <assert.h>
 #include <stdlib.h>
-#include <string.h>
+#include "guest.h"
+
+#define JOIN_LITERAL(prefix, suffix) prefix##suffix
+#define JOIN(prefix, suffix) JOIN_LITERAL(prefix, suffix)
+#define WIT(suffix) JOIN(WIT_WORLD, suffix)
+#define WIT_CONSTANT(suffix) JOIN(WIT_WORLD_UPPER, suffix)
+#define HANDLER(suffix) JOIN(WIT_HANDLER, suffix)
+
+#include "guest_contract.h"
 
 extern int32_t hew_sched_init(void);
 extern bool hew_guest_step(void);
@@ -25,7 +31,7 @@ typedef struct Pending {
     void (*settle)(struct Pending *, bool);
 } Pending;
 
-typedef enum { ROUTE, SNAPSHOT, DISPOSE, DRIVE } TaskKind;
+typedef enum { INVOKE, SNAPSHOT, DISPOSE, DRIVE } TaskKind;
 
 typedef struct Task {
     size_t refs;
@@ -33,21 +39,20 @@ typedef struct Task {
     bool cancelled;
     bool abort_requested;
     bool completed;
-    bool accepted;
-    uint64_t snapshot;
-    router_string_t failure;
+    GuestReply reply;
+    GuestSnapshot snapshot;
+    WIT(_string_t) failure;
     uint32_t waiters;
     Pending *pending;
-    HewText *source;
-    HewText *body;
+    GuestInput input;
     union {
-        HewCall_guest_route *route;
+        HewCall_guest_route *invoke;
         HewCall_guest_snapshot *snapshot;
         HewCall_guest_dispose *dispose;
     } call;
 } Task;
 
-static HewOwned_Router *state;
+static GuestState *state;
 static size_t active;
 typedef enum { NEW, RUNNING, QUIESCING, PAUSED, DISPOSING, CLOSED } Phase;
 static Phase phase;
@@ -61,15 +66,7 @@ static void release(void *raw) {
 // Polling occurs only after returning to the component callback.
 static void wake(void *raw) { (void)raw; }
 
-static router_string_t copy_text(const HewText *text) {
-    size_t length;
-    const unsigned char *bytes = hew_host_text_data(text, &length);
-    router_string_t result;
-    router_string_dup_n(&result, (const char *)bytes, length);
-    return result;
-}
-
-static HewText *hew_text(router_string_t text) {
+static HewText *hew_text(WIT(_string_t) text) {
     HewText *result = NULL;
     HewError *error = NULL;
     assert(hew_host_text_from_utf8(text.ptr, text.len, &result, &error) == 0);
@@ -79,7 +76,7 @@ static HewText *hew_text(router_string_t text) {
 static void failure(Task *task, HewError *error) {
     size_t length;
     const unsigned char *bytes = hew_host_error_message(error, &length);
-    router_string_dup_n(&task->failure, (const char *)bytes, length);
+    WIT(_string_dup_n)(&task->failure, (const char *)bytes, length);
     hew_host_error_release(error);
 }
 
@@ -91,23 +88,23 @@ static void complete_pending(Task *task, Pending *pending, bool cancelled) {
     hew_sink_close(pending->status);
     if (pending->ok != NULL) hew_sink_close(pending->ok);
     hew_sink_close(pending->error);
-    if (pending->has_handle) router_subtask_drop(pending->handle);
+    if (pending->has_handle) WIT(_subtask_drop)(pending->handle);
     free(pending);
 }
 
-static void await_pending(Task *task, Pending *pending, router_subtask_status_t status) {
-    pending->handle = ROUTER_SUBTASK_HANDLE(status);
-    pending->has_handle = ROUTER_SUBTASK_STATE(status) != ROUTER_SUBTASK_RETURNED;
-    if (ROUTER_SUBTASK_STATE(status) == ROUTER_SUBTASK_RETURNED) {
+static void await_pending(Task *task, Pending *pending, WIT(_subtask_status_t) status) {
+    pending->handle = WIT_CONSTANT(_SUBTASK_HANDLE)(status);
+    pending->has_handle = WIT_CONSTANT(_SUBTASK_STATE)(status) != WIT_CONSTANT(_SUBTASK_RETURNED);
+    if (WIT_CONSTANT(_SUBTASK_STATE)(status) == WIT_CONSTANT(_SUBTASK_RETURNED)) {
         complete_pending(task, pending, false);
     } else {
-        router_waitable_join(pending->handle, task->waiters);
+        WIT(_waitable_join)(pending->handle, task->waiters);
     }
 }
 
 /* HEW_WIT_SERVICE_BINDINGS */
 
-static router_callback_code_t finish(Task *task) {
+static WIT(_callback_code_t) finish(Task *task) {
     assert(task->pending == NULL);
     if (task->kind != DRIVE) active--;
     if (task->cancelled) {
@@ -117,62 +114,61 @@ static router_callback_code_t finish(Task *task) {
             phase = RUNNING;
         }
         else if (task->kind == DISPOSE && phase == DISPOSING) phase = CLOSED;
-        router_task_cancel();
+        WIT(_task_cancel)();
     } else if (task->kind == DRIVE) {
         int64_t delay = phase == RUNNING || phase == QUIESCING ? hew_guest_next_timer_ms() : -1;
-        router_option_u64_t result = { .is_some = delay >= 0, .val = delay < 0 ? 0 : (uint64_t)delay };
-        exports_hew_live_router_handler_drive_return(result);
+        WIT(_option_u64_t) result = { .is_some = delay >= 0, .val = delay < 0 ? 0 : (uint64_t)delay };
+        HANDLER(_drive_return)(result);
     } else if (task->kind == SNAPSHOT) {
         if (task->abort_requested && task->failure.ptr == NULL) {
-            router_string_dup(&task->failure, "quiescence attempt abandoned");
+            WIT(_string_dup)(&task->failure, "quiescence attempt abandoned");
         }
-        exports_hew_live_router_handler_result_snapshot_string_t result = {0};
+        HANDLER(_result_snapshot_string_t) result = {0};
         result.is_err = task->failure.ptr != NULL;
         if (result.is_err) result.val.err = task->failure;
-        else result.val.ok.accepted = task->snapshot;
+        else result.val.ok = task->snapshot;
         if (quiescing == task) {
             quiescing = NULL;
             if (result.is_err) hew_guest_resume();
             phase = result.is_err ? RUNNING : PAUSED;
         }
-        exports_hew_live_router_handler_quiesce_return(result);
+        HANDLER(_quiesce_return)(result);
     } else if (task->kind == DISPOSE) {
-        exports_hew_live_router_handler_result_void_string_t result = {0};
+        HANDLER(_result_void_string_t) result = {0};
         result.is_err = task->failure.ptr != NULL;
         if (result.is_err) result.val.err = task->failure;
         if (phase == DISPOSING) phase = CLOSED;
-        exports_hew_live_router_handler_dispose_return(result);
+        HANDLER(_dispose_return)(result);
     } else {
-        exports_hew_live_router_handler_result_bool_string_t result = {0};
+        WireReply result = {0};
         result.is_err = task->failure.ptr != NULL;
         if (result.is_err) result.val.err = task->failure;
-        else result.val.ok = task->accepted;
-        exports_hew_live_router_handler_route_return(result);
+        else result.val.ok = task->reply;
+        HANDLER(WIT_INVOKE_RETURN)(result);
     }
-    router_string_free(&task->failure);
-    hew_host_text_release(task->source);
-    hew_host_text_release(task->body);
-    router_waitable_set_drop(task->waiters);
-    router_context_set_0(NULL);
+    WIT(_string_free)(&task->failure);
+    release_input(&task->input);
+    WIT(_waitable_set_drop)(task->waiters);
+    WIT(_context_set_0)(NULL);
     release(task);
-    return ROUTER_CALLBACK_CODE_EXIT;
+    return WIT_CONSTANT(_CALLBACK_CODE_EXIT);
 }
 
-static router_callback_code_t pump(Task *task) {
+static WIT(_callback_code_t) pump(Task *task) {
     for (unsigned i = 0; i < 64; i++) {
         if (!task->completed && task->kind == SNAPSHOT && quiescing != task &&
             !task->abort_requested) {
             task->abort_requested = true;
             if (task->call.snapshot == NULL) {
                 task->completed = true;
-                router_string_dup(&task->failure, "quiescence attempt abandoned");
+                WIT(_string_dup)(&task->failure, "quiescence attempt abandoned");
             } else {
                 guest_snapshot_cancel(task->call.snapshot);
             }
         }
         if (!task->completed && task->kind == SNAPSHOT && task->call.snapshot == NULL) {
             if (!hew_guest_is_drained()) {
-                if (!hew_guest_step() && task->pending != NULL) return ROUTER_CALLBACK_CODE_WAIT(task->waiters);
+                if (!hew_guest_step() && task->pending != NULL) return WIT_CONSTANT(_CALLBACK_CODE_WAIT)(task->waiters);
                 continue;
             }
             HewWaker waker = {task, wake, retain, release};
@@ -185,69 +181,67 @@ static router_callback_code_t pump(Task *task) {
         if (!task->completed && task->kind != DRIVE) {
             bool ready = task->kind == SNAPSHOT ? guest_snapshot_poll(task->call.snapshot)
                        : task->kind == DISPOSE ? guest_dispose_poll(task->call.dispose)
-                       : guest_route_poll(task->call.route);
+                       : guest_route_poll(task->call.invoke);
             if (ready) {
                 HewError *error = NULL;
                 int32_t status;
                 if (task->kind == SNAPSHOT) {
-                    status = guest_snapshot_result(task->call.snapshot, &task->snapshot, &error);
+                    status = snapshot_result(task->call.snapshot, &task->snapshot, &error);
                 } else if (task->kind == DISPOSE) {
                     status = guest_dispose_result(task->call.dispose, &error);
                 } else {
-                    uint8_t accepted = 0;
-                    status = guest_route_result(task->call.route, &accepted, &error);
-                    task->accepted = accepted != 0;
+                    status = invoke_result(task->call.invoke, &task->reply, &error);
                 }
                 if (status != 0) failure(task, error);
                 error = NULL;
                 status = task->kind == SNAPSHOT ? guest_snapshot_release(&task->call.snapshot, &error)
                        : task->kind == DISPOSE ? guest_dispose_release(&task->call.dispose, &error)
-                       : guest_route_release(&task->call.route, &error);
+                       : guest_route_release(&task->call.invoke, &error);
                 assert(status == 0 && error == NULL);
                 task->completed = true;
             }
         }
         if (task->completed) {
             if (task->pending == NULL) return finish(task);
-            return ROUTER_CALLBACK_CODE_WAIT(task->waiters);
+            return WIT_CONSTANT(_CALLBACK_CODE_WAIT)(task->waiters);
         }
         if (!hew_guest_step()) {
             if (task->kind == DRIVE) {
                 task->completed = true;
                 if (task->pending == NULL) return finish(task);
             }
-            if (task->pending != NULL) return ROUTER_CALLBACK_CODE_WAIT(task->waiters);
-            return ROUTER_CALLBACK_CODE_YIELD;
+            if (task->pending != NULL) return WIT_CONSTANT(_CALLBACK_CODE_WAIT)(task->waiters);
+            return WIT_CONSTANT(_CALLBACK_CODE_YIELD);
         }
     }
-    return ROUTER_CALLBACK_CODE_YIELD;
+    return WIT_CONSTANT(_CALLBACK_CODE_YIELD);
 }
 
-static router_callback_code_t callback(router_event_t *event) {
-    Task *task = router_context_get_0();
+static WIT(_callback_code_t) callback(WIT(_event_t) *event) {
+    Task *task = WIT(_context_get_0)();
     assert(task != NULL);
-    if (event->event == ROUTER_EVENT_SUBTASK) {
+    if (event->event == WIT_CONSTANT(_EVENT_SUBTASK)) {
         Pending *pending = task->pending;
         while (pending != NULL && pending->handle != event->waitable) pending = pending->next;
         assert(pending != NULL);
-        if (event->code == ROUTER_SUBTASK_RETURNED) complete_pending(task, pending, false);
-        else if (event->code == ROUTER_SUBTASK_RETURNED_CANCELLED ||
-                 event->code == ROUTER_SUBTASK_STARTED_CANCELLED) complete_pending(task, pending, true);
-    } else if (event->event == ROUTER_EVENT_CANCEL) {
+        if (event->code == WIT_CONSTANT(_SUBTASK_RETURNED)) complete_pending(task, pending, false);
+        else if (event->code == WIT_CONSTANT(_SUBTASK_RETURNED_CANCELLED) ||
+                 event->code == WIT_CONSTANT(_SUBTASK_STARTED_CANCELLED)) complete_pending(task, pending, true);
+    } else if (event->event == WIT_CONSTANT(_EVENT_CANCEL)) {
         task->cancelled = true;
         if (task->kind == SNAPSHOT) {
             if (task->call.snapshot != NULL) guest_snapshot_cancel(task->call.snapshot);
             else task->completed = true;
         }
         else if (task->kind == DISPOSE) guest_dispose_cancel(task->call.dispose);
-        else if (task->kind == ROUTE) guest_route_cancel(task->call.route);
+        else if (task->kind == INVOKE) guest_route_cancel(task->call.invoke);
         else task->completed = true;
         for (Pending *pending = task->pending, *next; pending != NULL; pending = next) {
             next = pending->next;
-            router_subtask_status_t status = router_subtask_cancel(pending->handle);
-            if (ROUTER_SUBTASK_STATE(status) == ROUTER_SUBTASK_RETURNED) complete_pending(task, pending, false);
-            else if (ROUTER_SUBTASK_STATE(status) == ROUTER_SUBTASK_RETURNED_CANCELLED ||
-                     ROUTER_SUBTASK_STATE(status) == ROUTER_SUBTASK_STARTED_CANCELLED) complete_pending(task, pending, true);
+            WIT(_subtask_status_t) status = WIT(_subtask_cancel)(pending->handle);
+            if (WIT_CONSTANT(_SUBTASK_STATE)(status) == WIT_CONSTANT(_SUBTASK_RETURNED)) complete_pending(task, pending, false);
+            else if (WIT_CONSTANT(_SUBTASK_STATE)(status) == WIT_CONSTANT(_SUBTASK_RETURNED_CANCELLED) ||
+                     WIT_CONSTANT(_SUBTASK_STATE)(status) == WIT_CONSTANT(_SUBTASK_STARTED_CANCELLED)) complete_pending(task, pending, true);
         }
     }
     return pump(task);
@@ -259,23 +253,23 @@ static Task *new_task(TaskKind kind) {
     task->refs = 1;
     if (kind != DRIVE) active++;
     task->kind = kind;
-    task->waiters = router_waitable_set_new();
-    router_context_set_0(task);
+    task->waiters = WIT(_waitable_set_new)();
+    WIT(_context_set_0)(task);
     return task;
 }
 
-bool exports_hew_live_router_handler_initialize(
-    exports_hew_live_router_handler_snapshot_t *snapshot, router_string_t *error) {
+bool HANDLER(_initialize)(
+    GuestSnapshot *snapshot, WIT(_string_t) *error) {
     if (phase != NEW) {
-        router_string_dup(error, "router is already initialized");
+        WIT(_string_dup)(error, GUEST_NAME " is already initialized");
         return false;
     }
     assert(hew_sched_init() == 0);
     HewError *fault = NULL;
-    if (guest_create(snapshot->accepted, &state, &fault) != 0) {
+    if (initialize(snapshot, &state, &fault) != 0) {
         size_t length;
         const unsigned char *bytes = hew_host_error_message(fault, &length);
-        router_string_dup_n(error, (const char *)bytes, length);
+        WIT(_string_dup_n)(error, (const char *)bytes, length);
         hew_host_error_release(fault);
         return false;
     }
@@ -283,34 +277,32 @@ bool exports_hew_live_router_handler_initialize(
     return true;
 }
 
-router_callback_code_t exports_hew_live_router_handler_route(
-    exports_hew_live_router_handler_event_t *message) {
-    Task *task = new_task(ROUTE);
+WIT(_callback_code_t) HANDLER(WIT_INVOKE)(WireInput *message) {
+    Task *task = new_task(INVOKE);
     if (phase != RUNNING) {
-        router_string_dup(&task->failure, "router is not accepting events");
+        WIT(_string_dup)(&task->failure, GUEST_NAME " is not accepting events");
         task->completed = true;
     } else {
-        task->source = hew_text(message->source);
-        task->body = hew_text(message->body);
+        task->input = acquire_input(message);
         HewWaker waker = {task, wake, retain, release};
         HewError *error = NULL;
-        if (guest_route_start(state, task->source, task->body, &waker, &task->call.route, &error) != 0) {
+        if (invoke_start(state, &task->input, &waker, &task->call.invoke, &error) != 0) {
             failure(task, error);
             task->completed = true;
         }
     }
-    exports_hew_live_router_handler_event_free(message);
+    release_message(message);
     return pump(task);
 }
 
-router_callback_code_t exports_hew_live_router_handler_route_callback(router_event_t *event) {
+WIT(_callback_code_t) HANDLER(WIT_INVOKE_CALLBACK)(WIT(_event_t) *event) {
     return callback(event);
 }
 
-router_callback_code_t exports_hew_live_router_handler_quiesce(void) {
+WIT(_callback_code_t) HANDLER(_quiesce)(void) {
     Task *task = new_task(SNAPSHOT);
     if (phase != RUNNING || active != 1) {
-        router_string_dup(&task->failure, "router must drain admitted calls before quiescence");
+        WIT(_string_dup)(&task->failure, GUEST_NAME " must drain admitted calls before quiescence");
         task->completed = true;
     } else {
         phase = QUIESCING;
@@ -320,13 +312,13 @@ router_callback_code_t exports_hew_live_router_handler_quiesce(void) {
     return pump(task);
 }
 
-router_callback_code_t exports_hew_live_router_handler_quiesce_callback(router_event_t *event) {
+WIT(_callback_code_t) HANDLER(_quiesce_callback)(WIT(_event_t) *event) {
     return callback(event);
 }
 
-bool exports_hew_live_router_handler_resume(router_string_t *error) {
+bool HANDLER(_resume)(WIT(_string_t) *error) {
     if (phase != PAUSED && phase != QUIESCING) {
-        router_string_dup(error, "router has no suspended instance to resume");
+        WIT(_string_dup)(error, GUEST_NAME " has no suspended instance to resume");
         return false;
     }
     phase = RUNNING;
@@ -335,10 +327,10 @@ bool exports_hew_live_router_handler_resume(router_string_t *error) {
     return true;
 }
 
-router_callback_code_t exports_hew_live_router_handler_dispose(void) {
+WIT(_callback_code_t) HANDLER(_dispose)(void) {
     Task *task = new_task(DISPOSE);
     if (phase != PAUSED || active != 1) {
-        router_string_dup(&task->failure, "router must quiesce before disposal");
+        WIT(_string_dup)(&task->failure, GUEST_NAME " must quiesce before disposal");
         task->completed = true;
     } else {
         phase = DISPOSING;
@@ -353,16 +345,16 @@ router_callback_code_t exports_hew_live_router_handler_dispose(void) {
     return pump(task);
 }
 
-router_callback_code_t exports_hew_live_router_handler_dispose_callback(router_event_t *event) {
+WIT(_callback_code_t) HANDLER(_dispose_callback)(WIT(_event_t) *event) {
     return callback(event);
 }
 
-router_callback_code_t exports_hew_live_router_handler_drive(void) {
+WIT(_callback_code_t) HANDLER(_drive)(void) {
     Task *task = new_task(DRIVE);
     if (phase == NEW || phase == PAUSED || phase == CLOSED) return finish(task);
     return pump(task);
 }
 
-router_callback_code_t exports_hew_live_router_handler_drive_callback(router_event_t *event) {
+WIT(_callback_code_t) HANDLER(_drive_callback)(WIT(_event_t) *event) {
     return callback(event);
 }

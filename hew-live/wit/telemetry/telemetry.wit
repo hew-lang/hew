@@ -1,0 +1,41 @@
+package hew:live-telemetry@0.1.0;
+
+interface readings {
+    record sample {
+        sequence: u64,
+        vibration: u32,
+    }
+
+    record observation {
+        baseline: u32,
+        ready: bool,
+        anomaly: bool,
+    }
+
+    record snapshot {
+        accepted: u64,
+        previous: u32,
+        last: u32,
+    }
+}
+
+interface services {
+    /// Return the calibrated deviation limit in milligravity.
+    limit: async func(sequence: u64) -> result<u32, string>;
+}
+
+interface handler {
+    use readings.{sample, observation, snapshot};
+
+    initialize: func(state: snapshot) -> result<_, string>;
+    drive: async func() -> option<u64>;
+    observe: async func(reading: sample) -> result<observation, string>;
+    quiesce: async func() -> result<snapshot, string>;
+    resume: func() -> result<_, string>;
+    dispose: async func() -> result<_, string>;
+}
+
+world telemetry {
+    import services;
+    export handler;
+}

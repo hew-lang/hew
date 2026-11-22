@@ -19,6 +19,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use super::bindings;
 use super::cache::{self, ArtifactCache};
+use super::telemetry;
 pub use bindings::hew::live_router::events::{Delivery, Event, Snapshot};
 
 mod inspection;
@@ -43,6 +44,37 @@ pub type ServiceCall<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>
 pub trait Services: Send + Sync + 'static {
     fn destination(&self, source: String) -> ServiceCall<Option<String>>;
     fn emit(&self, message: Delivery) -> ServiceCall<()>;
+}
+
+#[derive(Clone)]
+enum ServicesFor {
+    Router(Arc<dyn Services>),
+    Telemetry(Arc<dyn telemetry::Calibration>),
+}
+
+impl ServicesFor {
+    fn profile(&self) -> &'static str {
+        match self {
+            Self::Router(_) => "hew:live-router@0.1.0",
+            Self::Telemetry(_) => "hew:live-telemetry@0.1.0",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum RetainedState {
+    Router(Snapshot),
+    Telemetry(telemetry::Snapshot),
+}
+
+pub(super) enum Invocation {
+    Route(Event),
+    Observe(telemetry::Sample),
+}
+
+pub(super) enum Reply {
+    Routed(bool),
+    Observed(telemetry::Observation),
 }
 
 /// Failure to execute or replace a portable deployment.
@@ -137,7 +169,7 @@ impl fmt::Debug for Prepared {
 /// A host with explicit service grants and no inherited WASI environment.
 pub struct Host {
     engine: Engine,
-    services: Arc<dyn Services>,
+    services: ServicesFor,
     observer: Option<Arc<dyn Observer>>,
     mode: &'static str,
     policy: Arc<HostPolicy>,
@@ -165,6 +197,14 @@ impl Host {
     /// # Errors
     /// Returns invalid policy or engine configuration failures.
     pub fn with_policy(services: Arc<dyn Services>, policy: HostPolicy) -> Result<Self, Error> {
+        Self::for_contract(ServicesFor::Router(services), policy)
+    }
+
+    pub(super) fn telemetry(calibration: Arc<dyn telemetry::Calibration>) -> Result<Self, Error> {
+        Self::for_contract(ServicesFor::Telemetry(calibration), HostPolicy::default())
+    }
+
+    fn for_contract(services: ServicesFor, policy: HostPolicy) -> Result<Self, Error> {
         policy.validate()?;
         let mut config = Config::new();
         config.wasm_component_model_async(true).consume_fuel(true);
@@ -246,6 +286,15 @@ impl Host {
         prepared: Prepared,
         state: Snapshot,
     ) -> Result<Deployment, Error> {
+        self.activate_with_state(prepared, RetainedState::Router(state))
+            .await
+    }
+
+    pub(super) async fn activate_with_state(
+        self: &Arc<Self>,
+        prepared: Prepared,
+        state: RetainedState,
+    ) -> Result<Deployment, Error> {
         let instance = self.instantiate(prepared).await?;
         instance.initialize(state).await?;
         instance.activate();
@@ -265,7 +314,7 @@ impl Host {
         let (failed, failure) = tokio::sync::watch::channel(None);
         let granted = Arc::new(AtomicBool::new(false));
         let engine = self.engine.clone();
-        let services = Arc::clone(&self.services);
+        let services = self.services.clone();
         let worker_grant = Arc::clone(&granted);
         let wake = Arc::new(tokio::sync::Notify::new());
         let worker_wake = Arc::clone(&wake);
@@ -286,11 +335,11 @@ impl Host {
             )
             .await
             {
-                Ok((mut store, router)) => {
+                Ok((mut store, handler)) => {
                     let _ = ready.send(Ok(()));
                     let result = store
                         .run_concurrent(async |accessor| {
-                            serve(accessor, Arc::new(router), receiver, worker_wake).await
+                            serve(accessor, Arc::new(handler), receiver, worker_wake).await
                         })
                         .await
                         .and_then(std::convert::identity);
@@ -339,9 +388,20 @@ impl Deployment {
     /// # Errors
     /// Returns guest faults, service refusals or a closed host.
     pub async fn route(&self, event: Event) -> Result<bool, Error> {
-        self.host
-            .policy
-            .payload(&[event.source.len(), event.body.len()])?;
+        match self.invoke(Invocation::Route(event)).await? {
+            Reply::Routed(accepted) => Ok(accepted),
+            Reply::Observed(_) => Err(Error::Engine(wasmtime::Error::msg(
+                "unexpected telemetry result",
+            ))),
+        }
+    }
+
+    pub(super) async fn invoke(&self, input: Invocation) -> Result<Reply, Error> {
+        let lengths = match &input {
+            Invocation::Route(event) => [event.source.len(), event.body.len()],
+            Invocation::Observe(_) => [size_of::<u64>(), size_of::<u32>()],
+        };
+        self.host.policy.payload(&lengths)?;
         let admission = policy::reserve(&self.host.budgets.routes, PolicyLimit::Routes)?;
         let lease = Arc::clone(&self.active).read_owned().await;
         let instance = Arc::clone(&lease.instance);
@@ -362,8 +422,8 @@ impl Deployment {
         );
         let observation =
             inspection::InvocationObservation::new(self.host.observer.clone(), identity);
-        permit.send(Command::Route {
-            event,
+        permit.send(Command::Invoke {
+            input,
             reply,
             lease,
             observation,
@@ -400,6 +460,28 @@ impl Deployment {
         predecessor: u64,
         within: Duration,
     ) -> Result<Committed, Error> {
+        let replacement = self
+            .replace_with_state(prepared, predecessor, within)
+            .await?;
+        let RetainedState::Router(snapshot) = replacement.snapshot else {
+            return Err(Error::Engine(wasmtime::Error::msg(
+                "unexpected telemetry snapshot",
+            )));
+        };
+        Ok(Committed {
+            epoch: replacement.epoch,
+            digest: replacement.digest,
+            snapshot,
+            retirement: replacement.retirement,
+        })
+    }
+
+    pub(super) async fn replace_with_state(
+        &self,
+        prepared: Prepared,
+        predecessor: u64,
+        within: Duration,
+    ) -> Result<Replacement, Error> {
         let candidate_status = Status {
             epoch: predecessor,
             digest: prepared.digest,
@@ -437,7 +519,7 @@ impl Deployment {
             let snapshot = old.snapshot(attempt).await?;
             stage = Stage::Initialization;
             self.record(candidate_status, None, "initializing");
-            candidate.initialize(snapshot).await?;
+            candidate.initialize(snapshot.clone()).await?;
             if Instant::now() >= deadline {
                 return Err(Error::Expired(stage));
             }
@@ -457,7 +539,7 @@ impl Deployment {
                 "committed",
             );
             let retirement = tokio::spawn(async move { old.dispose().await });
-            Ok(Committed {
+            Ok(Replacement {
                 epoch,
                 digest: candidate.digest,
                 snapshot,
@@ -495,6 +577,13 @@ pub struct Committed {
     pub digest: [u8; 32],
     pub snapshot: Snapshot,
     pub retirement: JoinHandle<Result<(), Error>>,
+}
+
+pub(super) struct Replacement {
+    pub(super) epoch: u64,
+    pub(super) digest: [u8; 32],
+    pub(super) snapshot: RetainedState,
+    pub(super) retirement: JoinHandle<Result<(), Error>>,
 }
 
 #[derive(Debug)]
@@ -545,7 +634,7 @@ impl Instance {
         self.wake.notify_one();
     }
 
-    async fn initialize(&self, state: Snapshot) -> Result<(), Error> {
+    async fn initialize(&self, state: RetainedState) -> Result<(), Error> {
         let (reply, result) = oneshot::channel();
         if self
             .commands
@@ -558,7 +647,7 @@ impl Instance {
         self.receive(result).await
     }
 
-    async fn snapshot(&self, attempt: Arc<Mutex<Attempt>>) -> Result<Snapshot, Error> {
+    async fn snapshot(&self, attempt: Arc<Mutex<Attempt>>) -> Result<RetainedState, Error> {
         let (reply, result) = oneshot::channel();
         if self
             .commands
@@ -621,20 +710,20 @@ impl Drop for Fence {
 }
 
 enum Command {
-    Route {
-        event: Event,
-        reply: oneshot::Sender<Result<bool, Error>>,
+    Invoke {
+        input: Invocation,
+        reply: oneshot::Sender<Result<Reply, Error>>,
         lease: OwnedRwLockReadGuard<Arc<Activation>>,
         observation: inspection::InvocationObservation,
         admission: OwnedSemaphorePermit,
     },
     Snapshot {
         attempt: Arc<Mutex<Attempt>>,
-        reply: oneshot::Sender<Result<Snapshot, Error>>,
+        reply: oneshot::Sender<Result<RetainedState, Error>>,
         gate: Arc<tokio::sync::Mutex<()>>,
     },
     Initialize {
-        state: Snapshot,
+        state: RetainedState,
         reply: oneshot::Sender<Result<(), Error>>,
     },
     Dispose {
@@ -648,6 +737,118 @@ struct Context {
     resources: ResourceTable,
     limits: StoreLimits,
     output: Arc<policy::ServicesBudget>,
+}
+
+enum Handler {
+    Router(bindings::Router),
+    Telemetry(telemetry::bindings::Telemetry),
+}
+
+impl Handler {
+    async fn initialize(
+        &self,
+        accessor: &Accessor<Context>,
+        state: RetainedState,
+    ) -> wasmtime::Result<Result<(), String>> {
+        match (self, state) {
+            (Self::Router(router), RetainedState::Router(state)) => {
+                router
+                    .hew_live_router_handler()
+                    .call_initialize(accessor, state)
+                    .await
+            }
+            (Self::Telemetry(monitor), RetainedState::Telemetry(state)) => {
+                monitor
+                    .hew_live_telemetry_handler()
+                    .call_initialize(accessor, state)
+                    .await
+            }
+            _ => Err(wasmtime::Error::msg(
+                "snapshot belongs to a different component contract",
+            )),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        accessor: &Accessor<Context>,
+        input: Invocation,
+    ) -> wasmtime::Result<Result<Reply, String>> {
+        match (self, input) {
+            (Self::Router(router), Invocation::Route(event)) => router
+                .hew_live_router_handler()
+                .call_route(accessor, event)
+                .await
+                .map(|result| result.map(Reply::Routed)),
+            (Self::Telemetry(monitor), Invocation::Observe(reading)) => monitor
+                .hew_live_telemetry_handler()
+                .call_observe(accessor, reading)
+                .await
+                .map(|result| result.map(Reply::Observed)),
+            _ => Err(wasmtime::Error::msg(
+                "invocation belongs to a different component contract",
+            )),
+        }
+    }
+
+    async fn snapshot(
+        &self,
+        accessor: &Accessor<Context>,
+    ) -> wasmtime::Result<Result<RetainedState, String>> {
+        match self {
+            Self::Router(router) => router
+                .hew_live_router_handler()
+                .call_quiesce(accessor)
+                .await
+                .map(|result| result.map(RetainedState::Router)),
+            Self::Telemetry(monitor) => monitor
+                .hew_live_telemetry_handler()
+                .call_quiesce(accessor)
+                .await
+                .map(|result| result.map(RetainedState::Telemetry)),
+        }
+    }
+
+    async fn drive(&self, accessor: &Accessor<Context>) -> wasmtime::Result<Option<u64>> {
+        match self {
+            Self::Router(router) => router.hew_live_router_handler().call_drive(accessor).await,
+            Self::Telemetry(monitor) => {
+                monitor
+                    .hew_live_telemetry_handler()
+                    .call_drive(accessor)
+                    .await
+            }
+        }
+    }
+
+    async fn resume(&self, accessor: &Accessor<Context>) -> wasmtime::Result<Result<(), String>> {
+        match self {
+            Self::Router(router) => router.hew_live_router_handler().call_resume(accessor).await,
+            Self::Telemetry(monitor) => {
+                monitor
+                    .hew_live_telemetry_handler()
+                    .call_resume(accessor)
+                    .await
+            }
+        }
+    }
+
+    async fn dispose(&self, accessor: &Accessor<Context>) -> wasmtime::Result<Result<(), String>> {
+        match self {
+            Self::Router(router) => {
+                router
+                    .hew_live_router_handler()
+                    .call_dispose(accessor)
+                    .await
+            }
+            Self::Telemetry(monitor) => {
+                monitor
+                    .hew_live_telemetry_handler()
+                    .call_dispose(accessor)
+                    .await
+            }
+        }
+    }
 }
 
 fn guest_result<T>(
@@ -677,17 +878,65 @@ impl WasiView for Context {
 async fn guest(
     engine: &Engine,
     component: &Component,
-    services: Arc<dyn Services>,
+    services: ServicesFor,
     granted: Arc<AtomicBool>,
     policy: Arc<HostPolicy>,
     budgets: Arc<policy::Budgets>,
-) -> Result<(Store<Context>, bindings::Router), Error> {
+) -> Result<(Store<Context>, Handler), Error> {
     let mut linker = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    let service_budget = Arc::new(policy::ServicesBudget::new(Arc::clone(&policy), &budgets));
+    match &services {
+        ServicesFor::Router(services) => link_router(
+            &mut linker,
+            Arc::clone(services),
+            granted,
+            Arc::clone(&service_budget),
+        )?,
+        ServicesFor::Telemetry(calibration) => link_telemetry(
+            &mut linker,
+            Arc::clone(calibration),
+            granted,
+            Arc::clone(&service_budget),
+        )?,
+    }
+    let mut resources = ResourceTable::new();
+    resources.set_max_capacity(policy.max_host_resources);
+    let mut wasi = WasiCtxBuilder::new();
+    wasi.max_random_size(policy.max_payload_bytes as u64);
+    let mut store = Store::new(
+        engine,
+        Context {
+            wasi: wasi.build(),
+            resources,
+            limits: policy.store_limits(),
+            output: service_budget,
+        },
+    );
+    store.limiter(|context| &mut context.limits);
+    store.set_fuel(policy.fuel)?;
+    store.fuel_async_yield_interval(Some(100_000))?;
+    let handler = match services {
+        ServicesFor::Router(_) => Handler::Router(
+            bindings::Router::instantiate_async(&mut store, component, &linker).await?,
+        ),
+        ServicesFor::Telemetry(_) => Handler::Telemetry(
+            telemetry::bindings::Telemetry::instantiate_async(&mut store, component, &linker)
+                .await?,
+        ),
+    };
+    Ok((store, handler))
+}
+
+fn link_router(
+    linker: &mut Linker<Context>,
+    services: Arc<dyn Services>,
+    granted: Arc<AtomicBool>,
+    service_budget: Arc<policy::ServicesBudget>,
+) -> wasmtime::Result<()> {
     let mut imports = linker.instance("hew:live-router/services@0.1.0")?;
     let destinations = Arc::clone(&services);
     let destination_grant = Arc::clone(&granted);
-    let service_budget = Arc::new(policy::ServicesBudget::new(Arc::clone(&policy), &budgets));
     let destination_budget = Arc::clone(&service_budget);
     imports.func_wrap_concurrent("destination", move |_accessor, (source,): (String,)| {
         let provider = Arc::clone(&destinations);
@@ -716,7 +965,7 @@ async fn guest(
             },))
         })
     })?;
-    let emit_budget = Arc::clone(&service_budget);
+    let emit_budget = service_budget;
     imports.func_wrap_concurrent("emit", move |_accessor, (message,): (Delivery,)| {
         let provider = Arc::clone(&services);
         let budget = Arc::clone(&emit_budget);
@@ -740,24 +989,37 @@ async fn guest(
             },))
         })
     })?;
-    let mut resources = ResourceTable::new();
-    resources.set_max_capacity(policy.max_host_resources);
-    let mut wasi = WasiCtxBuilder::new();
-    wasi.max_random_size(policy.max_payload_bytes as u64);
-    let mut store = Store::new(
-        engine,
-        Context {
-            wasi: wasi.build(),
-            resources,
-            limits: policy.store_limits(),
-            output: service_budget,
-        },
-    );
-    store.limiter(|context| &mut context.limits);
-    store.set_fuel(policy.fuel)?;
-    store.fuel_async_yield_interval(Some(100_000))?;
-    let router = bindings::Router::instantiate_async(&mut store, component, &linker).await?;
-    Ok((store, router))
+    Ok(())
+}
+
+fn link_telemetry(
+    linker: &mut Linker<Context>,
+    calibration: Arc<dyn telemetry::Calibration>,
+    granted: Arc<AtomicBool>,
+    service_budget: Arc<policy::ServicesBudget>,
+) -> wasmtime::Result<()> {
+    linker
+        .instance("hew:live-telemetry/services@0.1.0")?
+        .func_wrap_concurrent("limit", move |_accessor, (sequence,): (u64,)| {
+            let provider = Arc::clone(&calibration);
+            let budget = Arc::clone(&service_budget);
+            let admitted = granted
+                .load(Ordering::Acquire)
+                .then(|| budget.begin(&[size_of::<u64>()]))
+                .transpose();
+            Box::pin(async move {
+                let Some(_operation) = admitted? else {
+                    return Ok((Err("production services are not granted".into()),));
+                };
+                let result = budget.complete(provider.limit(sequence)).await?;
+                budget.response(
+                    result
+                        .as_ref()
+                        .map_or_else(String::len, |_| size_of::<u32>()),
+                )?;
+                Ok((result,))
+            })
+        })
 }
 
 #[allow(
@@ -766,7 +1028,7 @@ async fn guest(
 )]
 async fn serve(
     accessor: &Accessor<Context>,
-    router: Arc<bindings::Router>,
+    handler: Arc<Handler>,
     mut commands: mpsc::Receiver<Command>,
     wake: Arc<tokio::sync::Notify>,
 ) -> wasmtime::Result<()> {
@@ -811,21 +1073,21 @@ async fn serve(
             }, if enabled && !driving => {
                 driving = true;
                 deadline = None;
-                accessor.spawn(Drive { router: Arc::clone(&router), reply: driven.clone() })?;
+                accessor.spawn(Drive { handler: Arc::clone(&handler), reply: driven.clone() })?;
                 continue;
             }
         };
         match command {
-            Command::Route {
-                event,
+            Command::Invoke {
+                input,
                 reply,
                 lease,
                 observation,
                 admission,
             } => {
-                accessor.spawn(Route {
-                    router: Arc::clone(&router),
-                    event,
+                accessor.spawn(Invoke {
+                    handler: Arc::clone(&handler),
+                    input,
                     reply,
                     _lease: lease,
                     wake: Arc::clone(&wake),
@@ -839,29 +1101,23 @@ async fn serve(
                 gate,
             } => {
                 accessor.spawn(SnapshotCall {
-                    router: Arc::clone(&router),
+                    handler: Arc::clone(&handler),
                     attempt,
                     reply,
                     gate,
                 })?;
             }
             Command::Initialize { state, reply } => {
-                let result = router
-                    .hew_live_router_handler()
-                    .call_initialize(accessor, state)
-                    .await;
+                let result = handler.initialize(accessor, state).await;
                 let _ = reply.send(guest_result(accessor, result));
             }
             Command::Resume => {
                 // Complete this control call before dispatching later routes.
-                let result = router.hew_live_router_handler().call_resume(accessor).await;
+                let result = handler.resume(accessor).await;
                 guest_result(accessor, result).map_err(wasmtime::Error::new)?;
             }
             Command::Dispose { reply } => {
-                let result = router
-                    .hew_live_router_handler()
-                    .call_dispose(accessor)
-                    .await;
+                let result = handler.dispose(accessor).await;
                 let _ = reply.send(guest_result(accessor, result));
                 break;
             }
@@ -871,39 +1127,31 @@ async fn serve(
 }
 
 struct Drive {
-    router: Arc<bindings::Router>,
+    handler: Arc<Handler>,
     reply: mpsc::Sender<wasmtime::Result<Option<u64>>>,
 }
 
 impl AccessorTask<Context> for Drive {
     async fn run(self, accessor: &Accessor<Context>) -> wasmtime::Result<()> {
-        let result = self
-            .router
-            .hew_live_router_handler()
-            .call_drive(accessor)
-            .await;
+        let result = self.handler.drive(accessor).await;
         let _ = self.reply.send(result).await;
         Ok(())
     }
 }
 
-struct Route {
-    router: Arc<bindings::Router>,
-    event: Event,
-    reply: oneshot::Sender<Result<bool, Error>>,
+struct Invoke {
+    handler: Arc<Handler>,
+    input: Invocation,
+    reply: oneshot::Sender<Result<Reply, Error>>,
     _lease: OwnedRwLockReadGuard<Arc<Activation>>,
     wake: Arc<tokio::sync::Notify>,
     observation: inspection::InvocationObservation,
     _admission: OwnedSemaphorePermit,
 }
 
-impl AccessorTask<Context> for Route {
+impl AccessorTask<Context> for Invoke {
     async fn run(mut self, accessor: &Accessor<Context>) -> wasmtime::Result<()> {
-        let result = self
-            .router
-            .hew_live_router_handler()
-            .call_route(accessor, self.event)
-            .await;
+        let result = self.handler.invoke(accessor, self.input).await;
         self.wake.notify_one();
         self.observation.finish(if matches!(&result, Ok(Ok(_))) {
             "completed"
@@ -916,9 +1164,9 @@ impl AccessorTask<Context> for Route {
 }
 
 struct SnapshotCall {
-    router: Arc<bindings::Router>,
+    handler: Arc<Handler>,
     attempt: Arc<Mutex<Attempt>>,
-    reply: oneshot::Sender<Result<Snapshot, Error>>,
+    reply: oneshot::Sender<Result<RetainedState, Error>>,
     gate: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -927,7 +1175,7 @@ impl AccessorTask<Context> for SnapshotCall {
         // Expiry reopens routes immediately, but a new snapshot must wait for
         // the previous borrowed call's cooperative release to finish.
         let _snapshot = self.gate.lock().await;
-        let mut call = Box::pin(self.router.hew_live_router_handler().call_quiesce(accessor));
+        let mut call = Box::pin(self.handler.snapshot(accessor));
         // Stage the component call under the same attempt lock that expiry
         // revokes. A late host task cannot close admission after resume.
         let initial = poll_fn(|context| {

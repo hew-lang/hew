@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::GuestContract;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Toolchain locations for portable source compilation.
@@ -27,17 +29,21 @@ pub struct ContextSource {
 /// never silently replaced by the generated service contract.
 pub fn source_context(source: &Path) -> Result<Vec<ContextSource>> {
     let source = source.canonicalize()?;
+    Ok(vec![ContextSource {
+        path: service_path(&source, GuestContract::Router)?,
+        source: super::service_module_source()?,
+    }])
+}
+
+fn service_path(source: &Path, contract: GuestContract) -> Result<PathBuf> {
     let path = source
         .parent()
         .ok_or("source has no parent")?
-        .join("router_services.hew");
+        .join(format!("{}_services.hew", contract.world()));
     if path.exists() {
         return Err(format!("generated service module would shadow {}", path.display()).into());
     }
-    Ok(vec![ContextSource {
-        path,
-        source: super::service_module_source()?,
-    }])
+    Ok(path)
 }
 
 /// Compile ordinary router source in its existing project context. Generated
@@ -46,30 +52,64 @@ pub fn source_context(source: &Path) -> Result<Vec<ContextSource>> {
 /// # Errors
 /// Returns source, compiler, linker or component validation diagnostics.
 pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
+    build_for(source, toolchain, GuestContract::Router)
+}
+
+/// Compile the portable telemetry monitor and generate its calibrated service binding.
+/// # Errors
+/// Returns source, compiler, linker or component validation diagnostics.
+pub fn build_telemetry(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
+    build_for(source, toolchain, GuestContract::Telemetry)
+}
+
+fn build_for(source: &Path, toolchain: &Toolchain, contract: GuestContract) -> Result<Vec<u8>> {
     let source = source.canonicalize()?;
+    let services = service_path(&source, contract)?;
     let directory = tempfile::tempdir()?;
-    super::write_guest_bindings(directory.path())?;
-    let context = source_context(&source)?;
-    let services = &context[0];
-    run(Command::new(&toolchain.compiler)
+    super::write_guest_bindings_for(directory.path(), contract)?;
+    let mut command = Command::new(&toolchain.compiler);
+    command
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", "create=guest_create"])
-        .args(["--export-c-async", "route=guest_route"])
         .args(["--export-c-async", "snapshot=guest_snapshot"])
-        .args(["--export-c-async", "dispose=guest_dispose"])
+        .args(["--export-c-async", "dispose=guest_dispose"]);
+    match contract {
+        GuestContract::Router => {
+            command.args(["--export-c-async", "route=guest_route"]);
+        }
+        GuestContract::Telemetry => {
+            command.args(["--export-c-async", "observe=guest_route"]);
+            for getter in [
+                "baseline", "ready", "anomaly", "accepted", "previous", "last",
+            ] {
+                command
+                    .arg("--export-c")
+                    .arg(format!("{getter}=guest_{getter}"));
+            }
+        }
+    }
+    run(command
         .arg("--source-overlay")
         .arg(format!(
             "{}={}",
-            services.path.display(),
-            directory.path().join("router_services.hew").display()
+            services.display(),
+            directory
+                .path()
+                .join(
+                    services
+                        .file_name()
+                        .ok_or("service module has no file name")?
+                )
+                .display()
         ))
         .arg(&source)
         .arg("-o")
         .arg(directory.path().join("guest.o")))?;
-    link_guest_object(
+    link_guest_object_for(
         directory.path(),
         &toolchain.wasi_sdk,
         &toolchain.wasm_lib_dir,
+        contract,
     )
 }
 
@@ -82,6 +122,17 @@ pub fn link_guest_object(
     wasi_sdk: &Path,
     wasm_lib_dir: &Path,
 ) -> Result<Vec<u8>> {
+    link_guest_object_for(directory, wasi_sdk, wasm_lib_dir, GuestContract::Router)
+}
+
+fn link_guest_object_for(
+    directory: &Path,
+    wasi_sdk: &Path,
+    wasm_lib_dir: &Path,
+    contract: GuestContract,
+) -> Result<Vec<u8>> {
+    let world = contract.world();
+    let core = directory.join(format!("{world}.core.wasm"));
     run(Command::new(wasi_sdk.join("bin/clang"))
         .args(["-mexec-model=reactor", "-O2", "-Wall", "-Wextra", "-Werror"])
         .args(
@@ -91,16 +142,16 @@ pub fn link_guest_object(
         )
         .arg("-I")
         .arg(directory)
-        .arg(directory.join("router.c"))
-        .arg(directory.join("router_component_type.o"))
-        .arg(directory.join("router_adapter.c"))
+        .arg(directory.join(format!("{world}.c")))
+        .arg(directory.join(format!("{world}_component_type.o")))
+        .arg(directory.join(format!("{world}_adapter.c")))
         .arg(directory.join("guest.o"))
         .arg("-L")
         .arg(wasm_lib_dir)
         .args(["-lhew_runtime", "-lhew_std", "-o"])
-        .arg(directory.join("router.core.wasm")))?;
+        .arg(&core))?;
     Ok(wit_component::ComponentEncoder::default()
-        .module(&std::fs::read(directory.join("router.core.wasm"))?)?
+        .module(&std::fs::read(core)?)?
         .adapter(
             "wasi_snapshot_preview1",
             wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER,

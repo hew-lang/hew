@@ -140,7 +140,8 @@ fn parse_toml(text: &str) -> Result<Value, DecodeError> {
 pub(crate) fn write(format: Format, value: &Value) -> Vec<u8> {
     let written = match format {
         Format::Json => serde_json::to_vec(value).map_err(|e| e.to_string()),
-        Format::Yaml => ayaml::to_string(value)
+        Format::Yaml => ayaml::to_value(value)
+            .and_then(|value| crate::yaml_value::encode(&value))
             .map(String::into_bytes)
             .map_err(|e| e.to_string()),
         Format::Toml => toml::to_string(value)

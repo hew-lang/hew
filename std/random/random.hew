@@ -195,9 +195,7 @@ fn shuffled<T>(var values: Vec<T>, consume var draw: fn[var](i64) -> i64) -> Vec
     while remaining > 1 {
         let other = draw(remaining);
         remaining -= 1;
-        let saved = values[remaining];
-        values[remaining] = values[other];
-        values[other] = saved;
+        values.swap(remaining, other);
     }
     values
 }
@@ -205,13 +203,13 @@ fn shuffled<T>(var values: Vec<T>, consume var draw: fn[var](i64) -> i64) -> Vec
 /// Weighted choice by bisecting cumulative weights. Returns the chosen index.
 ///
 /// `weights` is a `Vec<f64>` of cumulative weights (each entry is the sum of
-/// all weights up to and including that index), `total` is the grand total,
+/// all weights up to and including that index), `total` is the positive finite grand total,
 /// and `n` must be `1`.
 pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 fails RandomError {
-    if weights.len() == 0 {
+    if weights.is_empty() {
         return error RandomError.InvalidWeights("weights must not be empty");
     }
-    if total <= 0.0 || total != total {
+    if total <= 0.0 || !total.is_finite() {
         return error RandomError.InvalidWeights("total must be a positive finite value");
     }
     if n != 1 {
@@ -220,7 +218,7 @@ pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 fails RandomError {
     var previous = 0.0;
     for i in 0..weights.len() {
         let weight = weights[i];
-        if weight <= previous || weight != weight {
+        if weight <= previous || !weight.is_finite() {
             return error RandomError.InvalidWeights("weights must be strictly increasing");
         }
         previous = weight;

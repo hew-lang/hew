@@ -384,12 +384,12 @@ impl Command {
         var names: Vec<string> = ["help"];
         var shorts: Vec<string> = ["h"];
         for argument in self.arguments {
-            if !valid_name(argument.name) || contains(names, argument.name) {
+            if !valid_name(argument.name) || names.contains(argument.name) {
                 return error .InvalidDefinition(f"invalid or repeated option `--{argument.name}`");
             }
             names.push(argument.name);
             if let .Some(short) = argument.short {
-                if short.len() != 1 || !valid_name(short) || contains(shorts, short) {
+                if short.len() != 1 || !valid_name(short) || shorts.contains(short) {
                     return error .InvalidDefinition(f"invalid or repeated short option `-{short}`");
                 }
                 shorts.push(short);
@@ -407,7 +407,7 @@ impl Command {
         }
         var commands: Vec<string> = Vec.new();
         for command in self.commands {
-            if contains(commands, command.name) {
+            if commands.contains(command.name) {
                 return error .InvalidDefinition(f"repeated command `{command.name}`");
             }
             commands.push(command.name);
@@ -469,26 +469,10 @@ fn value_label(kind: ValueKind) -> Option<string> {
     }
 }
 
-fn contains(values: Vec<string>, wanted: string) -> bool {
-    for value in values {
-        if value == wanted {
-            return true;
-        }
-    }
-    false
-}
-
 fn valid_name(name: string) -> bool {
-    if name.is_empty() || !iter.all(name.iter(), |c: char| c.is_ascii()) || name.starts_with("-") {
-        return false;
-    }
-    for index in 0..name.len() {
-        let ch = name[index .. index + 1];
-        if !((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch == "-" || ch == "_") {
-            return false;
-        }
-    }
-    true
+    !name.is_empty() && !name.starts_with("-") && iter.all(name.iter(), |ch: char| {
+        ch.is_ascii() && (ch.is_alphanumeric() || ch == '-' || ch == '_')
+    })
 }
 
 fn next_value(argument: Argument, args: Vec<string>, index: i64) -> string fails ParseError {
@@ -520,7 +504,7 @@ fn checked_value(argument: Argument, raw: string) -> Value fails ParseError {
             }
         }
         .Choice(_, choices) => {
-            if contains(choices, raw) {
+            if choices.contains(raw) {
                 return .Text(raw);
             }
             return error .InvalidValue(argument.name, raw, f"one of {choice_names(choices)}");
@@ -529,12 +513,5 @@ fn checked_value(argument: Argument, raw: string) -> Value fails ParseError {
 }
 
 fn choice_names(choices: Vec<string>) -> string {
-    var names = "";
-    for index in 0..choices.len() {
-        if index > 0 {
-            names = names + ", ";
-        }
-        names = names + choices[index];
-    }
-    names
+    choices.join(", ")
 }

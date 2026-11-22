@@ -68,12 +68,10 @@ pub fn sort_by<T>(v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Vec<T> 
 }
 
 /// Reverse a vector. The input is unchanged.
-pub fn reverse<T>(v: Vec<T>) -> Vec<T> {
-    var out: Vec<T> = Vec.new();
-    var i = v.len();
-    while i > 0 {
-        i = i - 1;
-        out.push(v[i]);
+pub fn reverse<T>(var values: Vec<T>) -> Vec<T> {
+    let count = values.len();
+    for i in 0 .. count / 2 {
+        values.swap(i, count - i - 1);
     }
-    out
+    values
 }

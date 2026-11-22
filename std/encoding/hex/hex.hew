@@ -51,14 +51,8 @@ pub fn decode(s: string) -> bytes fails DecodeError {
         return error .InvalidLength(slen);
     }
     for i in (0..slen).step_by(2) {
-        let hi = hex_char_to_nibble(s[i .. i + 1]);
-        if hi < 0 {
-            return error .InvalidCharacter { index: i, text: s[i .. i + 1] };
-        }
-        let lo = hex_char_to_nibble(s[i + 1 .. i + 2]);
-        if lo < 0 {
-            return error .InvalidCharacter { index: i + 1, text: s[i + 1 .. i + 2] };
-        }
+        let hi = nibble(s, i)?;
+        let lo = nibble(s, i + 1)?;
         out.push((hi * 16 + lo) as u8);
     }
     out
@@ -88,31 +82,7 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibb
     }
 }
 
-/// Convert a single hex character to its 4-bit nibble value, or -1 if invalid.
-fn hex_char_to_nibble(ch: string) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
-    match ch {
-        "0" => 0 as i32,
-        "1" => 1 as i32,
-        "2" => 2 as i32,
-        "3" => 3 as i32,
-        "4" => 4 as i32,
-        "5" => 5 as i32,
-        "6" => 6 as i32,
-        "7" => 7 as i32,
-        "8" => 8 as i32,
-        "9" => 9 as i32,
-        "a" => 10 as i32,
-        "b" => 11 as i32,
-        "c" => 12 as i32,
-        "d" => 13 as i32,
-        "e" => 14 as i32,
-        "f" => 15 as i32,
-        "A" => 10 as i32,
-        "B" => 11 as i32,
-        "C" => 12 as i32,
-        "D" => 13 as i32,
-        "E" => 14 as i32,
-        "F" => 15 as i32,
-        _ => -1 as i32,
-    }
+fn nibble(text: string, index: i64) -> i64 fails DecodeError {
+    let digit = text[index];
+    digit.to_digit(16) ?? return error .InvalidCharacter { index, text: f"{digit}" }
 }

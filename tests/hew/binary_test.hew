@@ -499,3 +499,18 @@ fn test_checked_parser_with_question_mark() {
     assert(f"{parse_record(record):?}" == "Ok((7, 21.5))");
     assert(f"{parse_record(record[0..3]):?}" == "Err(OutOfRange(2, 4, 3))");
 }
+
+#[test]
+fn unrepresentable_slice_widths_remain_bounds_errors() {
+    let data = hex_bytes([1]);
+    let largest: i64 = 9223372036854775807;
+    let smallest = -largest - 1;
+    match binary.slice(data, smallest, largest) {
+        .Err(.OutOfRange(at, width, available)) => assert(at == smallest && width == largest && available == 1),
+        _ => panic("expected bounds error for a positive oversized width"),
+    }
+    match binary.slice(data, largest, smallest) {
+        .Err(.OutOfRange(at, width, available)) => assert(at == largest && width == smallest && available == 1),
+        _ => panic("expected bounds error for a negative oversized width"),
+    }
+}

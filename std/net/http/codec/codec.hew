@@ -162,7 +162,7 @@ pub fn build_request(method: string, host: string, path: string, body: string, c
     if !(body).is_empty() {
         let ct = if (content_type).is_empty() { "application/octet-stream" } else { content_type };
         req = req + f"Content-Type: {ct}" + nl;
-        req = req + f"Content-Length: {body.len()}" + nl;
+        req = req + f"Content-Length: {body.byte_len()}" + nl;
     }
     req = req + nl;
     req = req + body;
@@ -273,15 +273,15 @@ fn authority_with_port(authority: string, scheme: string) -> string {
 /// each iteration so a malicious server cannot OOM the client with an unbounded
 /// head/body or an enormous `Content-Length`.
 pub fn response_over_limit(raw: string) -> bool {
-    if raw.len() > CLIENT_MAX_RESPONSE_BYTES {
+    if raw.byte_len() > CLIENT_MAX_RESPONSE_BYTES {
         return true;
     }
     let sep = match raw.find("\r\n\r\n") {
         .Some(i) => i,
-        .None => return raw.len() > CLIENT_MAX_HEADER_BYTES,
+        .None => return raw.byte_len() > CLIENT_MAX_HEADER_BYTES,
     };
     let head = raw[0..sep];
-    if head.len() > CLIENT_MAX_HEADER_BYTES {
+    if head.byte_len() > CLIENT_MAX_HEADER_BYTES {
         return true;
     }
     let declared = declared_content_length(header_section_of(head));
@@ -301,7 +301,7 @@ pub fn parse_response(raw: string) -> Option<Response> fails ResponseError {
     };
     let head = raw[0..sep];
     let body = raw[sep + 4 .. raw.len()];
-    if body.len() > CLIENT_MAX_BODY_BYTES {
+    if body.byte_len() > CLIENT_MAX_BODY_BYTES {
         return error ResponseError.TooLarge;
     }
     let code = parse_status_code(first_line(head));
@@ -324,7 +324,7 @@ pub fn parse_response(raw: string) -> Option<Response> fails ResponseError {
         if length.is_empty() || !iter.all(length.iter(), |c: char| c.is_digit()) {
             return error ResponseError.Malformed("invalid Content-Length");
         }
-        if body.len() < declared_content_length(header_section) {
+        if body.byte_len() < declared_content_length(header_section) {
             return .None;
         }
     }

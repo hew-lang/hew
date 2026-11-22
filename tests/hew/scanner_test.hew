@@ -387,3 +387,16 @@ fn test_from_file_missing_path_returns_io_error() {
         }
     }
 }
+
+#[test]
+fn unicode_lines_and_words_keep_scalar_offsets_and_the_original_mode() {
+    let source = "雪 dépanneur\r\n\nfin\r";
+    assert(scanner.lines(source) == ["雪 dépanneur", "", "fin\r"]);
+    let start = scanner.with_split(scanner.from_string(source), .SplitWords);
+    let first = scanner.scan(start);
+    assert(scanner.text(first) == "雪");
+    let (next, rest) = scanner.next_line(first);
+    assert(rest == .Some(" dépanneur"));
+    assert(scanner.collect(next) == [" dépanneur", "fin"]);
+    assert(scanner.words("a\u{a0}b c") == ["a\u{a0}b", "c"]);
+}

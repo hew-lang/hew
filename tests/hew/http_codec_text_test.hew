@@ -1,0 +1,19 @@
+import std.net.http.codec;
+
+#[test]
+fn a_unicode_body_round_trips_as_http_octets() {
+    let text = "café 雪";
+    let outgoing = codec.build_request("POST", "localhost", "/notes", text, "text/plain").expect("valid request");
+    assert(outgoing.contains("Content-Length: 9\r\n"));
+    let partial = outgoing[0 .. outgoing.len() - 1];
+    assert(!codec.request_complete(partial));
+    assert(codec.parse_request(partial).expect("valid partial request").is_none());
+    assert(codec.request_complete(outgoing));
+    let incoming = codec.parse_request(outgoing).expect("valid request").expect("complete body");
+    assert(incoming.body() == text);
+    let reply = codec.response_text(200, text).expect("valid reply");
+    assert(reply.contains("Content-Length: 9\r\n"));
+    assert(codec.parse_response(reply[0 .. reply.len() - 1]).expect("valid partial reply").is_none());
+    let parsed = codec.parse_response(reply).expect("valid reply").expect("complete body");
+    assert(parsed.body() == text);
+}

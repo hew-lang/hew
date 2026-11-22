@@ -251,7 +251,7 @@ impl Stream<string> {
 impl Stream<bytes> {
     /// Yield newline-free UTF-8 lines, normalizing CRLF and flushing a final
     /// unterminated line at EOF. Lines longer than one MiB are split into
-    /// bounded pieces. Closing the adapter closes its source cooperatively.
+    /// bounded pieces at UTF-8 scalar boundaries. Closing the adapter closes its source cooperatively.
     pub fn lines(consume self) -> Stream<string> {
         from_generator(normalized_lines(self))
     }
@@ -313,10 +313,18 @@ gen fn normalized_lines(consume input: Stream<bytes>) -> string {
             yield line;
             continue;
         }
-        if buffer.len() >= limit {
-            let line = line_text(buffer[0..limit]);
-            buffer = buffer[limit..buffer.len()];
-            skip_delimiter = true;
+        let pending_cr = !done && buffer.len() == limit && buffer[limit - 1] == 13;
+        if buffer.len() >= limit && !pending_cr {
+            let (line, consumed) = match utf8.decode(buffer[0..limit]) {
+                .Ok(text) => (text, limit),
+                .Err(error) if error.error_len.is_none() => {
+                    let valid_end = error.valid_up_to;
+                    (line_text(buffer[0..valid_end]), valid_end)
+                }
+                .Err(_) => panic("stream line contains invalid UTF-8"),
+            };
+            buffer = buffer[consumed..buffer.len()];
+            skip_delimiter = consumed == limit;
             scanned = 0;
             yield line;
             continue;

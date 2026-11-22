@@ -220,11 +220,12 @@ def verify_broken_stdlib_refuses_user_builds(
         scratch_std = scratch_root / "std"
         shutil.copytree(stdlib_dir, scratch_std)
         scratch_arena = scratch_std / arena.source.relative_to(stdlib_dir)
-        source = scratch_arena.read_text(encoding="utf-8")
-        changed = source.replace(".Some(slot)", "Some(slot)", 1)
-        if changed == source:
-            raise ValueError("broken-stdlib injection site `.Some(slot)` is missing")
-        scratch_arena.write_text(changed, encoding="utf-8")
+        with scratch_arena.open("a", encoding="utf-8") as source:
+            source.write(
+                "\nfn broken_variant_probe(value: Option<i64>) -> i64 {\n"
+                "    match value { Some(slot) => slot, .None => 0 }\n"
+                "}\n"
+            )
 
         result = audit_module(
             hew_bin,

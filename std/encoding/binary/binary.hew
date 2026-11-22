@@ -128,10 +128,11 @@ fn sign_extend(u: i64, width: i64) -> i64 {
 /// The bytes `start..end` of `data`, sharing its allocation.
 ///
 /// Returns `OutOfRange(start, end - start, data.len())` unless
-/// `0 <= start <= end <= data.len()`.
+/// `0 <= start <= end <= data.len()`. If the requested width is outside
+/// the range of `i64`, the error reports the nearest representable width.
 pub fn slice(data: bytes, start: i64, end: i64) -> Result<bytes, BinaryError> {
     if start < 0 || end < start || end > data.len() {
-        return .Err(BinaryError.OutOfRange(start, end - start, data.len()));
+        return .Err(BinaryError.OutOfRange(start, end.saturating_sub(start), data.len()));
     }
     .Ok(data[start..end])
 }

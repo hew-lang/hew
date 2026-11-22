@@ -82,6 +82,15 @@ fn main() {
         .Err(error) => panic(f"{error}"),
     }
     println("subcommand help");
+    for name in ["7zip", "_index", "no-colour"] {
+        assert(cli.command(name, "").parse([]).is_ok());
+    }
+    for name in ["", "-x", "--", "éclair", "two words"] {
+        match cli.command(name, "").parse([]) {
+            .Err(.InvalidDefinition(_)) => {}
+            _ => panic("invalid command name passed validation"),
+        }
+    }
     var ambiguous = cli.command("ambiguous", "Invalid declaration");
     ambiguous.argument(cli.flag("first", .Some("x"), "First"));
     ambiguous.argument(cli.flag("second", .Some("x"), "Second"));

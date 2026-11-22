@@ -343,7 +343,8 @@ pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
     }
 }
 
-/// Weighted choice using bisect on cumulative weights. Returns the chosen index.
+/// Weighted choice for native callers using the published vector ABI.
+/// New Hew programs search the cumulative weights in the standard library.
 /// Accepts a `HewVec` of f64 cumulative weights, the total weight, and n (unused,
 /// reserved for multi-sample).
 ///
@@ -375,7 +376,8 @@ pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: 
         let r = MT_STATE.with(|s| s.borrow_mut().random()) * total;
         // bisect_right
         let mut lo: usize = 0;
-        let mut hi: usize = len;
+        // The draw may round up to the total; it still selects the last index.
+        let mut hi: usize = len - 1;
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
             if r >= *data.add(mid) {
@@ -483,6 +485,19 @@ mod tests {
                 .unwrap()
                 .contains("expected plain elements"));
             crate::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn choices_vec_keeps_a_rounded_draw_inside_the_population() {
+        // SAFETY: the vector owns one f64, remains live through the call and is freed once.
+        unsafe {
+            let weights = crate::vec::hew_vec_new_f64();
+            let total = f64::from_bits(1);
+            crate::vec::hew_vec_push_f64(weights, total);
+            hew_random_seed(0);
+            assert_eq!(hew_random_choices_vec(weights, total, 1), 0);
+            crate::vec::hew_vec_free(weights);
         }
     }
 

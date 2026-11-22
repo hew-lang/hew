@@ -2,6 +2,8 @@
 
 import std.random;
 
+import std.math;
+
 #[test]
 fn test_choices_returns_an_index_for_valid_cumulative_weights() {
     var weights: Vec<f64> = Vec.new();
@@ -60,4 +62,24 @@ fn an_infinite_cumulative_total_is_refused() {
         .Err(.InvalidWeights(_)) => {}
         _ => panic("a weight distribution must be finite"),
     }
+}
+
+#[test]
+fn weighted_draws_match_the_seeded_stream_and_refusals_do_not_advance_it() {
+    random.seed(1729);
+    assert(random.choices([1.0, 1.0], 1.0, 1).is_err());
+    assert(random.choices([1.0, 3.0], 3.0, 2).is_err());
+    var draws: Vec<i64> = [];
+    for _ in 0..12 {
+        draws.push(random.choices([1.0, 3.0, 10.0], 10.0, 1).expect("valid weights"));
+    }
+    assert(draws == [2, 2, 2, 2, 2, 1, 1, 2, 2, 1, 2, 1]);
+    assert(random.randint(0, 1000000).expect("next draw") == 766301);
+}
+
+#[test]
+fn a_draw_rounded_to_the_total_still_selects_an_item() {
+    let smallest = math.from_bits(1);
+    random.seed(0);
+    assert(random.choices([smallest], smallest, 1) == .Ok(0));
 }

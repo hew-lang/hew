@@ -709,10 +709,15 @@ function readLineTerm(dst, to) {
 
 test("v1: a seeded program prints the same numbers whatever the chaos seed is", async () => {
   const randomPackage = pkg({
-    runtime_families: [PRINT_LN, { id: 1, family: "I64ToString" }],
+    runtime_families: [
+      PRINT_LN,
+      { id: 1, family: "I64ToString" },
+      { id: 2, family: "Print", detail: { kind: "F64", newline: true } },
+    ],
     externs: [
       { id: 0, symbol: "hew_random_seed" },
       { id: 1, symbol: "hew_random_randint" },
+      { id: 2, symbol: "hew_random_random" },
     ],
     functions: [
       fn(0, "main", [
@@ -752,15 +757,26 @@ test("v1: a seeded program prints the same numbers whatever the chaos seed is", 
         ),
         block(2, [], toStringCall2(3, 4, 3)),
         block(3, [], printTerm(4, 4)),
-        block(4, [], RETURN_UNIT),
+        block(4, [], {
+          op: "extern.call",
+          extern: 2,
+          args: [],
+          result: { value: 5, own: "owned" },
+          result_shape: null,
+          normal: { to: 5, args: [] },
+          unwind: null,
+          span: null,
+        }),
+        block(5, [], { ...printTerm(5, 6), family: 2 }),
+        block(6, [], RETURN_UNIT),
       ]),
     ],
   });
 
-  // `random.seed(1); random.randint(0, 99)` is 17 on native Hew, and the VM
-  // runs the same MT19937, so the draw does not depend on the VM's own seed.
-  assert.equal(stdout(await run(randomPackage, { seed: 1 })), "17\n");
-  assert.equal(stdout(await run(randomPackage, { seed: 9999 })), "17\n");
+  // A seeded integer draw followed by a float shares the native MT19937 stream,
+  // independently of the scheduler's seed.
+  assert.equal(stdout(await run(randomPackage, { seed: 1 })), "17\n0.569204\n");
+  assert.equal(stdout(await run(randomPackage, { seed: 9999 })), "17\n0.569204\n");
 });
 
 // ── admission ───────────────────────────────────────────────────────────────

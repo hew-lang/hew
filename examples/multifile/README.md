@@ -91,10 +91,10 @@ println(manhattan(o, p));        // 7
 
 ### Import style comparison
 
-| Style     | Syntax                          | Notes                                                                                                             |
-| --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Bare      | `import geo;`                   | All `pub` names in scope; also available as `geo.name(...)`. No false-positive warning when functions are called. |
-| Selective | `import geo.{Point, manhattan}` | Only named symbols enter scope. Preferred when callers only need a subset.                                        |
+| Style     | Syntax                           | Use                                                            |
+| --------- | -------------------------------- | -------------------------------------------------------------- |
+| Bare      | `import geo;`                    | Use the module name, as in `geo.Point` or `geo.origin()`.      |
+| Selective | `import geo.{Point, manhattan};` | Use the selected names directly, as in `Point { x: 3, y: 4 }`. |
 
 Run it:
 
@@ -156,24 +156,3 @@ truncate   : the quick...
 words      : 4
 first word : the
 ```
-
----
-
-## Known limitation — "unused import" false positive
-
-The compiler's unused-import checker currently tracks whether an import is
-**used as a qualified call** (`mod.func(...)`) but does **not** count
-unqualified type construction or trait usage as evidence of use. Concretely:
-
-```hew
-import shapes.{Circle};    // <-- warning: "unused import: shapes"
-let c = Circle { ... };    //     even though Circle came from this import
-```
-
-To avoid the false positive, call at least one imported function
-(`shapes.make_circle(...)`, or add the function to the selective list). A bare
-import with a qualified call (`import shapes; shapes.some_fn(...)`) also marks
-the import as used.
-
-This affects both import forms: bare and selective.
-The false positive is filed as a known issue.

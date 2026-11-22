@@ -1651,8 +1651,8 @@ stdlib-user-build-clean: hew-native
 # timed, and the slowest runs for minutes, well past a core-acceptance case's
 # per-source deadline.
 
-# Compile and run documentation examples in docs/ and std/.
-DOC_TEST_PATHS ?= docs std
+# Compile and run public README, manual and standard library examples.
+DOC_TEST_PATHS ?= README.md docs std
 test-doc-examples: hew-native
 	"$(DEBUG_HEW)" test --doc $(DOC_TEST_PATHS) --filter '::doc('
 

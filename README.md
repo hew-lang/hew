@@ -212,8 +212,8 @@ Wire types define versioned serialization schemas for use with actors and distri
 ```hew
 #[wire]
 type UserMessage {
-    name: string @1,
-    age:  i32    @2,
+    name: string @1;
+    age: i32 @2;
     // Adding a new @3 field later is backwards-compatible; reusing @1 is not.
 }
 ```
@@ -229,7 +229,7 @@ calls can suspend without an `await` prefix.
 
 ```hew
 actor Counter {
-    var count: i64 = 0,
+    var count: i64 = 0;
     receive fn add(n: i64) { count = count + n; }
     receive fn total() -> i64 { count }
 }
@@ -243,7 +243,7 @@ fn main() {
         .Ok(value) => println(value),
         .Err(error) => println(f"query failed: {error}"),
     }
-    close(counter);
+    stop(counter);
 }
 ```
 

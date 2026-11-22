@@ -386,6 +386,11 @@ unsafe fn take_release_items(
             if (layout.size == 0) != carrier.environment.is_null() {
                 std::process::abort();
             }
+            // An empty environment in the static image owns neither storage
+            // nor a code lease. Clearing the carrier completes its release.
+            if layout.size == 0 && layout.code_owner.is_null() {
+                return None;
+            }
             // SAFETY: this detached carrier transfers its retained code root.
             let code = unsafe { crate::code_owner::CodeRoot::take(layout.code_owner) };
             if layout.size != 0 {
@@ -754,6 +759,16 @@ mod tests {
 
     #[test]
     fn empty_function_carrier_is_distinct_from_a_cleared_carrier() {
+        use hew_cabi::code::{HewCodeLease, HewCodeLeaseSlot};
+
+        unsafe extern "C" fn retain(context: *const c_void) {
+            // SAFETY: the test keeps the counter alive through the final drop.
+            unsafe { &*context.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn release(context: *const c_void) {
+            // SAFETY: the context is the same live counter supplied to retain.
+            unsafe { &*context.cast::<AtomicUsize>() }.fetch_sub(1, Ordering::SeqCst);
+        }
         unsafe extern "C" fn invoke(
             environment: *mut c_void,
             _arguments: *const *mut c_void,
@@ -770,8 +785,18 @@ mod tests {
             }
             ptr::null_mut()
         }
+        let roots = AtomicUsize::new(0);
+        let lease = HewCodeLease {
+            context: (&raw const roots).cast(),
+            retain,
+            release,
+            try_retain: None,
+        };
+        let slot = HewCodeLeaseSlot {
+            lease: &raw const lease,
+        };
         let layout = HewValueLayout {
-            code_owner: core::ptr::null(),
+            code_owner: &raw const slot,
             managed: core::ptr::null(),
             release_start: None,
             size: 0,
@@ -788,8 +813,10 @@ mod tests {
             invoke_once_sync: None,
             specializations: core::ptr::null(),
         };
-        // SAFETY: Empty-function descriptors own no environment storage.
+        // SAFETY: the empty function owns only its defining generation.
+        // Both the lease and descriptor remain live through both drops.
         unsafe {
+            crate::code_owner::CodeRoot::retain_for_carrier(&raw const slot);
             let mut source = HewCallableValue {
                 environment: hew_cabi::callable::hew_callable_env_alloc(&raw const descriptor),
                 descriptor: &raw const descriptor,
@@ -802,6 +829,7 @@ mod tests {
             );
             let mut copy = output.assume_init();
             assert!(copy.environment.is_null());
+            assert_eq!(roots.load(Ordering::SeqCst), 2);
             assert!(ptr::eq(copy.descriptor, &raw const descriptor));
             let mut result = 0_i64;
             let mut fault = ptr::null_mut();
@@ -818,9 +846,11 @@ mod tests {
             assert_eq!(result, 42);
             assert!(fault.is_null());
             hew_cabi::callable::hew_callable_drop(&raw mut source);
+            assert_eq!(roots.load(Ordering::SeqCst), 1);
             assert_eq!(hew_callable_clone(&raw const source, &raw mut copy), -1);
             assert!(ptr::eq(copy.descriptor, &raw const descriptor));
             hew_callable_drop(&raw mut copy);
+            assert_eq!(roots.load(Ordering::SeqCst), 0);
         }
     }
 

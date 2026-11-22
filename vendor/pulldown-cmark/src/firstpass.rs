@@ -2096,6 +2096,9 @@ impl<'a, 'b> FirstPass<'a, 'b> {
         header_start: usize,
         header_end: usize,
     ) -> (usize, Option<HeadingAttributes<'a>>) {
+        if header_end <= header_start {
+            return (header_start, None);
+        }
         if !self.options.contains(Options::ENABLE_HEADING_ATTRIBUTES) {
             return (header_end, None);
         }

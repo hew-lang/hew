@@ -469,12 +469,13 @@ impl<'a> Formatter<'a> {
                 open -= 1;
                 continue;
             }
-            // Between the expression's last token and this `)`, only the
-            // closers of parentheses opened inside the expression.
+            // The parser also treats a single element with a trailing comma
+            // as a group. Any intervening closers must belong to inner groups.
             let encloses = close >= last
                 && (last + 1..close).all(|i| {
-                    matches!(self.tokens[i].0, hew_lexer::Token::RightParen)
-                        && self.openers.get(&i).is_some_and(|&o| o > open)
+                    (i + 1 == close && matches!(self.tokens[i].0, hew_lexer::Token::Comma))
+                        || (matches!(self.tokens[i].0, hew_lexer::Token::RightParen)
+                            && self.openers.get(&i).is_some_and(|&o| o > open))
                 });
             if !encloses {
                 break;
@@ -1016,7 +1017,12 @@ impl<'a> Formatter<'a> {
             }
             let text = comment.text.clone();
             let trailing = is_trailing_comment(self.source, comment.span.start);
-            let line_comment = text.starts_with("//") || text.contains('\n');
+            let line_comment = text.starts_with("//")
+                || (text.contains('\n')
+                    && self.source[comment.span.end..]
+                        .chars()
+                        .take_while(|c| c.is_whitespace())
+                        .any(|c| c == '\n'));
             self.prev_source_pos = comment.span.end;
             self.next_comment += 1;
             while self.output.ends_with(' ') {
@@ -1371,8 +1377,27 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_item(&mut self, item: &Item, span_start: usize, span_end: usize) {
+        // These declarations do not retain their leading attributes in the AST.
+        if matches!(
+            item,
+            Item::Import(_)
+                | Item::Const(_)
+                | Item::TypeAlias(_)
+                | Item::Impl(_)
+                | Item::ExternBlock(_)
+                | Item::Supervisor(_)
+                | Item::Record(_)
+                | Item::MacroCall(_)
+        ) {
+            self.format_item_attributes(span_start);
+        }
         match item {
-            Item::Macro(_) | Item::MacroCall(_) => {
+            Item::MacroCall(call) => {
+                self.write_indent();
+                self.format_macro_call(call);
+                self.newline();
+            }
+            Item::Macro(_) => {
                 self.write_indent();
                 let token_start = self.token_at_or_after(span_start);
                 let token_end = self.tokens[token_start..]
@@ -1486,7 +1511,7 @@ impl<'a> Formatter<'a> {
         self.write("const ");
         self.write_ident(decl.name);
         self.write(": ");
-        self.format_type_expr(&decl.ty.0);
+        self.format_type_expr(&decl.ty);
         self.write(" = ");
         self.format_expr(&decl.value);
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
@@ -1500,7 +1525,7 @@ impl<'a> Formatter<'a> {
         self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
-        self.format_type_expr(&decl.ty.0);
+        self.format_type_expr(&decl.ty);
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
 
@@ -1521,7 +1546,7 @@ impl<'a> Formatter<'a> {
                     self.write_indent();
                     self.write_ident(field.name);
                     self.write(": ");
-                    self.format_type_expr(&field.ty.0);
+                    self.format_type_expr(&field.ty);
                     self.write(";");
                     self.write("\n");
                 }
@@ -1531,7 +1556,7 @@ impl<'a> Formatter<'a> {
             }
             RecordKind::Tuple(field_types) => {
                 self.write("(");
-                for (i, (ty, _)) in field_types.iter().enumerate() {
+                for (i, ty) in field_types.iter().enumerate() {
                     self.format_type_expr(ty);
                     if i + 1 < field_types.len() {
                         self.write(", ");
@@ -1589,7 +1614,7 @@ impl<'a> Formatter<'a> {
                     }
                     self.write_ident(*name);
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                     self.write(";");
                     self.newline();
                     // flush any trailing comment on this line; span.end is the
@@ -1699,7 +1724,7 @@ impl<'a> Formatter<'a> {
                         self.write_indent();
                         self.write_ident(*name);
                         self.write(": ");
-                        self.format_type_expr(&ty.0);
+                        self.format_type_expr(ty);
                         // Emit wire field metadata
                         if let Some(meta) = wire.field_meta.get(i) {
                             if meta.field_number_explicit {
@@ -1838,7 +1863,7 @@ impl<'a> Formatter<'a> {
             VariantKind::Tuple(fields) => {
                 if !fields.is_empty() {
                     self.write("(");
-                    self.comma_sep(fields, |f, ty| f.format_type_expr(&ty.0));
+                    self.comma_sep(fields, Formatter::format_type_expr);
                     self.write(")");
                 }
             }
@@ -1847,7 +1872,7 @@ impl<'a> Formatter<'a> {
                 for (name, ty) in fields {
                     self.write_ident(*name);
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                     self.write("; ");
                 }
                 self.write("}");
@@ -1905,7 +1930,7 @@ impl<'a> Formatter<'a> {
                     }
                     if let Some(def) = default {
                         self.write(" = ");
-                        self.format_type_expr(&def.0);
+                        self.format_type_expr(def);
                     }
                     self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
                     self.end_member(span.end);
@@ -1974,7 +1999,7 @@ impl<'a> Formatter<'a> {
             self.format_trait_bound(bound);
             self.write(" for ");
         }
-        self.format_type_expr(&decl.target_type.0);
+        self.format_type_expr(&decl.target_type);
         self.format_opt_where_clause(decl.where_clause.as_ref());
         // An empty body (`impl Error for E {}`) stays on one line unless a
         // comment sits inside it.
@@ -2004,7 +2029,7 @@ impl<'a> Formatter<'a> {
                     self.write("type ");
                     self.write_ident(alias.name);
                     self.write(" = ");
-                    self.format_type_expr(&alias.ty.0);
+                    self.format_type_expr(&alias.ty);
                     self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
                     self.end_member(alias.span.end);
                 }
@@ -2020,9 +2045,19 @@ impl<'a> Formatter<'a> {
 
     fn format_extern_block(&mut self, decl: &ExternBlock, span_end: usize) {
         self.write_indent();
-        self.write("extern \"");
-        self.write(&decl.abi);
-        self.write("\" {\n");
+        self.write("extern");
+        let abi = if self.source.is_empty() {
+            Some(format!("\"{}\"", decl.abi))
+        } else {
+            self.tokens
+                .get(self.token_at_or_after(self.prev_source_pos))
+                .and_then(|(_, span)| self.literal_spelling(span))
+        };
+        if let Some(abi) = abi {
+            self.write(" ");
+            self.write(&abi);
+        }
+        self.write(" {\n");
         self.indent += 1;
         for f in &decl.functions {
             // flush inline comments that appear before this fn
@@ -2061,7 +2096,7 @@ impl<'a> Formatter<'a> {
         self.write(")");
         if let Some(ret) = &f.return_type {
             self.write(" -> ");
-            self.format_type_expr(&ret.0);
+            self.format_type_expr(ret);
         }
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
@@ -2201,8 +2236,8 @@ impl<'a> Formatter<'a> {
 
     #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
     fn format_machine(&mut self, decl: &MachineDecl, span_start: usize, span_end: usize) {
-        if let Some(wire) = &decl.wire {
-            if !self.format_item_attributes(span_start) {
+        if !self.format_item_attributes(span_start) {
+            if let Some(wire) = &decl.wire {
                 self.format_wire_attribute(wire);
             }
         }
@@ -2416,7 +2451,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.write_ident(*name);
                 self.write(": ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
                 self.write(";");
             }
             self.write(" }");
@@ -2439,7 +2474,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write_ident(*name);
                 self.write(": ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
                 self.write(";\n");
             }
             if let Some(entry) = &state.entry {
@@ -2463,7 +2498,7 @@ impl<'a> Formatter<'a> {
                 self.write(" ");
                 self.write_ident(*name);
                 self.write(": ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
                 self.write(";");
             }
             self.write(" }\n");
@@ -2610,7 +2645,7 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write_ident(*name);
             self.write(": ");
-            self.format_type_expr(&ty.0);
+            self.format_type_expr(ty);
             self.write(";\n");
         }
         if let Some(entry) = &group.entry {
@@ -2719,7 +2754,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write_ident(*fname);
                 self.write(": ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
                 self.write(";\n");
             }
             if let Some(entry) = &state.entry {
@@ -2743,7 +2778,7 @@ impl<'a> Formatter<'a> {
                 self.write(" ");
                 self.write_ident(*fname);
                 self.write(": ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
                 self.write(";");
             }
             self.write(" }\n");
@@ -2762,7 +2797,7 @@ impl<'a> Formatter<'a> {
         }
         self.write_ident(f.name);
         self.write(": ");
-        self.format_type_expr(&f.ty.0);
+        self.format_type_expr(&f.ty);
         if let Some(default) = &f.default {
             self.write(" = ");
             self.format_expr(default);
@@ -3073,7 +3108,7 @@ impl<'a> Formatter<'a> {
         if !spec.type_args.is_empty() {
             self.write("<");
             self.comma_sep(&spec.type_args, |formatter, ty| {
-                formatter.format_type_expr(&ty.0);
+                formatter.format_type_expr(ty);
             });
             self.write(">");
         }
@@ -3199,10 +3234,10 @@ impl<'a> Formatter<'a> {
     fn format_return_clause(&mut self, ret: &Spanned<TypeExpr>) {
         if let Some(error) = Self::unit_fallible_error(&ret.0) {
             self.write(" fails ");
-            self.format_type_expr(&error.0);
+            self.format_type_expr(error);
         } else {
             self.write(" -> ");
-            self.format_type_expr(&ret.0);
+            self.format_type_expr(ret);
         }
     }
 
@@ -3249,21 +3284,25 @@ impl<'a> Formatter<'a> {
         if grouped {
             self.write("(");
         }
-        self.format_type_expr(&success.0);
+        self.format_type_expr(success);
         if grouped {
             self.write(")");
         }
         self.write(" fails ");
-        self.format_type_expr(&error.0);
+        self.format_type_expr(error);
     }
 
-    fn format_type_expr(&mut self, ty: &TypeExpr) {
+    fn format_type_expr(&mut self, ty: &Spanned<TypeExpr>) {
+        self.with_source_parens(&ty.1, |f| f.format_type_expr_bare(&ty.0));
+    }
+
+    fn format_type_expr_bare(&mut self, ty: &TypeExpr) {
         match ty {
             TypeExpr::Named { path, type_args } => {
                 self.format_path(path);
                 if let Some(args) = type_args {
                     self.write("<");
-                    self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
+                    self.comma_sep(args, Formatter::format_type_expr);
                     self.write(">");
                 }
             }
@@ -3272,7 +3311,7 @@ impl<'a> Formatter<'a> {
                     self.write(" ");
                 }
                 self.write("<");
-                self.format_type_expr(&assoc.base.0);
+                self.format_type_expr(&assoc.base);
                 self.write(" as ");
                 self.format_path(&assoc.trait_path);
                 self.write(">");
@@ -3283,32 +3322,32 @@ impl<'a> Formatter<'a> {
             }
             TypeExpr::Result { ok, err } => {
                 self.write("Result<");
-                self.format_type_expr(&ok.0);
+                self.format_type_expr(ok);
                 self.write(", ");
-                self.format_type_expr(&err.0);
+                self.format_type_expr(err);
                 self.write(">");
             }
             TypeExpr::Fallible { success, error } => self.format_fallible_type(success, error),
             TypeExpr::Option(inner) => {
                 self.write("Option<");
-                self.format_type_expr(&inner.0);
+                self.format_type_expr(inner);
                 self.write(">");
             }
             TypeExpr::Tuple(elems) => {
                 self.write("(");
-                self.comma_sep(elems, |f, elem| f.format_type_expr(&elem.0));
+                self.comma_sep(elems, Formatter::format_type_expr);
                 self.write(")");
             }
             TypeExpr::Array { element, size } => {
                 self.write("[");
-                self.format_type_expr(&element.0);
+                self.format_type_expr(element);
                 self.write("; ");
                 self.write(&size.to_string());
                 self.write("]");
             }
             TypeExpr::Slice(inner) => {
                 self.write("[");
-                self.format_type_expr(&inner.0);
+                self.format_type_expr(inner);
                 self.write("]");
             }
             TypeExpr::Function {
@@ -3325,18 +3364,18 @@ impl<'a> Formatter<'a> {
                 params,
                 return_type,
             } => self.format_callable_type("actor", params, return_type, |f, p| {
-                f.format_type_expr(&p.0);
+                f.format_type_expr(p);
             }),
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
             } => {
                 self.write(if *is_mutable { "*mut " } else { "*const " });
-                self.format_type_expr(&pointee.0);
+                self.format_type_expr(pointee);
             }
             TypeExpr::Borrow(inner) => {
                 self.write("&");
-                self.format_type_expr(&inner.0);
+                self.format_type_expr(inner);
             }
             TypeExpr::TraitObject(bounds) => {
                 self.write("dyn ");
@@ -3366,7 +3405,7 @@ impl<'a> Formatter<'a> {
         if parameter.ownership == ParameterOwnership::Consume {
             self.write("consume ");
         }
-        self.format_type_expr(&parameter.ty.0);
+        self.format_type_expr(&parameter.ty);
     }
 
     /// Format `<type_params>(params) -> return_type where clause`.
@@ -3385,10 +3424,10 @@ impl<'a> Formatter<'a> {
         if let Some(ret) = return_type {
             if let Some(error) = Self::unit_fallible_error(&ret.0) {
                 self.write(" fails ");
-                self.format_type_expr(&error.0);
+                self.format_type_expr(error);
             } else {
                 self.write_token(" -> ", |t| matches!(t, hew_lexer::Token::Arrow));
-                self.format_type_expr(&ret.0);
+                self.format_type_expr(ret);
             }
             if ret.1.start < ret.1.end {
                 self.prev_source_pos = self.prev_source_pos.max(ret.1.end);
@@ -3421,7 +3460,7 @@ impl<'a> Formatter<'a> {
                     if needs_comma {
                         self.write(", ");
                     }
-                    self.format_type_expr(&arg.0);
+                    self.format_type_expr(arg);
                     needs_comma = true;
                 }
             }
@@ -3431,7 +3470,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.write_ident(binding.name);
                 self.write(" = ");
-                self.format_type_expr(&binding.ty.0);
+                self.format_type_expr(&binding.ty);
                 needs_comma = true;
             }
             self.write(">");
@@ -3452,7 +3491,7 @@ impl<'a> Formatter<'a> {
             self.write_token(" where ", |t| matches!(t, hew_lexer::Token::Where));
             self.comma_sep(&clause.predicates, |f, pred| {
                 f.flush_inline_comments(pred.ty.1.start);
-                f.format_type_expr(&pred.ty.0);
+                f.format_type_expr(&pred.ty);
                 f.write(": ");
                 f.format_trait_bound_list(&pred.bounds);
             });
@@ -3493,7 +3532,7 @@ impl<'a> Formatter<'a> {
         }
         self.write_ident(p.name);
         self.write(": ");
-        self.format_type_expr(&p.ty.0);
+        self.format_type_expr(&p.ty);
         if let Some(default) = &p.default {
             self.write(" = ");
             self.format_expr(default);
@@ -3914,7 +3953,7 @@ impl<'a> Formatter<'a> {
                 self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                 }
                 if let Some(expr) = value {
                     self.write(" = ");
@@ -3932,7 +3971,7 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*name);
                 if let Some(ty) = ty {
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                 }
                 if let Some(expr) = value {
                     self.write(" = ");
@@ -4012,7 +4051,7 @@ impl<'a> Formatter<'a> {
                 self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                 }
                 if let Some(val) = value {
                     self.write(" = ");
@@ -4032,7 +4071,7 @@ impl<'a> Formatter<'a> {
                 self.write_ident(*name);
                 if let Some(ty) = ty {
                     self.write(": ");
-                    self.format_type_expr(&ty.0);
+                    self.format_type_expr(ty);
                 }
                 if let Some(val) = value {
                     self.write(" = ");
@@ -4610,21 +4649,53 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_expr(&mut self, expr: &Spanned<Expr>) {
-        let parens = self.source_parens(&expr.1);
+        self.with_source_parens(&expr.1, |f| {
+            crate::stack::ensure_sufficient_stack(|| f.format_expr_unparenthesized(expr));
+        });
+    }
+
+    fn with_source_parens(&mut self, span: &Span, format: impl FnOnce(&mut Self)) {
+        let mut parens = self.source_parens(span);
+        // Brackets emitted by a containing list already belong to that list.
+        parens.retain(|&(_, open, _)| open >= self.prev_source_pos);
         for &(token, open, _) in &parens {
             self.printed_parens.insert(token);
             self.flush_inline_comments(open);
             self.write("(");
         }
-        crate::stack::ensure_sufficient_stack(|| self.format_expr_unparenthesized(expr));
-        for &(_, _, close) in parens.iter().rev() {
+        format(self);
+        for &(open, _, close) in parens.iter().rev() {
+            let close_token = self.closers[&open];
+            if matches!(self.tokens[close_token - 1].0, hew_lexer::Token::Comma) {
+                self.write(",");
+            }
             self.flush_inline_comments(close);
             self.write(")");
             self.prev_source_pos = self.prev_source_pos.max(close + 1);
         }
-        if expr.1.start < expr.1.end {
-            self.prev_source_pos = self.prev_source_pos.max(expr.1.end);
+        if span.start < span.end {
+            self.prev_source_pos = self.prev_source_pos.max(span.end);
         }
+    }
+
+    fn format_macro_call(&mut self, call: &crate::macro_syntax::MacroCall) {
+        if let Some((_, start)) = call.path.segments.first() {
+            self.flush_inline_comments(start.start);
+            self.prev_source_pos = start.start;
+        }
+        self.format_path(&call.path);
+        self.write("!");
+        // The macro observes its raw token tree, including every comment in it.
+        call.input.write_source(&mut self.output);
+        let end = call.input.span().end;
+        while self
+            .comments
+            .get(self.next_comment)
+            .is_some_and(|c| c.span.start < end)
+        {
+            self.next_comment += 1;
+        }
+        self.prev_source_pos = end;
     }
 
     #[expect(clippy::too_many_lines, reason = "match on all Expr variants")]
@@ -4635,23 +4706,7 @@ impl<'a> Formatter<'a> {
             self.flush_inline_comments(expr.1.start);
         }
         match &expr.0 {
-            Expr::MacroCall(call) => {
-                if let Some(source) = self.source.get(expr.1.clone()) {
-                    self.write(source);
-                } else {
-                    self.write(&call.path.to_string());
-                    self.write("!");
-                    let mut input = String::new();
-                    call.input.write_source(&mut input);
-                    self.write(input.trim_start());
-                }
-                self.prev_source_pos = expr.1.end;
-                while self.next_comment < self.comments.len()
-                    && self.comments[self.next_comment].span.start < expr.1.end
-                {
-                    self.next_comment += 1;
-                }
-            }
+            Expr::MacroCall(call) => self.format_macro_call(call),
             Expr::Binary { first, steps } => self.format_binary_chain(first, steps),
             Expr::Unary { op, operand } => {
                 match op {
@@ -4697,7 +4752,7 @@ impl<'a> Formatter<'a> {
                     self.format_receiver(target);
                 }
                 self.write("<");
-                self.comma_sep(type_args, |f, ty| f.format_type_expr(&ty.0));
+                self.comma_sep(type_args, Formatter::format_type_expr);
                 self.write(">");
             }
             Expr::RecordInitSuffix {
@@ -4718,7 +4773,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::QualifiedAssoc(assoc) => {
                 self.write("<");
-                self.format_type_expr(&assoc.base.0);
+                self.format_type_expr(&assoc.base);
                 self.write(" as ");
                 self.format_path(&assoc.trait_path);
                 self.write(">");
@@ -4861,7 +4916,7 @@ impl<'a> Formatter<'a> {
                 self.write("|");
                 if let Some(ret) = return_type {
                     self.write(" -> ");
-                    self.format_type_expr(&ret.0);
+                    self.format_type_expr(ret);
                     self.write(" ");
                     if matches!(body.0, Expr::Block(_)) {
                         self.format_expr(body);
@@ -4885,9 +4940,7 @@ impl<'a> Formatter<'a> {
                 self.format_expr(target);
                 if !type_args.is_empty() {
                     self.write("<");
-                    self.comma_sep(type_args, |f, (te, _)| {
-                        f.format_type_expr(te);
-                    });
+                    self.comma_sep(type_args, Formatter::format_type_expr);
                     self.write(">");
                 }
                 // An empty key list is written without braces.
@@ -4915,7 +4968,7 @@ impl<'a> Formatter<'a> {
                 self.write("|");
                 if let Some(ret) = return_type {
                     self.write(" -> ");
-                    self.format_type_expr(&ret.0);
+                    self.format_type_expr(ret);
                 }
                 self.write(" ");
                 self.format_expr(body);
@@ -4991,7 +5044,7 @@ impl<'a> Formatter<'a> {
                 }
                 if let Some(type_args) = type_args {
                     self.write("<");
-                    self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
+                    self.comma_sep(type_args, Formatter::format_type_expr);
                     self.write(">");
                 }
                 self.own_call_parens(&expr.1);
@@ -5028,7 +5081,7 @@ impl<'a> Formatter<'a> {
                 self.format_path(path);
                 if let Some(type_args) = type_args {
                     self.write("<");
-                    self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
+                    self.comma_sep(type_args, Formatter::format_type_expr);
                     self.write(">");
                 }
                 self.format_record_literal_body(
@@ -5130,7 +5183,7 @@ impl<'a> Formatter<'a> {
                     self.format_expr(expr);
                 }
                 self.write(" as ");
-                self.format_type_expr(&ty.0);
+                self.format_type_expr(ty);
             }
             Expr::PostfixTry(expr) => {
                 self.format_try_adjacent_receiver(expr);
@@ -5311,7 +5364,7 @@ impl<'a> Formatter<'a> {
             f.write_ident(p.name);
             if let Some(ty) = &p.ty {
                 f.write(": ");
-                f.format_type_expr(&ty.0);
+                f.format_type_expr(ty);
             }
         });
     }

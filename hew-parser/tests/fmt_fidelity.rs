@@ -1136,3 +1136,53 @@ fn a_lone_carriage_return_outside_a_comment_is_rejected() {
         );
     }
 }
+
+#[test]
+fn macro_arguments_are_raw_but_the_qualified_name_is_formatted() {
+    let source = "const N: i64 = math\r.\rvalue!(// the macro reads this\r\n  42);\n";
+    assert_faithful(source);
+    let formatted = format_source(source, &parse(source).program);
+    assert!(formatted.contains("math.value!(// the macro reads this\r\n  42)"));
+    assert_faithful("math\r.value!(// raw\n42)\n");
+    assert_faithful("const N: i64 = probe!(1) + probe!(/* raw */ 2);\n");
+}
+
+#[test]
+fn adjacent_block_comments_share_the_closing_line() {
+    let source = "const N: i64 = /* a\n  b */ /* before */ 1 /* c\n  d */ /* after */;\n";
+    assert_faithful(source);
+    let formatted = format_source(source, &parse(source).program);
+    assert!(formatted.contains("b */ /* before */"));
+    assert!(formatted.contains("d */ /* after */"));
+}
+
+#[test]
+fn grouped_operands_and_types_keep_their_source_delimiters() {
+    for source in [
+        "const N: i64 = 3 * (1 + 2,);",
+        "const N: i64 = ((1 + 2, /* grouped */),) * 3;",
+        "type Scalar = (i64);",
+        "fn echo(x: (i64)) -> ((i64)) { x }",
+        "type Holder { values: Vec<(i64)>; }",
+        "impl (Counter) {}",
+        "type Callback = fn(i64) -> i64;",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn declarations_keep_source_attributes_and_the_written_extern_abi() {
+    for source in [
+        "#[annotation]\nimport \"part.hew\";",
+        "#[annotation] const ANSWER: i64 = 42;",
+        "#[annotation] type Name = i64;",
+        "#[annotation] machine State {}",
+        "#[annotation] impl Counter {}",
+        "#[annotation] build!()",
+        "extern { fn answer() -> i64; }",
+        "extern r\"C\" { fn answer() -> i64; }",
+    ] {
+        assert_faithful(source);
+    }
+}

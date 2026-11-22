@@ -336,6 +336,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         source: StorageId,
         cleanup: &PhysicalCleanup,
     ) -> CodegenResult<bool> {
+        if self.destroy_complete_record(source, cleanup)? {
+            return Ok(true);
+        }
         self.destroy_partition(source, &|leaf| {
             cleanup.leaf(leaf).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -344,6 +347,67 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ))
             })
         })
+    }
+
+    /// A fully occupied record may use its existing descriptor drop entry.
+    /// Keep the field-by-field path when another action could observe its
+    /// occupancy flags changing, or when SIR certifies a partial value.
+    fn destroy_complete_record(
+        &self,
+        source: StorageId,
+        cleanup: &PhysicalCleanup,
+    ) -> CodegenResult<bool> {
+        let Some(place) = self.function.place_storage.get(&source) else {
+            return Ok(false);
+        };
+        let storage = self.storage(source)?;
+        let Some(action @ hew_mir::physical::DestroyAction::Aggregate(_)) = self
+            .module
+            .managed_types
+            .get(&storage.ty)
+            .and_then(|row| row.recipe.destroy)
+        else {
+            return Ok(false);
+        };
+        let effects = &self.module.releases;
+        if effects.runs_user_code(action)
+            || effects.suspends(action)
+            || effects.raises_fault(action)
+            || place
+                .leaves
+                .iter()
+                .filter(|leaf| leaf.recipe.destroy.is_some())
+                .take(2)
+                .count()
+                < 2
+            || !place
+                .leaves
+                .iter()
+                .all(|leaf| cleanup.leaf(leaf.storage) == Some(LeafContents::Present))
+        {
+            return Ok(false);
+        }
+        let descriptor = super::managed::value_layout_symbol(self.module, &storage.ty)?;
+        let drop = self
+            .llvm
+            .get_function(&format!("{descriptor}_drop"))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("complete record lacks its descriptor drop entry".into())
+            })?;
+        for leaf in &place.leaves {
+            self.set_place_initialized(leaf.storage, false)?;
+        }
+        drop.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.ctx.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                0,
+            ),
+        );
+        self.builder
+            .build_call(drop, &[self.slots[source.0 as usize].into()], "")
+            .llvm_ctx("release a fully initialized aggregate")?;
+        Ok(true)
     }
 
     /// Release every leaf that holds contents at run time. This is for an

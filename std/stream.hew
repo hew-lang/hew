@@ -318,8 +318,8 @@ gen fn normalized_lines(consume input: Stream<bytes>) -> string {
             let (line, consumed) = match utf8.decode(buffer[0..limit]) {
                 .Ok(text) => (text, limit),
                 .Err(error) if error.error_len.is_none() => {
-                    let end = error.valid_up_to;
-                    (line_text(buffer[0..end]), end)
+                    let valid_end = error.valid_up_to;
+                    (line_text(buffer[0..valid_end]), valid_end)
                 }
                 .Err(_) => panic("stream line contains invalid UTF-8"),
             };

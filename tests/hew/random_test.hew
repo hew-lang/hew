@@ -52,3 +52,12 @@ fn test_shuffle_preserves_generic_values_and_input_aliases() {
     assert(other.len() == 3);
     assert(other.contains("alpha") && other.contains("beta") && other.contains("gamma"));
 }
+
+#[test]
+fn an_infinite_cumulative_total_is_refused() {
+    let infinity = 1.0 / 0.0;
+    match random.choices([1.0, infinity], infinity, 1) {
+        .Err(.InvalidWeights(_)) => {}
+        _ => panic("a weight distribution must be finite"),
+    }
+}

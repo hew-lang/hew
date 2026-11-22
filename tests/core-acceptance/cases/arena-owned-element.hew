@@ -1,0 +1,25 @@
+import std.arena;
+
+#[resource]
+type Ticket {
+    name: string;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.name}");
+    }
+}
+
+fn main() {
+    var tickets: arena.Arena<Ticket> = arena.new();
+    let first = tickets.insert(Ticket { name: "first" });
+    let second = tickets.insert(Ticket { name: "second" });
+    assert(tickets.contains(first));
+    let ticket = tickets.remove(first).expect("stored ticket");
+    assert(ticket.name == "first");
+    assert(!tickets.contains(first));
+    assert(tickets.remove(first).is_none());
+    assert(tickets.contains(second));
+    println("removed first; second stays in the arena");
+}

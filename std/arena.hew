@@ -65,9 +65,8 @@ impl ArenaCloneGuard {
 
 /// A generational-index slotmap with O(1) slot bookkeeping.
 ///
-/// Construct with `arena.new()`. Values are owned by the arena; accessors
-/// return `Option<T>` copies under the value model, never references, so `T`
-/// carries `Clone`. An arena is non-cloneable because forking its identity
+/// Construct with `arena.new()`. The arena owns its values. `get` returns a copy when `T: Clone`;
+/// `remove` transfers ownership and accepts resource values. An arena is non-cloneable because forking its identity
 /// state could issue ambiguous keys.
 pub type Arena<T> {
     clone_guard: ArenaCloneGuard;
@@ -88,7 +87,7 @@ pub fn new<T>() -> Arena<T> {
     if arena_id == 0 {
         panic("arena.new: arena identity space exhausted");
     }
-    var slots: Vec<Slot<T>> = Vec.new();
+    let slots: Vec<Slot<T>> = Vec.new();
     let free: Vec<i64> = Vec.new();
     let generation_counter: Vec<i64> = [1];
     let clone_guard = ArenaCloneGuard { marker: 0 };
@@ -115,13 +114,32 @@ impl<T> Arena<T> {
             Key { arena_id: self.arena_id, index: index, generation: generation }
         }
     }
+    /// Check identity and generation without copying the stored value.
+    pub fn contains(self, key: Key<T>) -> bool {
+        key.arena_id == self.arena_id && key.index >= 0 && key.index < self.slots.len() && self.slots[key.index].generation == key.generation && self.slots[key.index].value.is_some()
+    }
+
+    /// Move the stored value out. A stale key or a key from another arena returns `None`.
+    pub fn remove(var self, key: Key<T>) -> Option<T> {
+        if !self.contains(key) {
+            return .None;
+        }
+        // Swap in an empty slot, then pop the displaced value by ownership.
+        let last = self.slots.len();
+        self.slots.push(Slot { generation: key.generation, value: .None });
+        self.slots.swap(key.index, last);
+        let slot = self.slots.pop();
+        self.free.push(key.index);
+        slot.value
+    }
+
     /// The number of live values in the arena.
     pub fn len(self) -> i64 {
         self.slots.len() - self.free.len()
     }
 }
 
-// Reading a value back copies it out of the slot, so these need `T: Clone`.
+// A read keeps the occupied slot intact and therefore copies the value.
 impl<T: Clone> Arena<T> {
     /// Return a copy of the value named by `key`, or `None` if the key is stale.
     ///
@@ -131,45 +149,8 @@ impl<T: Clone> Arena<T> {
     /// Fails closed: a key whose slot was removed (or whose generation no
     /// longer matches after slot reuse) returns `None`, as does an
     /// out-of-range key.
-    pub fn get(self, key: Key<T>) -> Option<T> where T: Clone {
-        if key.arena_id != self.arena_id {
-            return .None;
-        }
-        match self.slots.get(key.index) {
-            .Some(slot) => match slot.value {
-                .Some(value) => if slot.generation == key.generation { .Some(value) } else { .None }
-                .None => .None,
-            }
-            .None => .None,
-        }
-    }
-    /// Remove and return the value named by `key`.
-    ///
-    /// On a live match: frees the slot and returns `Some(value)`. The next
-    /// insertion mints a fresh generation. On a stale, already-removed, or
-    /// out-of-range key: returns `None`. Double-remove is idempotent — the
-    /// second call returns `None`.
-    pub fn remove(var self, key: Key<T>) -> Option<T> {
-        if key.arena_id != self.arena_id {
-            return .None;
-        }
-        match self.slots.get(key.index) {
-            .Some(slot) => match slot.value {
-                .Some(value) => if slot.generation == key.generation {
-                    self.slots.set(key.index, Slot { generation: slot.generation, value: .None });
-                    self.free.push(key.index);
-                    .Some(value)
-                } else {
-                    .None
-                }
-                .None => .None,
-            }
-            .None => .None,
-        }
-    }
-    /// Return `true` if `key` still names a live value.
-    pub fn contains(self, key: Key<T>) -> bool {
-        self.get(key).is_some()
+    pub fn get(self, key: Key<T>) -> Option<T> {
+        if self.contains(key) { self.slots[key.index].value } else { .None }
     }
 }
 

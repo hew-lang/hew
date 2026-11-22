@@ -1,0 +1,10 @@
+[[case]]
+id = "arena-owned-element"
+intent = "Removing an affine arena value transfers ownership and preserves other slots."
+source = "cases/arena-owned-element.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "removed first; second stays in the arena\nclosed first\nclosed second\n"
+exit = 0

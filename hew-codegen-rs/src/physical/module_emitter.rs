@@ -76,7 +76,7 @@ pub(super) fn build_module_with_host<'ctx>(
     emitter.emit_actor_descriptors()?;
     emitter.emit_actor_codec_registration()?;
     emitter.emit_actor_ingress_adapters()?;
-    emitter.emit_functions()?;
+    emitter.emit_functions(debug::optimizes(machine))?;
     c_export::emit(&emitter)?;
     emitter.emit_entry()?;
     for callable in &physical.callables {
@@ -775,7 +775,31 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    fn emit_functions(&self) -> CodegenResult<()> {
+    fn emit_functions(&self, place_frames: bool) -> CodegenResult<()> {
+        let mut plans = BTreeMap::new();
+        // Only authored physical bodies have a named first segment. Generated
+        // native adapters retain their existing entry and allocation protocol.
+        let bodies: std::collections::BTreeSet<_> = self
+            .module
+            .functions
+            .iter()
+            .map(|function| function.callable)
+            .collect();
+        let mut placed = std::collections::BTreeSet::new();
+        for function in &self.module.functions {
+            if self.ramps.contains_key(&function.callable) && self.module.coverage.is_empty() {
+                let mut plan = function.loop_plan(self.module);
+                if place_frames {
+                    plan.calls.retain(|_, callee| bodies.contains(callee));
+                    placed.extend(plan.calls.values().copied());
+                } else {
+                    plan.calls.clear();
+                }
+                if !plan.chunks.is_empty() || !plan.calls.is_empty() {
+                    plans.insert(function.callable, plan);
+                }
+            }
+        }
         for function in &self.module.functions {
             let callable = callable(self.module, function.callable)?;
             let values = if callable.is_resumable {
@@ -789,7 +813,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     function.callable.0
                 ))
             })?;
-            FunctionEmitter::new(self, function, callable, value)?.emit()?;
+            let plan = plans.remove(&function.callable).unwrap_or_default();
+            FunctionEmitter::new(
+                self,
+                function,
+                callable,
+                value,
+                placed.contains(&function.callable),
+            )?
+            .emit(&plan)?;
             if callable.is_resumable {
                 self.emit_sync_wrapper(callable)?;
             }

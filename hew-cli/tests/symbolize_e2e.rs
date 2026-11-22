@@ -204,11 +204,12 @@ fn level2(x: i64) -> i64 {
     if x > 3 {
         panic(\"too big\");
     }
+    if x == 0 { sleep(1ms); }
     x
 }
 
 fn main() -> i64 {
-    println(level2(4));
+    for x in 0..8 { println(level2(x)); }
     0
 }
 ";
@@ -256,19 +257,15 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
             .expect("one record"),
     )
     .expect("record parses");
+    // The call at x=4 faults in its first segment, before it can suspend.
     let frame = record["frames"]
         .as_array()
         .expect("frames")
         .iter()
-        .find(|frame| frame["hew_fn"] == "main" || frame["hew_fn"] == "level2")
-        .unwrap_or_else(|| panic!("a physical Hew frame: {record}"));
-    let function = frame["hew_fn"].as_str().unwrap();
-    let line = if function == "main" { 8 } else { 1 };
-    assert!(
-        stderr.contains(&format!("hew:   at {function} (")),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&format!("p.hew:{line})")), "{stderr}");
+        .find(|frame| frame["hew_fn"] == "level2")
+        .unwrap_or_else(|| panic!("missing eager child frame: {record}"));
+    assert!(stderr.contains("hew:   at level2 ("), "{stderr}");
+    assert!(stderr.contains("p.hew:1)"), "{stderr}");
     let output = symbolize(
         &binary,
         &[
@@ -278,8 +275,8 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         ],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(&format!("{function} at ")), "{stdout}");
-    assert!(stdout.contains(&format!("p.hew:{line}")), "{stdout}");
+    assert!(stdout.contains("level2 at "), "{stdout}");
+    assert!(stdout.contains("p.hew:1"), "{stdout}");
 }
 
 /// The compact table only describes physical frames; DWARF additionally

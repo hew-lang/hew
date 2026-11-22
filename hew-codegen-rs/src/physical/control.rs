@@ -3,7 +3,11 @@
 use super::*;
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
-    pub(super) fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
+    pub(super) fn emit_terminator(
+        &self,
+        block: &PhysicalBlock,
+        place_frame: bool,
+    ) -> CodegenResult<()> {
         self.fault_site.set(self.terminator_site(block));
         match &block.terminator {
             PhysicalTerminator::Materialize {
@@ -227,12 +231,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
                 handback,
             } => self.emit_call(
+                place_frame,
                 *callee,
                 args,
                 *result,
                 *handback,
-                normal.as_ref(),
-                unwind.as_ref(),
+                (normal.as_ref(), unwind.as_ref()),
             ),
             PhysicalTerminator::WireCodec {
                 codec,
@@ -643,12 +647,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_call(
         &self,
+        place_frame: bool,
         callee_id: CallableId,
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
         handback: Option<StorageId>,
-        normal: Option<&PhysicalEdge>,
-        unwind: Option<&PhysicalEdge>,
+        (normal, unwind): (Option<&PhysicalEdge>, Option<&PhysicalEdge>),
     ) -> CodegenResult<()> {
         let callee = callable(self.module, callee_id)?;
         let function = *self.functions.get(&callee_id).ok_or_else(|| {
@@ -703,7 +707,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         arguments.push(self.active_fault.into());
         let handback = handback.zip(result);
         if callee.is_resumable {
-            let status = self.emit_resumable_call(callee_id, &arguments, &moved)?;
+            let status = self.emit_resumable_call(callee_id, &arguments, &moved, place_frame)?;
             return self.emit_call_outcome_with_handback(status, result, handback, normal, unwind);
         }
         let status = self

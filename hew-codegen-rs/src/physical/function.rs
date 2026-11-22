@@ -20,6 +20,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         function: &'a PhysicalFunction,
         callable: &PhysicalCallable,
         value: FunctionValue<'ctx>,
+        placed: bool,
     ) -> CodegenResult<Self> {
         let ctx = module.ctx;
         let target_data = module.target_data;
@@ -257,6 +258,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 builder.set_current_debug_location(emitter.location(ctx, function_debug, offset));
             }
         }
+        if let Some(frame) = frame.as_ref().filter(|_| placed) {
+            frame.start_in_resume_body(ctx, &module.llvm, &builder)?;
+        }
         builder
             .build_unconditional_branch(blocks[&function.entry])
             .llvm_ctx("branch to physical entry")?;
@@ -287,15 +291,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         })
     }
 
-    pub(super) fn emit(self) -> CodegenResult<()> {
-        let chunks = if self.frame.is_some() && self.module.coverage.is_empty() {
-            self.function.loop_chunks(self.module)
-        } else {
-            Vec::new()
-        };
+    pub(super) fn emit(self, plan: &hew_mir::physical::PhysicalLoopPlan) -> CodegenResult<()> {
         for block in &self.function.blocks {
             let tail = self.value.get_last_basic_block();
-            self.emit_block(block, &chunks)?;
+            self.emit_block(block, plan)?;
             self.keep_with_block(block, tail);
         }
         self.group_by_line();
@@ -388,11 +387,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     fn emit_block(
         &self,
         block: &PhysicalBlock,
-        chunks: &[hew_mir::physical::PhysicalLoopChunk],
+        plan: &hew_mir::physical::PhysicalLoopPlan,
     ) -> CodegenResult<()> {
         {
             self.builder.position_at_end(self.blocks[&block.id]);
-            if let Some(chunk) = chunks.iter().find(|chunk| chunk.blocks.contains(&block.id)) {
+            if let Some(chunk) = plan
+                .chunks
+                .iter()
+                .find(|chunk| chunk.blocks.contains(&block.id))
+            {
                 if block.id == chunk.header {
                     self.emit_loop_chunk(chunk)?;
                 } else {
@@ -436,7 +439,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.debug_changes(block.id, index);
             }
             self.locate_terminator(block);
-            self.emit_terminator(block)?;
+            self.emit_terminator(block, plan.calls.contains_key(&block.id))?;
         }
         Ok(())
     }

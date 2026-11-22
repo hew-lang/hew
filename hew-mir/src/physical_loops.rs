@@ -1,5 +1,4 @@
-//! Bounded, call-free scalar regions that read vectors or append scalars to
-//! one vector, executing outside a coroutine frame.
+//! Scalar chunks and immediately awaited calls in natural scheduling loops.
 
 use hew_sir::{compute_indexed_dominators, CfgIndex, EdgeRef, SuccessorSlot};
 
@@ -30,16 +29,24 @@ pub struct PhysicalLoopChunk {
     pub exits: BTreeMap<BlockId, BTreeSet<StorageId>>,
 }
 
+/// Reuse the physical loop regions for scalar chunking and child-frame placement.
+#[derive(Debug, Default)]
+pub struct PhysicalLoopPlan {
+    pub chunks: Vec<PhysicalLoopChunk>,
+    /// Direct resumable callees at repeated sites. The parent destroys its one
+    /// active child on completion and cancellation before reusing the site.
+    pub calls: BTreeMap<BlockId, super::CallableId>,
+}
+
 impl PhysicalFunction {
-    /// Select innermost call-free loops whose scheduling ticks can be batched
-    /// without moving calls, checked failures or cancellation past a poll.
+    /// Identify single-entry scheduling loops and the optimizations each admits.
     #[must_use]
-    pub fn loop_chunks(&self, module: &PhysicalModule) -> Vec<PhysicalLoopChunk> {
+    pub fn loop_plan(&self, module: &PhysicalModule) -> PhysicalLoopPlan {
         let mut successors = Vec::new();
         for block in &self.blocks {
             for (slot, edge) in edges(&block.terminator).into_iter().enumerate() {
                 let Ok(slot) = u32::try_from(slot) else {
-                    return Vec::new();
+                    return PhysicalLoopPlan::default();
                 };
                 successors.push((
                     EdgeRef {
@@ -61,7 +68,7 @@ impl PhysicalFunction {
             .iter()
             .map(|block| (block.id, block))
             .collect::<BTreeMap<_, _>>();
-        let mut chunks = Vec::new();
+        let mut plan = PhysicalLoopPlan::default();
         for header in &self.blocks {
             let PhysicalTerminator::Safepoint { normal, .. } = &header.terminator else {
                 continue;
@@ -100,11 +107,19 @@ impl PhysicalFunction {
             {
                 continue;
             }
+            for id in &region {
+                if let PhysicalTerminator::Call { callee, .. } = &blocks[id].terminator {
+                    if module.callables[callee.0 as usize].is_resumable && *callee != self.callable
+                    {
+                        plan.calls.insert(*id, *callee);
+                    }
+                }
+            }
             if let Some(chunk) = self.scalar_chunk(header.id, region, &blocks, module) {
-                chunks.push(chunk);
+                plan.chunks.push(chunk);
             }
         }
-        chunks
+        plan
     }
 
     #[expect(

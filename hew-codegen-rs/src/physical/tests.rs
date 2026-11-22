@@ -1461,7 +1461,13 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         static POLLS: Cell<u32> = const { Cell::new(0) };
         static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
         static CANCELLING: Cell<bool> = const { Cell::new(false) };
+        static FRAME_ALLOCS: Cell<u32> = const { Cell::new(0) };
         static VECTOR_RELEASES: Cell<u32> = const { Cell::new(0) };
+    }
+    unsafe extern "C" fn allocate(size: u64) -> *mut std::ffi::c_void {
+        FRAME_ALLOCS.set(FRAME_ALLOCS.get() + 1);
+        // SAFETY: the running coroutine requests its complete frame size.
+        unsafe { hew_runtime::cont::hew_cont_frame_alloc(size) }
     }
     unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
         if SUPPRESSED.get() {
@@ -1538,6 +1544,7 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
             .unwrap();
         super::test_runtime::bind_runtime(&llvm, &engine);
         for (name, address) in [
+            ("hew_cont_frame_alloc", allocate as *const () as usize),
             ("hew_coro_safepoint_budget", countdown as *const () as usize),
             ("hew_coro_safepoint", poll as *const () as usize),
             (
@@ -1560,9 +1567,17 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
             POLLS.set(0);
             let mut result = 0;
             let mut fault = std::ptr::null_mut();
+            FRAME_ALLOCS.set(0);
             // SAFETY: output carriers remain live through the synchronous root.
             assert_eq!(unsafe { main.call(&raw mut result, &raw mut fault) }, 0);
             assert_eq!(result, 21);
+            if opt == OptLevel::O2 {
+                assert_eq!(
+                    FRAME_ALLOCS.get(),
+                    1,
+                    "the seven calls reuse their parent frame"
+                );
+            }
             assert!(fault.is_null());
             let polls = u32::from(initial != 0 && initial <= ticks);
             assert_eq!(POLLS.get(), polls, "{opt:?}, initial={initial}");

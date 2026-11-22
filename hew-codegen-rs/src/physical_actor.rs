@@ -2574,7 +2574,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             arguments.push(self.active_fault.into());
             let status = if callable.is_resumable {
-                self.emit_resumable_call(body, &arguments, &[])?
+                self.emit_resumable_call(body, &arguments, &[], false)?
             } else {
                 call_value(
                     &self.builder,

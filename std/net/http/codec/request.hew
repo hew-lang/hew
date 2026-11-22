@@ -152,8 +152,7 @@ pub fn request_complete(raw: string) -> bool {
         .None => return false,
     };
     let head = raw[0..sep];
-    let body_start = sep + 4;
-    let have_body = raw.len() - body_start;
+    let have_body = raw.byte_len() - head.byte_len() - 4;
     let want_body = content_length_of(header_section_after_request_line(head));
     have_body >= want_body
 }
@@ -166,16 +165,16 @@ pub fn request_complete(raw: string) -> bool {
 /// cannot exhaust the worker's buffer by
 /// streaming an unbounded head/body or declaring an enormous `Content-Length`.
 pub fn over_limit(raw: string) -> bool {
-    if raw.len() > MAX_REQUEST_BYTES {
+    if raw.byte_len() > MAX_REQUEST_BYTES {
         return true;
     }
     let sep = match raw.find("\r\n\r\n") {
         .Some(i) => i,
         // No header terminator yet: bound the head we are willing to buffer.
-        .None => return raw.len() > MAX_HEADER_BYTES,
+        .None => return raw.byte_len() > MAX_HEADER_BYTES,
     };
     let head = raw[0..sep];
-    if head.len() > MAX_HEADER_BYTES {
+    if head.byte_len() > MAX_HEADER_BYTES {
         return true;
     }
     let declared = content_length_of(header_section_after_request_line(head));
@@ -195,7 +194,7 @@ pub fn parse_request(raw: string) -> Option<Request> fails RequestError {
     };
     let head = raw[0..sep];
     let body = raw[sep + 4 .. raw.len()];
-    if body.len() > MAX_BODY_BYTES {
+    if body.byte_len() > MAX_BODY_BYTES {
         return error RequestError.TooLarge;
     }
     let request_line = first_line(head);
@@ -218,7 +217,7 @@ pub fn parse_request(raw: string) -> Option<Request> fails RequestError {
         if length.is_empty() || !iter.all(length.iter(), |c: char| c.is_digit()) {
             return error RequestError.Malformed("invalid Content-Length");
         }
-        if body.len() < content_length_of(header_section) {
+        if body.byte_len() < content_length_of(header_section) {
             return .None;
         }
     }
@@ -226,7 +225,7 @@ pub fn parse_request(raw: string) -> Option<Request> fails RequestError {
 }
 
 // ── Response building ─────────────────────────────────────────────────
-/// Build a plain-text HTTP/1.1 response (`Content-Type: text/plain`).
+/// Build a UTF-8 plain-text HTTP/1.1 response. `Content-Length` counts the encoded bytes.
 pub fn response_text(status: i64, body: string) -> string fails BuildError {
     build_response(status, "text/plain; charset=utf-8", body)?
 }
@@ -254,7 +253,7 @@ pub fn build_response(status: i64, content_type: string, body: string) -> string
     let nl = "\r\n";
     var resp = f"HTTP/1.1 {status} {status_text(status)}" + nl;
     resp = resp + f"Content-Type: {content_type}" + nl;
-    resp = resp + f"Content-Length: {body.len()}" + nl;
+    resp = resp + f"Content-Length: {body.byte_len()}" + nl;
     resp = resp + "Connection: close" + nl;
     resp = resp + nl;
     resp = resp + body;

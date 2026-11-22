@@ -23,6 +23,19 @@ fn main() {
     capped("x".repeat(limit - 1) + "\r\n", "", [limit - 1]);
     capped(full + "\r", "\n", [limit]);
     capped(full + "\r", "\nx\ny", [limit, 1, 1]);
+    capped("x".repeat(limit - 1) + "\r", "\n", [limit - 1]);
+    let prefix = "x".repeat(limit - 1);
+    let path = (prefix + "雪道\r\n").to_bytes();
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("pipe");
+    output.send(path[0..limit]).expect("first byte of 雪");
+    output.send(path[limit..path.len()]).expect("rest of the line");
+    output.finish();
+    var pieces: Vec<string> = [];
+    for piece in input.lines() {
+        pieces.push(piece);
+    }
+    assert(pieces == [prefix, "雪道"]);
+    output.close();
     capped("left", "over\nnext", [8, 4]);
     println("bounded line pieces");
 }

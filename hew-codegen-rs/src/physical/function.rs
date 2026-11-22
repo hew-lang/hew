@@ -1282,6 +1282,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn emit_literal(&self, dest: StorageId, bytes: &[u8], symbol: &str) -> CodegenResult<()> {
+        if bytes.is_empty() {
+            // Both native empty carriers have no allocation: a null string
+            // pointer or a byte triple with a null backing and zero range.
+            let ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
+            return self.store(dest, ty.const_zero());
+        }
         let (global, len) = self.literal_data(bytes)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let function = get_or_declare_external(

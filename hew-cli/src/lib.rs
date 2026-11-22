@@ -439,6 +439,7 @@ fn emit_module(
         emit_llvm,
         None,
         source,
+        false,
     )
 }
 
@@ -463,36 +464,39 @@ fn emit_module_with_triple(
     emit_llvm: bool,
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
+    allow_parallel_object: bool,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     let display_source = source_path.map(compile::debug_source_path);
-    hew_codegen_rs::emit_physical_object(
-        pipeline,
-        &hew_codegen_rs::PhysicalEmitOptions {
-            module_name,
-            out_dir: emit_dir,
-            target_triple: Some(target_triple.unwrap_or(&pipeline.module().target.triple)),
-            opt_level,
-            emit_llvm,
-            address_sanitizer: link::address_sanitizer_requested(),
-            debug_source: if debug {
-                source
-                    .zip(display_source.as_deref())
-                    .map(|((text, _), path)| hew_codegen_rs::DebugSource { path, text })
-            } else {
-                None
-            },
-            link_freestanding_wasm,
-            build_info: Some(hew_compile::VERSION),
-            debug_script_dir: debug
-                .then(|| find_debug_script("hew-gdb.py"))
-                .flatten()
-                .and_then(|script| {
-                    std::path::Path::new(&script)
-                        .parent()
-                        .map(Path::to_path_buf)
-                }),
+    let options = hew_codegen_rs::PhysicalEmitOptions {
+        module_name,
+        out_dir: emit_dir,
+        target_triple: Some(target_triple.unwrap_or(&pipeline.module().target.triple)),
+        opt_level,
+        emit_llvm,
+        address_sanitizer: link::address_sanitizer_requested(),
+        debug_source: if debug {
+            source
+                .zip(display_source.as_deref())
+                .map(|((text, _), path)| hew_codegen_rs::DebugSource { path, text })
+        } else {
+            None
         },
-    )
+        link_freestanding_wasm,
+        build_info: Some(hew_compile::VERSION),
+        debug_script_dir: debug
+            .then(|| find_debug_script("hew-gdb.py"))
+            .flatten()
+            .and_then(|script| {
+                std::path::Path::new(&script)
+                    .parent()
+                    .map(Path::to_path_buf)
+            }),
+    };
+    if allow_parallel_object {
+        hew_codegen_rs::physical::emit_static_executable_object(pipeline, &options)
+    } else {
+        hew_codegen_rs::emit_physical_object(pipeline, &options)
+    }
     .map_err(|error| {
         let channel = diagnostic::codegen_channel(&error);
         diagnostic::render_codegen_emit_error(&error, source);
@@ -522,6 +526,7 @@ fn emit_module_for_target(
     emit_llvm: bool,
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
+    allow_parallel_object: bool,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     emit_module_with_triple(
         pipeline,
@@ -534,6 +539,7 @@ fn emit_module_for_target(
         emit_llvm,
         source_path,
         source,
+        allow_parallel_object,
     )
 }
 
@@ -984,6 +990,9 @@ fn compile_build_binary_with_hew_lib(
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("module");
+    let allow_parallel_object = options.link.runtime == link::RuntimeLink::Static
+        && !debug
+        && std::env::var_os("HEW_COVERAGE").is_none();
     let artefacts = emit_module_for_target(
         &physical,
         module_name,
@@ -995,6 +1004,7 @@ fn compile_build_binary_with_hew_lib(
         emit_llvm,
         Some(input),
         Some(sources.root()),
+        allow_parallel_object,
     )?;
     if target.is_wasm() {
         link_wasm_module_for_target(&artefacts, output_path, target)?;
@@ -1113,6 +1123,7 @@ fn emit_obj_only(
         emit_llvm,
         if debug { Some(input) } else { None },
         Some(sources.root()),
+        false,
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -1616,6 +1627,7 @@ fn compile_temp_wasi_module(
             false,
             None,
             Some(sources.root()),
+            false,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             emit_semantic_error(

@@ -6,6 +6,10 @@
   intermediate artefacts or IR dumps can switch to `hew tool compile` with
   the same arguments. Bare `hew file.hew` keeps its existing artefact paths.
   Playground verification is available as `hew tool playground-verify`.
+- Large static O2 builds on Linux x86-64 can generate native objects in
+  parallel when the build has sufficient CPU and memory headroom and the
+  ELF link tools are available. Hew verifies the linked source ranges
+  before using the split object.
 
 - `hew build --link=dynamic` and `hew run --link=dynamic` link programs
   against the shared Hew runtime instead of copying it in. The shared runtime

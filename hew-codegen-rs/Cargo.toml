@@ -29,6 +29,10 @@ inkwell = { version = "0.11", default-features = false, features = [
 # Provides the exact LLVM toolchain path to the sanitizer test build setup.
 llvm-sys = "231"
 
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+object = "0.40"
+tempfile.workspace = true
+
 [build-dependencies]
 # Compiles the LLVM C++ debug shim into this crate's static archive.
 cc = "1"

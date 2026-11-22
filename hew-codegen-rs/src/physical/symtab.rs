@@ -171,7 +171,7 @@ pub(super) fn emit_symtab(
     module: &Module<'_>,
     physical: &PhysicalModule,
     defined: &[FunctionValue<'_>],
-) -> CodegenResult<()> {
+) -> CodegenResult<Vec<hew_debug_abi::SymbolSlots>> {
     let ctx = module.get_context();
     let file_ids = table_file_ids(&physical.debug);
     let mut records = Vec::new();
@@ -255,7 +255,7 @@ pub(super) fn emit_symtab(
     table.set_alignment(4);
     table.set_linkage(table_linkage(physical));
     retain(module, table);
-    Ok(())
+    Ok(slots)
 }
 
 /// gdb's `.debug_gdb_scripts` entry kind for an inline Python script.

@@ -75,7 +75,7 @@ import std.io;
 // ── Split mode ────────────────────────────────────────────────────────
 /// How the scanner tokenises its source.
 pub enum SplitMode {
-    /// Lines split on `\n`; a leading `\r` before `\n` is stripped.
+    /// Lines split on `\n`; a trailing `\r` before `\n` is stripped.
     SplitLines;
     /// Tokens split on any run of ASCII whitespace (space, tab, `\r`, `\n`).
     SplitWords;
@@ -88,7 +88,7 @@ pub enum SplitMode {
 /// for full usage.
 pub type Scanner {
     source: string;
-    /// Byte position of the next unconsumed character.
+    /// Unicode scalar index of the next unconsumed character.
     pos: i64;
     /// Text of the current token.  Valid after `scan()` when `has_next()`
     /// is true; empty string before the first `scan()` or after exhaustion.
@@ -137,10 +137,7 @@ pub fn from_stdin() -> Scanner fails io.IoError {
 ///
 /// Returns `Err(fs.IoError)` if the file cannot be opened or read.
 pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
-    match fs.read(path) {
-        .Ok(contents) => .Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }),
-        .Err(e) => .Err(e),
-    }
+    fs.read(path).map(from_string)
 }
 
 /// Override the split mode on an existing scanner, resetting to position 0.
@@ -199,16 +196,9 @@ pub fn scan(sc: Scanner) -> Scanner {
 /// This helper ignores the current split mode and always uses `SplitLines`.
 /// A real empty line returns `Some("")`; EOF returns `None`.
 pub fn next_line(sc: Scanner) -> (Scanner, Option<string>) {
-    let mode = sc.mode;
-    let line_sc = Scanner { source: sc.source, pos: sc.pos, current: sc.current, valid: sc.valid, done: sc.done, mode: .SplitLines };
-    let next = scan(line_sc);
-    let restored = Scanner { source: next.source, pos: next.pos, current: next.current, valid: next.valid, done: next.done, mode: mode };
-    if has_next(next) {
-        let line = text(next);
-        (restored, .Some(line))
-    } else {
-        (restored, .None)
-    }
+    let next = scan_line(sc);
+    let line: Option<string> = if next.valid { .Some(next.current) } else { .None };
+    (next, line)
 }
 
 // ── Observations ─────────────────────────────────────────────────────
@@ -249,17 +239,7 @@ pub fn text(sc: Scanner) -> string {
 /// }
 /// ```
 pub fn lines(s: string) -> Vec<string> {
-    var result: Vec<string> = Vec.new();
-    if s.len() == 0 {
-        return result;
-    }
-    var sc = from_string(s);
-    sc = scan(sc);
-    while has_next(sc) {
-        result.push(sc.current);
-        sc = scan(sc);
-    }
-    result
+    collect(from_string(s))
 }
 
 /// Return all whitespace-delimited words from `s` as a `Vec<string>`.
@@ -279,18 +259,7 @@ pub fn lines(s: string) -> Vec<string> {
 /// }
 /// ```
 pub fn words(s: string) -> Vec<string> {
-    var result: Vec<string> = Vec.new();
-    if s.len() == 0 {
-        return result;
-    }
-    var sc = from_string(s);
-    sc = with_split(sc, .SplitWords);
-    sc = scan(sc);
-    while has_next(sc) {
-        result.push(sc.current);
-        sc = scan(sc);
-    }
-    result
+    collect(with_split(from_string(s), .SplitWords))
 }
 
 /// Collect all remaining tokens from `sc` into a `Vec<string>`.
@@ -336,27 +305,20 @@ fn scan_line(sc: Scanner) -> Scanner {
     if pos >= slen {
         return Scanner { source: sc.source, pos: pos, current: "", valid: false, done: true, mode: sc.mode };
     }
-    let rest = sc.source[pos..slen];
-    let found = rest.find("\n");
-    if found.is_none() {
-        // No newline: remainder is the final token.
-        let line = sc.source[pos..slen];
-        Scanner { source: sc.source, pos: slen, current: line, valid: true, done: false, mode: sc.mode }
-    } else {
-        let nl_pos = pos + (found ?? 0);
-        // Strip \r before \n for \r\n line endings.
-        let line_end = if nl_pos > pos && sc.source[nl_pos - 1 .. nl_pos] == "\r" {
-            nl_pos - 1
+    if let .Some(newline) = sc.source.find_from("\n", pos) {
+        let end = if newline > pos && sc.source[newline - 1] == '\r' {
+            newline - 1
         } else {
-            nl_pos
+            newline
         };
-        let line = sc.source[pos..line_end];
-        Scanner { source: sc.source, pos: nl_pos + 1, current: line, valid: true, done: false, mode: sc.mode }
+        Scanner { source: sc.source, pos: newline + 1, current: sc.source[pos..end], valid: true, done: false, mode: sc.mode }
+    } else {
+        Scanner { source: sc.source, pos: slen, current: sc.source[pos..slen], valid: true, done: false, mode: sc.mode }
     }
 }
 
-fn is_ascii_whitespace(ch: string) -> bool {
-    ch == " " || ch == "\t" || ch == "\r" || ch == "\n"
+fn is_ascii_whitespace(ch: char) -> bool {
+    ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
 }
 
 fn scan_word(sc: Scanner) -> Scanner {
@@ -366,7 +328,7 @@ fn scan_word(sc: Scanner) -> Scanner {
     let slen = sc.source.len();
     var pos = sc.pos;
     // Skip leading whitespace.
-    while pos < slen && is_ascii_whitespace(sc.source[pos .. pos + 1]) {
+    while pos < slen && is_ascii_whitespace(sc.source[pos]) {
         pos = pos + 1;
     }
     if pos >= slen {
@@ -374,7 +336,7 @@ fn scan_word(sc: Scanner) -> Scanner {
     }
     // Collect non-whitespace characters.
     var end = pos;
-    while end < slen && !is_ascii_whitespace(sc.source[end .. end + 1]) {
+    while end < slen && !is_ascii_whitespace(sc.source[end]) {
         end = end + 1;
     }
     let word = sc.source[pos..end];

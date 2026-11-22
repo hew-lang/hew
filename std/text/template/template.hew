@@ -192,28 +192,26 @@ fn range_key(tag: string) -> string {
 fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: string, in_range: bool, cond: bool) -> Result<(string, i64), TemplateError> {
     var pos = start;
     var depth = 0;
-    var true_end = -1; // byte offset of the end of the "true" branch (exclusive)
-    var false_start = -1; // byte offset of the start of the "false" branch
-    var end_pos = -1; // byte offset right after the `{{end}}` that closes this if
-    var end_tag_start = -1; // byte offset of the `{{` of that closing `{{end}}`
+    var true_end = -1; // scalar index of the end of the "true" branch (exclusive)
+    var false_start = -1; // scalar index of the start of the "false" branch
+    var end_pos = -1; // scalar index right after the `{{end}}` that closes this if
+    var end_tag_start = -1; // scalar index of the `{{` of that closing `{{end}}`
     while pos < tlen {
-        let rest = tmpl[pos..tlen];
-        let open = match rest.find("{{") {
+        let open = match tmpl.find_from("{{", pos) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
             }
         };
-        let tag_start = pos + open + 2;
-        let after_open = tmpl[tag_start..tlen];
-        let close = match after_open.find("}}") {
+        let tag_start = open + 2;
+        let close = match tmpl.find_from("}}", tag_start) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{if}}` body"));
             }
         };
-        let tag = tmpl[tag_start .. tag_start + close].trim();
-        let next_pos = tag_start + close + 2;
+        let tag = tmpl[tag_start..close].trim();
+        let next_pos = close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
             depth = depth + 1;
             pos = next_pos;
@@ -221,9 +219,9 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             if depth == 0 {
                 // The body of the true branch ends here if no {{else}} was seen.
                 if true_end < 0 {
-                    true_end = pos + open;
+                    true_end = open;
                 }
-                end_tag_start = pos + open;
+                end_tag_start = open;
                 end_pos = next_pos;
                 // Exit the scan loop.
                 pos = tlen + 1;
@@ -235,7 +233,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
             if false_start >= 0 {
                 return .Err(TemplateError.DuplicateElse("template: duplicate `{{else}}` in one `{{if}}`"));
             }
-            true_end = pos + open;
+            true_end = open;
             false_start = next_pos;
             pos = next_pos;
         } else {
@@ -281,29 +279,27 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     var body_end = -1;
     var end_pos = -1;
     while pos < tlen {
-        let rest = tmpl[pos..tlen];
-        let open = match rest.find("{{") {
+        let open = match tmpl.find_from("{{", pos) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
             }
         };
-        let tag_start = pos + open + 2;
-        let after_open = tmpl[tag_start..tlen];
-        let close = match after_open.find("}}") {
+        let tag_start = open + 2;
+        let close = match tmpl.find_from("}}", tag_start) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` inside `{{range}}` body"));
             }
         };
-        let tag = tmpl[tag_start .. tag_start + close].trim();
-        let next_pos = tag_start + close + 2;
+        let tag = tmpl[tag_start..close].trim();
+        let next_pos = close + 2;
         if tag_is_if(tag) || tag_is_range(tag) {
             depth = depth + 1;
             pos = next_pos;
         } else if tag == "end" {
             if depth == 0 {
-                body_end = pos + open;
+                body_end = open;
                 end_pos = next_pos;
                 pos = tlen + 1;
             } else {
@@ -344,26 +340,24 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
     var pos = 0;
     let tlen = tmpl.len();
     while pos < tlen {
-        let rest = tmpl[pos..tlen];
-        let open = match rest.find("{{") {
+        let open = match tmpl.find_from("{{", pos) {
             .Some(i) => i,
             .None => {
-                out = out + rest;
+                out += tmpl[pos..tlen];
                 return .Ok(out);
             }
         };
         // Append literal text before `{{`.
-        out = out + tmpl[pos .. pos + open];
-        let tag_start = pos + open + 2;
-        let after_open = tmpl[tag_start..tlen];
-        let close = match after_open.find("}}") {
+        out = out + tmpl[pos..open];
+        let tag_start = open + 2;
+        let close = match tmpl.find_from("}}", tag_start) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
             }
         };
-        let tag = tmpl[tag_start .. tag_start + close].trim();
-        pos = tag_start + close + 2;
+        let tag = tmpl[tag_start..close].trim();
+        pos = close + 2;
         if tag == "." {
             if !in_range {
                 return .Err(TemplateError.DotOutsideRange("template: `{{.}}` used outside `{{range}}`"));
@@ -422,8 +416,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
     var pos = 0;
     let tlen = tmpl.len();
     while pos < tlen {
-        let rest = tmpl[pos..tlen];
-        let open = match rest.find("{{") {
+        let open = match tmpl.find_from("{{", pos) {
             .Some(i) => i,
             .None => {
                 if stack.len() > 0 {
@@ -433,16 +426,15 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
                 return .Ok(0);
             }
         };
-        let tag_start = pos + open + 2;
-        let after_open = tmpl[tag_start..tlen];
-        let close = match after_open.find("}}") {
+        let tag_start = open + 2;
+        let close = match tmpl.find_from("}}", tag_start) {
             .Some(i) => i,
             .None => {
                 return .Err(TemplateError.UnclosedDirective("template: unclosed `{{` directive"));
             }
         };
-        let tag = tmpl[tag_start .. tag_start + close].trim();
-        pos = tag_start + close + 2;
+        let tag = tmpl[tag_start..close].trim();
+        pos = close + 2;
         if tag == "." {
             if range_depth <= 0 {
                 return .Err(TemplateError.DotOutsideRange("template: `{{.}}` used outside `{{range}}`"));

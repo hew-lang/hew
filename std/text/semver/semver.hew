@@ -209,16 +209,7 @@ fn compare_decimal_strings(a: string, b: string) -> i64 {
     if alen > blen {
         return 1;
     }
-    let cmp = unsafe {
-        hew_string_compare(an, bn)
-    } as i64;
-    if cmp < 0 {
-        return -1;
-    }
-    if cmp > 0 {
-        return 1;
-    }
-    0
+    compare_text(an, bn)
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -357,25 +348,9 @@ fn compare_pre(a: string, b: string) -> i64 {
     let a_len = a.len();
     let b_len = b.len();
     while a_pos < a_len && b_pos < b_len {
-        // Extract next identifier from a
-        let a_dot = a[a_pos..a_len].find(".");
-        var a_end = a_len;
-        match a_dot {
-            .Some(i) => {
-                a_end = a_pos + i;
-            }
-            .None => {}
-        }
+        let a_end = a.find_from(".", a_pos) ?? a_len;
+        let b_end = b.find_from(".", b_pos) ?? b_len;
         let a_id = a[a_pos..a_end];
-        // Extract next identifier from b
-        let b_dot = b[b_pos..b_len].find(".");
-        var b_end = b_len;
-        match b_dot {
-            .Some(i) => {
-                b_end = b_pos + i;
-            }
-            .None => {}
-        }
         let b_id = b[b_pos..b_end];
         let cmp = compare_pre_id(a_id, b_id);
         if cmp != 0 {
@@ -412,19 +387,17 @@ fn compare_pre_id(a: string, b: string) -> i64 {
     if !a_num && b_num {
         return 1;
     }
-    // Lexicographic comparison for non-numeric identifiers.
-    // `<`/`>` on strings uses IntCmp which only handles integers; route through
-    // the runtime strcmp shim instead.
-    let cmp_r = unsafe {
-        hew_string_compare(a, b)
-    } as i64;
-    if cmp_r < 0 {
-        return -1;
+    compare_text(a, b)
+}
+
+fn compare_text(a: string, b: string) -> i64 {
+    if a < b {
+        -1
+    } else if a > b {
+        1
+    } else {
+        0
     }
-    if cmp_r > 0 {
-        return 1;
-    }
-    0
 }
 
 // ── Requirement matching ──────────────────────────────────────────────
@@ -524,12 +497,4 @@ fn matches_single(v: Version, constraint: string) -> bool {
         matches = cmp >= 0 && v.maj == req_ver.maj && v.min == req_ver.min;
     }
     matches
-}
-
-// ── FFI ───────────────────────────────────────────────────────────────
-// Lexicographic string comparison: returns negative, zero, or positive.
-// Declared here rather than via `import std.string` to avoid the module
-// compile path that `impl string { ... }` currently blocks on C2.
-extern "C" {
-    fn hew_string_compare(a: string, b: string) -> i32;
 }

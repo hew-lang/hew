@@ -76,6 +76,8 @@ mod loop_chunks;
 mod managed;
 mod materialize;
 mod module_emitter;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod parallel;
 mod runtime_calls;
 mod symtab;
 mod text;
@@ -541,7 +543,19 @@ pub fn emit_physical_object(
     verified: &VerifiedPhysicalModule,
     options: &PhysicalEmitOptions<'_>,
 ) -> Result<EmitArtefacts, CodegenError> {
-    emit_physical_object_with_host(verified, options, None)
+    emit_physical_object_with_host(verified, options, None, false)
+}
+
+/// Emit the native object of a statically linked executable. Large Linux
+/// x86-64 modules may emit their objects in parallel before the final link.
+///
+/// # Errors
+/// Returns target, LLVM or output errors from physical emission.
+pub fn emit_static_executable_object(
+    verified: &VerifiedPhysicalModule,
+    options: &PhysicalEmitOptions<'_>,
+) -> Result<EmitArtefacts, CodegenError> {
+    emit_physical_object_with_host(verified, options, None, true)
 }
 
 /// Emit an experimental C wrapper and its verified library body.
@@ -557,13 +571,14 @@ pub fn emit_host_object(
             "portable exports retain code through their instance, not native loader leases".into(),
         ));
     }
-    emit_physical_object_with_host(export.verified, options, Some(export))
+    emit_physical_object_with_host(export.verified, options, Some(export), false)
 }
 
 fn emit_physical_object_with_host(
     verified: &VerifiedPhysicalModule,
     options: &PhysicalEmitOptions<'_>,
     host: Option<&HostExport<'_>>,
+    allow_parallel_object: bool,
 ) -> Result<EmitArtefacts, CodegenError> {
     let triple = options
         .target_triple
@@ -596,6 +611,7 @@ fn emit_physical_object_with_host(
         options.debug_source,
         options.build_info,
         options.debug_script_dir.as_deref(),
+        allow_parallel_object,
     )?;
     if !wasm {
         return Ok(EmitArtefacts {
@@ -646,6 +662,7 @@ pub fn validate_physical_codegen(
         None,
         None,
         None,
+        false,
     )
 }
 
@@ -665,6 +682,7 @@ fn emit_physical_to_paths(
     debug_source: Option<DebugSource<'_>>,
     build_info: Option<&str>,
     debug_script_dir: Option<&Path>,
+    allow_parallel_object: bool,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     if debug_source.is_some()
@@ -712,14 +730,35 @@ fn emit_physical_to_paths(
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)
             .map_err(CodegenError::FailClosed)?;
     }
-    if let Some(symbols) = symbols {
-        symtab::emit_symtab(&llvm_module, verified.module(), &symbols)?;
-    }
+    let symbol_slots = symbols
+        .as_deref()
+        .map(|symbols| symtab::emit_symtab(&llvm_module, verified.module(), symbols))
+        .transpose()?;
     if let Some(path) = ll_path {
         llvm_module
             .print_to_file(path)
             .llvm_ctx_with(|| format!("write physical LLVM IR to {}", path.display()))?;
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if allow_parallel_object
+        && triple == "x86_64-unknown-linux-gnu"
+        && opt_level == OptLevel::O2
+        && host.is_none()
+        && debug_source.is_none()
+        && !address_sanitizer
+    {
+        if let (Some(path), Some(slots), Some(symbols)) =
+            (object_path, symbol_slots.as_deref(), symbols)
+        {
+            if let Some(emission) = parallel::Emission::prepare(&llvm_module, &symbols) {
+                drop(llvm_module);
+                drop(ctx);
+                return emission.emit_with_fallback(slots, &machine, triple, path);
+            }
+        }
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let _ = (allow_parallel_object, symbol_slots);
     if let Some(path) = object_path {
         machine
             .write_to_file(&llvm_module, FileType::Object, path)

@@ -42,7 +42,14 @@ fn main() {
     let cxx_flags = llvm_config_output(llvm_config, "--cxxflags");
     let flags = llvm_flags::cxx_flags(&cxx_flags, &include_dir)
         .expect("cannot parse llvm-config C++ flags");
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
+    {
+        println!("cargo:rerun-if-changed=src/split_object_shim.cpp");
+        build.file("src/split_object_shim.cpp");
+    }
+    build
         .cpp(true)
         .file("src/physical_debug_shim.cpp")
         .include(include_dir)

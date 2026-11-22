@@ -13,6 +13,7 @@ pub(super) struct Budget {
 }
 
 impl Budget {
+    // JUSTIFIED: Unknown host capacity opts out of parallel emission.
     pub(super) fn read() -> Option<Self> {
         let cpus = std::thread::available_parallelism().ok()?.get();
         if cpus < 2 {
@@ -66,6 +67,7 @@ impl Budget {
         budget.workers(0).map(|_| budget)
     }
 
+    // JUSTIFIED: A snapshot too large to budget requires monolithic emission.
     pub(super) fn workers(&self, snapshot_bytes: usize) -> Option<usize> {
         // Serialized bitcode underestimates live LLVM IR. Reserve room for
         // parsing/cloning it and for the independent target machines. These
@@ -79,6 +81,7 @@ impl Budget {
     }
 }
 
+// JUSTIFIED: Incomplete cgroup accounting opts out of parallel emission.
 fn cgroup_headroom(root: &Path, membership: &Path) -> Option<u64> {
     if membership
         .components()

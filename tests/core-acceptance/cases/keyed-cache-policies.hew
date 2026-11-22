@@ -1,5 +1,127 @@
 import std.cache;
 
+fn touch_refreshes_ttl(start: instant) {
+    var timed: cache.Cache<string, i64> = cache.new(.Some(2), .Some(10ms)).expect("valid TTL");
+    assert(!timed.touch("missing", start));
+    timed.insert("first", 1, start);
+    timed.insert("second", 2, start + 1ms);
+    assert(timed.touch("first", start + 4ms));
+    assert(timed.prune(start + 10ms) == 0);
+    assert(timed.get("first", start + 10ms) == .Some(1));
+    timed.insert("third", 3, start + 10ms);
+    assert(timed.get("first", start + 10ms).is_none());
+    assert(timed.get("second", start + 10ms) == .Some(2));
+    assert(!timed.touch("second", start + 11ms));
+    assert(timed.get("second", start + 12ms).is_none());
+}
+
+fn lru_uses_reads_and_touches(start: instant) {
+    var recent: cache.Cache<string, i64> = cache.new(.Some(2), .Some(10ms), eviction: .Lru).expect("valid limits");
+    recent.insert("first", 1, start);
+    recent.insert("second", 2, start + 2ms);
+    var snapshot = recent.clone();
+    assert(recent.get("first", start + 3ms) == .Some(1));
+    recent.insert("third", 3, start + 4ms);
+    snapshot.insert("third", 3, start + 4ms);
+    assert(recent.get("second", start + 4ms).is_none());
+    assert(snapshot.get("first", start + 4ms).is_none());
+    assert(snapshot.get("second", start + 4ms) == .Some(2));
+
+    // The plain read changed eviction order and left the first TTL unchanged.
+    assert(recent.get("first", start + 9ms) == .Some(1));
+    recent.insert("fourth", 4, start + 10ms);
+    assert(recent.get("first", start + 10ms).is_none());
+    assert(recent.touch("third", start + 11ms));
+    recent.insert("fifth", 5, start + 12ms);
+    assert(recent.get("fourth", start + 12ms).is_none());
+    assert(recent.get("third", start + 20ms) == .Some(3));
+    assert(!recent.touch("third", start + 21ms));
+    assert(recent.get("third", start + 22ms).is_none());
+}
+
+fn lru_prunes_without_disrupting_order(start: instant) {
+    var recent: cache.Cache<string, i64> = cache.new(.Some(3), .Some(10ms), eviction: .Lru).expect("valid limits");
+    recent.insert("expires", 0, start);
+    recent.insert("after", 1, start + 5ms);
+    recent.insert("before", 2, start + 6ms);
+    assert(recent.get("expires", start + 7ms) == .Some(0));
+    assert(recent.get("after", start + 8ms) == .Some(1));
+    assert(recent.prune(start + 10ms) == 1);
+    recent.insert("new", 3, start + 10ms);
+    recent.insert("newer", 4, start + 10ms);
+    assert(recent.get("before", start + 10ms).is_none());
+    assert(recent.get("after", start + 10ms) == .Some(1));
+    assert(recent.len(start + 10ms) == 3);
+}
+
+fn set_limits_preserves_age(start: instant) {
+    var timed: cache.Cache<string, i64> = cache.new(capacity: .Some(3)).expect("valid capacity");
+    timed.insert("old", 1, start);
+    timed.insert("live", 2, start + 8ms);
+    timed.set_limits(timed.capacity(), .Some(10ms), start + 10ms).expect("enable TTL");
+    assert(timed.ttl() == .Some(10ms));
+    assert(timed.get("old", start + 10ms).is_none());
+    assert(timed.get("live", start + 17ms) == .Some(2));
+    timed.insert("survivor", 3, start + 17ms);
+
+    // Both changes occur at the existing deadline, before a lazy read has
+    // reclaimed the entry. Neither operation may bring it back.
+    var extended = timed.clone();
+    timed.set_limits(timed.capacity(), .None, start + 18ms).expect("disable TTL");
+    extended.set_limits(extended.capacity(), .Some(20ms), start + 18ms).expect("extend TTL");
+    assert(timed.ttl().is_none());
+    assert(timed.get("live", start + 18ms).is_none());
+    assert(extended.get("live", start + 18ms).is_none());
+    assert(extended.get("survivor", start + 36ms) == .Some(3));
+    assert(extended.get("survivor", start + 37ms).is_none());
+    assert(timed.get("survivor", start + 37ms) == .Some(3));
+}
+
+fn set_limits_prunes_before_evicting(start: instant, policy: cache.Eviction) {
+    var values: cache.Cache<string, i64> = cache.new(.Some(4), .Some(20ms), eviction: policy).expect("valid limits");
+    values.insert("first-live", 1, start + 8ms);
+    values.insert("expired-under-new-ttl", 2, start);
+    values.insert("second-live", 3, start + 9ms);
+    values.insert("third-live", 4, start + 10ms);
+    assert(values.get("first-live", start + 10ms) == .Some(1));
+    values.set_limits(.Some(2), .Some(10ms), start + 10ms).expect("tighten limits");
+    assert(values.capacity() == .Some(2));
+    assert(values.len(start + 10ms) == 2);
+    assert(values.get("expired-under-new-ttl", start + 10ms).is_none());
+    assert(values.get("third-live", start + 10ms) == .Some(4));
+    match policy {
+        .Fifo => {
+            assert(values.get("first-live", start + 10ms).is_none());
+            assert(values.get("second-live", start + 10ms) == .Some(3));
+        }
+        .Lru => {
+            assert(values.get("first-live", start + 10ms) == .Some(1));
+            assert(values.get("second-live", start + 10ms).is_none());
+        }
+    }
+}
+
+fn set_limits_validates_and_clears(start: instant) {
+    var values: cache.Cache<string, i64> = cache.new(.Some(2), .Some(10ms)).expect("valid limits");
+    values.insert("first", 1, start);
+    values.insert("second", 2, start + 1ms);
+    assert(values.set_limits(.Some(-1), .None, start + 11ms).is_err());
+    assert(values.set_limits(.Some(0), .Some(-1ns), start + 11ms).is_err());
+    assert(values.capacity() == .Some(2));
+    assert(values.ttl() == .Some(10ms));
+    // An earlier observation detects whether either rejection pruned entries.
+    assert(values.len(start + 9ms) == 2);
+    values.set_limits(.Some(0), values.ttl(), start + 9ms).expect("zero capacity");
+    assert(values.len(start + 9ms) == 0);
+    values.set_limits(.None, .None, start + 9ms).expect("unbounded cache");
+    values.insert("future", 3, start + 1h);
+    values.set_limits(.None, .Some(0ns), start + 9ms).expect("zero TTL");
+    assert(values.len(start + 9ms) == 0);
+    values.insert("disabled", 4, start + 9ms);
+    values.set_limits(.None, .None, start + 9ms).expect("unbounded cache");
+    assert(values.len(start + 9ms) == 0);
+}
+
 fn main() {
     let negative_capacity: Result<cache.Cache<string, i64>, cache.CacheError> = cache.new(.Some(-1));
     assert(negative_capacity.is_err());
@@ -41,14 +163,13 @@ fn main() {
     assert(timed.get("future", start + 10ms) == .Some(1));
     assert(timed.get("earlier", start + 10ms).is_none());
     assert(timed.get("present", start + 10ms) == .Some(3));
-    // Enabling expiry on a populated untimed cache still checks every live key.
-    fifo.ttl = .Some(1ms);
-    fifo.insert("from-future", 1, start + 1h);
-    fifo.ttl = .None;
-    fifo.insert("backdated", 2, start);
-    fifo.ttl = .Some(1ms);
-    assert(fifo.prune(start + 1ms) == 1);
-    assert(fifo.get("from-future", start + 1ms) == .Some(1));
+    touch_refreshes_ttl(start);
+    lru_uses_reads_and_touches(start);
+    lru_prunes_without_disrupting_order(start);
+    set_limits_preserves_age(start);
+    set_limits_prunes_before_evicting(start, .Fifo);
+    set_limits_prunes_before_evicting(start, .Lru);
+    set_limits_validates_and_clears(start);
     var values: cache.Cache<i64, Vec<string>> = cache.new().expect("unbounded cache");
     values.insert(42, ["original".to_upper()], start);
     var read = values.get(42, start).expect("cached vector");

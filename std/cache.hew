@@ -1,4 +1,4 @@
-//! Keyed memoization with optional expiry and bounded FIFO eviction.
+//! Keyed memoization with optional expiry and bounded FIFO or LRU eviction.
 //!
 //! A cache is an ordinary value: copying it creates an independent snapshot.
 //! Keys and values must support `Clone`; reads return independent values.
@@ -6,17 +6,25 @@
 //! each expiring five seconds after insertion. Omit either option to disable
 //! that limit. A zero capacity or TTL disables retention; negative limits fail.
 //!
-//! `get` and `insert` accept an observation `instant`, defaulting to the host's
-//! monotonic clock. Explicit instants must come from the same clock and move
-//! forward. An entry is absent at its exact deadline; reads never extend TTL.
-//! Insertion removes expired entries before evicting the oldest live insertion.
-//! Replacing a key makes it the newest insertion; reads do not change order.
-//! Expiry is lazy: `get`, `insert`, `prune` and `len` reclaim expired entries;
-//! there is no background task. Pruning skips the scan when every entry is
-//! known to be live. Otherwise it visits the retained entries.
+//! `get`, `insert` and `touch` accept an observation `instant`, defaulting to
+//! the monotonic clock. Supply explicit instants from the same clock. An entry
+//! expires at its exact deadline. Reads do not extend TTL. `touch(key)` restarts
+//! the TTL on a live entry and returns `false` for a missing or expired key.
 //!
-//! Use the cache methods to insert, replace and invalidate values. The
-//! backing entries and FIFO order are internal and must be updated together.
+//! Use `eviction: .Lru` to evict the least recently used entry. Successful reads
+//! and touches update LRU order independently of TTL. FIFO is the default and
+//! orders entries by insertion. In either policy, replacement puts a key at the
+//! newest end, and insertion reclaims expired entries before evicting live ones.
+//! Expiry is lazy. `get` and `touch` reclaim the requested expired entry;
+//! `insert`, `prune` and `len` reclaim all expired entries. Pruning skips the scan
+//! when every entry is known to be live.
+//!
+//! Use `set_limits(capacity, ttl)` to change a populated cache. The cache
+//! removes entries expired under either TTL using their existing timestamps,
+//! then evicts by its policy until the new capacity fits. A zero limit clears
+//! the cache and disables retention. Use `values.set_limits(values.capacity(),
+//! .Some(5s))` to change only the TTL, or pass `values.ttl()` when changing
+//! only the capacity.
 //!
 //! `get_or_load(key, || load())` calls its loader only on a miss. Successful
 //! values are cached with a fresh `instant.now()` after loading finishes.
@@ -51,13 +59,21 @@ pub enum CacheError {
     InvalidTtl(duration);
 }
 
+/// Eviction order when a bounded cache runs out of space.
+pub enum Eviction {
+    /// Evict the oldest insertion.
+    Fifo;
+    /// Evict the least recently read, inserted or touched entry.
+    Lru;
+}
+
 impl Error for CacheError {}
 
 impl Display for CacheError {
     fn fmt(self) -> string {
         match self {
-            .InvalidCapacity(capacity) => f"cache.new: capacity must be nonnegative, got {capacity}",
-            .InvalidTtl(ttl) => f"cache.new: TTL must be nonnegative, got {ttl}",
+            .InvalidCapacity(capacity) => f"cache: capacity must be nonnegative, got {capacity}",
+            .InvalidTtl(ttl) => f"cache: TTL must be nonnegative, got {ttl}",
         }
     }
 }
@@ -65,22 +81,44 @@ impl Display for CacheError {
 type Entry<V> {
     value: V;
     inserted: instant;
-    // Lower bound for insertion times through this position in FIFO order.
-    // None means a later TTL change must check the entries individually.
-    oldest: Option<instant>;
+}
+
+type Links<K> {
+    older: Option<K>;
+    newer: Option<K>;
 }
 
 /// An owning value cache. Eviction and invalidation release retained values
 /// automatically; no close operation is needed.
 pub type Cache<K: Hash + Eq, V> {
-    entries: HashMap<K, Entry<V>>;
-    order: Vec<K>;
-    capacity: Option<i64>;
-    ttl: Option<duration>;
+    private entries: HashMap<K, Entry<V>>;
+    // Eviction order. Reads can update links without copying cached values.
+    private links: HashMap<K, Links<K>>;
+    private first: Option<K>;
+    private last: Option<K>;
+    private capacity: Option<i64>;
+    private ttl: Option<duration>;
+    private eviction: Eviction;
+    // Lower bound on retained timestamps, independent of eviction order.
+    private oldest: Option<instant>;
 }
 
 /// Create an empty cache. Unspecified limits are unbounded.
-pub fn new<K: Hash + Eq + Clone, V: Clone>(capacity: Option<i64> = .None, ttl: Option<duration> = .None) -> Cache<K, V> fails CacheError {
+pub fn new<K: Hash + Eq + Clone, V: Clone>(capacity: Option<i64> = .None, ttl: Option<duration> = .None, eviction: Eviction = .Fifo) -> Cache<K, V> fails CacheError {
+    validate_limits(capacity, ttl)?;
+    Cache {
+        entries: HashMap.new(),
+        links: HashMap.new(),
+        first: .None,
+        last: .None,
+        capacity: capacity,
+        ttl: ttl,
+        eviction: eviction,
+        oldest: .None,
+    }
+}
+
+fn validate_limits(capacity: Option<i64>, ttl: Option<duration>) fails CacheError {
     match capacity {
         .Some(limit) => if limit < 0 {
             return error .InvalidCapacity(limit);
@@ -93,45 +131,97 @@ pub fn new<K: Hash + Eq + Clone, V: Clone>(capacity: Option<i64> = .None, ttl: O
         }
         .None => {}
     }
-    Cache { entries: HashMap.new(), order: Vec.new(), capacity: capacity, ttl: ttl }
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
-    /// Return an independent value, removing the entry if its TTL has elapsed.
+    /// Configured maximum number of retained entries, if bounded.
+    pub fn capacity(self) -> Option<i64> {
+        self.capacity
+    }
+
+    /// Configured lifetime of each retained entry, if timed.
+    pub fn ttl(self) -> Option<duration> {
+        self.ttl
+    }
+
+    /// Change both limits and apply them to the current entries. Invalid
+    /// limits leave the cache unchanged, including entries awaiting expiry.
+    /// Live entries retain their timestamps and eviction order.
+    pub fn set_limits(var self, capacity: Option<i64>, ttl: Option<duration>, now: instant = instant.now()) fails CacheError {
+        validate_limits(capacity, ttl)?;
+        if capacity == .Some(0) || ttl == .Some(0ns) {
+            self.clear();
+        } else {
+            // Expiry under either limit is irreversible. The shorter active
+            // lifetime removes exactly that union in one pass.
+            let expiry = match (self.ttl, ttl) {
+                (.Some(old), .Some(new)) => .Some(if old <= new { old } else { new }),
+                (.Some(old), .None) => .Some(old),
+                (.None, new) => new,
+            };
+            if let .Some(lifetime) = expiry {
+                self.prune_expired(lifetime, now);
+            }
+            if let .Some(limit) = capacity {
+                while self.entries.len() > limit {
+                    self.evict_first();
+                }
+            }
+        }
+        self.capacity = capacity;
+        self.ttl = ttl;
+        if ttl.is_none() {
+            self.oldest = .None;
+        }
+    }
+
+    /// Return an independent value and record an LRU hit. An expired entry is removed.
     pub fn get(var self, key: K, now: instant = instant.now()) -> Option<V> {
-        match self.entries.get(key) {
-            .Some(entry) => if self.expired(entry.inserted, now) {
-                self.invalidate(key);
-                .None
-            } else {
+        match self.live_entry(key, now) {
+            .Some(entry) => {
+                self.record_access(key);
                 .Some(entry.value)
             }
             .None => .None,
         }
     }
 
+    /// Restart the TTL of a live entry and mark it as recently used under LRU.
+    /// Return false for an absent or expired key.
+    pub fn touch(var self, key: K, now: instant = instant.now()) -> bool {
+        match self.live_entry(key, now) {
+            .Some(entry) => {
+                if self.ttl.is_some() && now > entry.inserted {
+                    self.entries[key].inserted = now;
+                }
+                self.record_access(key);
+                true
+            }
+            .None => false,
+        }
+    }
+
     /// Insert or replace a value. Expired entries are reclaimed first; a full
-    /// bounded cache evicts its oldest insertion. Zero limits retain nothing.
+    /// bounded cache evicts according to its policy. Zero limits retain nothing.
     pub fn insert(var self, consume key: K, consume value: V, now: instant = instant.now()) {
-        let (_, oldest) = self.prune_entries(now);
-        self.invalidate(key);
+        self.prune(now);
         if self.capacity == .Some(0) || self.ttl == .Some(0ns) {
             return;
         }
+        if self.entries.contains_key(key) {
+            self.invalidate(key);
+        }
         match self.capacity {
-            .Some(limit) => if self.order.len() >= limit {
-                let victim = self.order[0];
-                self.invalidate(victim);
+            .Some(limit) => if self.entries.len() >= limit {
+                self.evict_first();
             }
             .None => {}
         }
-        let bound: Option<instant> = if self.ttl.is_some() {
-            .Some(earliest(oldest, now))
-        } else {
-            .None
-        };
-        self.order.push(key.clone());
-        self.entries.insert(key, Entry { value: value, inserted: now, oldest: bound });
+        if self.ttl.is_some() {
+            self.oldest = .Some(earliest(self.oldest, now));
+        }
+        self.append(key);
+        self.entries.insert(key, Entry { value: value, inserted: now });
     }
 
     /// Return a hit or run the explicit loader once. Failed loads retain no
@@ -149,80 +239,118 @@ impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
 
     /// Remove a key regardless of its age. Return whether it was retained.
     pub fn invalidate(var self, key: K) -> bool {
-        if !self.entries.contains_key(key) {
+        if self.entries.remove(key).is_none() {
             return false;
         }
-        self.entries.remove(key);
-        for index in 0..self.order.len() {
-            if self.order[index] == key {
-                self.order.remove(index);
-                break;
-            }
+        let links = self.links.remove(key).expect("retained key has eviction links");
+        self.detach(links);
+        if self.entries.is_empty() {
+            self.oldest = .None;
         }
         true
     }
 
     /// Reclaim all entries whose TTL has elapsed. Return the number removed.
     pub fn prune(var self, now: instant = instant.now()) -> i64 {
-        self.prune_entries(now).0
+        match self.ttl {
+            .Some(lifetime) => self.prune_expired(lifetime, now),
+            .None => 0,
+        }
     }
 
-    fn prune_entries(var self, now: instant) -> (i64, Option<instant>) {
-        if self.ttl.is_none() || self.order.is_empty() {
-            return (0, .None);
-        }
-        let last = self.order[self.order.len() - 1];
-        if let .Some(entry) = self.entries.get(last) {
-            if let .Some(oldest) = entry.oldest {
-                if !self.expired(oldest, now) {
-                    return (0, .Some(oldest));
-                }
+    fn prune_expired(var self, lifetime: duration, now: instant) -> i64 {
+        if let .Some(oldest) = self.oldest {
+            if !expired(oldest, lifetime, now) {
+                return 0;
             }
         }
         var oldest_retained: Option<instant> = .None;
-        let keys = self.order.clone();
-        var retained: Vec<K> = Vec.new();
+        var next = self.first;
         var removed: i64 = 0;
-        for key in keys {
-            match self.entries.get(key) {
-                .Some(entry) => if self.expired(entry.inserted, now) {
-                    self.entries.remove(key);
-                    removed += 1;
-                } else {
-                    oldest_retained = .Some(earliest(oldest_retained, entry.inserted));
-                    retained.push(key);
-                }
-                .None => {}
+        while let .Some(key) = next {
+            next = self.links[key].newer;
+            let inserted = self.entries[key].inserted;
+            if expired(inserted, lifetime, now) {
+                self.invalidate(key);
+                removed += 1;
+            } else {
+                oldest_retained = .Some(earliest(oldest_retained, inserted));
             }
         }
-        self.order = retained;
-        if !self.order.is_empty() {
-            let key = self.order[self.order.len() - 1];
-            if let .Some(entry) = self.entries.get(key) {
-                self.entries.insert(key, Entry { value: entry.value, inserted: entry.inserted, oldest: oldest_retained });
-            }
-        }
-        (removed, oldest_retained)
+        self.oldest = oldest_retained;
+        removed
     }
 
     /// Count live entries, reclaiming expired entries first.
     pub fn len(var self, now: instant = instant.now()) -> i64 {
         self.prune(now);
-        self.order.len()
+        self.entries.len()
     }
 
     /// Release every retained key and value, preserving the configured limits.
     pub fn clear(var self) {
         self.entries.clear();
-        self.order.clear();
+        self.links.clear();
+        self.first = .None;
+        self.last = .None;
+        self.oldest = .None;
     }
 
-    fn expired(self, inserted: instant, now: instant) -> bool {
-        match self.ttl {
-            .Some(lifetime) => now >= inserted && now.duration_since(inserted) >= lifetime,
-            .None => false,
+    fn live_entry(var self, key: K, now: instant) -> Option<Entry<V>> {
+        match self.entries.get(key) {
+            .Some(entry) => {
+                if let .Some(lifetime) = self.ttl {
+                    if expired(entry.inserted, lifetime, now) {
+                        self.invalidate(key);
+                        return .None;
+                    }
+                }
+                .Some(entry)
+            }
+            .None => .None,
         }
     }
+
+    fn evict_first(var self) {
+        self.invalidate(self.first.expect("cache has an eviction candidate"));
+    }
+
+    fn detach(var self, links: Links<K>) {
+        if let .Some(key) = links.older {
+            self.links[key].newer = links.newer;
+        } else {
+            self.first = links.newer;
+        }
+        if let .Some(key) = links.newer {
+            self.links[key].older = links.older;
+        } else {
+            self.last = links.older;
+        }
+    }
+
+    fn append(var self, key: K) {
+        let last = self.last;
+        if let .Some(previous) = last {
+            self.links[previous].newer = .Some(key);
+        } else {
+            self.first = .Some(key);
+        }
+        self.links.insert(key, Links { older: last, newer: .None });
+        self.last = .Some(key);
+    }
+
+    fn record_access(var self, key: K) {
+        if let .Lru = self.eviction {
+            if self.last != .Some(key) {
+                self.detach(self.links[key]);
+                self.append(key);
+            }
+        }
+    }
+}
+
+fn expired(inserted: instant, lifetime: duration, now: instant) -> bool {
+    now >= inserted && now.duration_since(inserted) >= lifetime
 }
 
 fn earliest(bound: Option<instant>, time: instant) -> instant {

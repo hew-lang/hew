@@ -1,0 +1,8 @@
+import std.cache;
+
+fn main() {
+    var values: cache.Cache<i64, i64> = cache.new().expect("cache");
+    values.capacity = .Some(0);
+    values.ttl = .Some(0ns);
+    values.entries.clear();
+}

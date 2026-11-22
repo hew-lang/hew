@@ -1,6 +1,6 @@
 [[case]]
 id = "keyed-cache-policies"
-intent = "Generic value cache snapshots, FIFO replacement/eviction, inclusive TTL boundaries, expiry before eviction, invalidation and checked zero/negative limits."
+intent = "Independent cache snapshots, FIFO and LRU eviction, explicit TTL renewal, inclusive expiry before capacity eviction and atomic limit changes."
 source = "cases/keyed-cache-policies.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

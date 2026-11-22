@@ -1,10 +1,7 @@
-positive
-negative
-zero
-feeling happy
-feeling sad
-feeling neutral
-x is big
-main: neutral branch
-got value: 42
-none branch taken
+Valley: open
+  12 km
+  Bring lunch.
+Spruce: muddy
+  3 km
+Ridge: closed
+River: open

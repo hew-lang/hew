@@ -1,8 +1,6 @@
-for loop 0..5:
-0
-1
-2
-3
-4
-while loop sum:
-15
+Trip 1: 2 parcels delivered
+Trip 2: 4 parcels delivered
+Trip 3: 6 parcels delivered
+Departing in 3
+Departing in 2
+Departing in 1

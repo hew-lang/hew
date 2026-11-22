@@ -2,18 +2,9 @@
 // Prices: [1,5,8,9,10,17,17,20] for lengths 1..8
 // Rod length: 8 -> max revenue = 22 (cut into 2+6 -> 5+17)
 fn main() {
-    var prices: Vec<i32> = Vec.new();
-    prices.push(1);
-    prices.push(5);
-    prices.push(8);
-    prices.push(9);
-    prices.push(10);
-    prices.push(17);
-    prices.push(17);
-    prices.push(20);
+    let prices: Vec<i32> = [1, 5, 8, 9, 10, 17, 17, 20];
     let rod_len = 8;
-    var dp: Vec<i32> = Vec.new();
-    dp.push(0);
+    var dp: Vec<i32> = [0];
     for i in 1 .. rod_len + 1 {
         dp.push(0);
     }

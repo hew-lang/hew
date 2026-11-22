@@ -1,40 +1,16 @@
-// Test 7: Enums and pattern matching
-// Testing enum definitions and match expressions
-enum Colour {
-    Red;
-    Green;
-    Blue;
+enum Delivery {
+    Pickup;
+    Courier(string);
 }
 
-enum Status {
-    Active;
-    Inactive;
-    Pending;
-}
-
-fn colour_to_int(c: Colour) -> i64 {
-    match c {
-        .Red => 1,
-        .Green => 2,
-        .Blue => 3,
-    }
-}
-
-fn status_to_int(s: Status) -> i64 {
-    match s {
-        .Active => 100,
-        .Inactive => 200,
-        .Pending => 300,
+fn instructions(delivery: Delivery) -> string {
+    match delivery {
+        .Pickup => "Collect at the depot",
+        .Courier(address) => f"Deliver to {address}",
     }
 }
 
 fn main() {
-    let c1 = Colour.Red;
-    let c2 = Colour.Green;
-    let c3 = Colour.Blue;
-    println(colour_to_int(c1));
-    println(colour_to_int(c2));
-    println(colour_to_int(c3));
-    let s1 = Status.Active;
-    println(status_to_int(s1));
+    println(instructions(.Pickup));
+    println(instructions(.Courier("14 Oak Street")));
 }

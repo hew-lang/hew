@@ -45,17 +45,7 @@ fn main() {
     var passed = 0;
     var failed = 0;
     // Test 1: uniformly distributed data
-    var v1: Vec<i64> = Vec.new();
-    v1.push(10);
-    v1.push(20);
-    v1.push(30);
-    v1.push(40);
-    v1.push(50);
-    v1.push(60);
-    v1.push(70);
-    v1.push(80);
-    v1.push(90);
-    v1.push(100);
+    let v1: Vec<i64> = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
     let r1 = interpolation_search(v1, 70);
     if r1 == 6 {
         println("Test 1 - find 70: PASS");
@@ -67,12 +57,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: find first element
-    var v2: Vec<i64> = Vec.new();
-    v2.push(10);
-    v2.push(20);
-    v2.push(30);
-    v2.push(40);
-    v2.push(50);
+    let v2: Vec<i64> = [10, 20, 30, 40, 50];
     let r2 = interpolation_search(v2, 10);
     if r2 == 0 {
         println("Test 2 - find first: PASS");
@@ -84,12 +69,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: find last element
-    var v3: Vec<i64> = Vec.new();
-    v3.push(10);
-    v3.push(20);
-    v3.push(30);
-    v3.push(40);
-    v3.push(50);
+    let v3: Vec<i64> = [10, 20, 30, 40, 50];
     let r3 = interpolation_search(v3, 50);
     if r3 == 4 {
         println("Test 3 - find last: PASS");
@@ -101,12 +81,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: not found
-    var v4: Vec<i64> = Vec.new();
-    v4.push(10);
-    v4.push(20);
-    v4.push(30);
-    v4.push(40);
-    v4.push(50);
+    let v4: Vec<i64> = [10, 20, 30, 40, 50];
     let r4 = interpolation_search(v4, 25);
     if r4 == 0 - 1 {
         println("Test 4 - not found: PASS");
@@ -130,8 +105,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: single element found
-    var v6: Vec<i64> = Vec.new();
-    v6.push(42);
+    let v6: Vec<i64> = [42];
     let r6 = interpolation_search(v6, 42);
     if r6 == 0 {
         println("Test 6 - single found: PASS");
@@ -143,10 +117,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: target below range
-    var v7: Vec<i64> = Vec.new();
-    v7.push(10);
-    v7.push(20);
-    v7.push(30);
+    let v7: Vec<i64> = [10, 20, 30];
     let r7 = interpolation_search(v7, 5);
     if r7 == 0 - 1 {
         println("Test 7 - below range: PASS");
@@ -158,10 +129,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: target above range
-    var v8: Vec<i64> = Vec.new();
-    v8.push(10);
-    v8.push(20);
-    v8.push(30);
+    let v8: Vec<i64> = [10, 20, 30];
     let r8 = interpolation_search(v8, 35);
     if r8 == 0 - 1 {
         println("Test 8 - above range: PASS");

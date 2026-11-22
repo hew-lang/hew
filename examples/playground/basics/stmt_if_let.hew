@@ -1,32 +1,15 @@
-//! @name Statement If Let
-//! @description Statement-position if-let with side-effecting branches
+//! @name Announce a platform
+//! @description Announce the confirmed platform or ask passengers to check the board.
 
-enum Wrapped {
-    Value(i64);
-    Empty;
-}
-
-fn announce(w: Wrapped) {
-    if let .Value(n) = w {
-        println(f"value: {n}");
+fn announce(destination: string, platform: Option<i64>) {
+    if let .Some(number) = platform {
+        println(f"{destination} departs from platform {number}.");
     } else {
-        println("empty");
+        println(f"Check the board for {destination}.");
     }
 }
 
 fn main() {
-    announce(.Value(10));
-    announce(.Empty);
-    announce(.Value(99));
-
-    // No-else form: only fires when pattern matches.
-    let x: Wrapped = .Value(7);
-    if let .Value(n) = x {
-        println(f"x is {n}");
-    }
-    let y: Wrapped = .Empty;
-    if let .Value(n) = y {
-        println(f"should not print: {n}");
-    }
-    println("done");
+    announce("Jasper", .Some(2));
+    announce("Churchill", .None);
 }

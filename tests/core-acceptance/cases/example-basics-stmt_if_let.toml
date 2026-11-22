@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "value: 10\nempty\nvalue: 99\nx is 7\ndone\n"
+stdout_file = "../../examples/playground/basics/stmt_if_let.expected"
 exit = 0

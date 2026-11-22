@@ -1,6 +1,3 @@
-42
-Invalid number
-true
-true
-42
--1
+42 doubled is 84
+-7 doubled is -14
+Expected an integer, got 'two'

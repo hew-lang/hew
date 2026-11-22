@@ -1,20 +1,10 @@
-// Lambda actor - inline actor definition
 fn main() {
-    let worker = actor |msg: i64| {
-        println(msg * 2);
+    let announcer = actor |number: i64| {
+        println(f"{number} doubled is {number * 2}");
     };
-    match worker(5) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 5"),
+    for number in [5, 10, 15] {
+        announcer(number).expect("the announcer is running");
     }
-    match worker(10) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 10"),
-    }
-    match worker(15) {
-        .Ok(_) => {}
-        .Err(_) => panic("lambda call failed for 15"),
-    }
-    stop(worker);
-    stopped(worker);
+    stop(announcer);
+    stopped(announcer);
 }

@@ -1,22 +1,9 @@
-// Test 5: Writing functions
-// Testing function definitions and calling them
-fn add(a: i64, b: i64) -> i64 {
-    a + b
-}
-
-fn multiply(a: i64, b: i64) -> i64 {
-    a * b
-}
-
-fn is_positive(x: i64) -> i64 {
-    if x > 0 { 1 } else { 0 }
+// The last expression supplies a function's return value.
+fn fits(weight_kg: i64, limit_kg: i64) -> bool {
+    weight_kg <= limit_kg
 }
 
 fn main() {
-    let result = add(5, 3);
-    println(result);
-    let prod = multiply(4, 7);
-    println(prod);
-    let pos = is_positive(-10);
-    println(pos);
+    println(f"8 kg fits the 20 kg limit: {fits(8, 20)}");
+    println(f"24 kg fits the 20 kg limit: {fits(24, 20)}");
 }

@@ -1,139 +1,51 @@
-// Heap Sort - build max-heap in-place, then extract elements
-// A parameter is the callee's own copy, so every helper that mutates the
-// vector returns it and the caller reassigns.
-fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
-    let tmp = v[i];
-    v.set(i, v[j]);
-    v.set(j, tmp);
-    v
+// Build a max-heap, then move its largest remaining value into each tail slot.
+type Heap {
+    values: Vec<i64>;
 }
 
-fn sift_down(var v: Vec<i64>, start: i64, end: i64) -> Vec<i64> {
-    var root = start;
-    var done = 0;
-    while done == 0 {
-        let left = 2 * root + 1;
-        if left > end {
-            done = 1;
-        } else {
-            var largest = root;
-            if v[left] > v[largest] {
-                largest = left;
+impl Heap {
+    fn sift_down(var self, start: i64, end: i64) {
+        var root = start;
+        loop {
+            let left = 2 * root + 1;
+            if left >= end {
+                return;
             }
             let right = left + 1;
-            if right <= end {
-                if v[right] > v[largest] {
-                    largest = right;
-                }
-            }
-            if largest != root {
-                v = swap(v, root, largest);
-                root = largest;
+            let largest = if right < end && self.values[right] > self.values[left] {
+                right
             } else {
-                done = 1;
+                left
+            };
+            if self.values[root] >= self.values[largest] {
+                return;
             }
+            self.values.swap(root, largest);
+            root = largest;
         }
     }
-    v
 }
 
-fn heap_sort(var v: Vec<i64>) -> Vec<i64> {
-    let n = v.len();
-    if n >= 2 {
-        // Build max-heap
-        var i = n / 2 - 1;
-        while i >= 0 {
-            v = sift_down(v, i, n - 1);
-            i = i - 1;
-        }
-        // Extract elements
-        var end = n - 1;
-        while end > 0 {
-            v = swap(v, 0, end);
-            end = end - 1;
-            v = sift_down(v, 0, end);
-        }
+fn heap_sort(values: Vec<i64>) -> Vec<i64> {
+    let count = values.len();
+    var heap = Heap { values };
+    for root in (0 .. count / 2).rev() {
+        heap.sift_down(root, count);
     }
-    v
-}
-
-fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
-    if a.len() != b.len() {
-        return 0;
+    for end in (1..count).rev() {
+        heap.values.swap(0, end);
+        heap.sift_down(0, end);
     }
-    var i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return 0;
-        }
-        i = i + 1;
-    }
-    1
-}
-
-fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    var v: Vec<i64> = Vec.new();
-    v.push(a);
-    v.push(b);
-    v.push(c);
-    v.push(d);
-    v.push(e);
-    v
-}
-
-fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    input = heap_sort(input);
-    let pass = vec_eq(input, expected);
-    if pass == 1 {
-        println(f"Test {name} ... PASS");
-    } else {
-        println(f"Test {name} ... FAIL");
-    }
-    pass
+    heap.values
 }
 
 fn main() {
-    var total = 0;
-    var passed = 0;
-    total = total + 1;
-    passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
-    total = total + 1;
-    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
-    total = total + 1;
-    var single: Vec<i64> = Vec.new();
-    single.push(42);
-    var exp_single: Vec<i64> = Vec.new();
-    exp_single.push(42);
-    passed = passed + run_test("single", single, exp_single);
-    total = total + 1;
-    let empty: Vec<i64> = Vec.new();
-    let exp_empty: Vec<i64> = Vec.new();
-    passed = passed + run_test("empty", empty, exp_empty);
-
-    // Larger test
-    total = total + 1;
-    var big: Vec<i64> = Vec.new();
-    big.push(9);
-    big.push(3);
-    big.push(7);
-    big.push(1);
-    big.push(5);
-    big.push(8);
-    big.push(2);
-    big.push(6);
-    big.push(4);
-    big.push(0);
-    var exp_big: Vec<i64> = Vec.new();
-    for x in 0..10 {
-        exp_big.push(x);
-    }
-    passed = passed + run_test("ten_elements", big, exp_big);
-    println(f"{passed}/{total} tests passed");
-    if passed == total {
-        println("ALL PASS");
-    } else {
-        println("SOME FAIL");
-    }
+    let input: Vec<i64> = [3, 1, 3, 1, 2];
+    let sorted = heap_sort(input);
+    println(f"{input:?} sorts to {sorted:?}");
+    assert(heap_sort([5, 4, 3, 2, 1]) == [1, 2, 3, 4, 5]);
+    assert(heap_sort([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]);
+    assert(heap_sort([42]) == [42]);
+    assert(heap_sort([9, 3, 7, 1, 5, 8, 2, 6, 4, 0]) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert(heap_sort([]).is_empty());
 }

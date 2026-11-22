@@ -1,25 +1,21 @@
-//! @name Statement If
-//! @description Statement-position if with side-effecting branches
+//! @name Dress for the weather
+//! @description Choose a coat for the temperature and add an umbrella when it rains.
 
-fn classify(n: i64) {
-    if n > 0 {
-        println("positive");
-    } else if n < 0 {
-        println("negative");
+fn forecast(degrees: i64, raining: bool) {
+    if degrees < 0 {
+        println("Wear a winter coat.");
+    } else if degrees < 15 {
+        println("Bring a jacket.");
     } else {
-        println("zero");
+        println("A light shirt is enough.");
+    }
+    if raining {
+        println("Pack an umbrella.");
     }
 }
 
 fn main() {
-    classify(5);
-    classify(-3);
-    classify(0);
-    let x = 10;
-    if x > 5 {
-        println("x is big");
-    }
-    if x < 0 {
-        println("unreachable");
-    }
+    forecast(-3, false);
+    forecast(8, true);
+    forecast(21, false);
 }

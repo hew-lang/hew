@@ -1,21 +1,7 @@
-// Lesson 2: Variables and arithmetic
-//
-// `let` declares an immutable binding — the name cannot be reassigned.
-// `var` declares a mutable binding — the name can be reassigned later.
+// A let binding keeps its value. A var binding can be reassigned.
 fn main() {
-    // Immutable bindings with `let`
-    let x = 10;
-    let y = 20;
-    let sum = x + y;
-    println("let bindings (immutable):");
-    println(x);
-    println(y);
-    println(sum);
-
-    // Mutable binding with `var`; reassign after declaration
-    var counter = 0;
-    counter = counter + 1;
-    counter = counter + 1;
-    println("var binding after two increments:");
-    println(counter);
+    let capacity = 12;
+    var seats_left = capacity;
+    seats_left -= 3;
+    println(f"{seats_left} of {capacity} seats available");
 }

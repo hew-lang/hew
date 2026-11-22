@@ -1,17 +1,9 @@
-// Lambda functions
-fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
-    f(x)
-}
-
-fn double_fn(n: i64) -> i64 {
-    n * 2
-}
-
-fn triple_fn(n: i64) -> i64 {
-    n * 3
+fn apply(price: i64, discount: fn(i64) -> i64) -> i64 {
+    price - discount(price)
 }
 
 fn main() {
-    println(apply(double_fn, 10));
-    println(apply(triple_fn, 10));
+    let half_price = |price: i64| price / 2;
+    println(f"Half-price ticket: {apply(30, half_price)} dollars");
+    println(f"Five dollars off: {apply(30, |_price| 5)} dollars");
 }

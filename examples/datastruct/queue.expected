@@ -1,9 +1,3 @@
-PASS: new queue is empty
-PASS: enqueue and size
-PASS: peek returns front
-PASS: dequeue FIFO order
-PASS: empty after dequeue all
-PASS: enqueue after empty
-PASS: 50 elements FIFO
-7/7 tests passed
-ALL PASS
+Served 10
+Served 20
+Served 30

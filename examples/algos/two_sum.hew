@@ -1,10 +1,6 @@
 // Two Sum: find two indices that sum to target (O(n^2) brute force)
 fn main() {
-    var nums: Vec<i32> = Vec.new();
-    nums.push(2);
-    nums.push(7);
-    nums.push(11);
-    nums.push(15);
+    let nums: Vec<i32> = [2, 7, 11, 15];
     let target = 9;
     var found_i = 0 - 1;
     var found_j = 0 - 1;
@@ -30,10 +26,7 @@ fn main() {
         println(found_j);
     }
     // Test 2: [3,2,4] target=6 -> [1,2]
-    var nums2: Vec<i32> = Vec.new();
-    nums2.push(3);
-    nums2.push(2);
-    nums2.push(4);
+    let nums2: Vec<i32> = [3, 2, 4];
     var fi2 = 0 - 1;
     var fj2 = 0 - 1;
     for a in 0..nums2.len() {

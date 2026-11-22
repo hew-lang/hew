@@ -40,8 +40,7 @@ fn main() {
         dist.push(0 - 1);
     }
     dist.set(0, 0);
-    var queue: Vec<i32> = Vec.new();
-    queue.push(0);
+    var queue: Vec<i32> = [0];
     var front = 0;
     while front < queue.len() {
         let u: i64 = queue[front] as i64;
@@ -59,13 +58,7 @@ fn main() {
         }
     }
     // Expected distances: [0, 1, 1, 2, 2, 3]
-    var expected: Vec<i32> = Vec.new();
-    expected.push(0);
-    expected.push(1);
-    expected.push(1);
-    expected.push(2);
-    expected.push(2);
-    expected.push(3);
+    let expected: Vec<i32> = [0, 1, 1, 2, 2, 3];
     var ok = 1;
     for i in 0..num_nodes {
         println(dist[i]);

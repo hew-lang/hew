@@ -66,12 +66,7 @@ fn main() {
             }
         }
     }
-    var expected: Vec<i32> = Vec.new();
-    expected.push(0);
-    expected.push(3);
-    expected.push(1);
-    expected.push(4);
-    expected.push(7);
+    let expected: Vec<i32> = [0, 3, 1, 4, 7];
     var ok = 1;
     for i in 0..num_nodes {
         println(dist[i]);

@@ -1,47 +1,21 @@
-// Factorial - iterative implementation
-fn factorial(n: i64) -> i64 {
-    var result = 1;
-    var i = 2;
-    while i <= n {
-        result = result * i;
-        i = i + 1;
+// Multiply the integers from 1 through n. A factorial may exceed i64.
+fn factorial(n: i64) -> Option<i64> {
+    if n < 0 {
+        return .None;
     }
-    result
-}
-
-fn check(name: string, got: i64, expected: i64) -> i64 {
-    if got == expected {
-        println("PASS: " + name);
-        1
-    } else {
-        println("FAIL: " + name);
-        print("  expected: ");
-        println(expected);
-        print("  got: ");
-        println(got);
-        0
+    var product: i64 = 1;
+    for factor in 2..=n {
+        product = product.checked_mul(factor)?;
     }
+    .Some(product)
 }
 
 fn main() {
-    var passed = 0;
-    var total = 0;
-    total = total + 1;
-    passed = passed + check("0!=1", factorial(0), 1);
-    total = total + 1;
-    passed = passed + check("1!=1", factorial(1), 1);
-    total = total + 1;
-    passed = passed + check("5!=120", factorial(5), 120);
-    total = total + 1;
-    passed = passed + check("10!=3628800", factorial(10), 3628800);
-    println("---");
-    print("Passed: ");
-    print(passed);
-    print(" / ");
-    println(total);
-    if passed == total {
-        println("ALL PASS");
-    } else {
-        println("SOME FAILED");
+    for n in [0, 1, 5, 10, 20, 21] {
+        match factorial(n) {
+            .Some(product) => println(f"{n}! = {product}"),
+            .None => println(f"{n}! cannot be represented as an i64"),
+        }
     }
+    assert(factorial(-1).is_none());
 }

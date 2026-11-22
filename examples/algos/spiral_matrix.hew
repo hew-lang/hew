@@ -55,16 +55,7 @@ fn main() {
     // 1 2 3
     // 8 9 4
     // 7 6 5
-    var expected: Vec<i64> = Vec.new();
-    expected.push(1);
-    expected.push(2);
-    expected.push(3);
-    expected.push(8);
-    expected.push(9);
-    expected.push(4);
-    expected.push(7);
-    expected.push(6);
-    expected.push(5);
+    let expected: Vec<i64> = [1, 2, 3, 8, 9, 4, 7, 6, 5];
     var pass = true;
     for i in 0..total {
         if mat[i] != expected[i] {

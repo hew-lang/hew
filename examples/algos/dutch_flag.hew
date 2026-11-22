@@ -1,12 +1,6 @@
 // Dutch National Flag: 3-way partition (0s, 1s, 2s)
 fn main() {
-    var arr: Vec<i32> = Vec.new();
-    arr.push(2);
-    arr.push(0);
-    arr.push(1);
-    arr.push(2);
-    arr.push(1);
-    arr.push(0);
+    var arr: Vec<i32> = [2, 0, 1, 2, 1, 0];
     var lo = 0;
     var mid = 0;
     var hi = arr.len() - 1;
@@ -28,13 +22,7 @@ fn main() {
         }
     }
     // Expected: [0,0,1,1,2,2]
-    var expected: Vec<i32> = Vec.new();
-    expected.push(0);
-    expected.push(0);
-    expected.push(1);
-    expected.push(1);
-    expected.push(2);
-    expected.push(2);
+    let expected: Vec<i32> = [0, 0, 1, 1, 2, 2];
     var pass = true;
     for i in 0..6 {
         if arr[i] != expected[i] {

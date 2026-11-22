@@ -107,15 +107,7 @@ fn main() {
     // But no negative literals, use positive values:
     // arr = [1, 3, 2, 0, 5, 3, 6, 7], k = 3
     // Windows: [1,3,2]->3, [3,2,0]->3, [2,0,5]->5, [0,5,3]->5, [5,3,6]->6, [3,6,7]->7
-    var arr: Vec<i64> = Vec.new();
-    arr.push(1);
-    arr.push(3);
-    arr.push(2);
-    arr.push(0);
-    arr.push(5);
-    arr.push(3);
-    arr.push(6);
-    arr.push(7);
+    var arr: Vec<i64> = [1, 3, 2, 0, 5, 3, 6, 7];
     let res = sliding_window_max(arr, 3);
     var ok1 = 1;
     if res.len() != 6 {
@@ -149,11 +141,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Window size = 1 (each element is its own max)
-    var arr2: Vec<i64> = Vec.new();
-    arr2.push(5);
-    arr2.push(2);
-    arr2.push(8);
-    arr2.push(1);
+    let arr2: Vec<i64> = [5, 2, 8, 1];
     let res2 = sliding_window_max(arr2, 1);
     var ok2 = 1;
     if res2.len() != 4 {
@@ -181,12 +169,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Window size = array length (single result = global max)
-    var arr3: Vec<i64> = Vec.new();
-    arr3.push(3);
-    arr3.push(7);
-    arr3.push(2);
-    arr3.push(9);
-    arr3.push(1);
+    let arr3: Vec<i64> = [3, 7, 2, 9, 1];
     let res3 = sliding_window_max(arr3, 5);
     if res3.len() == 1 {
         if res3[0] == 9 {
@@ -201,11 +184,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: All same elements
-    var arr4: Vec<i64> = Vec.new();
-    arr4.push(4);
-    arr4.push(4);
-    arr4.push(4);
-    arr4.push(4);
+    let arr4: Vec<i64> = [4, 4, 4, 4];
     let res4 = sliding_window_max(arr4, 2);
     var ok4 = 1;
     if res4.len() != 3 {
@@ -228,12 +207,7 @@ fn main() {
     // Test 5: Increasing sequence
     // arr = [1, 2, 3, 4, 5], k=3
     // Windows: [1,2,3]->3, [2,3,4]->4, [3,4,5]->5
-    var arr5: Vec<i64> = Vec.new();
-    arr5.push(1);
-    arr5.push(2);
-    arr5.push(3);
-    arr5.push(4);
-    arr5.push(5);
+    let arr5: Vec<i64> = [1, 2, 3, 4, 5];
     let res5 = sliding_window_max(arr5, 3);
     var ok5 = 1;
     if res5.len() != 3 {
@@ -260,12 +234,7 @@ fn main() {
     // Test 6: Decreasing sequence
     // arr = [5, 4, 3, 2, 1], k=3
     // Windows: [5,4,3]->5, [4,3,2]->4, [3,2,1]->3
-    var arr6: Vec<i64> = Vec.new();
-    arr6.push(5);
-    arr6.push(4);
-    arr6.push(3);
-    arr6.push(2);
-    arr6.push(1);
+    let arr6: Vec<i64> = [5, 4, 3, 2, 1];
     let res6 = sliding_window_max(arr6, 3);
     var ok6 = 1;
     if res6.len() != 3 {
@@ -292,13 +261,7 @@ fn main() {
     // Test 7: Window size 2
     // arr = [10, 5, 2, 7, 8, 7], k=2
     // Windows: [10,5]->10, [5,2]->5, [2,7]->7, [7,8]->8, [8,7]->8
-    var arr7: Vec<i64> = Vec.new();
-    arr7.push(10);
-    arr7.push(5);
-    arr7.push(2);
-    arr7.push(7);
-    arr7.push(8);
-    arr7.push(7);
+    let arr7: Vec<i64> = [10, 5, 2, 7, 8, 7];
     let res7 = sliding_window_max(arr7, 2);
     var ok7 = 1;
     if res7.len() != 5 {

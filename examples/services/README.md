@@ -1,16 +1,15 @@
 # Service Pattern Examples
 
-Service-pattern examples retained during the compiler cutover. Review each
-example's current acceptance before using it as a starting point. Ordinary actor
-calls wait for completion; concurrent fan-out needs `fork`, and explicit
-one-way submission uses a `mailbox` view.
+Run a small service locally and watch how its actors handle load and failure.
+The [circuit breaker](circuit_breaker.hew) is a starting point for typed errors,
+supervised recovery and machine transitions in one program.
 
 ## Examples
 
 | Example                                              | Pattern           | Key Features                                                 |
 | ---------------------------------------------------- | ----------------- | ------------------------------------------------------------ |
 | [`circuit_breaker.hew`](circuit_breaker.hew)         | Circuit Breaker   | Typed failures, machine transitions, supervised backend      |
-| [`rate_limiter.hew`](rate_limiter.hew)               | Token Bucket      | Ask/reply, shared limiter actor, periodic refill timer       |
+| [`rate_limiter.hew`](rate_limiter.hew)               | Token Bucket      | Shared limiter, concurrent callers and capped refill         |
 | [`worker_pool.hew`](worker_pool.hew)                 | Scatter/Gather    | Supervision, `fork` fan-out, crash recovery                  |
 | [`pub_sub.hew`](pub_sub.hew)                         | Publish/Subscribe | Topic routing, actor-to-actor completion calls               |
 | [`health_monitor.hew`](health_monitor.hew)           | Health Check      | `select` with timeout, periodic monitoring, aggregate status |

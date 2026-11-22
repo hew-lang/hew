@@ -18,16 +18,8 @@ fn mat_mul(a: Vec<i32>, b: Vec<i32>, n: i32) -> Vec<i32> {
 fn main() {
     // A = [[1,2],[3,4]], B = [[5,6],[7,8]]
     // C = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19,22],[43,50]]
-    var a: Vec<i32> = Vec.new();
-    a.push(1);
-    a.push(2);
-    a.push(3);
-    a.push(4);
-    var b: Vec<i32> = Vec.new();
-    b.push(5);
-    b.push(6);
-    b.push(7);
-    b.push(8);
+    let a: Vec<i32> = [1, 2, 3, 4];
+    let b: Vec<i32> = [5, 6, 7, 8];
     let c = mat_mul(a, b, 2);
     var pass = true;
     if c[0] != 19 {
@@ -51,16 +43,8 @@ fn main() {
         println(c[3]);
     }
     // Test 2: identity * A = A
-    var id: Vec<i32> = Vec.new();
-    id.push(1);
-    id.push(0);
-    id.push(0);
-    id.push(1);
-    var a2: Vec<i32> = Vec.new();
-    a2.push(3);
-    a2.push(7);
-    a2.push(2);
-    a2.push(5);
+    let id: Vec<i32> = [1, 0, 0, 1];
+    let a2: Vec<i32> = [3, 7, 2, 5];
     let r = mat_mul(id, a2, 2);
     if r[0] != 3 {
         pass = false;

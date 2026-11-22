@@ -163,9 +163,25 @@ impl ValueOwner {
     /// # Panics
     /// Panics if a backing, capacity or reference count differs from its retained ownership.
     pub fn release(&self, storage: &[ManagedStorage]) {
-        let pending = storage_counts(storage);
+        match storage {
+            [backing] if backing.identity != 0 => {
+                let release = Retention {
+                    bytes: backing.bytes,
+                    references: 1,
+                };
+                self.release_counts(std::iter::once((&backing.identity, &release)));
+            }
+            _ => self.release_counts(storage_counts(storage).iter()),
+        }
+    }
+
+    fn release_counts<'a>(
+        &self,
+        pending: impl Iterator<Item = (&'a usize, &'a Retention)> + Clone,
+    ) {
         let mut ledger = self.ledger();
-        for (identity, release) in &pending {
+        // Validate every backing before refunding the first one.
+        for (identity, release) in pending.clone() {
             let retained = ledger
                 .storage
                 .get(identity)
@@ -180,10 +196,10 @@ impl ValueOwner {
             );
         }
         for (identity, release) in pending {
-            let retained = ledger.storage.get_mut(&identity).unwrap();
+            let retained = ledger.storage.get_mut(identity).unwrap();
             retained.references -= release.references;
             if retained.references == 0 {
-                ledger.storage.remove(&identity);
+                ledger.storage.remove(identity);
                 ledger.live -= release.bytes;
             }
         }

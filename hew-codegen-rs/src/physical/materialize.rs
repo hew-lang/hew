@@ -118,6 +118,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        if let [operation @ PhysicalOp::Clone { dest, .. }] = operations {
+            // A weak or actor handle still needs its physical retain. Its
+            // descriptor has no managed backing to acquire, even in a bounded actor.
+            let ty = &self.storage(*dest)?.ty;
+            if !self.module.managed_types[ty].shape.has_managed_children() {
+                self.emit_op(operation)?;
+                return self.emit_edge(normal);
+            }
+        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
         let size_ty = self.ctx.ptr_sized_int_type(self.target_data, None);

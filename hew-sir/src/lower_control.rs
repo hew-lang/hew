@@ -161,7 +161,23 @@ impl Builder<'_, '_> {
             kind,
             provenance,
         };
+        // Empty text and byte literals own no backing and cannot refuse a
+        // heap acquisition, including inside a bounded actor.
+        let empty_literal = match &op.kind {
+            SemOpKind::ConstStr(id) => self
+                .service
+                .string_literals
+                .get(id)
+                .is_some_and(String::is_empty),
+            SemOpKind::ConstBytes(id) => self
+                .service
+                .bytes_literals
+                .get(id)
+                .is_some_and(Vec::is_empty),
+            _ => false,
+        };
         if own == OwnKind::Owned
+            && !empty_literal
             && op
                 .kind
                 .is_managed_materialization(&self.service.variant_shapes)

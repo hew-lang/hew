@@ -1144,6 +1144,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn owned_values_without_managed_backing_need_no_heap_acquisition() {
+    let semantic = lower_source(
+        r#"
+        fn text() -> string { "" }
+        fn buffer() -> bytes { b"" }
+        fn main() {
+            let t = text();
+            let b = buffer();
+            let root = Rc.new(1);
+            let weak = root.downgrade();
+            let alias = weak;
+        }
+        "#,
+    );
+    let triple = native_emission_triple();
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+    let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    let ctx = Context::create();
+    let machine =
+        crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+    let module = build_module(&ctx, physical.module(), "empty_literals", &machine).unwrap();
+    module.verify().unwrap();
+    assert!(module.get_function("hew_weak_clone_rc").is_some());
+    for symbol in [
+        "hew_budget_string_literal",
+        "hew_budget_materialize_begin",
+        "hew_string_literal_new",
+        "hew_bytes_literal_new",
+    ] {
+        assert!(module.get_function(symbol).is_none(), "{symbol}");
+    }
+}
+
+#[test]
 fn string_length_uses_the_widened_runtime_abi() {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

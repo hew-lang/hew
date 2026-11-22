@@ -272,6 +272,27 @@ non-terminating candidate initialization, retained-state recovery, predecessor
 fencing, autonomous service calls without ingress, cache reopening and disposal.
 The cache also rejects corrupt entries without overwriting them.
 
+### Vibration monitor
+
+[The portable monitor](examples/telemetry.hew) compares each vibration reading
+with the mean of the previous two readings. Its host supplies the calibrated
+limit for each sample sequence. The first two readings warm the window. Later
+observations report the baseline and whether the new reading exceeds the limit.
+
+The monitor has its own [WIT contract](wit/telemetry/telemetry.wit). Its typed
+snapshot holds the two readings and the accepted count. Build it with
+`component::build::build_telemetry` and activate it through
+`component::telemetry::Host`. The latter uses the same store owner, admission
+fence and retirement path as the router.
+
+`make test-live-component` warms the monitor, holds an in-flight calibration
+request and starts a replacement with a tighter alert threshold. It then
+releases the request and checks that the admitted sample reaches the retained
+window before the candidate begins serving. A candidate that requires an
+empty window is refused, and the active generation continues applying the
+retained window. A failed calibration leaves the next observation's baseline
+unchanged.
+
 ### Authenticated source deployment
 
 `make live-node` builds the experimental `hew-live-node` companion. Its native

@@ -658,7 +658,7 @@ test-live-component: hew-native wasm-runtime-debug live-component-foreign ## Tes
 	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
 	HEW_LIVE_FOREIGN_COMPONENT="$(abspath $(WASM_DEBUG_DIR))/hew_foreign_router.wasm" \
 	HEW_LIVE_FOREIGN_ROLLBACK_COMPONENT="$(abspath $(WASM_DEBUG_DIR))/hew_foreign_router_rollback.wasm" \
-		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --lib --test component
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --lib --test component --test telemetry
 
 test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --lib -E 'test(code_owner)'

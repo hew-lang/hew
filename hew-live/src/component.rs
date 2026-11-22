@@ -9,9 +9,39 @@ pub mod cache;
 mod hew_bindings;
 pub mod host;
 pub mod network;
+pub mod telemetry;
 
 /// The portable reference service's source contract, shared by guest bindings.
 pub const ROUTER_WIT: &str = include_str!("../wit/router.wit");
+
+#[derive(Clone, Copy)]
+enum GuestContract {
+    Router,
+    Telemetry,
+}
+
+impl GuestContract {
+    fn world(self) -> &'static str {
+        match self {
+            Self::Router => "router",
+            Self::Telemetry => "telemetry",
+        }
+    }
+
+    fn wit(self) -> &'static str {
+        match self {
+            Self::Router => ROUTER_WIT,
+            Self::Telemetry => include_str!("../wit/telemetry/telemetry.wit"),
+        }
+    }
+
+    fn adapter_header(self) -> &'static [u8] {
+        match self {
+            Self::Router => include_bytes!("component/router_contract.h"),
+            Self::Telemetry => include_bytes!("component/telemetry_contract.h"),
+        }
+    }
+}
 
 /// Host bindings retain component async calls instead of blocking the guest.
 pub mod bindings {
@@ -30,9 +60,15 @@ pub mod bindings {
 /// # Errors
 /// Returns WIT parsing or unsupported service-type diagnostics.
 pub fn service_module_source() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    service_module_for(GuestContract::Router)
+}
+
+fn service_module_for(
+    contract: GuestContract,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut resolve = Resolve::default();
-    let package = resolve.push_str("router.wit", ROUTER_WIT)?;
-    let world = resolve.select_world(&[package], Some("router"))?;
+    let package = resolve.push_str("guest.wit", contract.wit())?;
+    let world = resolve.select_world(&[package], Some(contract.world()))?;
     Ok(hew_bindings::generate(&resolve, world)?.0)
 }
 
@@ -44,18 +80,32 @@ pub fn service_module_source() -> Result<String, Box<dyn std::error::Error + Sen
 pub fn write_guest_bindings(
     directory: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    write_guest_bindings_for(directory, GuestContract::Router)
+}
+
+fn write_guest_bindings_for(
+    directory: &Path,
+    contract: GuestContract,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut resolve = Resolve::default();
-    let package = resolve.push_str("router.wit", ROUTER_WIT)?;
-    let world = resolve.select_world(&[package], Some("router"))?;
+    let package = resolve.push_str("guest.wit", contract.wit())?;
+    let world = resolve.select_world(&[package], Some(contract.world()))?;
     let mut files = Files::default();
     wit_bindgen_c::Opts::default()
         .build()
         .generate(&mut resolve, world, &mut files)?;
     let (hew, services) = hew_bindings::generate(&resolve, world)?;
-    files.push("router_services.hew", hew.as_bytes());
-    let adapter = include_str!("component/router_adapter.c")
+    files.push(
+        &format!("{}_services.hew", contract.world()),
+        hew.as_bytes(),
+    );
+    let adapter = include_str!("component/guest_adapter.c")
         .replace("/* HEW_WIT_SERVICE_BINDINGS */", &services);
-    files.push("router_adapter.c", adapter.as_bytes());
+    files.push(
+        &format!("{}_adapter.c", contract.world()),
+        adapter.as_bytes(),
+    );
+    files.push("guest_contract.h", contract.adapter_header());
     write_host_headers(directory)?;
     for (name, contents) in files.iter() {
         std::fs::write(directory.join(name), contents)?;

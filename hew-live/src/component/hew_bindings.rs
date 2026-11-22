@@ -37,7 +37,7 @@ pub(super) fn generate(resolve: &Resolve, world: WorldId) -> Result<(String, Str
             }
             _ => None,
         })
-        .ok_or("router world must import its services interface")?;
+        .ok_or("component world must import its services interface")?;
     let mut generator = Bindings {
         resolve,
         world: &world.name,
@@ -374,7 +374,7 @@ impl Bindings<'_> {
         writeln!(c, "        }}\n        hew_sink_write(base->status, &status, sizeof(status));\n        {result_free}(&pending->result);\n    }}")?;
         for leaf in &leaves {
             if leaf.ty == Type::String {
-                writeln!(c, "    router_string_free(&pending->{});", leaf.field)?;
+                writeln!(c, "    WIT(_string_free)(&pending->{});", leaf.field)?;
             }
         }
         c.push_str("}\n");
@@ -387,7 +387,7 @@ impl Bindings<'_> {
             c_params.push("void *ok".into());
         }
         c_params.push("void *error".into());
-        writeln!(c, "void {bridge}({}) {{\n    Task *task = router_context_get_0();\n    assert(task != NULL);\n    {pending} *pending = calloc(1, sizeof(*pending));\n    assert(pending != NULL);\n    pending->base.status = status;\n    pending->base.error = error;\n    pending->base.settle = settle_{name};", c_params.join(", "))?;
+        writeln!(c, "void {bridge}({}) {{\n    Task *task = WIT(_context_get_0)();\n    assert(task != NULL);\n    {pending} *pending = calloc(1, sizeof(*pending));\n    assert(pending != NULL);\n    pending->base.status = status;\n    pending->base.error = error;\n    pending->base.settle = settle_{name};", c_params.join(", "))?;
         if value.is_some() {
             c.push_str("    pending->base.ok = ok;\n");
         }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Arc, Delivery, Deployment, Error, Event, Host, Mutex, Prepared, ServiceCall, Services,
-    Snapshot, Stage, Status,
+    ServicesFor, Snapshot, Stage, Status,
 };
 
 /// Metadata-only observation. Implementations must not re-enter this host.
@@ -72,7 +72,7 @@ impl Deployment {
             code_id,
             phase: phase.into(),
             mode: self.host.mode.into(),
-            semantic_profile: "hew:live-router@0.1.0".into(),
+            semantic_profile: self.host.services.profile().into(),
             coverage: if self.host.mode == "preview" {
                 "explicit_services"
             } else {
@@ -239,7 +239,7 @@ impl Host {
         }));
         let isolated = Arc::new(Self {
             engine: self.engine.clone(),
-            services: Arc::new(SimulatedServices(Arc::clone(&simulation))),
+            services: ServicesFor::Router(Arc::new(SimulatedServices(Arc::clone(&simulation)))),
             observer: self.observer.clone(),
             mode: "preview",
             policy: Arc::clone(&self.policy),

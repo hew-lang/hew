@@ -1,0 +1,97 @@
+// One rolling monitor for vibration readings in milligravity.
+import telemetry_services;
+
+const MAX_READING: u32 = 1_000_000;
+const LIMIT_DIVISOR: u32 = 1;
+
+pub type Snapshot {
+    accepted: u64;
+    previous: u32;
+    last: u32;
+}
+
+pub type Observation {
+    baseline: u32;
+    ready: bool;
+    anomaly: bool;
+}
+
+actor Window {
+    var accepted: u64;
+    var previous: u32;
+    var last: u32;
+
+    receive fn observe(value: u32, limit: u32) -> Observation {
+        let ready = accepted >= 2;
+        let baseline = (previous + last) / 2;
+        let deviation = if value >= baseline { value - baseline } else { baseline - value };
+        previous = last;
+        last = value;
+        accepted = accepted.saturating_add(1);
+        Observation { baseline, ready, anomaly: ready && deviation > limit }
+    }
+
+    receive fn snapshot() -> Snapshot {
+        Snapshot { accepted, previous, last }
+    }
+}
+
+#[resource]
+pub type Monitor {
+    window: Window;
+}
+
+impl Monitor {
+    fn close(consume self) {
+        stop(self.window);
+        stopped(self.window);
+    }
+}
+
+pub fn create(accepted: u64, previous: u32, last: u32) -> Monitor {
+    assert(previous <= MAX_READING && last <= MAX_READING, "invalid retained vibration reading");
+    assert(accepted >= 2 || previous == 0, "invalid partial vibration window");
+    assert(accepted > 0 || last == 0, "invalid empty vibration window");
+    Monitor { window: spawn Window { accepted, previous, last } }
+}
+
+pub fn observe(monitor: Monitor, sequence: u64, value: u32) -> Observation {
+    assert(value <= MAX_READING, "vibration reading is out of range");
+    let configured = match telemetry_services.limit(sequence) {
+        .Ok(limit) => limit,
+        .Err(reason) => panic(reason),
+    };
+    assert(configured > 0 && configured <= MAX_READING, "invalid calibration limit");
+    monitor.window.observe(value, configured / LIMIT_DIVISOR).expect("record vibration")
+}
+
+pub fn snapshot(monitor: Monitor) -> Snapshot {
+    monitor.window.snapshot().expect("snapshot vibration")
+}
+
+pub fn dispose(consume monitor: Monitor) {}
+
+// The component adapter reads typed fields from the checked host's value owners.
+pub fn baseline(observation: Observation) -> u32 {
+    observation.baseline
+}
+
+pub fn ready(observation: Observation) -> bool {
+    observation.ready
+}
+
+pub fn anomaly(observation: Observation) -> bool {
+    observation.anomaly
+}
+
+pub fn accepted(snapshot: Snapshot) -> u64 {
+    snapshot.accepted
+}
+
+pub fn previous(snapshot: Snapshot) -> u32 {
+    snapshot.previous
+}
+
+pub fn last(snapshot: Snapshot) -> u32 {
+    snapshot.last
+}

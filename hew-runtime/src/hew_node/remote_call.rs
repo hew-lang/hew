@@ -460,8 +460,11 @@ fn withdraw_remote(route: &RemoteCallRoute) {
 /// `operation` is a live call from [`HewRemoteCall`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_poll(operation: *mut HewRemoteCall) -> i32 {
-    // SAFETY: the caller exclusively drives this live operation.
-    if unsafe { &mut *operation }.ready() {
+    // SAFETY: the caller exclusively drives this live operation, or supplies null.
+    let Some(operation) = (unsafe { operation.as_mut() }) else {
+        return 0;
+    };
+    if operation.ready() {
         0
     } else {
         -1
@@ -478,8 +481,10 @@ pub unsafe extern "C" fn hew_remote_call_take(
     operation: *mut HewRemoteCall,
     output: *mut c_void,
 ) -> i32 {
-    // SAFETY: the caller exclusively drives this live operation.
-    let operation = unsafe { &mut *operation };
+    // SAFETY: the caller exclusively drives this live operation, or supplies null.
+    let Some(operation) = (unsafe { operation.as_mut() }) else {
+        return AskError::StaleRef as i32;
+    };
     if matches!(
         operation.route,
         RemoteCallRoute::Offer(..) | RemoteCallRoute::Import(..)
@@ -522,6 +527,11 @@ unsafe fn write_remote_reply(
     ) {
         Ok(value) => {
             if operation.reply_size > 0 {
+                if output.is_null() {
+                    // SAFETY: `value` was allocated by `remote_reply_value`.
+                    unsafe { crate::mem::buf_free(value) };
+                    return AskError::Refused as i32;
+                }
                 // SAFETY: the decoded value and output both hold reply_size
                 // bytes; the value's owners move into output.
                 unsafe {

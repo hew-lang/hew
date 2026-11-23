@@ -4,10 +4,6 @@
 //! (`Noise_XX_25519_ChaChaPoly_BLAKE2s`) that the tcp-noise transport pins for
 //! its in-band `upgrade_noise` handshake. Key material is written owner-only
 //! and zeroised on every exit path.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::ffi::{c_char, c_int};
 #[cfg(test)]

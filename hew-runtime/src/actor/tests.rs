@@ -1871,7 +1871,7 @@ fn terminal_sender_rechecks_after_last_activation_drain() {
         unsafe { reply_channel::hew_reply_channel_retain(ch) };
 
         let (link_hook, link_entered, link_release) =
-            mailbox::MpscPostSwapPreLinkHookGuard::install(ch.cast());
+            mailbox::UserCountPublicationHookGuard::install_for_reply_channel(ch.cast());
 
         let submission = SendSubmission {
             actor,
@@ -1991,7 +1991,7 @@ fn delayed_system_link_uses_common_terminal_handoff() {
         assert!(unsafe { live_actors::track_actor(actor) });
 
         let (hook, entered, release) =
-            mailbox::MpscPostSwapPreLinkHookGuard::install_system(mailbox::HewSysMsg::Down);
+            mailbox::SysCountPublicationHookGuard::install(mailbox::HewSysMsg::Down);
         let actor_addr = actor.addr();
         let sender = std::thread::spawn(move || {
             let actor = ptr::with_exposed_provenance_mut::<HewActor>(actor_addr);
@@ -7346,4 +7346,183 @@ fn spawn_at_the_last_representable_serial_still_succeeds() {
     assert_eq!(crate::pid::hew_pid_serial(id), MAX_SPAWN_SERIAL);
     // SAFETY: actor is a valid pointer from hew_actor_spawn.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+}
+
+#[test]
+fn native_actor_construction_fails_closed_on_null_and_oom() {
+    static STATE_DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    unsafe extern "C" fn drop_state_count(_state: *mut c_void) {
+        STATE_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+    unsafe extern "C-unwind" fn clone_noop(_state: *const c_void) -> *mut c_void {
+        ptr::null_mut()
+    }
+
+    let _guard = crate::runtime_test_guard();
+    // SAFETY: exercises null and OOM fail-closed handling on native construction.
+    unsafe {
+        assert_eq!(hew_actor_self_token(ptr::null()), 0);
+        assert_eq!(
+            hew_actor_publish_native(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ),
+            1
+        );
+        hew_actor_abort_construction(
+            crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            ptr::null_mut(),
+        );
+
+        STATE_DROPS.store(0, Ordering::SeqCst);
+        let null_ctor_state = crate::mem::buf_try_alloc(8);
+        assert!(!null_ctor_state.is_null());
+        assert_eq!(
+            hew_actor_construct_native(
+                null_ctor_state,
+                8,
+                noop_dispatch,
+                drop_state_count,
+                clone_noop,
+                None,
+                0,
+                0,
+                0,
+                None,
+                None,
+                ptr::null_mut(),
+                None,
+                0,
+                None,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                ptr::null(),
+            ),
+            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        );
+        assert_eq!(STATE_DROPS.load(Ordering::SeqCst), 1);
+
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let construction =
+            crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+        let oom_state = crate::mem::buf_try_alloc(8);
+        assert!(!oom_state.is_null());
+        let mut fault = ptr::null_mut();
+        STATE_DROPS.store(0, Ordering::SeqCst);
+        let _oom = mailbox::fail_mailbox_alloc_on_nth(0);
+        assert_eq!(
+            hew_actor_construct_native(
+                oom_state,
+                8,
+                noop_dispatch,
+                drop_state_count,
+                clone_noop,
+                None,
+                0,
+                0,
+                0,
+                None,
+                None,
+                &raw mut fault,
+                None,
+                0,
+                None,
+                ptr::null_mut(),
+                construction,
+                0,
+                ptr::null(),
+            ),
+            crate::lifetime::local_handles::HewLocalPidId::INVALID
+        );
+        assert_eq!(STATE_DROPS.load(Ordering::SeqCst), 1);
+        assert!(!fault.is_null());
+        crate::fault::hew_fault_drop(fault);
+        crate::coro_state::hew_coro_state_free(construction);
+    }
+}
+
+#[test]
+fn actor_spawn_fails_closed_on_mailbox_oom() {
+    let _guard = crate::runtime_test_guard();
+    let initial_val = 7_u64;
+    let opts = HewActorOpts {
+        init_state: (&raw const initial_val).cast_mut().cast(),
+        state_size: size_of::<u64>(),
+        dispatch: Some(noop_dispatch),
+        mailbox_capacity: 4,
+        overflow: 0,
+        coalesce_match_fn: None,
+        coalesce_fallback: 0,
+        budget: 0,
+        message_drop_fn: None,
+        arena_cap_bytes: 0,
+        cycle_capable: 0,
+    };
+    // SAFETY: exercises OOM fail-closed handling on actor spawn entry points.
+    unsafe {
+        {
+            let _oom = mailbox::fail_mailbox_alloc_on_nth(0);
+            assert!(hew_actor_spawn(
+                (&raw const initial_val).cast_mut().cast(),
+                size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+            .is_null());
+        }
+        {
+            let _oom = mailbox::fail_mailbox_alloc_on_nth(0);
+            assert!(hew_actor_spawn_opts(&raw const opts).is_null());
+        }
+        {
+            let cloned = crate::mem::buf_try_alloc(size_of::<u64>());
+            assert!(!cloned.is_null());
+            let _oom = mailbox::fail_mailbox_alloc_on_nth(0);
+            assert!(hew_actor_spawn_opts_adopt(&raw const opts, cloned).is_null());
+        }
+        {
+            let _oom = mailbox::fail_mailbox_alloc_on_nth(0);
+            assert!(hew_actor_spawn_bounded(
+                (&raw const initial_val).cast_mut().cast(),
+                size_of::<u64>(),
+                Some(noop_dispatch),
+                4,
+            )
+            .is_null());
+        }
+
+        let mut fault: *mut crate::fault::HewFault = ptr::null_mut();
+        assert_eq!(
+            hew_actor_publish_native(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                &raw mut fault,
+            ),
+            1
+        );
+        assert!(!fault.is_null());
+        crate::fault::hew_fault_drop(fault);
+
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let coro = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+        let mut fault2: *mut crate::fault::HewFault = ptr::null_mut();
+        assert_eq!(
+            hew_actor_publish_native(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+                0,
+                coro,
+                &raw mut fault2,
+            ),
+            1
+        );
+        assert!(!fault2.is_null());
+        crate::fault::hew_fault_drop(fault2);
+        crate::coro_state::hew_coro_state_free(coro);
+    }
 }

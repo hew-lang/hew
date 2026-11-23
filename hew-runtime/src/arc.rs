@@ -6,10 +6,6 @@
 //!
 //! Layout: `[HewArcInner header | data bytes...]`
 //! Same pointer convention as Rc: returned pointer is to the data region.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
@@ -21,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct HewArcInner {
     strong: AtomicUsize,
     weak: AtomicUsize,
-    drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+    drop_fn: Option<unsafe extern "C-unwind" fn(*mut u8)>,
     data_size: usize,
     data_align: usize,
     data_offset: usize,
@@ -103,8 +99,11 @@ pub unsafe extern "C" fn hew_arc_new(
     data: *const u8,
     size: usize,
     align: usize,
-    drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+    drop_fn: Option<unsafe extern "C-unwind" fn(*mut u8)>,
 ) -> *mut u8 {
+    if size > 0 && data.is_null() {
+        return ptr::null_mut();
+    }
     let data_align = normalise_align(align);
     let Some((layout, data_offset)) = alloc_layout(size, data_align) else {
         return ptr::null_mut();
@@ -181,21 +180,45 @@ pub unsafe extern "C" fn hew_arc_clone(ptr: *mut u8) -> *mut u8 {
 /// `ptr` must have been returned by [`hew_arc_new`] or [`hew_arc_clone`].
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_arc_drop(ptr: *mut u8) {
+    struct WeakPin(*mut HewArcInner);
+    impl Drop for WeakPin {
+        fn drop(&mut self) {
+            // SAFETY: header stays pinned by the implicit weak ref until release here.
+            unsafe {
+                let data_size = (*self.0).data_size;
+                let data_align = (*self.0).data_align;
+                // Release the implicit weak ref held by the strong count.
+                // Release ordering ensures the destructor above is visible before
+                // any thread deallocates.
+                if (*self.0).weak.fetch_sub(1, Ordering::Release) == 1 {
+                    std::sync::atomic::fence(Ordering::Acquire);
+                    let Some((layout, _)) = alloc_layout(data_size, data_align) else {
+                        eprintln!("hew_arc_drop: layout invalid at drop");
+                        std::process::abort();
+                    };
+                    dealloc(self.0.cast(), layout);
+                }
+            }
+        }
+    }
+
     if ptr.is_null() {
         return;
     }
     // SAFETY: caller guarantees ptr is valid.
     let header = unsafe { header_from_data(ptr) };
-    // SAFETY: header is valid.
-    let inner = unsafe { &*header };
 
     // Release: ensure all writes before this drop are visible to the
     // thread that observes strong == 0.
-    let old = inner.strong.fetch_sub(1, Ordering::Release);
+    // SAFETY: `header` remains live while this caller retains a strong ref.
+    let old = unsafe { (*header).strong.fetch_sub(1, Ordering::Release) };
     // Refcount invariant: the pre-decrement value must be > 0. A zero-or-
     // underflowed strong count means a double-free — a memory-safety violation
     // that must abort in release, not wrap silently past a debug_assert.
-    assert!(old > 0, "Arc double-free: strong refcount was already 0");
+    if old == 0 {
+        eprintln!("Arc double-free: strong refcount was already 0");
+        std::process::abort();
+    }
 
     if old != 1 {
         return; // Not the last strong reference.
@@ -205,22 +228,14 @@ pub unsafe extern "C-unwind" fn hew_arc_drop(ptr: *mut u8) {
     // we see all prior writes before running the destructor.
     std::sync::atomic::fence(Ordering::Acquire);
 
+    // SAFETY: exclusive strong-ref transition guarantees valid header fields;
+    // snapshot `drop_fn` before dropping payload or releasing the implicit weak pin.
+    let drop_fn = unsafe { (*header).drop_fn };
+    let _pin = WeakPin(header);
     // Call destructor on the data.
-    if let Some(drop_fn) = inner.drop_fn {
+    if let Some(drop_fn) = drop_fn {
         // SAFETY: drop_fn contract per hew_arc_new.
         unsafe { drop_fn(ptr) };
-    }
-
-    // Release the implicit weak ref held by the strong count.
-    // Release ordering ensures the destructor above is visible before
-    // any thread deallocates.
-    if inner.weak.fetch_sub(1, Ordering::Release) == 1 {
-        // We were the last weak ref (implicit). Deallocate.
-        std::sync::atomic::fence(Ordering::Acquire);
-        let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
-            .expect("layout was valid at construction");
-        // SAFETY: header was allocated with this layout, no other refs remain.
-        unsafe { dealloc(header.cast(), layout) };
     }
     // If weak > 0, external weak refs still exist; they will deallocate.
 }
@@ -351,16 +366,18 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
     // SAFETY: weak_ptr was returned by hew_arc_downgrade which returns a header pointer
     // allocated with align_of::<HewArcInner>().
     let header = weak_ptr.cast::<HewArcInner>();
-    // SAFETY: weak_ptr is a header pointer.
-    let inner = unsafe { &*header };
+    // SAFETY: weak_ptr is a live header pointer; snapshot immutable layout fields
+    // before decrementing `weak` so no shared borrow outlives deallocation.
+    let (data_size, data_align) = unsafe { ((*header).data_size, (*header).data_align) };
 
-    let old = inner.weak.fetch_sub(1, Ordering::Release);
+    // SAFETY: `header` remains live while this caller holds a weak ref.
+    let old = unsafe { (*header).weak.fetch_sub(1, Ordering::Release) };
     // Same rationale as the strong-count assert in hew_arc_drop: a zero weak
     // count before decrement is a double-free and must abort in release.
-    assert!(
-        old > 0,
-        "Weak<Arc> double-free: weak refcount was already 0"
-    );
+    if old == 0 {
+        eprintln!("Weak<Arc> double-free: weak refcount was already 0");
+        std::process::abort();
+    }
 
     if old != 1 {
         return;
@@ -370,8 +387,10 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
     // the implicit +1 weak ref would still be held). Deallocate.
     std::sync::atomic::fence(Ordering::Acquire);
 
-    let (layout, _) =
-        alloc_layout(inner.data_size, inner.data_align).expect("layout was valid at construction");
+    let Some((layout, _)) = alloc_layout(data_size, data_align) else {
+        eprintln!("hew_weak_drop_arc: layout invalid at drop");
+        std::process::abort();
+    };
     // SAFETY: header was allocated with this layout, strong=0 and weak=0.
     unsafe { dealloc(header.cast(), layout) };
 }
@@ -420,7 +439,7 @@ mod tests {
         use std::sync::atomic::AtomicI32;
         static DROP_COUNT: AtomicI32 = AtomicI32::new(0);
 
-        unsafe extern "C" fn drop_counter(_data: *mut u8) {
+        unsafe extern "C-unwind" fn drop_counter(_data: *mut u8) {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -533,5 +552,41 @@ mod tests {
         assert_eq!(normalise_align(8), 8);
         assert_eq!(normalise_align(3), 4);
         assert_eq!(normalise_align(48), 64);
+    }
+
+    #[test]
+    fn wave3_arc_new_rejects_null_nonzero_data() {
+        // SAFETY: tests fail-closed rejection when data is null for non-zero size.
+        unsafe {
+            assert!(hew_arc_new(ptr::null(), 8, 8, None).is_null());
+        }
+    }
+
+    #[test]
+    fn arc_c_unwind_drop_propagates_and_weak_pin_deallocates_cleanly() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        unsafe extern "C-unwind" fn panic_drop(_data: *mut u8) {
+            panic!("intentional unwind from Arc destructor");
+        }
+
+        // SAFETY: exercises C-unwind drop propagation and weak pin deallocation without leaks.
+        unsafe {
+            let val: i32 = 123;
+            let arc = hew_arc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                Some(panic_drop),
+            );
+            assert!(!arc.is_null());
+            let weak = hew_arc_downgrade(arc);
+            assert!(!weak.is_null());
+            let res = catch_unwind(AssertUnwindSafe(|| hew_arc_drop(arc)));
+            assert!(res.is_err());
+            // External weak ref still keeps header valid until dropped.
+            assert!(hew_weak_upgrade_arc(weak).is_null());
+            hew_weak_drop_arc(weak);
+        }
     }
 }

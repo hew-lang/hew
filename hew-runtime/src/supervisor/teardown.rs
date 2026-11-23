@@ -405,6 +405,28 @@ pub(crate) fn take_nested_supervisor_roster(
         .collect()
 }
 
+fn take_nested_supervisor_slot(
+    sup: *mut HewSupervisor,
+    index: usize,
+) -> Option<(
+    *mut HewSupervisor,
+    crate::lifetime::local_handles::HewLocalPidId,
+)> {
+    // SAFETY: callers retain exclusive teardown ownership over `sup`.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let pointer = roster.child_supervisors.get_mut(index)?;
+    let supervisor_ptr = std::mem::replace(pointer, ptr::null_mut());
+    if supervisor_ptr.is_null() {
+        return None;
+    }
+    let token = std::mem::replace(
+        &mut roster.child_supervisor_tokens[index],
+        crate::lifetime::local_handles::HewLocalPidId::INVALID,
+    );
+    roster.child_supervisor_specs[index].take();
+    Some((supervisor_ptr, token))
+}
+
 /// The self actor has quiesced, transferring its pending invocation to this
 /// unique teardown owner. Keep siblings/config live until typed cleanup ends.
 pub(super) unsafe fn drain_cancelled_native_group(
@@ -552,34 +574,25 @@ pub(crate) unsafe fn stop_supervisor_owned(
         reason = "the variants describe this local teardown traversal"
     )]
     enum TeardownChild {
-        Actor {
-            index: usize,
-            stop_ns: i64,
-        },
-        Supervisor {
-            pointer: *mut HewSupervisor,
-            token: crate::lifetime::local_handles::HewLocalPidId,
-            stop_ns: i64,
-        },
+        Actor { index: usize, stop_ns: i64 },
+        Supervisor { index: usize, stop_ns: i64 },
     }
     let mut children = Vec::new();
-    for (pointer, token, spec) in take_nested_supervisor_roster(&raw mut *s) {
-        if !pointer.is_null() {
-            // Legacy attached supervisors without a declaration sort last.
-            let identity = spec.as_ref().map_or(0, |spec| spec.identity);
-            let stop_ns = spec.as_ref().map_or(-1, |spec| spec.stop_ns);
-            children.push((
-                identity,
-                TeardownChild::Supervisor {
-                    pointer,
-                    token,
-                    stop_ns,
-                },
-            ));
-        }
-    }
     {
         let roster = s.roster.lock_or_recover();
+        for (index, (pointer, spec)) in roster
+            .child_supervisors
+            .iter()
+            .zip(&roster.child_supervisor_specs)
+            .enumerate()
+        {
+            if !pointer.is_null() {
+                // Legacy attached supervisors without a declaration sort last.
+                let identity = spec.as_ref().map_or(0, |spec| spec.identity);
+                let stop_ns = spec.as_ref().map_or(-1, |spec| spec.stop_ns);
+                children.push((identity, TeardownChild::Supervisor { index, stop_ns }));
+            }
+        }
         for (index, child) in roster.children.iter().enumerate() {
             if !child.is_null() {
                 let spec = &roster.child_specs[index];
@@ -596,11 +609,10 @@ pub(crate) unsafe fn stop_supervisor_owned(
     children.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, entry) in children {
         match entry {
-            TeardownChild::Supervisor {
-                pointer,
-                token,
-                stop_ns,
-            } => {
+            TeardownChild::Supervisor { index, stop_ns } => {
+                let Some((pointer, token)) = take_nested_supervisor_slot(&raw mut *s, index) else {
+                    continue;
+                };
                 retain_nested_completion(&raw mut *s, token);
                 let nested_control = handles.supervisor_control_for_raw(token, pointer);
                 if let Some(nested_control) = nested_control.as_ref() {

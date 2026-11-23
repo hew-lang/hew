@@ -290,6 +290,9 @@ pub extern "C" fn hew_node_snapshot_valid(snapshot: *const HewNodeSnapshot) -> b
 /// `snapshot` is borrowed and live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_snapshot_local(snapshot: *const HewNodeSnapshot) -> Member {
+    if snapshot.is_null() {
+        return Member::default();
+    }
     // SAFETY: caller owns a valid snapshot.
     unsafe { (*snapshot).local }
 }
@@ -301,6 +304,9 @@ pub unsafe extern "C" fn hew_node_snapshot_count(
     snapshot: *const HewNodeSnapshot,
     registrations: bool,
 ) -> i64 {
+    if snapshot.is_null() {
+        return 0;
+    }
     // SAFETY: caller owns a valid snapshot.
     let snapshot = unsafe { &*snapshot };
     i64::try_from(if registrations {
@@ -318,8 +324,13 @@ pub unsafe extern "C" fn hew_node_snapshot_member(
     snapshot: *const HewNodeSnapshot,
     index: i64,
 ) -> Member {
-    // SAFETY: caller checked the immutable snapshot's count before indexing.
-    unsafe { (&(*snapshot).members)[usize::try_from(index).expect("checked snapshot index")] }
+    let Ok(index) = usize::try_from(index) else {
+        return Member::default();
+    };
+    // SAFETY: caller owns a valid snapshot, or supplies null.
+    unsafe { snapshot.as_ref() }
+        .and_then(|snapshot| snapshot.members.get(index).copied())
+        .unwrap_or_default()
 }
 
 /// # Safety
@@ -330,9 +341,14 @@ pub unsafe extern "C" fn hew_node_snapshot_registration(
     snapshot: *const HewNodeSnapshot,
     index: i64,
 ) -> Registration {
-    // SAFETY: caller checked the immutable snapshot's count before indexing.
-    let (name, location) = unsafe {
-        &(&(*snapshot).registrations)[usize::try_from(index).expect("checked snapshot index")]
+    let Ok(index) = usize::try_from(index) else {
+        return Registration::default();
+    };
+    // SAFETY: caller owns a valid snapshot, or supplies null.
+    let Some((name, location)) =
+        (unsafe { snapshot.as_ref() }).and_then(|snapshot| snapshot.registrations.get(index))
+    else {
+        return Registration::default();
     };
     Registration {
         name: string_from_str(name),
@@ -490,7 +506,7 @@ mod tests {
             assert_eq!(hew_node_start(node), 0);
             let watch = hew_node_watch_open();
             let subscription = (*watch).subscription.as_ref().unwrap();
-            super::super::stop_node_accept_thread(&mut *node);
+            super::super::stop_node_accept_thread(&*node);
             let (release, blocked) = std::sync::mpsc::channel();
             *(*node).accept_thread.lock_or_recover() = Some(std::thread::spawn(move || {
                 blocked.recv().unwrap();
@@ -530,6 +546,36 @@ mod tests {
             assert_eq!(subscription.queue.poll_recv_ready(&Arc::new(waker)), 2);
             hew_node_watch_free(watch);
             hew_node_free(node);
+        }
+    }
+
+    #[test]
+    fn wave4a_snapshot_null_and_oob_fail_closed() {
+        // SAFETY: null pointers and arbitrary indices must fail closed without panicking or UB.
+        unsafe {
+            assert_eq!(hew_node_snapshot_local(ptr::null()).state, 0);
+            assert_eq!(hew_node_snapshot_count(ptr::null(), false), 0);
+            assert_eq!(hew_node_snapshot_count(ptr::null(), true), 0);
+            assert_eq!(hew_node_snapshot_member(ptr::null(), 0).state, 0);
+            assert!(hew_node_snapshot_registration(ptr::null(), 0)
+                .name
+                .is_null());
+
+            let snapshot = Box::into_raw(Box::new(HewNodeSnapshot {
+                local: Member {
+                    id: HewNodeId::default(),
+                    session: 7,
+                    state: 1,
+                },
+                members: Vec::new(),
+                registrations: Vec::new(),
+            }));
+            assert_eq!(hew_node_snapshot_local(snapshot).session, 7);
+            assert_eq!(hew_node_snapshot_member(snapshot, -1).state, 0);
+            assert_eq!(hew_node_snapshot_member(snapshot, 99).state, 0);
+            assert!(hew_node_snapshot_registration(snapshot, -1).name.is_null());
+            assert!(hew_node_snapshot_registration(snapshot, 99).name.is_null());
+            hew_node_snapshot_free(snapshot);
         }
     }
 }

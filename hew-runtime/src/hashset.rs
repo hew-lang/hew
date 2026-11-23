@@ -10,10 +10,6 @@
 //! retired once `collection_layout_witness` became the sole codegen authority for
 //! collection clone/drop (W5.001 / W5.003). All codegen paths now route
 //! exclusively through the `_layout` family.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use core::ffi::c_void;
 use core::ptr;
@@ -137,11 +133,9 @@ pub unsafe extern "C" fn hew_hashset_probe_begin(
     elem: *const c_void,
     inserting: i32,
 ) -> *mut crate::hashmap::HewLayoutMapProbe {
+    require_set_elem(set.cast_const(), elem, "hew_hashset_probe_begin");
     // SAFETY: the caller lends a live set and matching element through the probe.
-    unsafe {
-        validate_set_op_elem(set, elem);
-        crate::hashmap::hew_hashmap_probe_begin((*set).map, elem, inserting)
-    }
+    unsafe { crate::hashmap::hew_hashmap_probe_begin((*set).map, elem, inserting) }
 }
 
 /// Opaque borrowing cursor over a layout-backed set.
@@ -160,8 +154,7 @@ pub struct HewLayoutHashSetIter {
 pub unsafe extern "C" fn hew_hashset_iter_new_layout(
     set: *const HewLayoutHashSet,
 ) -> *mut HewLayoutHashSetIter {
-    // SAFETY: set is live per this fn's contract.
-    unsafe { validate_set_op(set) };
+    require_set(set, "hew_hashset_iter_new_layout");
     // SAFETY: validation established set and its wrapped map are live; the
     // caller guarantees neither is mutated while the iterator exists.
     let inner = unsafe { hew_hashmap_iter_new_layout((*set).map) };
@@ -211,17 +204,28 @@ pub unsafe extern "C" fn hew_hashset_iter_free_layout(iter: *mut HewLayoutHashSe
 // pattern from C-1b in `hashmap.rs`).
 // ---------------------------------------------------------------------------
 
+fn require_set(set: *const HewLayoutHashSet, op: &str) {
+    if set.is_null() {
+        crate::set_last_error(format!("{op}: set is null"));
+        std::process::abort();
+    }
+}
+
+fn require_set_elem(set: *const HewLayoutHashSet, elem: *const c_void, op: &str) {
+    require_set(set, op);
+    if elem.is_null() {
+        crate::set_last_error(format!("{op}: elem is null"));
+        std::process::abort();
+    }
+}
+
 /// Fail-closed null-set check for single-pointer `HewLayoutHashSet` operations
 /// (e.g. `len_layout`).
 ///
 /// # Panics
 ///
 /// Panics if `set` is null.
-///
-/// # Safety
-///
-/// Performs only a null check; safe to call with any `*const`.
-pub unsafe fn validate_set_op(set: *const HewLayoutHashSet) {
+pub fn validate_set_op(set: *const HewLayoutHashSet) {
     if set.is_null() {
         crate::set_last_error("HewLayoutHashSet op: set is null");
         panic!("HewLayoutHashSet op: set is null");
@@ -234,11 +238,7 @@ pub unsafe fn validate_set_op(set: *const HewLayoutHashSet) {
 /// # Panics
 ///
 /// Panics if `set` or `elem` is null.
-///
-/// # Safety
-///
-/// Performs only null checks; safe to call with any pointers.
-pub unsafe fn validate_set_op_elem(set: *const HewLayoutHashSet, elem: *const c_void) {
+pub fn validate_set_op_elem(set: *const HewLayoutHashSet, elem: *const c_void) {
     if set.is_null() {
         crate::set_last_error("HewLayoutHashSet op: set is null");
         panic!("HewLayoutHashSet op: set is null");
@@ -278,9 +278,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout(
 ) -> *mut HewLayoutHashSet {
     if elem_layout.is_null() {
         crate::set_last_error("hew_hashset_new_with_layout: elem_layout is null");
-        // SAFETY: extern "C" cannot unwind; abort the process. The null
-        // elem_layout case is covered by `should_panic` tests driving
-        // `validate_key_layout` directly (the C-1b pattern).
+        // Fail closed: null elem_layout aborts the process.
         std::process::abort();
     }
     // SAFETY: elem_layout non-null (checked above); VALUE_LAYOUT is 'static and
@@ -323,7 +321,10 @@ pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout_checked(
             layout,
             status,
             || {
-                let width = (*element)
+                let Some(element_ref) = element.as_ref() else {
+                    return Err(hew_cabi::managed::UNDESCRIBED);
+                };
+                let width = element_ref
                     .value
                     .managed
                     .as_ref()
@@ -381,15 +382,14 @@ pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout_checked(
 /// `hew_hashset_new_with_layout`.  `elem` must point to a readable blob whose
 /// size and alignment match the `elem_layout` registered at construction.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_insert_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_insert_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared validator; panics on null set or null elem.
-    unsafe { validate_set_op_elem(set.cast_const(), elem) };
-    // SAFETY: set non-null per validator; map is a valid HewLayoutHashMap pointer.
+    require_set_elem(set.cast_const(), elem, "hew_hashset_insert_layout");
+    // SAFETY: set non-null per check; map is a valid HewLayoutHashMap pointer.
     // ZST value contract: pass ptr::null() — validate_op_inputs inside
     // hew_hashmap_insert_layout allows null val when val_size == 0.
     unsafe { hew_hashmap_insert_layout((*set).map, elem, ptr::null(), present_out, fault_out) }
@@ -425,8 +425,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_insert_take_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared validator; panics on null set or null elem.
-    unsafe { validate_set_op_elem(set.cast_const(), elem) };
+    require_set_elem(set.cast_const(), elem, "hew_hashset_insert_take_layout");
     // SAFETY: set non-null per validator; the wrapper owns a live map whose
     // key descriptor is this set's element descriptor.
     let elem_layout = unsafe { (*(*set).map).key_layout.value };
@@ -469,8 +468,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_insert_clone_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: the shared validator checks the live set and element input.
-    unsafe { validate_set_op_elem(set, elem) };
+    require_set_elem(set, elem, "hew_hashset_insert_clone_layout");
     // SAFETY: the set owns a live map with a plain zero-sized value descriptor.
     unsafe {
         crate::hashmap::hew_hashmap_insert_clone_layout(
@@ -508,9 +506,8 @@ pub unsafe extern "C" fn hew_hashset_contains_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared validator; panics on null set or null elem.
-    unsafe { validate_set_op_elem(set, elem) };
-    // SAFETY: set non-null per validator; map pointer valid.
+    require_set_elem(set, elem, "hew_hashset_contains_layout");
+    // SAFETY: set non-null per check; map pointer valid.
     unsafe { hew_hashmap_contains_key_layout((*set).map, elem, present_out, fault_out) }
 }
 
@@ -535,15 +532,14 @@ pub unsafe extern "C" fn hew_hashset_contains_layout(
 ///
 /// Same as [`hew_hashset_insert_layout`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_remove_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_remove_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared validator; panics on null set or null elem.
-    unsafe { validate_set_op_elem(set.cast_const(), elem) };
-    // SAFETY: set non-null per validator; map pointer valid.
+    require_set_elem(set.cast_const(), elem, "hew_hashset_remove_layout");
+    // SAFETY: set non-null per check; map pointer valid.
     unsafe { hew_hashmap_remove_layout((*set).map, elem, present_out, fault_out) }
 }
 
@@ -560,10 +556,9 @@ pub unsafe extern "C" fn hew_hashset_remove_layout(
 ///
 /// `set` must be a valid `HewLayoutHashSet` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
-    // SAFETY: shared validator; panics if set is null.
-    unsafe { validate_set_op(set.cast_const()) };
-    // SAFETY: set non-null per validator; map pointer valid.
+pub unsafe extern "C-unwind" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
+    require_set(set.cast_const(), "hew_hashset_clear_layout");
+    // SAFETY: set non-null per check; map pointer valid.
     unsafe { hew_hashmap_clear_layout((*set).map) }
 }
 
@@ -578,11 +573,9 @@ pub unsafe extern "C" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
 pub unsafe extern "C" fn hew_hashset_clear_release(
     set: *mut HewLayoutHashSet,
 ) -> *mut crate::release_walker::HewReleaseCursor {
+    require_set(set.cast_const(), "hew_hashset_clear_release");
     // SAFETY: set validation proves the wrapped map is live.
-    unsafe {
-        validate_set_op(set.cast_const());
-        crate::hashmap::hew_hashmap_clear_release((*set).map)
-    }
+    unsafe { crate::hashmap::hew_hashmap_clear_release((*set).map) }
 }
 
 /// Return the number of elements in the set.
@@ -594,9 +587,8 @@ pub unsafe extern "C" fn hew_hashset_clear_release(
 /// `set` must be a valid `HewLayoutHashSet` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashset_len_layout(set: *const HewLayoutHashSet) -> i64 {
-    // SAFETY: shared validator; panics if set is null.
-    unsafe { validate_set_op(set) };
-    // SAFETY: set non-null per validator; map pointer valid.
+    require_set(set, "hew_hashset_len_layout");
+    // SAFETY: set non-null per check; map pointer valid.
     unsafe { hew_hashmap_len_layout((*set).map) }
 }
 
@@ -635,12 +627,9 @@ pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet)
     if set.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: set non-null per the gate; map was constructed via
+    // SAFETY: set checked non-null above; map was constructed via
     // hew_hashmap_new_with_layout, so keys_layout reads its occupied slots.
-    unsafe {
-        validate_set_op(set);
-        hew_hashmap_keys_layout((*set).map)
-    }
+    unsafe { hew_hashmap_keys_layout((*set).map) }
 }
 
 /// Snapshot set elements through the checked map projection authority.
@@ -803,4 +792,27 @@ pub unsafe extern "C" fn hew_hashset_release_begin(
     };
     // SAFETY: the detached map owner transfers to the returned cursor.
     unsafe { crate::release_walker::hew_hashmap_release_begin(map) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::owned_value_budget::{with_value_owner, ValueOwner};
+
+    #[test]
+    fn wave4b_hashset_checked_null_element_fails_closed() {
+        with_value_owner(&Some(ValueOwner::new(Some(1024))), || {
+            let mut status = 0_i32;
+            // SAFETY: verifies checked constructor returns UNDESCRIBED on null `element`.
+            let set = unsafe {
+                hew_hashset_new_with_layout_checked(
+                    ptr::null(),
+                    &raw const crate::layout_intrinsics::hew_layout_val_string,
+                    &raw mut status,
+                )
+            };
+            assert!(set.is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+        });
+    }
 }

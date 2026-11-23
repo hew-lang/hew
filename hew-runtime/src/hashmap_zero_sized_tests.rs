@@ -275,6 +275,10 @@ fn empty_set_clones_projects_and_releases_aligned_keys() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "hew_fault_new calls weak C symtab shim hew_debug_has_debug_info unsupported under Miri"
+)]
 fn empty_key_faults_preserve_results_entries_and_staged_owners() {
     let (key_layout, unit) = layouts(64, true);
     let key = AlignedUnit;

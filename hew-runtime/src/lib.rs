@@ -26,10 +26,6 @@
 //! - `full` (default) — profiler + QUIC
 //! - `quic` — QUIC transports (quic-mesh mutual TLS 1.3)
 //! - `profiler` — built-in profiler dashboard and pprof export
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 #[cfg(test)]
 use std::cell::Cell;

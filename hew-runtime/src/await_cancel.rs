@@ -4,10 +4,6 @@
 //! retained scope cancellation token snapshot, the optional deadline timer, and
 //! the actor wake.  Each wait source supplies exactly one cleanup callback for
 //! its own in-flight resource.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at each fn signature."
-)]
 
 use crate::runtime_sync::AtomicI32;
 use crate::runtime_sync::Mutex;

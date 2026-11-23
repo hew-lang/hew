@@ -34,10 +34,6 @@
 //! - [`hew_fault_inject_drop`] — Drop next N messages to an actor.
 //! - [`hew_fault_clear`] — Remove all faults for an actor.
 //! - [`hew_fault_clear_all`] — Remove all faults system-wide.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::lifetime::PoisonSafe;
 use std::ffi::c_int;
@@ -378,6 +374,7 @@ mod tests {
 
     #[test]
     fn simulated_time() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         hew_simtime_enable(1000);
         assert_eq!(hew_simtime_is_enabled(), 1);
@@ -479,6 +476,7 @@ mod tests {
 
     #[test]
     fn full_reset() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_set_seed(99);
         hew_simtime_enable(5000);

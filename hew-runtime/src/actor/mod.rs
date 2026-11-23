@@ -3,10 +3,6 @@
 //! Defines the [`HewActor`] struct layout for C ABI compatibility and the
 //! actor state machine constants. Actor operations are implemented in this
 //! module and its submodules.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;

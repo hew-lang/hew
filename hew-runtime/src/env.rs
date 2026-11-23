@@ -3,10 +3,6 @@
 //! Provides access to environment variables, command-line arguments, and basic
 //! process/system information for compiled Hew programs. All returned strings
 //! are managed UTF-8 values released with `hew_string_drop`.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::lifetime::PoisonSafeRw;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};

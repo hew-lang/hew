@@ -1,15 +1,5 @@
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
+//! Collection iterator runtime support.
 //! Iterator protocol for Hew collections.
-
-// Pointer casts from the data buffer are safe because the backing storage
-// is grown via the sized-block allocator, which guarantees 16-byte alignment.
-#![expect(
-    clippy::cast_ptr_alignment,
-    reason = "data buffer grown via the sized-block allocator, which guarantees 16-byte alignment"
-)]
 
 use core::ffi::c_void;
 
@@ -76,6 +66,9 @@ fn kind_from_elem_size(elem_size: usize) -> IterKind {
 /// returned iterator.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_vec(vec: *const HewVec) -> *mut HewIter {
+    if vec.is_null() {
+        return core::ptr::null_mut();
+    }
     // SAFETY: caller guarantees `vec` is valid.
     unsafe {
         let v = &*vec;
@@ -117,11 +110,18 @@ pub unsafe extern "C" fn hew_iter_free(iter: *mut HewIter) {
 /// `iter` must be a valid `HewIter` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_next(iter: *mut HewIter) -> i32 {
+    if iter.is_null() {
+        return 0;
+    }
     // SAFETY: caller guarantees `iter` is valid and the vec is still alive.
     unsafe {
-        let len = (*(*iter).vec).len;
-        if (*iter).index < len {
-            (*iter).index += 1;
+        let iter_ref = &mut *iter;
+        if iter_ref.vec.is_null() {
+            return 0;
+        }
+        let len = (*iter_ref.vec).len;
+        if iter_ref.index < len {
+            iter_ref.index += 1;
             1
         } else {
             0
@@ -136,6 +136,9 @@ pub unsafe extern "C" fn hew_iter_next(iter: *mut HewIter) -> i32 {
 /// `iter` must be a valid `HewIter` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_reset(iter: *mut HewIter) {
+    if iter.is_null() {
+        return;
+    }
     // SAFETY: caller guarantees `iter` is valid.
     unsafe {
         (*iter).index = 0;
@@ -146,6 +149,40 @@ pub unsafe extern "C" fn hew_iter_reset(iter: *mut HewIter) {
 // Value accessors — each reads the element at `index - 1` (set by `next`)
 // ---------------------------------------------------------------------------
 
+/// Return a pointer to the current element slot when `iter`, its backing vec,
+/// and the cursor bounds are valid.
+///
+/// # Safety
+///
+/// If non-null, `iter` and its backing `HewVec` must remain live and valid.
+unsafe fn iter_current_slot(
+    iter: *const HewIter,
+    expected_size: Option<usize>,
+) -> Option<*const u8> {
+    // SAFETY: caller ensures `iter` is null or points to a live `HewIter`.
+    let iter_ref = unsafe { iter.as_ref()? };
+    // SAFETY: iterator holds null or a live `HewVec` pointer for its lifetime.
+    let vec = unsafe { iter_ref.vec.as_ref()? };
+    if vec.data.is_null() {
+        return None;
+    }
+    let idx = iter_ref.index.checked_sub(1)?;
+    if idx >= vec.len {
+        return None;
+    }
+    let step = if let Some(expected) = expected_size {
+        if iter_ref.elem_size != expected || vec.elem_size != expected {
+            return None;
+        }
+        expected
+    } else {
+        iter_ref.elem_size
+    };
+    let byte_offset = idx.checked_mul(step)?;
+    // SAFETY: `idx < vec.len` and `byte_offset` lies inside `vec.data`.
+    Some(unsafe { vec.data.cast::<u8>().add(byte_offset) })
+}
+
 /// Return the current `i32` value.
 ///
 /// # Safety
@@ -154,11 +191,10 @@ pub unsafe extern "C" fn hew_iter_reset(iter: *mut HewIter) {
 /// `hew_iter_next` must have returned 1 before calling this.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_value_i32(iter: *const HewIter) -> i32 {
-    // SAFETY: caller guarantees `iter` is valid and positioned via next().
+    // SAFETY: `iter_current_slot` validated bounds and `size_of::<i32>()`.
     unsafe {
-        let idx = (*iter).index - 1;
-        let data = (*(*iter).vec).data;
-        data.cast::<i32>().add(idx).read()
+        iter_current_slot(iter, Some(core::mem::size_of::<i32>()))
+            .map_or(0, |slot| slot.cast::<i32>().read_unaligned())
     }
 }
 
@@ -170,11 +206,10 @@ pub unsafe extern "C" fn hew_iter_value_i32(iter: *const HewIter) -> i32 {
 /// `hew_iter_next` must have returned 1 before calling this.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_value_i64(iter: *const HewIter) -> i64 {
-    // SAFETY: caller guarantees `iter` is valid and positioned via next().
+    // SAFETY: `iter_current_slot` validated bounds and `size_of::<i64>()`.
     unsafe {
-        let idx = (*iter).index - 1;
-        let data = (*(*iter).vec).data;
-        data.cast::<i64>().add(idx).read()
+        iter_current_slot(iter, Some(core::mem::size_of::<i64>()))
+            .map_or(0, |slot| slot.cast::<i64>().read_unaligned())
     }
 }
 
@@ -186,11 +221,10 @@ pub unsafe extern "C" fn hew_iter_value_i64(iter: *const HewIter) -> i64 {
 /// `hew_iter_next` must have returned 1 before calling this.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_value_f64(iter: *const HewIter) -> f64 {
-    // SAFETY: caller guarantees `iter` is valid and positioned via next().
+    // SAFETY: `iter_current_slot` validated bounds and `size_of::<f64>()`.
     unsafe {
-        let idx = (*iter).index - 1;
-        let data = (*(*iter).vec).data;
-        data.cast::<f64>().add(idx).read()
+        iter_current_slot(iter, Some(core::mem::size_of::<f64>()))
+            .map_or(0.0, |slot| slot.cast::<f64>().read_unaligned())
     }
 }
 
@@ -204,13 +238,16 @@ pub unsafe extern "C" fn hew_iter_value_f64(iter: *const HewIter) -> f64 {
 pub unsafe extern "C" fn hew_iter_value_str(
     iter: *const HewIter,
 ) -> *const hew_cabi::string::HewString {
-    // SAFETY: caller guarantees `iter` is valid and positioned via next().
+    // SAFETY: `iter_current_slot` validated bounds and handle size.
     unsafe {
-        let idx = (*iter).index - 1;
-        let data = (*(*iter).vec).data;
-        data.cast::<*const hew_cabi::string::HewString>()
-            .add(idx)
-            .read()
+        iter_current_slot(
+            iter,
+            Some(core::mem::size_of::<*const hew_cabi::string::HewString>()),
+        )
+        .map_or(core::ptr::null(), |slot| {
+            slot.cast::<*const hew_cabi::string::HewString>()
+                .read_unaligned()
+        })
     }
 }
 
@@ -222,12 +259,8 @@ pub unsafe extern "C" fn hew_iter_value_str(
 /// before calling this.
 #[no_mangle]
 pub unsafe extern "C" fn hew_iter_value_ptr(iter: *const HewIter) -> *const c_void {
-    // SAFETY: caller guarantees `iter` is valid and positioned via next().
-    unsafe {
-        let idx = (*iter).index - 1;
-        let data = (*(*iter).vec).data;
-        data.cast::<u8>().add(idx * (*iter).elem_size).cast()
-    }
+    // SAFETY: `iter_current_slot` validated non-null and `idx < vec.len`.
+    unsafe { iter_current_slot(iter, None).map_or(core::ptr::null(), <*const u8>::cast) }
 }
 
 #[cfg(test)]
@@ -548,5 +581,126 @@ mod tests {
     fn kind_from_elem_size_unusual_falls_back_to_generic() {
         // An unusual elem_size (e.g. 3 bytes) should yield VecGeneric.
         assert!(matches!(kind_from_elem_size(3), IterKind::VecGeneric));
+    }
+
+    #[test]
+    fn wave4b_iter_null_and_before_next_bounds_fail_closed() {
+        // SAFETY: tests explicit null, underflow, and mismatched element size guards.
+        unsafe {
+            assert!(hew_iter_vec(core::ptr::null()).is_null());
+            assert_eq!(hew_iter_next(core::ptr::null_mut()), 0);
+            hew_iter_reset(core::ptr::null_mut());
+            assert_eq!(hew_iter_value_i32(core::ptr::null()), 0);
+            assert_eq!(hew_iter_value_i64(core::ptr::null()), 0);
+            assert_eq!(
+                hew_iter_value_f64(core::ptr::null()).to_bits(),
+                0.0_f64.to_bits()
+            );
+            assert!(hew_iter_value_str(core::ptr::null()).is_null());
+            assert!(hew_iter_value_ptr(core::ptr::null()).is_null());
+
+            let v = hew_vec_new_i64();
+            hew_vec_push_i64(v, 99);
+            let it = hew_iter_vec(v);
+            assert!(!it.is_null());
+            // Before `hew_iter_next`, index == 0 must fail closed without underflow.
+            assert_eq!(hew_iter_value_i64(it), 0);
+            assert!(hew_iter_value_ptr(it).is_null());
+            assert_eq!(hew_iter_next(it), 1);
+            assert_eq!(hew_iter_value_i64(it), 99);
+            // Mismatched element width must fail closed instead of reading wrong width.
+            assert_eq!(hew_iter_value_i32(it), 0);
+            assert_eq!(hew_iter_next(it), 0);
+            // Mutating index past `vec.len` fails closed via `idx < vec.len`.
+            (*it).index = 99;
+            assert_eq!(hew_iter_value_i64(it), 0);
+            assert!(hew_iter_value_ptr(it).is_null());
+            hew_iter_free(it);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn iter_values_handle_unaligned_packed_buffers_safely() {
+        // SAFETY: points each vector's `data` temporarily at a 1-byte misaligned
+        // scratch buffer so Miri verifies unaligned loads succeed across all four types.
+        unsafe {
+            let mut storage = [0_u8; 32];
+            let base = storage.as_mut_ptr().add(1);
+            let val_int32: i32 = -123_456;
+            let val_long64: i64 = 0x1122_3344_5566_7788;
+            let val_double: f64 = 3.25;
+            let packed_str = string_from_str("packed");
+
+            let int32_vec = hew_vec_new();
+            hew_vec_push_i32(int32_vec, 0);
+            let orig_int32_buf = (*int32_vec).data;
+            core::ptr::copy_nonoverlapping(
+                (&raw const val_int32).cast::<u8>(),
+                base,
+                core::mem::size_of::<i32>(),
+            );
+            (*int32_vec).data = base;
+            let int32_iter = hew_iter_vec(int32_vec);
+            assert_eq!(hew_iter_next(int32_iter), 1);
+            assert_eq!(hew_iter_value_i32(int32_iter), val_int32);
+            (*int32_vec).data = orig_int32_buf;
+            hew_iter_free(int32_iter);
+            hew_vec_free(int32_vec);
+
+            let long64_vec = hew_vec_new_i64();
+            hew_vec_push_i64(long64_vec, 0);
+            let orig_long64_buf = (*long64_vec).data;
+            core::ptr::copy_nonoverlapping(
+                (&raw const val_long64).cast::<u8>(),
+                base,
+                core::mem::size_of::<i64>(),
+            );
+            (*long64_vec).data = base;
+            let long64_iter = hew_iter_vec(long64_vec);
+            assert_eq!(hew_iter_next(long64_iter), 1);
+            assert_eq!(hew_iter_value_i64(long64_iter), val_long64);
+            (*long64_vec).data = orig_long64_buf;
+            hew_iter_free(long64_iter);
+            hew_vec_free(long64_vec);
+
+            let double_vec = hew_vec_new_f64();
+            hew_vec_push_f64(double_vec, 0.0);
+            let orig_double_buf = (*double_vec).data;
+            core::ptr::copy_nonoverlapping(
+                (&raw const val_double).cast::<u8>(),
+                base,
+                core::mem::size_of::<f64>(),
+            );
+            (*double_vec).data = base;
+            let double_iter = hew_iter_vec(double_vec);
+            assert_eq!(hew_iter_next(double_iter), 1);
+            assert_eq!(
+                hew_iter_value_f64(double_iter).to_bits(),
+                val_double.to_bits()
+            );
+            (*double_vec).data = orig_double_buf;
+            hew_iter_free(double_iter);
+            hew_vec_free(double_vec);
+
+            let str_vec = hew_vec_new_str();
+            let placeholder = string_from_str("tmp");
+            hew_vec_push_str(str_vec, placeholder);
+            string_release(placeholder);
+            let orig_str_buf = (*str_vec).data;
+            core::ptr::copy_nonoverlapping(
+                (&raw const packed_str).cast::<u8>(),
+                base,
+                core::mem::size_of::<*const hew_cabi::string::HewString>(),
+            );
+            (*str_vec).data = base;
+            let str_iter = hew_iter_vec(str_vec);
+            assert_eq!(hew_iter_next(str_iter), 1);
+            assert_eq!(hew_iter_value_str(str_iter), packed_str.cast_const());
+            (*str_vec).data = orig_str_buf;
+            hew_iter_free(str_iter);
+            hew_vec_free(str_vec);
+            string_release(packed_str);
+        }
     }
 }

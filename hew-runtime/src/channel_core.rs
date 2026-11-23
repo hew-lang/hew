@@ -2064,22 +2064,28 @@ mod tests {
         src: *const core::ffi::c_void,
         dst: *mut core::ffi::c_void,
     ) -> i32 {
-        let s = &*src.cast::<OwnedElem>();
-        let d = &mut *dst.cast::<OwnedElem>();
-        let dup = crate::mem::buf_try_alloc(8).cast::<u8>();
-        if !s.heap.is_null() {
-            std::ptr::copy_nonoverlapping(s.heap, dup, 8);
+        // SAFETY: test layout descriptor passes valid `OwnedElem` slots.
+        unsafe {
+            let s = &*src.cast::<OwnedElem>();
+            let d = &mut *dst.cast::<OwnedElem>();
+            let dup = crate::mem::buf_try_alloc(8).cast::<u8>();
+            if !s.heap.is_null() {
+                std::ptr::copy_nonoverlapping(s.heap, dup, 8);
+            }
+            d.heap = dup;
         }
-        d.heap = dup;
         OWNED_CLONES.fetch_add(1, Ordering::SeqCst);
         0
     }
 
     unsafe extern "C-unwind" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
-        let e = &mut *slot.cast::<OwnedElem>();
-        if !e.heap.is_null() {
-            crate::mem::buf_free(e.heap.cast());
-            e.heap = std::ptr::null_mut();
+        // SAFETY: test layout descriptor passes valid `OwnedElem` slot.
+        unsafe {
+            let e = &mut *slot.cast::<OwnedElem>();
+            if !e.heap.is_null() {
+                crate::mem::buf_free(e.heap.cast());
+                e.heap = std::ptr::null_mut();
+            }
         }
         OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }

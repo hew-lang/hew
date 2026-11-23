@@ -3,10 +3,6 @@
 //! Standard I/O operations (stdout, stderr, stdin) with C ABI.
 //!
 //! All string values use the managed, length-bounded Hew string carrier.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use hew_cabi::string::{string_as_bytes, HewString};
 

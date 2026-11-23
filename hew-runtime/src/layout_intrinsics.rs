@@ -6,10 +6,7 @@
 //! have no hash/equality callbacks because they do not satisfy the key contract.
 //! These pure descriptors and their callbacks also support wasm32-wasip1.
 
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI thunk module; SAFETY documented per-thunk."
-)]
+//! FFI layout descriptors and intrinsic hash/eq/clone/drop thunks.
 
 use core::ffi::c_void;
 
@@ -81,8 +78,11 @@ macro_rules! scalar_hash_eq {
             out: *mut u64,
             fault_out: *mut *mut c_void,
         ) -> i32 {
-            let v: $ty = core::ptr::read(key.cast::<$ty>());
-            key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
+            // SAFETY: caller provides readable scalar key and writable output slots.
+            unsafe {
+                let v: $ty = core::ptr::read(key.cast::<$ty>());
+                key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
+            }
         }
         unsafe extern "C" fn $eq_fn(
             lhs: *const c_void,
@@ -90,9 +90,12 @@ macro_rules! scalar_hash_eq {
             out: *mut bool,
             fault_out: *mut *mut c_void,
         ) -> i32 {
-            let l: $ty = core::ptr::read(lhs.cast::<$ty>());
-            let r: $ty = core::ptr::read(rhs.cast::<$ty>());
-            key_result(out, l == r, fault_out)
+            // SAFETY: caller provides readable scalar keys and writable output slots.
+            unsafe {
+                let l: $ty = core::ptr::read(lhs.cast::<$ty>());
+                let r: $ty = core::ptr::read(rhs.cast::<$ty>());
+                key_result(out, l == r, fault_out)
+            }
         }
     };
 }
@@ -110,8 +113,11 @@ unsafe extern "C" fn hew_layout_key_bool_hash(
     out: *mut u64,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let v: u8 = core::ptr::read(key.cast::<u8>());
-    key_result(out, fnv1a_64(&[v]), fault_out)
+    // SAFETY: caller provides readable bool byte and writable output slots.
+    unsafe {
+        let v: u8 = core::ptr::read(key.cast::<u8>());
+        key_result(out, fnv1a_64(&[v]), fault_out)
+    }
 }
 unsafe extern "C" fn hew_layout_key_bool_eq(
     lhs: *const c_void,
@@ -119,9 +125,12 @@ unsafe extern "C" fn hew_layout_key_bool_eq(
     out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let l: u8 = core::ptr::read(lhs.cast::<u8>());
-    let r: u8 = core::ptr::read(rhs.cast::<u8>());
-    key_result(out, l == r, fault_out)
+    // SAFETY: caller provides readable bool bytes and writable output slots.
+    unsafe {
+        let l: u8 = core::ptr::read(lhs.cast::<u8>());
+        let r: u8 = core::ptr::read(rhs.cast::<u8>());
+        key_result(out, l == r, fault_out)
+    }
 }
 
 // char: Hew char is a 32-bit Unicode codepoint (LLVM lowering: i32 — see
@@ -131,8 +140,11 @@ unsafe extern "C" fn hew_layout_key_char_hash(
     out: *mut u64,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let v: u32 = core::ptr::read(key.cast::<u32>());
-    key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
+    // SAFETY: caller provides readable codepoint and writable output slots.
+    unsafe {
+        let v: u32 = core::ptr::read(key.cast::<u32>());
+        key_result(out, fnv1a_64(&v.to_le_bytes()), fault_out)
+    }
 }
 unsafe extern "C" fn hew_layout_key_char_eq(
     lhs: *const c_void,
@@ -140,9 +152,12 @@ unsafe extern "C" fn hew_layout_key_char_eq(
     out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let l: u32 = core::ptr::read(lhs.cast::<u32>());
-    let r: u32 = core::ptr::read(rhs.cast::<u32>());
-    key_result(out, l == r, fault_out)
+    // SAFETY: caller provides readable codepoints and writable output slots.
+    unsafe {
+        let l: u32 = core::ptr::read(lhs.cast::<u32>());
+        let r: u32 = core::ptr::read(rhs.cast::<u32>());
+        key_result(out, l == r, fault_out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,14 +173,16 @@ unsafe extern "C" fn hew_layout_key_string_hash(
     out: *mut u64,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let p: *const hew_cabi::string::HewString =
-        core::ptr::read(key.cast::<*const hew_cabi::string::HewString>());
-    // SAFETY: the descriptor contract supplies null or a live managed handle.
-    key_result(
-        out,
-        fnv1a_64(unsafe { hew_cabi::string::string_as_bytes(p) }),
-        fault_out,
-    )
+    // SAFETY: key holds a pointer-sized managed string slot; out/fault_out are writable.
+    unsafe {
+        let p: *const hew_cabi::string::HewString =
+            core::ptr::read(key.cast::<*const hew_cabi::string::HewString>());
+        key_result(
+            out,
+            fnv1a_64(hew_cabi::string::string_as_bytes(p)),
+            fault_out,
+        )
+    }
 }
 
 unsafe extern "C" fn hew_layout_key_string_eq(
@@ -174,16 +191,18 @@ unsafe extern "C" fn hew_layout_key_string_eq(
     out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let lp: *const hew_cabi::string::HewString =
-        core::ptr::read(lhs.cast::<*const hew_cabi::string::HewString>());
-    let rp: *const hew_cabi::string::HewString =
-        core::ptr::read(rhs.cast::<*const hew_cabi::string::HewString>());
-    // SAFETY: the descriptor contract supplies null or live managed handles.
-    key_result(
-        out,
-        crate::string::hew_string_equals(lp, rp) != 0,
-        fault_out,
-    )
+    // SAFETY: lhs/rhs hold pointer-sized managed string slots; out/fault_out are writable.
+    unsafe {
+        let lp: *const hew_cabi::string::HewString =
+            core::ptr::read(lhs.cast::<*const hew_cabi::string::HewString>());
+        let rp: *const hew_cabi::string::HewString =
+            core::ptr::read(rhs.cast::<*const hew_cabi::string::HewString>());
+        key_result(
+            out,
+            crate::string::hew_string_equals(lp, rp) != 0,
+            fault_out,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,30 +214,26 @@ unsafe extern "C" fn hew_layout_key_string_eq(
 // `(ptr + offset)[0..len]`. A length-prefixed FNV-1a-64 prevents prefix
 // collisions.
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct BytesTripleRepr {
-    ptr: *mut u8,
-    offset: u32,
-    len: u32,
-}
-
 unsafe extern "C" fn hew_layout_key_bytes_hash(
     key: *const c_void,
     out: *mut u64,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let triple: BytesTripleRepr = core::ptr::read(key.cast::<BytesTripleRepr>());
+    // SAFETY: key holds a `BytesTriple`; out/fault_out are writable.
+    let triple = unsafe { core::ptr::read(key.cast::<crate::bytes::BytesTriple>()) };
     if triple.len == 0 {
-        return key_result(out, fnv1a_64_with_len_prefix(&[]), fault_out);
+        // SAFETY: out/fault_out are writable per contract.
+        return unsafe { key_result(out, fnv1a_64_with_len_prefix(&[]), fault_out) };
     }
     if triple.ptr.is_null() {
         crate::set_last_error("hew_layout_key_bytes_hash: null ptr with non-zero len");
         std::process::abort();
     }
-    let start = triple.ptr.add(triple.offset as usize);
-    let slice = core::slice::from_raw_parts(start, triple.len as usize);
-    key_result(out, fnv1a_64_with_len_prefix(slice), fault_out)
+    // SAFETY: triple buffer checked non-null; caller guarantees active slice is readable.
+    unsafe {
+        let slice = crate::bytes::active(&triple);
+        key_result(out, fnv1a_64_with_len_prefix(slice), fault_out)
+    }
 }
 
 unsafe extern "C" fn hew_layout_key_bytes_eq(
@@ -227,21 +242,31 @@ unsafe extern "C" fn hew_layout_key_bytes_eq(
     out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let l: BytesTripleRepr = core::ptr::read(lhs.cast::<BytesTripleRepr>());
-    let r: BytesTripleRepr = core::ptr::read(rhs.cast::<BytesTripleRepr>());
+    // SAFETY: lhs/rhs hold `BytesTriple` values.
+    let (l, r) = unsafe {
+        (
+            core::ptr::read(lhs.cast::<crate::bytes::BytesTriple>()),
+            core::ptr::read(rhs.cast::<crate::bytes::BytesTriple>()),
+        )
+    };
     if l.len != r.len {
-        return key_result(out, false, fault_out);
+        // SAFETY: out/fault_out are writable per contract.
+        return unsafe { key_result(out, false, fault_out) };
     }
     if l.len == 0 {
-        return key_result(out, true, fault_out);
+        // SAFETY: out/fault_out are writable per contract.
+        return unsafe { key_result(out, true, fault_out) };
     }
     if l.ptr.is_null() || r.ptr.is_null() {
         crate::set_last_error("hew_layout_key_bytes_eq: null ptr with non-zero len");
         std::process::abort();
     }
-    let ls = core::slice::from_raw_parts(l.ptr.add(l.offset as usize), l.len as usize);
-    let rs = core::slice::from_raw_parts(r.ptr.add(r.offset as usize), r.len as usize);
-    key_result(out, ls == rs, fault_out)
+    // SAFETY: non-null buffers checked above; caller guarantees active slices are readable.
+    unsafe {
+        let ls = crate::bytes::active(&l);
+        let rs = crate::bytes::active(&r);
+        key_result(out, ls == rs, fault_out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,13 +315,13 @@ unsafe extern "C" fn hew_layout_string_clone(src: *const c_void, dst: *mut c_voi
 unsafe extern "C" fn hew_layout_bytes_clone(src: *const c_void, dst: *mut c_void) -> i32 {
     // SAFETY: src/dst point at BytesTriple slots. Refcount the backing buffer,
     // then copy the by-value view into dst.
-    let triple: BytesTripleRepr = unsafe { core::ptr::read(src.cast::<BytesTripleRepr>()) };
+    let triple = unsafe { core::ptr::read(src.cast::<crate::bytes::BytesTriple>()) };
     if !triple.ptr.is_null() {
         // SAFETY: non-null buffer pointer comes from a valid BytesTriple.
         unsafe { crate::bytes::hew_bytes_clone_ref(triple.ptr) };
     }
     // SAFETY: `dst` is writable BytesTriple storage.
-    unsafe { core::ptr::write(dst.cast::<BytesTripleRepr>(), triple) };
+    unsafe { core::ptr::write(dst.cast::<crate::bytes::BytesTriple>(), triple) };
     0
 }
 
@@ -304,7 +329,7 @@ extern "C-unwind" fn hew_layout_bytes_drop(blob: *mut c_void) {
     // SAFETY: blob is non-null and points to a `BytesTriple` slot owned by
     // the kernel. Reload + drop the inner buffer via the bytes runtime.
     unsafe {
-        let triple: BytesTripleRepr = core::ptr::read(blob.cast::<BytesTripleRepr>());
+        let triple = core::ptr::read(blob.cast::<crate::bytes::BytesTriple>());
         if !triple.ptr.is_null() {
             crate::bytes::hew_bytes_drop_managed(triple.ptr);
         }
@@ -470,8 +495,8 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
             visit: Some(crate::owned_value_budget::visit::hew_managed_visit_bytes),
         },
         release_start: None,
-        size: core::mem::size_of::<BytesTripleRepr>(),
-        align: core::mem::align_of::<BytesTripleRepr>(),
+        size: core::mem::size_of::<crate::bytes::BytesTriple>(),
+        align: core::mem::align_of::<crate::bytes::BytesTriple>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         clone_fn: Some(hew_layout_bytes_clone),
         drop_fn: Some(hew_layout_bytes_drop),
@@ -569,8 +594,8 @@ pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
         visit: Some(crate::owned_value_budget::visit::hew_managed_visit_bytes),
     },
     release_start: None,
-    size: core::mem::size_of::<BytesTripleRepr>(),
-    align: core::mem::align_of::<BytesTripleRepr>(),
+    size: core::mem::size_of::<crate::bytes::BytesTriple>(),
+    align: core::mem::align_of::<crate::bytes::BytesTriple>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
     drop_fn: Some(hew_layout_bytes_drop),
     clone_fn: Some(hew_layout_bytes_clone),

@@ -4,10 +4,6 @@
 //! sender calls [`hew_reply`] to deposit a value, and the receiver
 //! blocks in [`hew_reply_wait`] (or [`hew_reply_wait_timeout`]) until
 //! the value is ready.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::actor::HewActor;
 use crate::await_cancel::{
@@ -69,12 +65,11 @@ pub struct HewReplyChannel {
     value_size: usize,
     /// Optional typed destructor for the reply payload (`R`'s embedded heap),
     /// run on the delivered-but-never-consumed leg in
-    /// [`hew_reply_channel_free`] before `value` is `buf_free`d. Null (the
+    /// [`hew_reply_channel_free`] before `value` is `buf_free`d. `None` (the
     /// default) ⇒ the reply type is bit-copy (no embedded heap) and the buffer
-    /// free alone suffices — current behaviour. Stored type-erased as the bits
-    /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
-    /// race with any reply), read once at final free (after `refs` hits 0).
-    reply_drop_fn: AtomicPtr<c_void>,
+    /// free alone suffices. Guarded by a mutex so set and teardown remain
+    /// strongly typed without raw fn-pointer transmutes.
+    reply_drop_fn: Mutex<Option<HewReplyDropFn>>,
     native_reply_release: Option<hew_cabi::value::HewValueReleaseStart>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
@@ -152,7 +147,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         orphaned: AtomicBool::new(false),
         value: ptr::null_mut(),
         value_size: 0,
-        reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        reply_drop_fn: Mutex::new(None),
         native_reply_release: None,
         allocation_failed: AtomicBool::new(false),
         fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
@@ -250,7 +245,25 @@ pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
     }
 }
 
-/// Attach a shared await-cancellation registration to this suspended reply wait.
+/// Retain the channel's current await-cancellation registration under its lock.
+///
+/// # Safety
+///
+/// `ch` must be a live reply channel pointer.
+unsafe fn retain_await_cancel(ch: *const HewReplyChannel) -> *mut HewAwaitCancel {
+    // SAFETY: caller guarantees `ch` is live; projecting directly to `lock`
+    // and `await_cancel` avoids retagging unrelated non-atomic payload fields.
+    unsafe {
+        let _guard = (*ch).lock.lock_or_recover();
+        let reg = (*ch).await_cancel.load(Ordering::Acquire);
+        if !reg.is_null() {
+            hew_await_cancel_retain(reg);
+        }
+        reg
+    }
+}
+
+/// Attach a suspended-await cancellation record to this reply channel.
 ///
 /// # Safety
 ///
@@ -265,14 +278,18 @@ pub unsafe extern "C" fn hew_reply_channel_set_await_cancel(
     if ch.is_null() {
         return;
     }
-    if !reg.is_null() {
-        // SAFETY: caller provides a live registration to retain for the channel.
-        unsafe { hew_await_cancel_retain(reg) };
-    }
-    // SAFETY: caller holds a live channel reference.
-    let old = unsafe { (*ch).await_cancel.swap(reg, Ordering::AcqRel) };
+    // SAFETY: caller holds a live channel pointer; direct field projections
+    // avoid whole-struct retags across concurrent `value` initialization.
+    let old = unsafe {
+        let _guard = (*ch).lock.lock_or_recover();
+        if !reg.is_null() {
+            hew_await_cancel_retain(reg);
+        }
+        (*ch).await_cancel.swap(reg, Ordering::AcqRel)
+    };
     if !old.is_null() {
-        // SAFETY: releases the channel's previous retained registration.
+        // SAFETY: `old` was detached under `ch.lock` and any concurrent reader
+        // retained its own reference before releasing `ch.lock`.
         unsafe { hew_await_cancel_free(old) };
     }
 }
@@ -299,14 +316,8 @@ pub unsafe extern "C" fn hew_reply_channel_set_reply_drop_fn(
     if ch.is_null() {
         return;
     }
-    // Type-erase the fn pointer into the AtomicPtr slot (round-tripped back via
-    // transmute in `hew_reply_channel_free`). None ⇒ null ⇒ no-op free leg.
-    let raw = f.map_or(ptr::null_mut(), |f| f as *mut c_void);
-    // SAFETY: caller guarantees `ch` is a live reply channel reference; the
-    // Release store pairs with the Acquire load at final free.
-    unsafe {
-        (*ch).reply_drop_fn.store(raw, Ordering::Release);
-    }
+    // SAFETY: caller guarantees `ch` is a live reply channel pointer.
+    *unsafe { &(*ch).reply_drop_fn }.lock_or_recover() = f;
 }
 
 /// Cleanup callback for [`crate::await_cancel::HewAwaitCancel`] reply waits.
@@ -384,9 +395,8 @@ unsafe fn run_registered_reply_drop_on_value(ch: *mut HewReplyChannel, value: *m
             }
             return;
         }
-        let drop_raw = (*ch).reply_drop_fn.load(Ordering::Acquire);
-        if !drop_raw.is_null() {
-            let drop_fn = std::mem::transmute::<*mut c_void, HewReplyDropFn>(drop_raw);
+        let drop_fn = *(*ch).reply_drop_fn.lock_or_recover();
+        if let Some(drop_fn) = drop_fn {
             drop_fn(value);
         }
     }
@@ -434,12 +444,14 @@ unsafe fn publish_reply_from_sender_ref(
         // (a plain ask, no `| after d`) the reply is the only waker and always
         // wakes. The arbiter `complete` itself MUST still run unconditionally so a
         // winning reply cancels the timer.
-        let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
+        let await_cancel = retain_await_cancel(ch);
         let reply_won = if await_cancel.is_null() {
             true
         } else {
-            // SAFETY: the channel holds a retained registration reference.
-            hew_await_cancel_complete(await_cancel) != 0
+            // SAFETY: `retain_await_cancel` holds a retained registration ref.
+            let won = hew_await_cancel_complete(await_cancel) != 0;
+            hew_await_cancel_free(await_cancel);
+            won
         };
 
         // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
@@ -700,7 +712,7 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut H
               Internal Rust call sites that pass stack values or null \
               should bind the result to `_` to acknowledge the contract."]
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply(
+pub unsafe extern "C-unwind" fn hew_reply(
     ch: *mut HewReplyChannel,
     value: *mut c_void,
     size: usize,
@@ -720,10 +732,20 @@ pub unsafe extern "C" fn hew_reply(
             return false;
         }
 
+        if size > 0 && value.is_null() {
+            crate::set_last_error("hew_reply: null value with non-zero payload size");
+            hew_reply_channel_mark_failed(
+                ch,
+                crate::internal::types::HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED,
+            );
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+            return false;
+        }
+
         let mut copied_value = ptr::null_mut();
         let mut copied_size = 0;
         let mut delivered = true;
-        if size > 0 && !value.is_null() {
+        if size > 0 {
             // SAFETY: malloc for deep copy of reply payload.
             let buf = alloc_reply_buffer(size);
             if buf.is_null() {
@@ -766,7 +788,7 @@ pub unsafe extern "C" fn hew_reply(
 /// non-null, this function consumes exactly one reference. It must be called
 /// at most once for that retained reference.
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
+pub unsafe extern "C-unwind" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
     let ch = ch.cast::<HewReplyChannel>();
     if ch.is_null() {
         return;
@@ -1012,7 +1034,7 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
 ///
 /// `ch` must be null or the live sender-side reference for the current reply.
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply_channel_publish_cancelled(ch: *mut HewReplyChannel) {
+pub unsafe extern "C-unwind" fn hew_reply_channel_publish_cancelled(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
@@ -1030,7 +1052,7 @@ pub unsafe extern "C" fn hew_reply_channel_publish_cancelled(ch: *mut HewReplyCh
 ///
 /// `ch` must be null or the live sender-side reference for the current reply.
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply_channel_publish_task_failed(ch: *mut HewReplyChannel) {
+pub unsafe extern "C-unwind" fn hew_reply_channel_publish_task_failed(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
@@ -1055,11 +1077,14 @@ pub unsafe extern "C" fn hew_reply_channel_await_status(ch: *mut HewReplyChannel
     if ch.is_null() {
         return AwaitCancelStatus::Cancelled as i32;
     }
-    // SAFETY: caller holds a live channel reference.
-    let await_cancel = unsafe { (*ch).await_cancel.load(Ordering::Acquire) };
+    // SAFETY: caller holds a live channel pointer.
+    let await_cancel = unsafe { retain_await_cancel(ch) };
     if !await_cancel.is_null() {
-        // SAFETY: the channel holds a retained registration reference.
-        return unsafe { hew_await_cancel_status(await_cancel) };
+        // SAFETY: `retain_await_cancel` holds a live retained registration ref.
+        let status = unsafe { hew_await_cancel_status(await_cancel) };
+        // SAFETY: release the temporary retained ref acquired above.
+        unsafe { hew_await_cancel_free(await_cancel) };
+        return status;
     }
     // SAFETY: caller holds a live channel reference.
     unsafe {
@@ -2427,7 +2452,7 @@ mod tests {
     /// correctly ordered so TSAN can verify no data race on `value` or `refs`.
     #[test]
     fn threaded_cancel_races_late_reply() {
-        const ITERS: usize = 500;
+        const ITERS: usize = if cfg!(miri) { 8 } else { 500 };
         let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: ch is valid; ref counts are managed explicitly below.
@@ -2466,7 +2491,7 @@ mod tests {
     #[test]
     fn threaded_select_cancel_with_late_replies() {
         const ARMS: usize = 3;
-        const ITERS: usize = 200;
+        const ITERS: usize = if cfg!(miri) { 4 } else { 200 };
         let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: channel lifetimes are managed through ref counts;
@@ -2532,8 +2557,8 @@ mod tests {
     /// concurrent load.  TSAN checks ordering across the `ready` flag.
     #[test]
     fn threaded_parallel_roundtrips() {
-        const THREADS: usize = 8;
-        const ROUNDS: usize = 64;
+        const THREADS: usize = if cfg!(miri) { 2 } else { 8 };
+        const ROUNDS: usize = if cfg!(miri) { 4 } else { 64 };
         let _guard = crate::runtime_test_guard();
 
         let handles: Vec<_> = (0..THREADS)
@@ -2695,6 +2720,109 @@ mod tests {
                 "the diagnostic must name the branch and the classified cause; got: {msg}"
             );
             hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn hew_reply_null_value_with_nonzero_size_fails_closed() {
+        use crate::internal::types::HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED;
+        // SAFETY: channel owns one waiter and one sender reference.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_retain(ch);
+            assert!(
+                !hew_reply(ch, ptr::null_mut(), 16),
+                "null value with non-zero size must fail closed"
+            );
+            assert!(hew_reply_wait(ch).is_null());
+            assert_eq!(
+                hew_reply_channel_failure_kind(ch),
+                HEW_REPLY_FAIL_PAYLOAD_ALLOC_FAILED
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn reply_channel_await_cancel_replacement_and_concurrent_publish_is_sound() {
+        use crate::send_ptr::SendPtr;
+        // SAFETY: both arbiter registrations and channel live through join/free.
+        unsafe {
+            for round in 0..4 {
+                let ch = hew_reply_channel_new();
+                hew_reply_channel_retain(ch);
+                let first = crate::await_cancel::hew_await_cancel_new(
+                    ptr::null_mut(),
+                    None,
+                    ptr::null_mut(),
+                );
+                let second = crate::await_cancel::hew_await_cancel_new(
+                    ptr::null_mut(),
+                    None,
+                    ptr::null_mut(),
+                );
+                hew_reply_channel_set_await_cancel(ch, first);
+
+                let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+                let start_t = std::sync::Arc::clone(&start);
+                let ch_send = SendPtr::new(ch);
+                let second_send = SendPtr::new(second);
+                let updater = std::thread::spawn(move || {
+                    let ch_send = ch_send;
+                    let second_send = second_send;
+                    start_t.wait();
+                    hew_reply_channel_set_await_cancel(ch_send.as_ptr(), second_send.as_ptr());
+                    let _ = hew_reply_channel_await_status(ch_send.as_ptr());
+                });
+
+                start.wait();
+                if round % 2 == 0 {
+                    assert!(hew_reply(ch, ptr::null_mut(), 0));
+                } else {
+                    hew_reply_channel_publish_cancelled(ch);
+                }
+                updater.join().expect("await_cancel updater panicked");
+
+                crate::await_cancel::hew_await_cancel_free(first);
+                crate::await_cancel::hew_await_cancel_free(second);
+                hew_reply_channel_free(ch);
+            }
+        }
+    }
+
+    #[test]
+    fn reply_channel_typed_drop_fn_runs_without_transmute_on_cancel_and_unconsumed() {
+        static DROP_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        unsafe extern "C" fn count_drop(_val: *mut c_void) {
+            DROP_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // 1. Cancelled-before-reply invokes drop_fn once on producer payload.
+        DROP_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: channel owns one waiter and one sender ref; stack payload outlives reply.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_set_reply_drop_fn(ch, Some(count_drop));
+            hew_reply_channel_cancel(ch);
+            let mut val = 123_u64;
+            assert!(!hew_reply(ch, (&raw mut val).cast(), size_of::<u64>()));
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
+            hew_reply_channel_free(ch);
+        }
+
+        // 2. Delivered-but-unconsumed reply invokes drop_fn once at channel free.
+        DROP_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: channel owns both references; final free reclaims copied payload.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_set_reply_drop_fn(ch, Some(count_drop));
+            let mut val = 456_u64;
+            assert!(hew_reply(ch, (&raw mut val).cast(), size_of::<u64>()));
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 0);
+            hew_reply_channel_free(ch);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
         }
     }
 }

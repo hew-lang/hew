@@ -28,10 +28,6 @@
 //! - [`hew_connmgr_add`] — Add a connection (spawns reader thread).
 //! - [`hew_connmgr_remove`] — Remove and close a connection.
 //! - [`hew_connmgr_count`] — Number of active connections.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::collections::HashMap;
 use std::ffi::c_int;

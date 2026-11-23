@@ -47,6 +47,11 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 /// First registration for a dispatch key wins; later names are dropped.
 pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: String) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
+    register_dispatch_type_addr(key, type_name);
+}
+
+/// Register a Hew type name by raw dispatch pointer address.
+pub(crate) fn register_dispatch_type_addr(key: usize, type_name: String) {
     if key == 0 {
         return;
     }
@@ -158,6 +163,11 @@ pub fn register_handler_name(
     handler_name: String,
 ) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
+    register_handler_name_addr(key, msg_type, handler_name);
+}
+
+/// Register a fully-qualified handler name by raw dispatch pointer address.
+pub(crate) fn register_handler_name_addr(key: usize, msg_type: i32, handler_name: String) {
     if key == 0 {
         return;
     }

@@ -2,10 +2,6 @@
 //!
 //! CPython-compatible MT19937 Mersenne Twister PRNG with `#[no_mangle]
 //! extern "C"` FFI functions. State is thread-local (one generator per thread).
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::cell::RefCell;
 use std::mem;
@@ -322,13 +318,13 @@ pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
     if unsafe { validate_vec_shape(v, mem::size_of::<i64>(), "hew_random_shuffle_i64") }.is_none() {
         return;
     }
-    // SAFETY: caller guarantees `v` is valid.
+    // SAFETY: `validate_vec_shape` established `v` is a valid `HewVec`.
+    let len = unsafe { (*v).len };
+    if len <= 1 {
+        return;
+    }
+    // SAFETY: `v` is non-null with > 1 elements; uniqueness precedes data read.
     unsafe {
-        let vec = &mut *v;
-        let len = vec.len;
-        if len <= 1 {
-            return;
-        }
         crate::vec::hew_vec_make_unique(v);
         let data = (*v).data.cast::<i64>();
         MT_STATE.with(|s| {
@@ -522,6 +518,32 @@ mod tests {
                 err.contains("expected elem_size 8"),
                 "unexpected error: {err}"
             );
+            crate::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn wave4b_random_shuffle_i64_unique_and_short_vecs() {
+        // SAFETY: allocates valid i64 vectors, clones for CoW, shuffles, and frees both.
+        unsafe {
+            let empty = crate::vec::hew_vec_new_i64();
+            hew_random_shuffle_i64(empty);
+            crate::vec::hew_vec_free(empty);
+
+            let v = crate::vec::hew_vec_new_i64();
+            for x in [10_i64, 20, 30, 40] {
+                crate::vec::hew_vec_push_i64(v, x);
+            }
+            let clone = crate::vec::hew_vec_clone(v);
+            hew_random_shuffle_i64(v);
+            assert_eq!(crate::vec::hew_vec_len(clone), 4);
+            for (idx, expected) in [10_i64, 20, 30, 40].into_iter().enumerate() {
+                assert_eq!(
+                    crate::vec::hew_vec_get_i64(clone, i64::try_from(idx).unwrap()),
+                    expected
+                );
+            }
+            crate::vec::hew_vec_free(clone);
             crate::vec::hew_vec_free(v);
         }
     }

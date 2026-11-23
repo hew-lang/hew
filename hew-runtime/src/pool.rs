@@ -1,7 +1,3 @@
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 //! Actor pool abstraction with configurable routing strategies.
 
 use std::ffi::c_char;
@@ -98,7 +94,7 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_id: u64) ->
         return -1;
     }
     // SAFETY: Caller guarantees `pool` is valid.
-    let pool = unsafe { &mut *pool };
+    let pool = unsafe { &*pool };
     if pool_is_freed(pool) {
         return -1;
     }
@@ -122,7 +118,7 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_id: u64)
         return -1;
     }
     // SAFETY: Caller guarantees `pool` is valid.
-    let pool = unsafe { &mut *pool };
+    let pool = unsafe { &*pool };
     if pool_is_freed(pool) {
         return -1;
     }
@@ -196,7 +192,7 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
         return 0;
     }
     // SAFETY: Caller guarantees `pool` is valid.
-    let pool = unsafe { &mut *pool };
+    let pool = unsafe { &*pool };
     if pool_is_freed(pool) {
         return 0;
     }

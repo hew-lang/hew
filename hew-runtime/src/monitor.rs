@@ -3,10 +3,6 @@
 //! In Erlang-style actor systems, monitors are unidirectional: when actor A
 //! monitors actor B, if B dies, A receives a DOWN message but does NOT crash.
 //! This module implements the monitor table and death notification logic.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -1379,6 +1375,9 @@ unsafe fn register_local_monitor(
     target: Option<&HewActor>,
     out_monitor_id: *mut u64,
 ) -> i32 {
+    if out_monitor_id.is_null() {
+        return -1;
+    }
     // Generate one shared local/remote observation ID.
     let state = monitor_state();
     let ref_id = state
@@ -1409,7 +1408,10 @@ unsafe fn register_local_monitor(
                 state: reason,
                 end: crate::internal::types::ActorEndReason::from_terminal(
                     reason,
-                    crate::mailbox::mailbox_terminate_requested(target_ref.mailbox.cast()),
+                    // SAFETY: target_ref is live for this access and its mailbox is null or live.
+                    unsafe {
+                        crate::mailbox::mailbox_terminate_requested(target_ref.mailbox.cast())
+                    },
                 ),
                 crash_kind: if reason == HewActorState::Crashed as i32 {
                     crate::internal::types::CrashKind::tag_from_error_code(
@@ -1467,6 +1469,9 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
     target: HewLocalPidId,
     out_monitor_id: *mut u64,
 ) -> i32 {
+    if out_monitor_id.is_null() {
+        return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
+    }
     let watcher = crate::actor::hew_actor_self();
     if watcher.is_null() {
         return HEW_OBSERVATION_NO_CONTEXT;
@@ -3389,6 +3394,18 @@ mod tests {
                 RemoteWatcherSetup::Terminal(expected),
             );
             crate::actor::hew_actor_free(actor);
+        }
+    }
+
+    #[test]
+    fn wave4a_native_actor_monitor_null_out_fails_closed() {
+        // SAFETY: explicit null `out_monitor_id` must return an error without dereferencing.
+        unsafe {
+            assert_eq!(
+                hew_native_actor_monitor(HewLocalPidId::INVALID, std::ptr::null_mut()),
+                -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+            );
+            assert_eq!(register_local_monitor(1, 2, None, std::ptr::null_mut()), -1);
         }
     }
 }

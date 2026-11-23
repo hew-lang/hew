@@ -287,8 +287,10 @@ pub(super) fn reader_loop(
                         set_last_error("request envelope has reply status");
                         continue;
                     };
-                    let identity = std::ffi::CString::new(identity.as_str())
-                        .expect("decoded wire identity excludes NUL");
+                    let Ok(identity) = std::ffi::CString::new(identity.as_str()) else {
+                        set_last_error("decoded wire identity contains interior NUL");
+                        continue;
+                    };
                     // I/O recv span: bracket the router call so the
                     // mailbox enqueue captures the io_recv span as the
                     // parent of the actor-dispatch span.

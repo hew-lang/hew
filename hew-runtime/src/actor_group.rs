@@ -9,10 +9,6 @@
 //! **Note:** `HewActorGroup` is currently unintegrated and retained as a
 //! reference design for future heap-allocated actor groups. It is not
 //! currently emitted by codegen.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -73,8 +69,7 @@ pub struct HewActorGroup {
     /// validate liveness through `LIVE_ACTORS` (keyed by ID) rather than
     /// dereferencing the raw pointer bare — closing the UAF window that
     /// opens when a supervisor frees a sibling while `wait_all` loops.
-    actors: Vec<(u64, *mut c_void)>,
-    lock: std::sync::Mutex<()>,
+    actors: std::sync::Mutex<Vec<(u64, *mut c_void)>>,
     done_cond: Arc<std::sync::Condvar>,
 }
 
@@ -94,8 +89,7 @@ unsafe impl Sync for HewActorGroup {}
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_group_new() -> *mut HewActorGroup {
     let group = Box::new(HewActorGroup {
-        actors: Vec::with_capacity(HEW_ACTOR_GROUP_INIT_CAP),
-        lock: std::sync::Mutex::new(()),
+        actors: std::sync::Mutex::new(Vec::with_capacity(HEW_ACTOR_GROUP_INIT_CAP)),
         done_cond: Arc::new(std::sync::Condvar::new()),
     });
     Box::into_raw(group) // ALLOCATOR-PAIRING: GlobalAlloc
@@ -118,11 +112,13 @@ pub unsafe extern "C" fn hew_actor_group_destroy(g: *mut HewActorGroup) {
     let group = unsafe { Box::from_raw(g) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Unregister death notifiers for all tracked actors.
-    for &(actor_id, _actor_ptr) in &group.actors {
+    let actors = group
+        .actors
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (actor_id, _actor_ptr) in actors {
         unregister_death_notifier(actor_id, &group.done_cond);
     }
-
-    drop(group);
 }
 
 // ── Add ────────────────────────────────────────────────────────────────
@@ -141,9 +137,9 @@ pub unsafe extern "C" fn hew_actor_group_add(g: *mut HewActorGroup, actor: *mut 
         return -1;
     }
     // SAFETY: Caller guarantees `g` is valid.
-    let group = unsafe { &mut *g };
+    let group = unsafe { &*g };
 
-    let _guard = group.lock.lock_or_recover();
+    let mut actors = group.actors.lock_or_recover();
 
     // Register death notifier so wait_all wakes immediately on actor death.
     let a = actor.cast::<HewActor>();
@@ -151,7 +147,7 @@ pub unsafe extern "C" fn hew_actor_group_add(g: *mut HewActorGroup, actor: *mut 
     let actor_id = unsafe { (*a).id };
     register_death_notifier(actor_id, Arc::clone(&group.done_cond));
 
-    group.actors.push((actor_id, actor));
+    actors.push((actor_id, actor));
     0
 }
 
@@ -176,8 +172,8 @@ fn is_terminal(state: i32) -> bool {
 /// If an actor has already been removed from `LIVE_ACTORS` (freed by a
 /// supervisor before we reach it), we treat it as terminal: a freed actor
 /// is no longer running.
-fn all_stopped(group: &HewActorGroup) -> bool {
-    for &(actor_id, actor_ptr) in &group.actors {
+fn all_stopped(actors: &[(u64, *mut c_void)]) -> bool {
+    for &(actor_id, actor_ptr) in actors {
         if actor_ptr.is_null() {
             continue;
         }
@@ -213,15 +209,16 @@ pub unsafe extern "C" fn hew_actor_group_wait_all(g: *mut HewActorGroup) {
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &*g };
 
+    let mut guard = group.actors.lock_or_recover();
     loop {
-        let guard = group.lock.lock_or_recover();
-        if all_stopped(group) {
+        if all_stopped(&guard) {
             return;
         }
         // Wait with a 10 ms timeout to re-check actor states.
-        let (_guard, _timeout) = group
+        let (new_guard, _timeout) = group
             .done_cond
             .wait_timeout_or_recover(guard, std::time::Duration::from_millis(10));
+        guard = new_guard;
     }
 }
 
@@ -245,10 +242,10 @@ pub unsafe extern "C" fn hew_actor_group_wait_timeout(
 
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_millis(u64::try_from(timeout_ms.max(0)).unwrap_or(0));
-    let mut guard = group.lock.lock_or_recover();
+    let mut guard = group.actors.lock_or_recover();
 
     loop {
-        if all_stopped(group) {
+        if all_stopped(&guard) {
             return 0;
         }
 
@@ -261,7 +258,7 @@ pub unsafe extern "C" fn hew_actor_group_wait_timeout(
         let (new_guard, wait_result) = group.done_cond.wait_timeout_or_recover(guard, wait_for);
         guard = new_guard;
 
-        if wait_result.timed_out() && all_stopped(group) {
+        if wait_result.timed_out() && all_stopped(&guard) {
             return 0;
         }
     }
@@ -282,8 +279,8 @@ pub unsafe extern "C" fn hew_actor_group_stop_all(g: *mut HewActorGroup) {
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &*g };
 
-    let _guard = group.lock.lock_or_recover();
-    for &(actor_id, actor_ptr) in &group.actors {
+    let actors = group.actors.lock_or_recover();
+    for &(actor_id, actor_ptr) in &*actors {
         if actor_ptr.is_null() {
             continue;
         }
@@ -359,13 +356,11 @@ pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count
         return -1;
     }
 
+    let Ok(count) = usize::try_from(count) else {
+        return -1;
+    };
     let mut first_error: i32 = 0;
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "count >= 0 checked above; practical array sizes fit in usize"
-    )]
-    for i in 0..count as usize {
+    for i in 0..count {
         // SAFETY: Caller guarantees the array is valid for `count` elements.
         let actor = unsafe { *actors.add(i) };
         if actor.is_null() {
@@ -739,5 +734,39 @@ mod tests {
         // (which calls untrack_actor and drops the box but does NOT access mailbox).
         // SAFETY: actor allocation is valid; we own it exclusively here.
         unsafe { (*actor.ptr()).mailbox = ptr::null_mut() };
+    }
+
+    #[test]
+    fn wave4b_actor_group_concurrent_add_and_await_all_guards() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: `hew_actor_group_new` has no preconditions.
+        let g = unsafe { hew_actor_group_new() };
+        assert!(!g.is_null());
+        let addr = g as usize;
+        let actor = TrackedActor::install(stub_actor(next_id(), HewActorState::Stopped));
+        let actor_addr = actor.ptr() as usize;
+        let t = std::thread::spawn(move || {
+            // SAFETY: `g` and `actor` outlive the joined thread.
+            unsafe {
+                assert_eq!(
+                    hew_actor_group_add(addr as *mut HewActorGroup, actor_addr as *mut c_void),
+                    0
+                );
+            }
+        });
+        // SAFETY: `g` is live; concurrent `wait_timeout` synchronizes cleanly via `Mutex`.
+        unsafe {
+            let _ = hew_actor_group_wait_timeout(g, 5);
+        }
+        t.join().unwrap();
+        // SAFETY: all actors in `g` are stopped; destroy frees `g`.
+        unsafe {
+            assert_eq!(hew_actor_group_wait_timeout(g, 50), 0);
+            hew_actor_group_stop_all(g);
+            hew_actor_group_destroy(g);
+            let dummy: *mut HewActor = ptr::null_mut();
+            assert_eq!(hew_actor_await_all(&raw const dummy, -1), -1);
+            assert_eq!(hew_actor_await_all(ptr::null(), 1), -1);
+        }
     }
 }

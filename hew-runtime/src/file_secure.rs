@@ -5,10 +5,6 @@
 //! does. What a platform cannot do is reported as unsupported, never
 //! approximated: Windows has no Unix permission mode or numeric owner, so the
 //! entries that create with a mode or check one refuse there.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::bytes::BytesTriple;
 use crate::file_io::{clear_file_io_error, file_path, set_file_io_errno, set_file_io_error_or};
@@ -303,6 +299,10 @@ pub unsafe extern "C" fn hew_fs_create_new(
     let Some(target) = (unsafe { file_path(path, "hew_fs_create_new", Access::Write) }) else {
         return FAILED;
     };
+    if data.is_null() {
+        set_file_io_errno("hew_fs_create_new", "null bytes pointer", libc::EINVAL);
+        return FAILED;
+    }
     // SAFETY: data is a valid borrowed triple per the contract.
     let data = unsafe { crate::bytes::active(&*data) };
     match create_new(Path::new(&target), data, mode) {
@@ -939,6 +939,18 @@ mod tests {
                 crate::stream_error::IO_ERROR_KIND_UNSUPPORTED
             );
             assert_eq!(crate::stream_error::take_last_errno(), 0);
+        }
+        release(path);
+    }
+
+    #[test]
+    fn wave4b_fs_create_new_null_data_fails_closed() {
+        let scratch = Scratch::new("null-data");
+        let path = managed(&scratch.0.join("unused"));
+        // SAFETY: `path` is a live managed string handle; null `data` must fail closed.
+        unsafe {
+            assert_eq!(hew_fs_create_new(path, std::ptr::null(), 0o600), FAILED);
+            assert_eq!(crate::stream_error::take_last_errno(), libc::EINVAL);
         }
         release(path);
     }

@@ -13,10 +13,6 @@
 //!
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 //! - [`sched_try_wake`] — wake a parked worker thread.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -393,6 +389,11 @@ impl Scheduler {
     /// Mirrors the placeholder discriminator in `init_real_scheduler_for_test`.
     pub(crate) fn is_worker_backed(&self) -> bool {
         !self.stealers.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shutdown_for_test(&self) {
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 
@@ -1180,22 +1181,28 @@ pub(crate) use crate::mailbox::{MESSAGES_RECEIVED, MESSAGES_SENT};
 
 /// Push an owned queue entry onto the work-stealing queue and wake a worker.
 pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
-    let sched = get_scheduler().expect("scheduler not initialized");
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     sched_enqueue_owned_inner(sched, entry);
 }
 
 /// Publish ready work on the same worker pool as actor activations.
 pub(crate) fn enqueue_work(task: std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>) {
-    let sched = get_scheduler().expect("scheduler not initialized");
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     sched.task_queue.push(task);
     sched_try_wake();
 }
 
 pub(crate) fn sched_enqueue(actor: *mut HewActor) {
-    let sched = get_scheduler().expect("scheduler not initialized");
     if actor.is_null() {
         return;
     }
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     // SAFETY: every production caller holds a live actor while transferring
     // that lifetime to the scheduler queue entry.
     let entry = unsafe { SchedulerQueueEntry::retain(actor) };
@@ -3783,7 +3790,7 @@ mod tests {
 
     #[test]
     fn resumed_checked_crash_preserves_message_identity_after_invocation_cleanup() {
-        unsafe extern "C" fn fail_after_resume(frame: *mut c_void) {
+        unsafe extern "C-unwind" fn fail_after_resume(frame: *mut c_void) {
             let context = crate::execution_context::current_context();
             // SAFETY: the test owns this active actor, invocation and scratch frame.
             unsafe {
@@ -4785,7 +4792,7 @@ mod tests {
     /// equivalent of the concurrent stop: the actor is `Running` at exactly the
     /// instant `hew_actor_stop` reads its state, which is the only interleaving
     /// in which the flag is taken.
-    unsafe extern "C" fn stop_during_resume_outline(_frame: *mut std::ffi::c_void) {
+    unsafe extern "C-unwind" fn stop_during_resume_outline(_frame: *mut std::ffi::c_void) {
         let actor = STOP_ON_RESUME_ACTOR.swap(ptr::null_mut(), Ordering::AcqRel);
         if !actor.is_null() {
             // SAFETY: the actor is live for the duration of the activation that

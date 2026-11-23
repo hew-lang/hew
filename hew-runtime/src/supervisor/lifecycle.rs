@@ -373,8 +373,12 @@ pub unsafe extern "C" fn hew_supervisor_new(
 ) -> *mut HewSupervisor {
     #[cfg(not(target_arch = "wasm32"))]
     let runtime = crate::runtime::rt_current();
-    let handles = crate::lifetime::local_handles::current_handles()
-        .expect("supervisor construction requires its local handle authority");
+    let Some(handles) = crate::lifetime::local_handles::current_handles() else {
+        set_last_error(
+            "hew_supervisor_new: supervisor construction requires a local handle authority",
+        );
+        return ptr::null_mut();
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let runtime_id = runtime.runtime_id();
     #[cfg(target_arch = "wasm32")]
@@ -1056,6 +1060,7 @@ pub(crate) fn stop_local_supervisor(
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn supervisor_cancelled_construction_settles_refused_delivered_events() {
@@ -5266,10 +5271,13 @@ mod tests {
             .state
             .cast::<HeapState>();
         assert!(!spec_template.is_null());
-        let payload = (*spec_template).payload;
-        assert!(!payload.is_null());
-        crate::mem::buf_free(payload.cast::<c_void>());
-        payload
+        // SAFETY: `spec_template` is valid for this test fixture and owns `payload`.
+        unsafe {
+            let payload = (*spec_template).payload;
+            assert!(!payload.is_null());
+            crate::mem::buf_free(payload.cast::<c_void>());
+            payload
+        }
     }
 
     unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
@@ -5280,15 +5288,18 @@ mod tests {
         // a `state_clone_fn` now refuses the restart outright, so this
         // probe proves the refusal instead of the fault.
         let _rt = crate::runtime_test_guard();
-        let (sup, _template) = make_supervisor_with_heap_child(false);
-        let _dangling_payload = free_spec_template_payload(sup);
+        // SAFETY: test subprocess owns `sup` until exit.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(false);
+            let _dangling_payload = free_spec_template_payload(sup);
 
-        let restarted = restart_child_from_spec(sup, 0);
-        assert!(
-            restarted.is_null(),
-            "a state_drop_fn registered without state_clone_fn must refuse the restart, \
-             not byte-copy a freed spec payload"
-        );
+            let restarted = restart_child_from_spec(sup, 0);
+            assert!(
+                restarted.is_null(),
+                "a state_drop_fn registered without state_clone_fn must refuse the restart, \
+                 not byte-copy a freed spec payload"
+            );
+        }
 
         std::process::exit(0);
     }
@@ -5615,6 +5626,60 @@ mod tests {
             registered,
             "sweep inside the handback window dropped the root"
         );
+    }
+
+    #[test]
+    fn nested_supervisor_teardown_retains_unvisited_siblings_on_timeout() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: test owns parent and both attached nested supervisors until handback cleanup.
+        unsafe {
+            let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            let child_a = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            let child_b = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!parent.is_null() && !child_a.is_null() && !child_b.is_null());
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, child_a), 0);
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, child_b), 0);
+
+            (*parent)
+                .roster
+                .lock_or_recover()
+                .retiring_children
+                .push(Arc::new(
+                    crate::actor_native::NativeActorCompletion::with_crash(None),
+                ));
+
+            roots::hew_shutdown_register_supervisor(parent);
+            let teardown = begin_supervisor_teardown(parent).expect("lease");
+            assert_eq!(
+                claim_supervisor_teardown(parent),
+                crate::lifetime::local_handles::TeardownClaim::Won
+            );
+            roots::hew_shutdown_unregister_supervisor(parent);
+
+            crate::runtime::rt_current()
+                .scheduler
+                .set_shutdown_for_test();
+            assert!(
+                !stop_supervisor_owned(parent, &teardown),
+                "unfinished retiring child during shutdown must time out after first child"
+            );
+            drop(teardown);
+
+            let remaining_nested = (*parent)
+                .roster
+                .lock_or_recover()
+                .child_supervisors
+                .iter()
+                .filter(|p| !p.is_null())
+                .count();
+            assert_eq!(
+                remaining_nested, 1,
+                "unvisited nested child supervisor must remain rooted in parent roster"
+            );
+
+            (*parent).roster.lock_or_recover().retiring_children.clear();
+            crate::scheduler::hew_runtime_cleanup();
+        }
     }
 }
 

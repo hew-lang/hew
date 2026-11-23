@@ -81,9 +81,16 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
     _parent: *mut HewCoroState,
     out_status: *mut i32,
 ) -> *mut HewNativeReply {
+    if out_status.is_null() {
+        return ptr::null_mut();
+    }
     // SAFETY: generated code lends the initialized result and writable status.
     unsafe {
         out_status.write(0);
+        if layout.is_null() || ((*layout).size != 0 && value.is_null()) {
+            out_status.write(hew_cabi::managed::UNDESCRIBED);
+            return ptr::null_mut();
+        }
         let owner = crate::owned_value_budget::current_owner();
         let width = if owner.is_some() {
             match crate::owned_value_budget::visit::slot_bytes(&*layout) {
@@ -160,10 +167,17 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
 /// # Panics
 /// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_reply_poll_native(
+#[expect(
+    clippy::too_many_lines,
+    reason = "checked reply polling sequences terminal, cancel, and transfer gates"
+)]
+pub unsafe extern "C-unwind" fn hew_actor_reply_poll_native(
     operation: *mut HewNativeReply,
     parent: *mut HewCoroState,
 ) -> i32 {
+    if operation.is_null() {
+        return CoroStatus::Complete as i32;
+    }
     // SAFETY: the checked continuation owns this operation until terminal cleanup.
     unsafe {
         let identity = operation as usize;
@@ -173,6 +187,14 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
         }
         let channel = operation.channel;
         if channel.is_null() {
+            operation.terminal = true;
+            return CoroStatus::Complete as i32;
+        }
+        if parent.is_null() {
+            operation.transfer = None;
+            release_gate(channel, identity);
+            operation.channel = ptr::null_mut();
+            super::super::hew_reply_channel_publish_task_failed(channel);
             operation.terminal = true;
             return CoroStatus::Complete as i32;
         }
@@ -192,7 +214,16 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             operation.terminal = true;
             return CoroStatus::Complete as i32;
         }
-        let wake = OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(parent));
+        let waker_ptr = crate::coro_state::hew_coro_state_waker(parent);
+        if waker_ptr.is_null() {
+            operation.transfer = None;
+            release_gate(channel, identity);
+            operation.channel = ptr::null_mut();
+            super::super::hew_reply_channel_publish_task_failed(channel);
+            operation.terminal = true;
+            return CoroStatus::Complete as i32;
+        }
+        let wake = OwnedWaker::retain(&*waker_ptr);
         let (destination, binding) = {
             let mut owner = (*channel).native.lock_or_recover();
             if !owner.claim(identity, Some(wake.clone())) {
@@ -267,17 +298,20 @@ unsafe fn free_reply_storage(value: *mut c_void) {
 /// Hand an unpublished result to the existing typed consuming cleanup walker.
 /// # Safety
 /// Publication is terminal and this function is called once before free.
-///
-/// # Panics
-/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_take_cleanup_native(
     operation: *mut HewNativeReply,
 ) -> *mut HewReleaseCursor {
+    if operation.is_null() {
+        return ptr::null_mut();
+    }
     // SAFETY: terminal ownership belongs exclusively to this checked continuation.
     unsafe {
         let operation = &mut *operation;
-        assert!(operation.terminal);
+        if !operation.terminal {
+            eprintln!("fatal: hew_actor_reply_take_cleanup_native called before terminal");
+            std::process::abort();
+        }
         if operation.taken {
             return ptr::null_mut();
         }
@@ -325,18 +359,18 @@ pub(super) unsafe fn release_payload(
 /// Release a terminal operation after taking its remaining cleanup obligations.
 /// # Safety
 /// The caller owns this operation and has stopped polling it.
-///
-/// # Panics
-/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_reply_free_native(operation: *mut HewNativeReply) {
+pub unsafe extern "C-unwind" fn hew_actor_reply_free_native(operation: *mut HewNativeReply) {
     if operation.is_null() {
         return;
     }
     // SAFETY: the caller transfers one final operation owner.
     unsafe {
         let operation = Box::from_raw(operation);
-        assert!(operation.terminal && operation.taken && operation.transfer.is_none());
+        if !(operation.terminal && operation.taken && operation.transfer.is_none()) {
+            eprintln!("fatal: hew_actor_reply_free_native called out of lifecycle order");
+            std::process::abort();
+        }
         if !operation.channel.is_null() {
             super::super::hew_reply_channel_free(operation.channel);
         }
@@ -683,6 +717,91 @@ mod tests {
             assert!(driver.take_fault().is_null());
             drop(driver);
             assert_eq!(destination.live_bytes(), 0);
+            hew_actor_reply_free_native(operation);
+            super::super::super::hew_reply_channel_free(channel);
+            crate::coro_state::hew_coro_state_free(parent);
+        }
+    }
+
+    #[test]
+    fn reply_operation_entry_points_fail_closed_on_null() {
+        static NON_ZERO_LAYOUT: HewValueLayout = HewValueLayout { size: 8, ..SCALAR };
+        // SAFETY: all guarded C entry points handle null inputs without UB.
+        unsafe {
+            let mut status = 0_i32;
+            assert!(hew_actor_reply_start_native(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+            .is_null());
+            assert!(hew_actor_reply_start_native(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            status = 0;
+            assert!(hew_actor_reply_start_native(
+                ptr::null_mut(),
+                &raw const NON_ZERO_LAYOUT,
+                ptr::null_mut(),
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            assert_eq!(
+                hew_actor_reply_poll_native(ptr::null_mut(), ptr::null_mut()),
+                CoroStatus::Complete as i32
+            );
+            assert!(hew_actor_reply_take_cleanup_native(ptr::null_mut()).is_null());
+            hew_actor_reply_free_native(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn poll_with_null_parent_completes_terminal_failure_without_aborting_cleanup() {
+        let (_ready, wake) = Readiness::new();
+        // SAFETY: fixture owns channel, parent coro state, value, and operation cleanly.
+        unsafe {
+            let channel = super::super::hew_reply_channel_new_native(
+                wake.descriptor(),
+                None,
+                None,
+                &raw const SCALAR,
+            );
+            super::super::super::hew_reply_channel_retain(channel);
+            let _context = TestExecutionContext::install(HewExecutionContext {
+                reply_channel: channel.cast(),
+                ..HewExecutionContext::default()
+            });
+            let parent = crate::coro_state::hew_coro_state_new(wake.descriptor(), ptr::null_mut());
+            let mut value = 99_u64;
+            let mut status = -1;
+            let operation = hew_actor_reply_start_native(
+                (&raw mut value).cast(),
+                &raw const SCALAR,
+                parent,
+                &raw mut status,
+            );
+            assert!(!operation.is_null());
+            assert_eq!(status, 0);
+
+            assert_eq!(
+                hew_actor_reply_poll_native(operation, ptr::null_mut()),
+                CoroStatus::Complete as i32
+            );
+            let cleanup = hew_actor_reply_take_cleanup_native(operation);
+            assert!(!cleanup.is_null());
+            let mut driver = crate::release_walker::ReleaseDriver::new(cleanup);
+            assert!(driver.poll(parent));
+            assert!(driver.take_fault().is_null());
+            drop(driver);
             hew_actor_reply_free_native(operation);
             super::super::super::hew_reply_channel_free(channel);
             crate::coro_state::hew_coro_state_free(parent);

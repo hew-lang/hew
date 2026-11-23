@@ -12,8 +12,8 @@
 //! rather than the `extern "C"` entry points directly. This mirrors the
 //! pattern from `ffi_boundary_layout_hashmap.rs`: the test harness can only
 //! observe a `panic!()` (not a `std::process::abort()`) at a Rust-only call
-//! site, and the `extern "C"` entry points for null-set / null-elem use
-//! `panic!()` internally via the shared validators.
+//! site, whereas the `extern "C"` entry points abort fail-closed directly on
+//! null set / elem pointers.
 
 #![expect(
     clippy::undocumented_unsafe_blocks,
@@ -402,10 +402,7 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
 #[test]
 #[should_panic]
 fn layout_hashset_null_set_aborts() {
-    // SAFETY: intentionally null set — tests the fail-closed gate.
-    unsafe {
-        validate_set_op(ptr::null());
-    }
+    validate_set_op(ptr::null());
 }
 
 /// A null `elem` pointer to an element operation panics fail-closed.
@@ -418,10 +415,7 @@ fn layout_hashset_null_elem_aborts() {
     // should_panic semantics, consistent with the C-1b test pattern).
     let kl = elem_layout_point();
     let s = unsafe { hew_hashset_new_with_layout(&raw const kl) };
-    // SAFETY: s non-null; elem is intentionally null — tests the fail-closed gate.
-    unsafe {
-        validate_set_op_elem(s.cast_const(), ptr::null());
-    }
+    validate_set_op_elem(s.cast_const(), ptr::null());
     // Unreachable; appease the type system.
     unsafe { hew_hashset_free_layout(s) };
 }

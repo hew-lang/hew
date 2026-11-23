@@ -3,16 +3,12 @@
 //! Implements event-driven supervision with three restart strategies
 //! (one-for-one, one-for-all, rest-for-one) and sliding-window restart
 //! tracking. Mirrors the C implementation in `hew-codegen/runtime/src/supervisor.c`.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1855,32 +1851,22 @@ pub type HewNativeChildSpawnFn = unsafe extern "C-unwind" fn(
 /// without mutating or replacing an Arc generation.
 #[derive(Debug)]
 struct ChildStateDropDescriptor {
-    function: AtomicUsize,
+    function: Mutex<Option<unsafe extern "C" fn(*mut c_void)>>,
 }
 
 impl ChildStateDropDescriptor {
     fn new() -> Self {
         Self {
-            function: AtomicUsize::new(0),
+            function: Mutex::new(None),
         }
     }
 
     fn store(&self, function: unsafe extern "C" fn(*mut c_void)) {
-        self.function.store(function as usize, Ordering::Release);
+        *self.function.lock_or_recover() = Some(function);
     }
 
     fn load(&self) -> Option<unsafe extern "C" fn(*mut c_void)> {
-        let function = self.function.load(Ordering::Acquire);
-        if function == 0 {
-            None
-        } else {
-            // SAFETY: the only non-zero values stored above came from this
-            // exact C-ABI function-pointer type, and function/data pointers are
-            // the same width on every supported Hew runtime target.
-            Some(unsafe {
-                std::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(function)
-            })
-        }
+        *self.function.lock_or_recover()
     }
 }
 

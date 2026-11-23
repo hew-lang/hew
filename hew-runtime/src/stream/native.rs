@@ -124,6 +124,8 @@ pub unsafe extern "C" fn hew_managed_visit_stream_operation(
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
     use hew_cabi::managed::UNDESCRIBED;
+    cabi_guard!(slot.is_null(), 0);
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
     // SAFETY: the compiler supplies the operation's live handle slot.
     unsafe {
         let pointer = slot.cast::<*mut HewNativeStream>().read();
@@ -279,11 +281,18 @@ pub unsafe extern "C" fn hew_stream_read_ready_native(
     out: *mut c_void,
     fault_out: *mut *mut crate::fault::HewFault,
 ) -> i32 {
+    if !fault_out.is_null() {
+        // SAFETY: caller supplies writable fault_out when non-null.
+        unsafe { *fault_out = std::ptr::null_mut() };
+    }
+    cabi_guard!(
+        stream.is_null() || layout.is_null() || out.is_null() || fault_out.is_null(),
+        2
+    );
     // SAFETY: the caller supplies the same exact witness as a parked receive.
     let layout = unsafe { move_elem_layout_witness(layout, "ready native stream read") };
     // SAFETY: the exclusive loan and output slots survive this call.
     unsafe {
-        *fault_out = std::ptr::null_mut();
         if (*stream).exhausted() {
             return 2;
         }
@@ -318,6 +327,10 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
     layout: *const HewValueLayout,
     parent: *mut crate::coro_state::HewCoroState,
 ) -> *mut HewNativeStream {
+    cabi_guard!(
+        stream.is_null() || waker.is_null() || layout.is_null(),
+        std::ptr::null_mut()
+    );
     // SAFETY: compiler-provided live operands satisfy the start contract.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream read") };
     #[cfg(not(target_arch = "wasm32"))]
@@ -419,11 +432,25 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     sink_layout: *const HewValueLayout,
     out_status: *mut i32,
 ) -> *mut HewNativeStream {
+    cabi_guard!(out_status.is_null(), std::ptr::null_mut());
+    // SAFETY: out_status is writable; clear it before validating other pointers.
+    unsafe { out_status.write(0) };
+    if sink.is_null() || waker.is_null() || layout.is_null() || sink_layout.is_null() {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `layout` was verified non-null above.
+    let needs_data = unsafe { crate::vec::layout_needs_slot(&*layout) };
+    if data.is_null() && needs_data {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return std::ptr::null_mut();
+    }
     // SAFETY: the source read loan pins the endpoint and its exact descriptor.
     unsafe { super::sender::retain(sink, sink_layout, false) };
     // SAFETY: the installed owner serializes every underlying write through terminal cleanup.
     unsafe {
-        out_status.write(0);
         match start_underlying(sink, waker, data, layout, parent, park) {
             Ok(operation) => operation,
             Err(status) => {
@@ -732,6 +759,7 @@ pub(super) unsafe fn start_underlying(
 /// Operation is a live exclusive read operation; out is one writable element.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeStream) -> i32 {
+    cabi_guard!(operation.is_null(), 2);
     // SAFETY: the creator reference remains live throughout this exclusive poll.
     let owner = unsafe { HewNativeStream::borrow(operation) };
     // SAFETY: the caller lends the live exclusive operation.
@@ -788,6 +816,7 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
 pub unsafe extern "C" fn hew_stream_operation_fault_native(
     operation: *mut HewNativeStream,
 ) -> *mut crate::fault::HewFault {
+    cabi_guard!(operation.is_null(), std::ptr::null_mut());
     // SAFETY: the creator exclusively lends state; notifications access only the header.
     let state = unsafe { &mut **(*operation).state.get() };
     // SAFETY: the operation owns its unpublished-result diagnostic.
@@ -861,6 +890,7 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
     operation: *mut HewNativeStream,
     out: *mut c_void,
 ) -> i32 {
+    cabi_guard!(operation.is_null() || out.is_null(), 2);
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut **(*operation).state.get() };
     if let Backing::TypedRead(read) = &mut operation.backing {
@@ -933,6 +963,7 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
 /// Operation is a live exclusive write operation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeStream) -> i32 {
+    cabi_guard!(operation.is_null(), 2);
     // SAFETY: the creator reference remains live throughout this exclusive poll.
     let owner = unsafe { HewNativeStream::borrow(operation) };
     // SAFETY: the caller lends the live exclusive operation.
@@ -978,6 +1009,7 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
 /// Operation is a live write operation whose last poll answered 4.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNativeStream) -> i64 {
+    cabi_guard!(operation.is_null(), 0);
     // SAFETY: the creator exclusively lends state; notifications access only the header.
     let state = unsafe { &**(*operation).state.get() };
     // SAFETY: the caller lends the live operation.
@@ -1000,6 +1032,7 @@ pub unsafe extern "C" fn hew_stream_write_committed_native(operation: *mut HewNa
 /// Operation is live; cancellation precedes draining a pending operation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_cancel_native(operation: *mut HewNativeStream) {
+    cabi_guard!(operation.is_null());
     // SAFETY: the creator exclusively lends state; notifications access only the header.
     let state = unsafe { &mut **(*operation).state.get() };
     // SAFETY: the caller lends the live exclusive operation.
@@ -1045,6 +1078,7 @@ pub unsafe extern "C" fn hew_stream_cleanup_status_native(
     operation: *mut HewNativeStream,
     waker: *const HewWaker,
 ) -> i32 {
+    cabi_guard!(operation.is_null(), 1);
     // SAFETY: the creator exclusively lends state; notifications access only the header.
     let state = unsafe { &mut **(*operation).state.get() };
     // SAFETY: the caller lends the live exclusive operation.
@@ -1093,6 +1127,7 @@ pub unsafe extern "C" fn hew_stream_cleanup_status_native(
 /// Operation is uniquely owned and its producer cleanup status is ready.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_operation_free_native(operation: *mut HewNativeStream) {
+    cabi_guard!(operation.is_null());
     // SAFETY: caller transfers the drained operation's unique creator reference.
     // SAFETY: consume the one creator reference, leaving notification upgrades
     // with access to the immutable header only.
@@ -1111,6 +1146,11 @@ pub(super) unsafe fn borrows_write_input(operation: *const HewNativeStream) -> b
     matches!(state.backing, Backing::TypedWrite(_))
 }
 
+unsafe fn free_operation(owner: *mut c_void) {
+    // SAFETY: the cursor has consumed the detached envelope and owns the creator reference.
+    unsafe { hew_stream_operation_free_native(owner.cast()) };
+}
+
 /// Consume a quiescent operation, closing an untransferred element before its
 /// operation and producer references are released.
 /// # Safety
@@ -1120,10 +1160,7 @@ pub unsafe extern "C" fn hew_stream_operation_release_begin(
     operation: *mut HewNativeStream,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
-    unsafe fn free_operation(owner: *mut c_void) {
-        // SAFETY: the cursor has consumed the detached envelope and owns the creator reference.
-        unsafe { hew_stream_operation_free_native(owner.cast()) };
-    }
+    cabi_guard!(operation.is_null(), std::ptr::null_mut());
     // SAFETY: the quiescent creator exclusively owns mutable state.
     let state = unsafe { &mut **(*operation).state.get() };
     // SAFETY: quiescence excludes producers borrowing the operation's storage.

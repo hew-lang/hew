@@ -2,10 +2,6 @@
 //!
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::MutexExt;
@@ -1647,37 +1643,53 @@ unsafe fn free_transport(transport: *mut HewTransport) {
     reason = "node configuration flags are independent booleans"
 )]
 unsafe fn cleanup_start_failure(
-    node: &mut HewNode,
+    node: *mut HewNode,
     created_transport: bool,
     created_cluster: bool,
     created_routing_table: bool,
     created_conn_mgr: bool,
     joined_cluster: bool,
 ) {
-    if joined_cluster && !node.cluster.is_null() {
+    // SAFETY: caller owns `node` cleanup after a failed start before publication.
+    let cluster = unsafe { (*node).cluster };
+    if joined_cluster && !cluster.is_null() {
         // SAFETY: valid cluster pointer.
-        unsafe { cluster::hew_cluster_leave(node.cluster) };
+        unsafe { cluster::hew_cluster_leave(cluster) };
     }
-    if created_conn_mgr && !node.conn_mgr.is_null() {
+    // SAFETY: `node` remains valid through start failure cleanup.
+    let conn_mgr = unsafe { (*node).conn_mgr };
+    if created_conn_mgr && !conn_mgr.is_null() {
         // SAFETY: valid manager pointer from hew_connmgr_new.
-        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
-        node.conn_mgr = ptr::null_mut();
+        unsafe { connection::hew_connmgr_free(conn_mgr) };
+        // SAFETY: no shared references to `node` are live during start cleanup.
+        unsafe { (*node).conn_mgr = ptr::null_mut() };
     }
-    if created_routing_table && !node.routing_table.is_null() {
+    // SAFETY: `node` remains valid through start failure cleanup.
+    let routing_table = unsafe { (*node).routing_table };
+    if created_routing_table && !routing_table.is_null() {
         // SAFETY: valid routing table pointer from hew_routing_table_new.
-        unsafe { routing::hew_routing_table_free(node.routing_table) };
-        node.routing_table = ptr::null_mut();
+        unsafe { routing::hew_routing_table_free(routing_table) };
+        // SAFETY: no shared references to `node` are live during start cleanup.
+        unsafe { (*node).routing_table = ptr::null_mut() };
     }
-    if created_cluster && !node.cluster.is_null() {
+    // SAFETY: `node` remains valid through start failure cleanup.
+    let cluster = unsafe { (*node).cluster };
+    if created_cluster && !cluster.is_null() {
         // SAFETY: valid cluster pointer from hew_cluster_new.
-        unsafe { cluster::hew_cluster_free(node.cluster) };
-        node.cluster = ptr::null_mut();
+        unsafe { cluster::hew_cluster_free(cluster) };
+        // SAFETY: no shared references to `node` are live during start cleanup.
+        unsafe { (*node).cluster = ptr::null_mut() };
     }
-    if created_transport && !node.transport.is_null() {
+    // SAFETY: `node` remains valid through start failure cleanup.
+    let transport = unsafe { (*node).transport };
+    if created_transport && !transport.is_null() {
         // SAFETY: transport was created during this start attempt.
-        unsafe { free_transport(node.transport) };
-        node.transport = ptr::null_mut();
-        node.transport_ops = ptr::null();
+        unsafe { free_transport(transport) };
+        // SAFETY: no shared references to `node` are live during start cleanup.
+        unsafe {
+            (*node).transport = ptr::null_mut();
+            (*node).transport_ops = ptr::null();
+        }
     }
 }
 
@@ -1802,13 +1814,13 @@ pub(crate) unsafe fn hew_node_set_auth_snapshot(
         set_last_error("hew_node_set_auth_snapshot: node is null");
         return -1;
     }
-    // SAFETY: caller guarantees `node` is valid.
-    let node_ref = unsafe { &mut *node };
-    if node_ref.state.load(Ordering::Acquire) != NODE_STATE_STOPPED {
+    // SAFETY: caller guarantees `node` is valid and stopped (unpublished).
+    if unsafe { (*node).state.load(Ordering::Acquire) } != NODE_STATE_STOPPED {
         set_last_error("hew_node_set_auth_snapshot: node is not stopped");
         return -1;
     }
-    node_ref.auth = snapshot;
+    // SAFETY: caller guarantees `node` is valid and unstarted.
+    unsafe { (*node).auth = snapshot };
     0
 }
 
@@ -1829,10 +1841,9 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         set_last_error("hew_node_start: node is null");
         return -1;
     }
-    // SAFETY: caller guarantees node pointer is valid.
-    let node = unsafe { &mut *node };
-
-    let current = node.state.load(Ordering::Acquire);
+    let node_ptr = node;
+    // SAFETY: caller guarantees node pointer is valid and unstarted.
+    let current = unsafe { (*node_ptr).state.load(Ordering::Acquire) };
     if current == NODE_STATE_RUNNING {
         return 0;
     }
@@ -1841,7 +1852,12 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         return -1;
     }
 
-    node.state.store(NODE_STATE_STARTING, Ordering::Release);
+    // SAFETY: caller guarantees node pointer is valid.
+    unsafe {
+        (*node_ptr)
+            .state
+            .store(NODE_STATE_STARTING, Ordering::Release);
+    }
     let mut created_transport = false;
     let mut created_cluster = false;
     let mut created_routing_table = false;
@@ -1852,7 +1868,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             // SAFETY: pointers belong to this node; flags track what was created in this start call.
             unsafe {
                 cleanup_start_failure(
-                    node,
+                    node_ptr,
                     created_transport,
                     created_cluster,
                     created_routing_table,
@@ -1860,7 +1876,8 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
                     joined_cluster,
                 )
             };
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            // SAFETY: node_ptr remains live until after cleanup completes.
+            unsafe { (*node_ptr).state.store(NODE_STATE_STOPPED, Ordering::Release) };
             set_last_error($msg);
             return -1;
         }};
@@ -1869,56 +1886,67 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // ── NodeId authority — before any allocation/listen ──
     // The per-node `PeerAuthSnapshot` is authoritative for the receiver-local
     // route slot. Reject a self-inconsistent snapshot, then reconcile the slot.
-    if let Err(reason) = node.auth.validate() {
+    // SAFETY: node_ptr is valid and unstarted before publication.
+    let auth_validation = unsafe { (*node_ptr).auth.validate() };
+    if let Err(reason) = auth_validation {
         fail_start!(reason);
     }
-    if let Some(snapshot_route_slot) = node.auth.local_route_slot() {
+    // SAFETY: node_ptr is valid and unstarted before publication.
+    if let Some(snapshot_route_slot) = unsafe { (*node_ptr).auth.local_route_slot() } {
         let snapshot_route_slot = snapshot_route_slot.get();
-        if node.route_slot == 0 {
+        // SAFETY: node_ptr is valid and unstarted before publication.
+        let current_slot = unsafe { (*node_ptr).route_slot };
+        if current_slot == 0 {
             // A low-level caller deferred the route slot to its snapshot.
-            node.route_slot = snapshot_route_slot;
-        } else if node.route_slot != snapshot_route_slot {
+            // SAFETY: unstarted node field setup before publication.
+            unsafe { (*node_ptr).route_slot = snapshot_route_slot };
+        } else if current_slot != snapshot_route_slot {
             // Refuse before the listener binds and before cluster/routing/connmgr
             // are created.
             fail_start!(format!(
-                "hew_node_start: explicit route slot {} conflicts with the frozen local route slot \
-                 {snapshot_route_slot} — refusing to listen (fail-closed)",
-                node.route_slot
+                "hew_node_start: explicit route slot {current_slot} conflicts with the frozen local route slot \
+                 {snapshot_route_slot} — refusing to listen (fail-closed)"
             ));
         }
     }
 
-    if node.transport.is_null() {
+    // SAFETY: node_ptr is valid and unstarted before publication.
+    if unsafe { (*node_ptr).transport }.is_null() {
         let selection = match transport_selection_from_env() {
             Ok(selection) => selection,
             Err(err) => fail_start!(format!("hew_node_start: {err}")),
         };
 
-        match selection {
+        let created = match selection {
             TransportSelection::Tcp => {
                 // SAFETY: constructor returns owned transport pointer or null.
-                node.transport = unsafe { transport::hew_transport_tcp_new() };
+                unsafe { transport::hew_transport_tcp_new() }
             }
             #[cfg(feature = "quic")]
             TransportSelection::QuicMesh => {
                 // SAFETY: constructor returns owned transport pointer or null.
-                node.transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+                unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() }
             }
-        }
-        if node.transport.is_null() {
+        };
+        // SAFETY: unstarted node field setup before publication.
+        unsafe { (*node_ptr).transport = created };
+        if created.is_null() {
             fail_start!("hew_node_start: failed to create transport");
         }
         created_transport = true;
     }
 
     // SAFETY: transport was just created or previously assigned and validated by caller.
-    let t = unsafe { &*node.transport };
-    node.transport_ops = t.ops;
-    if node.transport_ops.is_null() {
+    let transport_ptr = unsafe { (*node_ptr).transport };
+    // SAFETY: transport_ptr checked non-null and live above.
+    let t = unsafe { &*transport_ptr };
+    // SAFETY: unstarted node field setup before publication.
+    unsafe { (*node_ptr).transport_ops = t.ops };
+    if t.ops.is_null() {
         fail_start!("hew_node_start: transport ops are null");
     }
     // SAFETY: checked non-null above.
-    let ops = unsafe { &*node.transport_ops };
+    let ops = unsafe { &*t.ops };
 
     // Install the frozen per-node mesh peer-auth material (stable identity + peer
     // SPKI allowlist + setup-error poison, derived from `Node::load_keys` /
@@ -1927,10 +1955,11 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // other, and a poisoned setup refuses to bind (fail-closed). Per-instance —
     // no process-global allowlist, so two concurrent mesh nodes stay isolated.
     #[cfg(feature = "quic")]
-    if node.auth.transport() == PeerTransport::QuicMesh {
+    // SAFETY: node_ptr is valid and unstarted.
+    if unsafe { (*node_ptr).auth.transport() } == PeerTransport::QuicMesh {
         // SAFETY: node.transport was created/validated above and is live here.
         let rc = unsafe {
-            crate::quic_mesh::hew_quic_mesh_transport_install_auth(node.transport, &node.auth)
+            crate::quic_mesh::hew_quic_mesh_transport_install_auth(transport_ptr, &(*node_ptr).auth)
         };
         if rc != 0 {
             fail_start!(
@@ -1943,54 +1972,75 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let Some(listen_fn) = ops.listen else {
         fail_start!("hew_node_start: transport listen op missing");
     };
-    // SAFETY: transport implementation is valid.
-    if unsafe { listen_fn(t.r#impl, node.bind_addr) } < 0 {
+    // SAFETY: transport implementation and bind_addr are valid.
+    if unsafe { listen_fn(t.r#impl, (*node_ptr).bind_addr) } < 0 {
         fail_start!("hew_node_start: transport listen failed");
     }
 
-    if node.cluster.is_null() {
-        let cfg = cluster_config_from_env(node.route_slot);
+    // SAFETY: node_ptr is valid and unstarted.
+    let route_slot = unsafe { (*node_ptr).route_slot };
+    // SAFETY: node_ptr is valid and unstarted.
+    if unsafe { (*node_ptr).cluster }.is_null() {
+        let cfg = cluster_config_from_env(route_slot);
         // SAFETY: config pointer is valid for this call.
-        node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
-        if node.cluster.is_null() {
+        let new_cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
+        // SAFETY: unstarted node field setup before publication.
+        unsafe { (*node_ptr).cluster = new_cluster };
+        if new_cluster.is_null() {
             fail_start!("hew_node_start: failed to create cluster");
         }
         created_cluster = true;
     }
 
-    if node.routing_table.is_null() {
-        let configured_routes = node.auth.configured_node_routes();
-        node.routing_table = routing::hew_routing_table_new(
-            node.route_slot,
-            node.auth.node_identity(),
-            node.auth.session_incarnation(),
+    // SAFETY: node_ptr is valid and unstarted.
+    if unsafe { (*node_ptr).routing_table }.is_null() {
+        // SAFETY: node_ptr is valid and unstarted.
+        let (configured_routes, node_identity, session_incarnation) = unsafe {
+            (
+                (*node_ptr).auth.configured_node_routes(),
+                (*node_ptr).auth.node_identity(),
+                (*node_ptr).auth.session_incarnation(),
+            )
+        };
+        let new_routing_table = routing::hew_routing_table_new(
+            route_slot,
+            node_identity,
+            session_incarnation,
             &configured_routes,
         );
-        if node.routing_table.is_null() {
+        // SAFETY: unstarted node field setup before publication.
+        unsafe { (*node_ptr).routing_table = new_routing_table };
+        if new_routing_table.is_null() {
             fail_start!("hew_node_start: failed to create routing table");
         }
         created_routing_table = true;
     }
 
-    if node.conn_mgr.is_null() {
+    // SAFETY: node_ptr is valid and unstarted.
+    if unsafe { (*node_ptr).conn_mgr }.is_null() {
         // SAFETY: pointers are valid for manager lifetime. The manager receives
         // this node's per-node auth snapshot (cheap clone; identity behind Arc)
         // — never the process-global `ConfigState` or `ACTIVE_*` statics.
-        node.conn_mgr = unsafe {
+        let new_conn_mgr = unsafe {
             connection::connmgr_new(
-                node.transport,
+                (*node_ptr).transport,
                 Some(node_inbound_router),
-                node.routing_table,
-                node.cluster,
-                node.route_slot,
-                node.auth.clone(),
+                (*node_ptr).routing_table,
+                (*node_ptr).cluster,
+                route_slot,
+                (*node_ptr).auth.clone(),
             )
         };
-        if node.conn_mgr.is_null() {
+        // SAFETY: unstarted node field setup before publication.
+        unsafe { (*node_ptr).conn_mgr = new_conn_mgr };
+        if new_conn_mgr.is_null() {
             fail_start!("hew_node_start: failed to create connection manager");
         }
         created_conn_mgr = true;
     }
+
+    // SAFETY: after all startup pointer initialization, read-only borrow `node` spans no `&mut`.
+    let node = unsafe { &*node_ptr };
 
     // SAFETY: cluster pointer valid; bind_addr points to a stable strdup buffer.
     let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.route_slot, node.bind_addr) };
@@ -2015,7 +2065,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             cluster::hew_cluster_set_membership_callback(
                 node.cluster,
                 node_membership_callback,
-                (node as *mut HewNode).cast::<c_void>(),
+                node_ptr.cast::<c_void>(),
             );
             // The manager borrows this canonical map until its readers, sends
             // and admission workers have joined, before node registry teardown.
@@ -2043,7 +2093,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // the TOCTOU race where two threads both read 0 and both try to set.
     with_current_node(|guard| {
         if *guard == 0 {
-            *guard = ptr::from_mut(node) as usize;
+            *guard = node_ptr as usize;
             crate::pid::hew_pid_set_local_node(node.route_slot);
         }
     });
@@ -2054,7 +2104,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // The ticker is stopped and joined in hew_node_stop before the cluster /
     // conn_mgr it touches are freed (see the teardown ordering below).
     // SAFETY: node is RUNNING with a live cluster + conn_mgr at this point.
-    if !unsafe { crate::swim_driver::start_swim_driver(ptr::from_mut(node)) } {
+    if !unsafe { crate::swim_driver::start_swim_driver(node_ptr) } {
         // A failed ticker spawn is not fatal to the node (gossip + the
         // connection-event SUSPECT path still work), but it means active
         // failure detection is degraded. Record it; do not fail the start.
@@ -2108,127 +2158,126 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         set_last_error("hew_node_stop: node is null");
         return -1;
     }
-    // SAFETY: caller guarantees node pointer is valid.
-    let node = unsafe { &mut *node };
+    let node_ptr = node;
     // Hold the node registry list across teardown so actor-free cleanup cannot
     // race with cluster deallocation. The `.access()` closure spans the
     // entire teardown body; `unregister_actor_names` (called from actor-free
     // paths) also acquires KNOWN_NODES and will block here until teardown
     // completes.
     with_known_nodes(|_known_nodes| {
-        if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
-            return 0;
-        }
-
-        node.state.store(NODE_STATE_STOPPING, Ordering::Release);
-        if let Some(rt) = crate::runtime::rt_current_opt() {
-            rt.monitors.drain_remote_observations_for_shutdown();
-        }
-
-        // Close admission before draining completed replies. Pending calls retain
-        // their observations until completion or the existing drain ceiling.
-        let inbound_active_arc = if node.conn_mgr.is_null() {
-            None
-        } else {
-            // SAFETY: node owns this connection manager until teardown completes.
-            unsafe { connection::hew_connmgr_close_inbound_spawn(node.conn_mgr) };
-            // SAFETY: conn_mgr is valid here and remains live until after the drain.
-            unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
-        };
-        drain_inbound_requests(inbound_active_arc.as_ref());
-        if !node.conn_mgr.is_null() {
-            // SAFETY: the node still owns its manager. Admission is closed, and
-            // cancellation drops pending request/reply owners without a worker.
-            unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
-        }
-        // Replies are flushed; tell peers this node is leaving while their
-        // connections still carry frames, so they record LEFT, not a crash.
-        let leave = announce_leave(node);
-
         {
-            // A router still preparing a rejection may outlive the drain
-            // ceiling. This barrier finishes publication before freeing its
-            // manager; later replies observe shutdown without dereferencing it.
-            with_current_node(|guard| {
-                if !node.conn_mgr.is_null() {
-                    // SAFETY: node owns this connection manager until teardown completes.
-                    unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
-                }
-                if *guard == ptr::from_mut(node) as usize {
-                    *guard = 0;
-                    reply_table().fail_all();
-                }
-            });
-        }
-        // Admission is closed: wake every thread still blocked on a peer (the
-        // accept thread mid-handshake, a seed dial, a probe send) so the joins
-        // below wait only on local work.
-        // SAFETY: the node still owns its manager; it is freed below.
-        unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
-        if let Some(leave) = leave {
-            crate::util::report_join_panic("hew node leave announcement", leave.join());
-        }
-        stop_node_accept_thread(node);
-
-        // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
-        // it dereferences each period. The join is the lifetime barrier: once
-        // it returns, the ticker thread has fully exited and cannot race the
-        // teardown of node resources below (LESSONS: cleanup-all-exits, the
-        // reactor's ticker-joined-before-free ordering).
-        // SAFETY: node pointer is used only as the driver registry key.
-        unsafe { crate::swim_driver::stop_swim_driver(ptr::from_mut(node)) };
-
-        // Remove this node's published names from the local registry before the
-        // cluster state is torn down. Remote nodes drop cached names when the
-        // membership callback observes this node leaving or dying.
-        // SAFETY: `node` is valid for the duration of hew_node_stop, and KNOWN_NODES
-        // serialization above prevents concurrent actor cleanup from racing this teardown.
-        unsafe { unregister_local_names_for_node(node) };
-
-        if !node.conn_mgr.is_null() {
-            #[cfg(test)]
-            NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
-            // SAFETY: valid manager pointer from hew_connmgr_new; all inbound ask
-            // workers that could still hold it were drained in Phase 1 (above the
-            // CURRENT_NODE barrier). Any straggler past the drain ceiling bails at
-            // the `CURRENT_NODE == 0` / `reconnect_shutdown` guard before touching
-            // conn_mgr, so the free is race-free.
-            unsafe { connection::hew_connmgr_free(node.conn_mgr) };
-            node.conn_mgr = ptr::null_mut();
-        }
-
-        if !node.routing_table.is_null() {
-            // SAFETY: valid routing table pointer from hew_routing_table_new.
-            unsafe { routing::hew_routing_table_free(node.routing_table) };
-            node.routing_table = ptr::null_mut();
-        }
-
-        if !node.cluster.is_null() {
-            // SAFETY: valid cluster pointer from hew_cluster_new.
-            unsafe { cluster::hew_cluster_free(node.cluster) };
-            node.cluster = ptr::null_mut();
-        }
-
-        if !node.transport.is_null() {
-            // SAFETY: valid transport pointer from constructor.
-            let transport = unsafe { &*node.transport };
-            // SAFETY: ops pointer is part of valid transport.
-            if let Some(ops) = unsafe { transport.ops.as_ref() } {
-                if let Some(destroy_fn) = ops.destroy {
-                    // SAFETY: transport impl belongs to this transport.
-                    unsafe { destroy_fn(transport.r#impl) };
-                }
+            // SAFETY: caller guarantees `node_ptr` is valid; worker threads are
+            // still running until the joins below complete, so borrow shared only.
+            let node = unsafe { &*node_ptr };
+            if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
+                return 0;
             }
-            // SAFETY: transport was allocated by Box::into_raw.
-            let _ = unsafe { Box::from_raw(node.transport) };
-            node.transport = ptr::null_mut();
-            node.transport_ops = ptr::null();
+
+            node.state.store(NODE_STATE_STOPPING, Ordering::Release);
+            if let Some(rt) = crate::runtime::rt_current_opt() {
+                rt.monitors.drain_remote_observations_for_shutdown();
+            }
+
+            // Close admission before draining completed replies. Pending calls retain
+            // their observations until completion or the existing drain ceiling.
+            let inbound_active_arc = if node.conn_mgr.is_null() {
+                None
+            } else {
+                // SAFETY: node owns this connection manager until teardown completes.
+                unsafe { connection::hew_connmgr_close_inbound_spawn(node.conn_mgr) };
+                // SAFETY: conn_mgr is valid here and remains live until after the drain.
+                unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
+            };
+            drain_inbound_requests(inbound_active_arc.as_ref());
+            if !node.conn_mgr.is_null() {
+                // SAFETY: the node still owns its manager. Admission is closed, and
+                // cancellation drops pending request/reply owners without a worker.
+                unsafe { (*node.conn_mgr).inbound_asks.cancel_all() };
+            }
+            // Replies are flushed; tell peers this node is leaving while their
+            // connections still carry frames, so they record LEFT, not a crash.
+            let leave = announce_leave(node);
+
+            {
+                // A router still preparing a rejection may outlive the drain
+                // ceiling. This barrier finishes publication before freeing its
+                // manager; later replies observe shutdown without dereferencing it.
+                with_current_node(|guard| {
+                    if !node.conn_mgr.is_null() {
+                        // SAFETY: node owns this connection manager until teardown completes.
+                        unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
+                    }
+                    if *guard == node_ptr as usize {
+                        *guard = 0;
+                        if let Some(table) = reply_table_opt() {
+                            table.fail_all();
+                        }
+                    }
+                });
+            }
+            // Admission is closed: wake every thread still blocked on a peer (the
+            // accept thread mid-handshake, a seed dial, a probe send) so the joins
+            // below wait only on local work.
+            // SAFETY: the node still owns its manager; it is freed below.
+            unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
+            if let Some(leave) = leave {
+                crate::util::report_join_panic("hew node leave announcement", leave.join());
+            }
+            stop_node_accept_thread(node);
+
+            // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
+            // it dereferences each period. The join is the lifetime barrier: once
+            // it returns, the ticker thread has fully exited and cannot race the
+            // teardown of node resources below (LESSONS: cleanup-all-exits, the
+            // reactor's ticker-joined-before-free ordering).
+            crate::swim_driver::stop_swim_driver(node_ptr);
+
+            // Remove this node's published names from the local registry before the
+            // cluster state is torn down. Remote nodes drop cached names when the
+            // membership callback observes this node leaving or dying.
+            // SAFETY: `node` is valid for the duration of hew_node_stop, and KNOWN_NODES
+            // serialization above prevents concurrent actor cleanup from racing this teardown.
+            unsafe { unregister_local_names_for_node(node) };
         }
 
-        node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-        if !node.registry.is_null() {
-            // SAFETY: registry outlives stop, including its final EOF publication.
-            unsafe { &*node.registry }.observer().finish();
+        // All worker threads (leave announcer, accept thread, SWIM ticker) have joined.
+        // SAFETY: `node_ptr` is valid, worker threads have joined, and no `&HewNode` borrow lives here.
+        unsafe {
+            if !(*node_ptr).conn_mgr.is_null() {
+                #[cfg(test)]
+                NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
+                connection::hew_connmgr_free((*node_ptr).conn_mgr);
+                (*node_ptr).conn_mgr = ptr::null_mut();
+            }
+
+            if !(*node_ptr).routing_table.is_null() {
+                routing::hew_routing_table_free((*node_ptr).routing_table);
+                (*node_ptr).routing_table = ptr::null_mut();
+            }
+
+            if !(*node_ptr).cluster.is_null() {
+                cluster::hew_cluster_free((*node_ptr).cluster);
+                (*node_ptr).cluster = ptr::null_mut();
+            }
+
+            if !(*node_ptr).transport.is_null() {
+                let transport = &*(*node_ptr).transport;
+                if let Some(ops) = transport.ops.as_ref() {
+                    if let Some(destroy_fn) = ops.destroy {
+                        destroy_fn(transport.r#impl);
+                    }
+                }
+                let _ = Box::from_raw((*node_ptr).transport);
+                (*node_ptr).transport = ptr::null_mut();
+                (*node_ptr).transport_ops = ptr::null();
+            }
+
+            (*node_ptr)
+                .state
+                .store(NODE_STATE_STOPPED, Ordering::Release);
+            if !(*node_ptr).registry.is_null() {
+                (&*(*node_ptr).registry).observer().finish();
+            }
         }
         0
     }) // KNOWN_NODES.access
@@ -2277,7 +2326,7 @@ pub unsafe extern "C" fn hew_node_register(
 ) -> c_int {
     cabi_guard!(node.is_null() || name.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
-    let node = unsafe { &mut *node };
+    let node = unsafe { &*node };
     if node.registry.is_null() {
         return -1;
     }
@@ -2363,7 +2412,7 @@ unsafe fn register_location(
 pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_char) -> c_int {
     cabi_guard!(node.is_null() || name.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
-    let node = unsafe { &mut *node };
+    let node = unsafe { &*node };
     if node.registry.is_null() {
         return -1;
     }

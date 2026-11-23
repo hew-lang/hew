@@ -77,6 +77,8 @@ pub unsafe extern "C" fn hew_managed_visit_string(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
+    cabi_guard!(slot.is_null(), 0);
     // SAFETY: the descriptor supplies the concrete string slot.
     unsafe {
         let value = slot.cast::<*const hew_cabi::string::HewString>().read();
@@ -101,6 +103,8 @@ pub unsafe extern "C" fn hew_managed_visit_bytes(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
+    cabi_guard!(slot.is_null(), 0);
     // SAFETY: slices retain the original backing and its complete capacity.
     unsafe {
         let value = &*slot.cast::<crate::bytes::BytesTriple>();
@@ -125,6 +129,8 @@ pub unsafe extern "C" fn hew_managed_visit_vector(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
+    cabi_guard!(slot.is_null(), 0);
     // SAFETY: the descriptor supplies the live container handle.
     let pointer = unsafe { slot.cast::<*const hew_cabi::vec::HewVec>().read() };
     // SAFETY: the slot owner retains this immutable header throughout the visit.
@@ -200,6 +206,8 @@ pub unsafe extern "C" fn hew_managed_visit_map(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
+    cabi_guard!(slot.is_null(), 0);
     // SAFETY: the descriptor supplies the live container handle.
     let pointer = unsafe {
         slot.cast::<*const crate::hashmap::HewLayoutHashMap>()
@@ -274,6 +282,8 @@ pub unsafe extern "C" fn hew_managed_visit_set(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(visitor.is_null(), UNDESCRIBED);
+    cabi_guard!(slot.is_null(), 0);
     // SAFETY: a set owns its underlying map; the temporary slot only lends it.
     unsafe {
         let set = slot
@@ -516,6 +526,30 @@ mod tests {
             assert_eq!(walk.retained.values().sum::<u64>(), 32);
             crate::bytes::hew_bytes_drop(alias.ptr);
             crate::bytes::hew_bytes_drop(original.ptr);
+        }
+    }
+
+    #[test]
+    fn managed_visit_null_slot_and_visitor_fail_closed() {
+        let mut walk = Walk::default();
+        let sink = visitor(&mut walk, HewManagedWalkKind::Retain);
+        let dummy_slot = 0_usize;
+        // SAFETY: verifies fail-closed guards on null slot and null visitor pointers.
+        unsafe {
+            for visit_fn in [
+                hew_managed_visit_string,
+                hew_managed_visit_bytes,
+                hew_managed_visit_vector,
+                hew_managed_visit_map,
+                hew_managed_visit_set,
+            ] {
+                assert_eq!(visit_fn(core::ptr::null(), &raw const sink), 0);
+                assert_eq!(visit_fn(core::ptr::null(), core::ptr::null()), UNDESCRIBED);
+                assert_eq!(
+                    visit_fn((&raw const dummy_slot).cast(), core::ptr::null()),
+                    UNDESCRIBED
+                );
+            }
         }
     }
 }

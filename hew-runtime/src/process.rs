@@ -10,10 +10,6 @@
 //! so it holds no thread. Command and argument inputs borrow managed handles
 //! and reject interior NUL before crossing the OS boundary. Capture and lossy
 //! UTF-8 decoding belong to the standard library's concurrent stream consumers.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::stream::HewStreamPair;
 use crate::util::{cstr_to_str, MutexExt};
@@ -424,6 +420,9 @@ pub unsafe extern "C" fn hew_process_is_valid(proc: *mut HewProcess) -> bool {
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_id(proc: *mut HewProcess) -> i64 {
+    if proc.is_null() {
+        return -1;
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     i64::from(unsafe { &*proc }.state.lock_or_recover().child.id())
 }
@@ -452,6 +451,9 @@ pub unsafe extern "C" fn hew_process_take_pipe(
     proc: *mut HewProcess,
     which: i32,
 ) -> *mut HewStreamPair {
+    if proc.is_null() {
+        return std::ptr::null_mut();
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     let mut state = unsafe { &*proc }.state.lock_or_recover();
     #[cfg(windows)]
@@ -495,6 +497,9 @@ pub unsafe extern "C" fn hew_process_take_pipe(
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_exit_stream(proc: *mut HewProcess) -> *mut HewStreamPair {
+    if proc.is_null() {
+        return std::ptr::null_mut();
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     let proc = unsafe { &*proc };
     // Held while the watch names the child, so no concurrent wait reaps it
@@ -532,6 +537,9 @@ pub unsafe extern "C" fn hew_process_exit_stream(proc: *mut HewProcess) -> *mut 
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_wait_error(proc: *mut HewProcess) -> i32 {
+    if proc.is_null() {
+        return libc::EINVAL;
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     unsafe { &*proc }
         .wait_error
@@ -546,6 +554,9 @@ pub unsafe extern "C" fn hew_process_wait_error(proc: *mut HewProcess) -> i32 {
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_poll(proc: *mut HewProcess) -> i32 {
+    if proc.is_null() {
+        return -libc::EINVAL;
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     match unsafe { (*proc).poll() } {
         Ok(Some(_)) => 1,
@@ -562,6 +573,9 @@ pub unsafe extern "C" fn hew_process_poll(proc: *mut HewProcess) -> i32 {
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_signalled(proc: *mut HewProcess) -> bool {
+    if proc.is_null() {
+        return false;
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     unsafe { &*proc }
         .status()
@@ -576,6 +590,9 @@ pub unsafe extern "C" fn hew_process_signalled(proc: *mut HewProcess) -> bool {
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_status(proc: *mut HewProcess) -> i64 {
+    if proc.is_null() {
+        return 0;
+    }
     // SAFETY: proc is a live HewProcess per caller contract.
     unsafe { &*proc }.status().map_or(0, status_number)
 }
@@ -589,6 +606,9 @@ pub unsafe extern "C" fn hew_process_status(proc: *mut HewProcess) -> i64 {
 /// `proc` must be a valid pointer to a [`HewProcess`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_signal(proc: *mut HewProcess, force: bool) -> i32 {
+    if proc.is_null() {
+        return libc::EINVAL;
+    }
     #[cfg_attr(
         unix,
         expect(unused_mut, reason = "only Windows kills through the Child")
@@ -1241,5 +1261,23 @@ mod tests {
             assert_eq!(read_last_error(), "sentinel process error");
         }
         crate::hew_clear_error();
+    }
+
+    #[test]
+    fn wave4b_process_null_pointers_fail_closed() {
+        // SAFETY: every exported process accessor must handle null pointers without UB.
+        unsafe {
+            assert_eq!(hew_process_id(std::ptr::null_mut()), -1);
+            assert!(hew_process_take_pipe(std::ptr::null_mut(), 0).is_null());
+            assert!(hew_process_exit_stream(std::ptr::null_mut()).is_null());
+            assert_eq!(hew_process_wait_error(std::ptr::null_mut()), libc::EINVAL);
+            assert_eq!(hew_process_poll(std::ptr::null_mut()), -libc::EINVAL);
+            assert!(!hew_process_signalled(std::ptr::null_mut()));
+            assert_eq!(hew_process_status(std::ptr::null_mut()), 0);
+            assert_eq!(
+                hew_process_signal(std::ptr::null_mut(), false),
+                libc::EINVAL
+            );
+        }
     }
 }

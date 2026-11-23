@@ -106,6 +106,9 @@ pub unsafe extern "C" fn hew_node_peer_new(
     node: *const HewNodeId,
     output: *mut *mut c_void,
 ) -> i32 {
+    if output.is_null() {
+        return hew_cabi::node::NodeFailure::Refused as i32;
+    }
     // SAFETY: the source passes a live identity for this synchronous borrow.
     let Some(node) = (unsafe { node.as_ref() }) else {
         return hew_cabi::node::NodeFailure::Refused as i32;
@@ -166,6 +169,9 @@ unsafe fn handler_interface(
     unsafe { std::slice::from_raw_parts(handlers, count) }
         .iter()
         .map(|handler| {
+            if handler.is_null() {
+                return Err(AskError::Unauthorized);
+            }
             // SAFETY: each generated declaration ID is a live C string.
             unsafe { CStr::from_ptr(*handler) }
                 .to_str()
@@ -191,6 +197,18 @@ pub unsafe extern "C" fn hew_service_acquire_new(
     waker: *const crate::wake::HewWaker,
 ) -> *mut HewRemoteCall {
     let deadline = RequestDeadline::from_raw(deadline_ns);
+    if waker.is_null() {
+        return Box::into_raw(Box::new(HewRemoteCall {
+            route: RemoteCallRoute::Failed(AskError::Unauthorized),
+            timer: ptr::null_mut(),
+            timed_out: false,
+            deadline,
+            dispatch: ptr::null(),
+            msg_type: 0,
+            reply_size: std::mem::size_of::<*mut c_void>(),
+            failure: None,
+        }));
+    }
     // SAFETY: all three borrows are generated from live source/descriptor values.
     let setup = unsafe { peer.cast::<PeerSession>().as_ref() }
         .ok_or(AskError::StaleRef)
@@ -319,6 +337,9 @@ fn start_export(
 pub(super) unsafe fn take_acquisition(operation: &mut HewRemoteCall, output: *mut c_void) -> i32 {
     if operation.timed_out {
         return AskError::Timeout as i32;
+    }
+    if output.is_null() {
+        return AskError::Refused as i32;
     }
     let (RemoteCallRoute::Offer(pending, _) | RemoteCallRoute::Import(pending, _)) =
         &operation.route

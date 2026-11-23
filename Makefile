@@ -1733,16 +1733,14 @@ endif
 #
 # MIRIFLAGS:
 #   -Zmiri-disable-isolation       — timer/clock/random reads need host time/entropy.
-#   -Zmiri-permissive-provenance   — suppresses integer-to-pointer cast warnings;
-#     some bugs involving exposed-provenance pointers can be missed.
 #
 # The filters select module test names. Arena uses the `cfg(miri)` std::alloc
 # implementation instead of mmap/VirtualAlloc.
 MIRI_TOOLCHAIN ?= nightly
-MIRI_ALLOWLIST := send_ptr:: rc:: arc:: arena:: bytes:: vecdeque:: vec::
+MIRI_ALLOWLIST := send_ptr:: rc:: arc:: arena:: bytes:: vecdeque:: vec:: cont:: mailbox:: reply_channel:: await_cancel:: read_slot:: string:: hashmap:: blocking_pool:: link:: hashset:: iter:: random:: layout_intrinsics::
 miri:
 	CARGO_TARGET_DIR=$(RUNTIME_MIRI_TARGET_DIR) \
-	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \
+	MIRIFLAGS="-Zmiri-disable-isolation" \
 	cargo +$(MIRI_TOOLCHAIN) miri test \
 		-p hew-runtime \
 		--no-default-features \

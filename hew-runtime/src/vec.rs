@@ -5,10 +5,6 @@
 //!
 //! Type definitions (`ElemKind`, `HewVec`) are re-exported from `hew-cabi`.
 //! This module provides the actual implementations of all `hew_vec_*` functions.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 // Buffers preserve the element's alignment after their reference count.
 #![expect(
     clippy::cast_ptr_alignment,
@@ -97,6 +93,30 @@ pub(crate) fn capacity_for(capacity: usize, needed: usize) -> Option<usize> {
     Some(new_cap)
 }
 
+/// Check whether a value descriptor requires a non-null element slot pointer.
+#[inline]
+pub(crate) unsafe fn layout_needs_slot(layout: &HewValueLayout) -> bool {
+    // SAFETY: caller guarantees `layout.managed` is either null or a valid descriptor.
+    let managed_visit = unsafe { layout.managed.as_ref() }.is_some_and(|m| m.visit.is_some());
+    layout.size != 0
+        || layout.clone_fn.is_some()
+        || layout.drop_fn.is_some()
+        || layout.release_start.is_some()
+        || managed_visit
+}
+
+/// Check whether `v` requires a non-null element slot pointer.
+#[inline]
+pub(crate) unsafe fn vec_needs_slot_data(v: *const HewVec) -> bool {
+    // SAFETY: caller guarantees `v` is live and `(*v).layout` is either null or valid.
+    unsafe { (*v).layout.as_ref() }.map_or_else(
+        // SAFETY: caller guarantees `v` is live.
+        || unsafe { (*v).elem_size != 0 },
+        // SAFETY: descriptor reference is live for this vec.
+        |layout| unsafe { layout_needs_slot(layout) },
+    )
+}
+
 /// Push through a checked managed-storage boundary before changing any input.
 /// # Safety
 /// Vector, element and invocation are live and match the compiler descriptor.
@@ -107,6 +127,11 @@ pub unsafe extern "C" fn hew_vec_push_managed(
     moved: u32,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> i32 {
+    cabi_guard!(v.is_null(), hew_cabi::managed::UNDESCRIBED);
+    // SAFETY: `v` was verified non-null above.
+    if data.is_null() && unsafe { vec_needs_slot_data(v) } {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: the caller retains the invocation and both typed inputs.
     let Some(owner) =
         (unsafe { crate::owned_value_budget::materialize::invocation_owner(invocation) })
@@ -327,6 +352,7 @@ unsafe fn ensure_cap_with_source(
 /// `v` must be a live, exclusively borrowed vector from the runtime constructors.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_make_unique(v: *mut HewVec) {
+    cabi_guard!(v.is_null());
     // SAFETY: the caller exclusively owns this header; other headers may read
     // the shared buffer concurrently but cannot write it without detaching.
     unsafe {
@@ -551,6 +577,10 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
+    let Ok(elem_size) = usize::try_from(elem_size) else {
+        // SAFETY: negative element sizes cannot represent a valid buffer layout.
+        unsafe { abort_vector() };
+    };
     // SAFETY: allocating a zeroed struct via the sized-block allocator is safe.
     unsafe {
         let v: *mut HewVec = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
@@ -561,7 +591,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
         (*v).len = 0;
         (*v).front = 0;
         (*v).cap = 0;
-        (*v).elem_size = elem_size as usize;
+        (*v).elem_size = elem_size;
         (*v).elem_kind = ElemKind::Plain;
         (*v).layout = ptr::null();
         v
@@ -908,6 +938,7 @@ macro_rules! vec_push_primitive {
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
         pub unsafe extern "C" fn $name(v: *mut HewVec, val: $ty) {
+            cabi_guard!(v.is_null());
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let len = (*v).len;
@@ -940,6 +971,7 @@ vec_push_primitive!(hew_vec_push_i64, i64);
 /// managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const HewString) {
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let len = (*v).len;
@@ -967,6 +999,7 @@ vec_push_primitive!(hew_vec_push_f32, f32);
 /// `v` must be a valid pointer-element Vec.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if (*v).elem_size != core::mem::size_of::<*mut c_void>() {
@@ -995,6 +1028,7 @@ macro_rules! vec_get_primitive {
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
+            cabi_guard!(v.is_null(), <$ty>::default());
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let index = require_index(index, (*v).len, "Vec.get()");
@@ -1023,6 +1057,7 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString {
+    cabi_guard!(v.is_null(), ptr::null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = require_index(index, (*v).len, "Vec.get()");
@@ -1066,6 +1101,7 @@ unsafe fn abort_ptr_stride_mismatch(elem_size: usize) -> ! {
 /// opaque handles.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+    cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let expected = core::mem::size_of::<*mut c_void>();
@@ -1622,6 +1658,7 @@ vec_pop_primitive!(hew_vec_pop_ptr, *mut c_void, ptr::null_mut());
 /// `v` must be a valid `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
+    cabi_guard!(v.is_null(), 0);
     #[expect(
         clippy::cast_possible_wrap,
         reason = "vec length won't exceed i64::MAX"
@@ -1639,6 +1676,7 @@ pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
 /// `v` must be a valid `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
+    cabi_guard!(v.is_null(), true);
     // SAFETY: caller guarantees `v` is valid.
     unsafe { (*v).len == 0 }
 }
@@ -2465,15 +2503,22 @@ pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val:
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
+        let expected = core::mem::size_of::<*mut c_void>();
+        if (*v).elem_size != expected {
+            abort_ptr_stride_mismatch((*v).elem_size);
+        }
         let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
+        let slot = (*v).data.cast::<*mut c_void>().add(index);
+        let mut old_val = slot.read();
+        // Install the replacement before dropping the old element so any unwind
+        // or re-entrant read observes a live slot value rather than a dropped one.
+        slot.write(val);
         if !(*v).layout.is_null() {
             if let Some(drop_fn) = (*(*v).layout).drop_fn {
-                let slot = (*v).data.add(index * (*v).elem_size);
-                drop_fn(slot.cast::<c_void>());
+                drop_fn((&raw mut old_val).cast::<c_void>());
             }
         }
-        (*v).data.cast::<*mut c_void>().add(index).write(val);
     }
 }
 
@@ -2623,6 +2668,7 @@ pub unsafe extern "C" fn hew_vec_new_generic(elem_size: i64, elem_kind: i64) -> 
 /// `elem_size` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core::ffi::c_void) {
+    cabi_guard!(v.is_null() || data.is_null());
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2678,6 +2724,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_generic(
     v: *const HewVec,
     index: i64,
 ) -> *const core::ffi::c_void {
+    cabi_guard!(v.is_null(), ptr::null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2721,6 +2768,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_generic(
     index: i64,
     data: *const core::ffi::c_void,
 ) {
+    cabi_guard!(v.is_null() || data.is_null());
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2767,6 +2815,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_layout(
 /// `elem_size` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi::c_void) -> i32 {
+    cabi_guard!(v.is_null() || out.is_null(), 0);
     // SAFETY: caller guarantees `v` and `out` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -3044,10 +3093,13 @@ unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
 /// `descriptor.size` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::ffi::c_void) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    cabi_guard!(v.is_null());
+    // SAFETY: guards reject null `v`; descriptor presence is validated.
     unsafe {
         let layout = owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(layout) {
+            return;
+        }
         let elem_size = layout.size;
         let clone_fn = owned_clone_fn(layout);
         let len = (*v).len;
@@ -3058,7 +3110,9 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         let dst = (*v).data.add(len * elem_size);
         // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
         // the clone thunk to deep-copy the owned heap (clone-fn contract).
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        if elem_size > 0 {
+            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        }
         let status = clone_fn.map_or(0, |clone_fn| {
             clone_fn(data, dst.cast::<core::ffi::c_void>())
         });
@@ -3088,10 +3142,13 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
 /// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const core::ffi::c_void) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    cabi_guard!(v.is_null());
+    // SAFETY: guards reject null `v`; descriptor presence is validated.
     unsafe {
         let layout = owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(layout) {
+            return;
+        }
         let elem_size = layout.size;
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
@@ -3102,7 +3159,9 @@ pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const co
         // Move-in: byte-copy transfers the element (BitCopy fields, enum tag
         // bytes, AND owned-heap pointers) into the slot. No `clone_fn` — the
         // source's heap is now owned by the Vec; the source is dead.
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        if elem_size > 0 {
+            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        }
         (*v).len = new_len;
     }
 }
@@ -3320,16 +3379,69 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move_release(
     unsafe { set_owned_release(v, index, data, false) }
 }
 
+struct OwnedScratchGuard {
+    ptr: *mut u8,
+    layout: HewValueLayout,
+    scratch_size: usize,
+    live: bool,
+}
+
+impl Drop for OwnedScratchGuard {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            if self.live {
+                // SAFETY: `self.ptr` holds an initialized value matching `self.layout`.
+                let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast(), self.layout) };
+                // SAFETY: synchronous vec set owns this scratch value if unwinding before publish.
+                unsafe { release_walker::hew_release_sync(cursor) };
+            }
+            // SAFETY: allocated with hew_alloc(scratch_size, layout.align) for this scratch slot.
+            unsafe {
+                crate::mem::hew_dealloc(
+                    self.ptr,
+                    self.scratch_size as u64,
+                    self.layout.align as u64,
+                );
+            }
+        }
+    }
+}
+
+struct MovedValueGuard {
+    ptr: *const c_void,
+    layout: HewValueLayout,
+    armed: bool,
+}
+
+impl Drop for MovedValueGuard {
+    fn drop(&mut self) {
+        if self.armed && !self.ptr.is_null() {
+            // SAFETY: `self.ptr` holds the caller-transferred owner that was not installed.
+            let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast_mut(), self.layout) };
+            // SAFETY: synchronous release drops the moved owner if OOB or CoW clone unwinds.
+            unsafe { crate::release_walker::hew_release_sync(cursor) };
+        }
+    }
+}
+
 unsafe fn set_owned_release(
     v: *mut HewVec,
     index: i64,
     data: *const c_void,
     copy: bool,
 ) -> *mut HewReleaseCursor {
-    cabi_guard!(v.is_null() || data.is_null(), ptr::null_mut());
+    cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: the caller supplies initialized, correctly laid out slots.
     unsafe {
         let layout = *owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(&layout) {
+            return ptr::null_mut();
+        }
+        let mut moved_guard = MovedValueGuard {
+            ptr: data,
+            layout,
+            armed: !copy,
+        };
         let index = require_index(index, (*v).len, "Vec.set()");
         let data = ensure_cap_with_source(v, (*v).len, data);
         let slot = (*v).data.add(index * layout.size);
@@ -3339,11 +3451,20 @@ unsafe fn set_owned_release(
             && layout.release_start.is_none()
         {
             // The borrowed replacement may be this element or another slot.
-            ptr::copy(data.cast::<u8>(), slot, layout.size);
+            if layout.size > 0 {
+                ptr::copy(data.cast::<u8>(), slot, layout.size);
+            }
+            moved_guard.armed = false;
             return ptr::null_mut();
         }
         let scratch_size = layout.size.max(1);
         let scratch = crate::mem::hew_alloc(scratch_size as u64, layout.align as u64);
+        let mut scratch_guard = OwnedScratchGuard {
+            ptr: scratch,
+            layout,
+            scratch_size,
+            live: false,
+        };
         ptr::copy_nonoverlapping(data.cast::<u8>(), scratch, layout.size);
         if copy {
             let status = owned_clone_fn(&layout).map_or(0, |clone| clone(data, scratch.cast()));
@@ -3351,10 +3472,14 @@ unsafe fn set_owned_release(
                 write_stderr(b"PANIC: Vec owned element clone failed\n");
                 abort_vector();
             }
+            scratch_guard.live = true;
+        } else {
+            scratch_guard.live = true;
+            moved_guard.armed = false;
         }
         let displaced = HewReleaseCursor::detached(slot.cast(), layout);
         ptr::copy_nonoverlapping(scratch, slot, layout.size);
-        crate::mem::hew_dealloc(scratch, scratch_size as u64, layout.align as u64);
+        scratch_guard.live = false;
         displaced
     }
 }
@@ -3634,6 +3759,10 @@ pub unsafe extern "C" fn hew_vec_contains_checked(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        v.is_null() || val.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the caller provides a live vector and readable element storage.
     unsafe {
         let layout = owned_descriptor(v);
@@ -6171,6 +6300,167 @@ mod vec_owned_tests {
                 payload: core::ptr::null_mut(),
             };
             hew_vec_push_owned(v, (&raw const s0).cast());
+        }
+    }
+
+    #[test]
+    fn wave3_null_guards_and_set_ptr_installs_before_drop() {
+        use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+        static OBSERVED_DURING_DROP: AtomicI64 = AtomicI64::new(0);
+        static LIVE_VEC: std::sync::atomic::AtomicPtr<HewVec> =
+            std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+        unsafe extern "C-unwind" fn drop_ptr_checks_live_slot(slot: *mut c_void) {
+            // SAFETY: slot holds an owned *mut i64 box removed from LIVE_VEC before drop.
+            unsafe {
+                let old_ptr = slot.cast::<*mut i64>().read();
+                let _ = Box::from_raw(old_ptr);
+                let vec_ptr = LIVE_VEC.load(Ordering::SeqCst);
+                if !vec_ptr.is_null() {
+                    let live_replacement = hew_vec_get_ptr(vec_ptr, 0).cast::<i64>();
+                    OBSERVED_DURING_DROP.store(*live_replacement, Ordering::SeqCst);
+                }
+            }
+        }
+
+        // SAFETY: exercises C ABI null guards and hew_vec_set_ptr replacement-before-drop order.
+        unsafe {
+            hew_vec_make_unique(core::ptr::null_mut());
+            hew_vec_push_i32(core::ptr::null_mut(), 7);
+            hew_vec_push_str(core::ptr::null_mut(), core::ptr::null());
+            hew_vec_push_ptr(core::ptr::null_mut(), core::ptr::null_mut());
+            assert_eq!(hew_vec_get_i32(core::ptr::null_mut(), 0), 0);
+            assert!(hew_vec_get_str(core::ptr::null_mut(), 0).is_null());
+            assert!(hew_vec_get_ptr(core::ptr::null_mut(), 0).is_null());
+            assert_eq!(hew_vec_len(core::ptr::null_mut()), 0);
+            assert!(hew_vec_is_empty(core::ptr::null_mut()));
+            hew_vec_push_generic(core::ptr::null_mut(), core::ptr::null());
+            assert!(hew_vec_get_generic(core::ptr::null(), 0).is_null());
+            hew_vec_set_generic(core::ptr::null_mut(), 0, core::ptr::null());
+            assert_eq!(
+                hew_vec_pop_generic(core::ptr::null_mut(), core::ptr::null_mut()),
+                0
+            );
+            assert_ne!(
+                hew_vec_push_managed(
+                    core::ptr::null_mut(),
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null()
+                ),
+                0
+            );
+            assert_ne!(
+                hew_vec_make_unique_managed(core::ptr::null_mut(), core::ptr::null()),
+                0
+            );
+            assert_ne!(
+                hew_vec_append_managed(core::ptr::null_mut(), core::ptr::null(), core::ptr::null()),
+                0
+            );
+            let mut status = 0_i32;
+            let mut dummy_out = 0_u64;
+            assert!(!hew_vec_get_clone_managed(
+                core::ptr::null(),
+                0,
+                (&raw mut dummy_out).cast(),
+                core::ptr::null(),
+                &raw mut status
+            ));
+            assert!(!hew_vec_get_clone_managed(
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                core::ptr::null_mut()
+            ));
+
+            let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
+                release_start: None,
+                size: core::mem::size_of::<*mut i64>(),
+                align: core::mem::align_of::<*mut i64>(),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                clone_fn: None,
+                drop_fn: Some(drop_ptr_checks_live_slot),
+            };
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let first = Box::into_raw(Box::new(111_i64));
+            let second = Box::into_raw(Box::new(222_i64));
+            hew_vec_push_ptr(v, first.cast());
+            LIVE_VEC.store(v, Ordering::SeqCst);
+            OBSERVED_DURING_DROP.store(0, Ordering::SeqCst);
+            hew_vec_set_ptr(v, 0, second.cast());
+            assert_eq!(OBSERVED_DURING_DROP.load(Ordering::SeqCst), 222);
+            LIVE_VEC.store(core::ptr::null_mut(), Ordering::SeqCst);
+            hew_vec_free(v);
+            let _ = AtomicUsize::new(0);
+        }
+    }
+
+    #[test]
+    fn zst_plain_managed_vec_accepts_null_data_while_callback_zst_rejects() {
+        unsafe extern "C-unwind" fn noop_drop(_slot: *mut c_void) {}
+        static DROP_ZST_MANAGED: hew_cabi::managed::HewManagedValueDescriptor =
+            hew_cabi::managed::HewManagedValueDescriptor {
+                slot_bytes: 0,
+                visit: None,
+            };
+        static DROP_ZST_LAYOUT: HewValueLayout = HewValueLayout {
+            size: 0,
+            align: 1,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(noop_drop),
+            release_start: None,
+            code_owner: core::ptr::null(),
+            managed: &raw const DROP_ZST_MANAGED,
+        };
+
+        // SAFETY: exercises plain ZST null data acceptance vs callback ZST refusal.
+        unsafe {
+            let v_unit = hew_vec_new_with_elem_layout(
+                &raw const crate::layout_intrinsics::hew_layout_val_unit,
+            );
+            assert_eq!(
+                hew_vec_push_managed(v_unit, core::ptr::null(), 0, core::ptr::null()),
+                0
+            );
+            assert_eq!(hew_vec_len(v_unit), 1);
+            let mut cleanup = core::ptr::null_mut();
+            assert_eq!(
+                super::managed::hew_vec_set_managed(
+                    v_unit,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    &raw mut cleanup,
+                ),
+                0
+            );
+            release_walker::hew_release_sync(cleanup);
+            hew_vec_free_owned(v_unit);
+
+            let v_drop = hew_vec_new_with_elem_layout(&raw const DROP_ZST_LAYOUT);
+            assert_eq!(
+                hew_vec_push_managed(v_drop, core::ptr::null(), 0, core::ptr::null()),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert_eq!(
+                super::managed::hew_vec_set_managed(
+                    v_drop,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    &raw mut cleanup,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            hew_vec_free_owned(v_drop);
         }
     }
 }

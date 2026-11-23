@@ -2,10 +2,6 @@
 //!
 //! Provides `hew_actor_schedule_periodic` which schedules a repeating
 //! self-send to an actor at a fixed interval using the runtime's timer wheel.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -567,6 +563,7 @@ mod tests {
 
     #[test]
     fn late_fire_skips_missed_slots_at_anchored_cadence() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -617,6 +614,7 @@ mod tests {
 
     #[test]
     fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -675,6 +673,7 @@ mod tests {
 
     #[test]
     fn fractional_periodic_cadence_survives_a_late_tick() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -732,7 +731,11 @@ mod tests {
     /// starts again for the next wheel user.
     #[test]
     fn reactor_ticks_the_process_wheel_and_restarts_after_shutdown() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _simtime = crate::deterministic::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for round in 0..2 {
@@ -757,6 +760,7 @@ mod tests {
 
     #[test]
     fn cancel_all_timers_marks_contexts_cancelled() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -813,6 +817,7 @@ mod tests {
     /// single-owner Arc protocol must not crash.
     #[test]
     fn cancel_all_with_live_ticker_and_pending_oneshot_no_uaf() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -841,6 +846,7 @@ mod tests {
 
     #[test]
     fn shutdown_quiescence_closes_periodic_admission_without_stopping_shared_timers() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -887,6 +893,7 @@ mod tests {
 
     #[test]
     fn shutdown_cancels_due_but_unclaimed_periodic_entry() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -954,6 +961,7 @@ mod tests {
 
     #[test]
     fn shutdown_quiescence_keeps_registry_visible_until_callbacks_drain() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1004,6 +1012,7 @@ mod tests {
 
     #[test]
     fn cancel_all_timers_no_timers_does_not_panic() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1020,7 +1029,11 @@ mod tests {
     /// Verifies: parked-empty → schedule fires on time.
     #[test]
     fn tickless_parked_empty_fires_on_schedule() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _simtime = crate::deterministic::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -1069,7 +1082,11 @@ mod tests {
     /// fires at its own deadline (not the far one).
     #[test]
     fn tickless_sooner_insert_fires_before_far_deadline() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _simtime = crate::deterministic::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -1115,6 +1132,7 @@ mod tests {
     /// wait for, a quiet period passes without a single loop turn.
     #[test]
     fn tickless_no_idle_wakeup_when_wheel_empty() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1166,6 +1184,7 @@ mod tests {
                     1 => 20_000_000_000u64..60_000_000_000,
                 ], any::<bool>()), 1..24),
             ) {
+                let _runtime = crate::runtime_test_guard();
                 let _guard = TICKER_TEST_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut actor = create_test_actor(50_450);
                 actor.actor_state.store(HewActorState::Stopped as i32, Ordering::SeqCst);

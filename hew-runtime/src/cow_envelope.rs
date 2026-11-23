@@ -399,10 +399,10 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                 free_allocation(env);
                 return;
             }
-            if let Some(drop) = (*env).ingress_drop.take() {
-                (drop.callback)(drop.message, (*env).payload, (*env).payload_size);
-            }
             if !(*env).payload.is_null() {
+                if let Some(drop) = (*env).ingress_drop.take() {
+                    (drop.callback)(drop.message, (*env).payload, (*env).payload_size);
+                }
                 if let Some(owner) = &(*env).value_owner {
                     owner
                         .release_value(&ENVELOPE_LAYOUT, env.cast())
@@ -680,5 +680,27 @@ mod tests {
             (*env).header_bits.store(0, Ordering::SeqCst);
             release(env);
         }
+    }
+
+    #[test]
+    fn null_payload_never_calls_ingress_drop() {
+        static INGRESS_DROPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn count_ingress_drop(_msg: i32, _data: *mut c_void, _size: usize) {
+            INGRESS_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _serial = CORE_TEST_LOCK.lock().unwrap();
+        INGRESS_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: envelope is uniquely owned by this test and carries null payload.
+        unsafe {
+            let env = new(ptr::null_mut(), 64, None, alloc);
+            assert!(!env.is_null());
+            (*env).ingress_drop = Some(IngressDrop {
+                message: 7,
+                callback: count_ingress_drop,
+            });
+            release(env);
+        }
+        assert_eq!(INGRESS_DROPS.load(Ordering::SeqCst), 0);
     }
 }

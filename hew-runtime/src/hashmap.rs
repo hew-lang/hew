@@ -4,10 +4,6 @@
 //! Stores opaque key/value blobs whose identity is delegated to
 //! caller-supplied hash and equality thunks; uses linear probing with
 //! tombstones.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 #![expect(
     clippy::cast_possible_wrap,
     reason = "hew_hashmap_len_layout casts usize→i64; workspace caps len well below i64::MAX so the cast is lossless"
@@ -874,6 +870,22 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_clone_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
+    // SAFETY: `m` is verified non-null above.
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: the caller lends initialized operands matching the descriptors.
     unsafe { validate_op_inputs(m, key, Some(val)) };
     // SAFETY: all loans remain live while the shared probe drives C callbacks.
@@ -918,6 +930,22 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
+    // SAFETY: `m` is verified non-null above.
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: the caller lends initialized operands matching the descriptors.
     unsafe { validate_op_inputs(m, key, Some(val)) };
     // SAFETY: all loans remain live while the shared probe drives C callbacks.
@@ -961,13 +989,29 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
 /// blob of the registered key layout. `val` likewise for the value layout
 /// (when size > 0).
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_layout(
+pub unsafe extern "C-unwind" fn hew_hashmap_insert_layout(
     m: *mut HewLayoutHashMap,
     key: *const c_void,
     val: *const c_void,
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
+    // SAFETY: `m` is verified non-null above.
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: caller supplies independent key/value owners of matching layouts.
     unsafe { validate_op_inputs(m, key, Some(val)) };
     // SAFETY: all operands remain live through callback completion.
@@ -1017,6 +1061,10 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
     value_out: *mut *const c_void,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || value_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the map and key remain live and unmodified during the lookup.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: lookup probes only borrow the map; this cast grants no mutation.
@@ -1058,6 +1106,10 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: caller provides a live map and matching key.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's descriptor determines output storage needs.
@@ -1106,6 +1158,10 @@ pub unsafe extern "C" fn hew_hashmap_get_borrow_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: caller provides a live map and matching key.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's descriptor determines output storage needs.
@@ -1143,6 +1199,10 @@ pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: caller provides a live map and matching borrowed key.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: lookup only borrows the map; its contents stay live throughout.
@@ -1169,12 +1229,16 @@ pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
 ///
 /// Same as [`hew_hashmap_get_layout`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_remove_layout(
+pub unsafe extern "C-unwind" fn hew_hashmap_remove_layout(
     m: *mut HewLayoutHashMap,
     key: *const c_void,
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: caller lends the live map exclusively and a matching query.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: no mutation occurs until every callback finishes.
@@ -1220,13 +1284,17 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
 /// blob. When the map's value size is non-zero, `out` must point to writable
 /// storage for exactly `val_layout.size` bytes at `val_layout.align`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
+pub unsafe extern "C-unwind" fn hew_hashmap_remove_take_layout(
     m: *mut HewLayoutHashMap,
     key: *const c_void,
     out: *mut c_void,
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        m.is_null() || key.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: caller lends the live map exclusively and a matching query.
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's value descriptor determines output size.
@@ -1255,6 +1323,7 @@ pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
 /// `m` must be a valid `HewLayoutHashMap`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i64 {
+    cabi_guard!(m.is_null(), 0);
     // SAFETY: shared fail-closed gate (map-only variant).
     unsafe { validate_op_map(m) };
     // SAFETY: m non-null per gate.
@@ -1457,7 +1526,8 @@ pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
 ///
 /// `m` must be a valid `HewLayoutHashMap` pointer (non-null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
+pub unsafe extern "C-unwind" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
+    cabi_guard!(m.is_null());
     // SAFETY: the synchronous ABI consumes the shared detached owner traversal.
     unsafe { release_walker::hew_release_sync(hew_hashmap_clear_release(m)) };
 }
@@ -1469,6 +1539,7 @@ pub unsafe extern "C" fn hew_hashmap_clear_layout(m: *mut HewLayoutHashMap) {
 pub unsafe extern "C" fn hew_hashmap_clear_release(
     m: *mut HewLayoutHashMap,
 ) -> *mut HewReleaseCursor {
+    cabi_guard!(m.is_null(), ptr::null_mut());
     // SAFETY: the receiver owns every occupied slot; no callback runs until all
     // entries have transferred and the visible map is empty.
     unsafe {
@@ -1693,4 +1764,65 @@ pub unsafe extern "C" fn hew_hashmap_values_layout(m: *const HewLayoutHashMap) -
     let map = unsafe { &*m };
     // SAFETY: the descriptor and offset describe an initialized field in every occupied slot.
     unsafe { collect_layout_field(map, map.val_layout, map.val_offset) }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::layout_intrinsics::{hew_layout_key_i64, hew_layout_val_i64};
+
+    #[test]
+    fn insert_layout_null_val_clears_fault_out_before_returning_undescribed() {
+        // SAFETY: map, key, and output pointers are valid stack locals owned by test.
+        unsafe {
+            let map = hew_hashmap_new_with_layout(
+                &raw const hew_layout_key_i64,
+                &raw const hew_layout_val_i64,
+            );
+            let key = 1_i64;
+            let mut present = false;
+            let sentinel = core::ptr::without_provenance_mut::<c_void>(0x1234);
+
+            let mut fault_clone = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_clone_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_clone,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_clone.is_null());
+
+            let mut fault_take = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_take_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_take,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_take.is_null());
+
+            let mut fault_raw = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_raw,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_raw.is_null());
+
+            hew_hashmap_free_layout(map);
+        }
+    }
 }

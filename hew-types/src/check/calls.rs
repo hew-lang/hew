@@ -646,10 +646,6 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
-    )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
         func: &Spanned<Expr>,
@@ -688,6 +684,10 @@ impl Checker {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
+    )]
     fn check_call_against_expected_constructor_callee(
         &mut self,
         callee: CallCallee<'_>,
@@ -1950,10 +1950,6 @@ impl Checker {
         .then_some(family)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "call checking covers many builtin and method signatures"
-    )]
     pub(super) fn check_call(
         &mut self,
         func: &Spanned<Expr>,
@@ -1983,6 +1979,10 @@ impl Checker {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "call checking covers many builtin and method signatures"
+    )]
     fn check_call_callee(
         &mut self,
         callee: CallCallee<'_>,

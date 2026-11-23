@@ -75,14 +75,13 @@ impl Checker {
                 .iter()
                 .map(|arg| self.resolve_type_expr(arg))
                 .collect();
-            let actor_ty = match self.resolve_type_path(&c.actor_type) {
-                Some(super::scope::Resolution::Nominal(actor)) => {
-                    Ty::named_head(self.head_of_declaration(actor), type_args)
-                }
-                _ => {
-                    let child_type = c.actor_type.to_string();
-                    self.named_ty_for_key(&child_type, type_args)
-                }
+            let actor_ty = if let Some(super::scope::Resolution::Nominal(actor)) =
+                self.resolve_type_path(&c.actor_type)
+            {
+                Ty::named_head(self.head_of_declaration(actor), type_args)
+            } else {
+                let child_type = c.actor_type.to_string();
+                self.named_ty_for_key(&child_type, type_args)
             };
             let entry = (c.name.to_string(), Ty::actor_handle_of(&actor_ty));
             if c.is_pool {

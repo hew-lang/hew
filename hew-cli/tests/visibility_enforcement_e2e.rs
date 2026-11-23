@@ -398,7 +398,7 @@ fn private_field_note_points_to_the_declaring_peer_file() {
     assert_eq!(errors.len(), 1, "{diagnostics}");
     assert_eq!(errors[0]["code"], "VisibilityViolationPrivate");
     assert_eq!(
-        std::path::Path::new(errors[0]["notes"][0]["file"].as_str().unwrap()),
-        declaration
+        std::fs::canonicalize(errors[0]["notes"][0]["file"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(&declaration).unwrap(),
     );
 }

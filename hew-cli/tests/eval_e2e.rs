@@ -1325,15 +1325,17 @@ fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
 #[test]
 fn eval_repl_clear_emits_confirmation() {
     let output = run_eval_with_stdin(&["eval"], ":clear\n:quit\n");
-
     assert!(
         output.status.success(),
-        "stderr: {}",
+        "eval :clear exited with {:?}, stderr: {}",
+        output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Session cleared."),
+        "expected :clear confirmation on stdout, got: {stdout}"
+    );
 }
 
 /// `:clear` must drop all accumulated items and bindings so that previously
@@ -1746,37 +1748,23 @@ fn eval_wasm_interactive_mode_rejected() {
 // only have invented.
 
 #[test]
-fn eval_inline_runtime_failure_exits_with_child_exit_code() {
+fn eval_inline_runtime_failure_exits_with_child_exit_code_and_stderr() {
     require_codegen();
 
-    // `panic` exits the child with code 1.  Without the fix `hew eval`
-    // would report its own status regardless of the child's code.
+    // `panic` exits the child with code 1. `hew eval` must propagate the
+    // child's status and runtime stderr rather than substituting its own.
     let output = Command::new(hew_binary())
         .args(["eval", r#"panic("deliberate failure")"#])
         .current_dir(repo_root())
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
         Some(1),
         "expected child exit code 1 (Hew panic), got {:?}",
         output.status.code()
     );
-}
-
-#[test]
-fn eval_inline_runtime_failure_surfaces_child_stderr() {
-    require_codegen();
-
-    let output = Command::new(hew_binary())
-        .args(["eval", r#"panic("deliberate failure")"#])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_no_monomorphic_overload_error(&stderr);
     assert!(
@@ -1786,42 +1774,15 @@ fn eval_inline_runtime_failure_surfaces_child_stderr() {
 }
 
 #[test]
-fn eval_file_runtime_failure_exits_with_child_exit_code() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let path = dir.path().join("failing_eval.hew");
-    // A single expression that unconditionally panics.  `panic` exits with
-    // code 1, and the CLI must propagate the child's status rather than
-    // substitute one of its own.
-    std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
-
-    let output = Command::new(hew_binary())
-        .arg("eval")
-        .arg("-f")
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected child exit code 1 (Hew panic), got {:?}",
-        output.status.code()
-    );
-}
-
-#[test]
-fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
+fn eval_file_runtime_failure_exits_with_child_code_and_preserves_stdout() {
     require_codegen();
 
     let dir = support::tempdir();
     let path = dir.path().join("partial_output_eval.hew");
     // A helper that prints before panicking, called as a single expression so
-    // both print and panic run inside the same compiled binary.  Stdout
-    // produced before the panic must not be silently discarded.
+    // both print and panic run inside the same compiled binary. Stdout
+    // produced before the panic must not be silently discarded, and exit code
+    // must propagate.
     std::fs::write(
         &path,
         "fn do_and_fail() {\n    print(\"partial\\n\");\n    panic(\"deliberate failure\");\n}\ndo_and_fail()\n",
@@ -1836,7 +1797,12 @@ fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected child exit code 1 (Hew panic), got {:?}",
+        output.status.code()
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("partial"),
@@ -1962,36 +1928,7 @@ fn integer_overflow_traps_identically_on_native_and_wasi() {
 }
 
 #[test]
-fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
-    require_codegen();
-    support::require_wasi_runner();
-
-    let dir = support::tempdir();
-    let path = dir.path().join("wasm_failing_eval.hew");
-    std::fs::write(
-        &path,
-        "fn fail() -> i64 {\n    panic(\"deliberate failure\")\n}\nfail()\n",
-    )
-    .unwrap();
-
-    let output = Command::new(hew_binary())
-        .args(["eval", "--target", "wasm32-wasi", "-f"])
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected child exit code 1 (Hew panic via WASM), got {:?}",
-        output.status.code()
-    );
-}
-
-#[test]
-fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
+fn eval_wasm_file_runtime_failure_exits_with_child_code_and_preserves_stdout() {
     require_codegen();
     support::require_wasi_runner();
 
@@ -2010,7 +1947,12 @@ fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected child exit code 1 (Hew panic via WASM), got {:?}",
+        output.status.code()
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("wasm-partial"),
@@ -2042,8 +1984,9 @@ fn eval_json_ok_inline_expression() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(0),
         "expected exit 0 with --json, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2057,24 +2000,6 @@ fn eval_json_ok_inline_expression() {
     assert_eq!(v["stderr"], "", "stderr must be empty on ok: {v}");
     assert_eq!(v["exit_code"], 0, "unexpected exit_code: {v}");
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
-}
-
-#[test]
-fn eval_json_ok_exits_zero() {
-    require_codegen();
-
-    let output = Command::new(hew_binary())
-        .args(["eval", "--json", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("\"status\":\"ok\""),
-        "JSON ok status missing from stdout: {stdout}"
-    );
 }
 
 #[test]
@@ -2237,6 +2162,11 @@ fn eval_json_compile_error() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(1));
+    let parent_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        parent_stderr.is_empty(),
+        "compile diagnostics leaked to parent stderr instead of JSON: {parent_stderr:?}"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
@@ -2252,9 +2182,20 @@ fn eval_json_compile_error() {
         v["stderr"], "",
         "stderr must be empty on compile error: {v}"
     );
+    let diagnostics = v["diagnostics"].as_str().unwrap_or("");
     assert!(
-        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
+        !diagnostics.is_empty(),
         "diagnostics must be non-empty on compile_error: {v}"
+    );
+    assert!(
+        !diagnostics.contains("\u{1b}["),
+        "compile diagnostics in JSON must not contain ANSI escapes: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.contains("this_does_not_exist_at_all")
+            || diagnostics.contains("error")
+            || diagnostics.contains("not found"),
+        "diagnostics text appears empty or unhelpful: {diagnostics:?}"
     );
 }
 
@@ -2282,39 +2223,6 @@ fn eval_json_compile_error_exits_nonzero() {
     assert!(
         stdout.contains("\"status\":\"compile_error\""),
         "JSON compile_error status missing from stdout: {stdout}"
-    );
-}
-
-#[test]
-fn eval_json_compile_error_contains_diagnostic_text() {
-    require_codegen();
-
-    let output = Command::new(hew_binary())
-        .args(["eval", "--json", "this_does_not_exist_at_all()"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
-
-    let diagnostics = v["diagnostics"].as_str().unwrap_or("");
-    let parent_stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        parent_stderr.is_empty(),
-        "compile diagnostics leaked to parent stderr instead of JSON: {parent_stderr:?}"
-    );
-    assert!(
-        !diagnostics.contains("\u{1b}["),
-        "compile diagnostics in JSON must not contain ANSI escapes: {diagnostics:?}"
-    );
-    // The diagnostic must mention the unknown name so tooling can surface it.
-    assert!(
-        diagnostics.contains("this_does_not_exist_at_all")
-            || diagnostics.contains("error")
-            || diagnostics.contains("not found"),
-        "diagnostics text appears empty or unhelpful: {diagnostics:?}"
     );
 }
 
@@ -2637,6 +2545,7 @@ fn eval_repl_non_tty_suppresses_interactive_chrome() {
     let output = run_eval_with_stdin(&["eval"], ":quit\n");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stdout.contains("Hew REPL"),
         "piped hew eval must not print the startup banner: {stdout}"
@@ -2648,6 +2557,10 @@ fn eval_repl_non_tty_suppresses_interactive_chrome() {
     assert!(
         !stdout.contains("hew>"),
         "piped hew eval must not print the primary prompt: {stdout}"
+    );
+    assert!(
+        !stderr.contains("previous session ended"),
+        "the removed cumulative failure counter must not resurface: {stderr}"
     );
 }
 
@@ -2692,24 +2605,6 @@ fn eval_repl_quiet_flag_suppresses_startup_boilerplate() {
     assert!(
         !stdout.contains("Hew REPL"),
         "hew eval --quiet must not print the startup banner: {stdout}"
-    );
-}
-
-/// `hew eval` no longer tracks or surfaces a cumulative cross-session
-/// failure/crash counter — regression test for the removed "previous session
-/// ended without a clean :quit (N times in the last 7 days)" note, which
-/// was not useful to users and has been deleted along with the
-/// `host_death` module.
-#[test]
-fn eval_repl_never_prints_cumulative_failure_counter() {
-    require_codegen();
-
-    let output = run_eval_with_stdin(&["eval"], ":quit\n");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("previous session ended"),
-        "the removed cumulative failure counter must not resurface: {stderr}"
     );
 }
 

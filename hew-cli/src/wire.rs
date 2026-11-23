@@ -153,11 +153,18 @@ fn parse_wire_decls(
     if let Some(failure) = state.stopped {
         return Err(format!("cannot check {path}: {}", failure.message));
     }
+    extract_wire_schemas(&state, path)
+}
+
+fn extract_wire_schemas(
+    state: &hew_compile::DocumentFrontendState,
+    label: &str,
+) -> Result<Vec<VersionedWireSchema>, String> {
     let checked = state
         .typecheck_result
         .as_ref()
         .and_then(|result| result.tco.as_ref())
-        .ok_or_else(|| format!("Error: wire declarations in {path} have no checked type facts"))?;
+        .ok_or_else(|| format!("Error: wire declarations in {label} have no checked type facts"))?;
     let program = checked
         .normalized_program
         .as_ref()
@@ -698,5 +705,392 @@ fn schema_type_identity(ty: &ResolvedTy, parameters: &[ParamHead], defs: &DefTab
             schema_type_identity(element, parameters, defs)
         ),
         _ => ty.user_facing().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_wire_sources(current: &str, baseline: &str) -> Result<CompatibilityReport, String> {
+        fn load_source(
+            frontend: &mut hew_compile::SourceAnalysisBatch,
+            source: &str,
+            label: &str,
+        ) -> Result<Vec<VersionedWireSchema>, String> {
+            let state = frontend.run_source_frontend(source, label);
+            if let Some(failure) = state.stopped {
+                let diag_text = state
+                    .diagnostics
+                    .iter()
+                    .map(|diag| match &diag.kind {
+                        hew_compile::FrontendDiagnosticKind::Message(inner) => {
+                            inner.message.clone()
+                        }
+                        hew_compile::FrontendDiagnosticKind::Parse(err) => err.message.clone(),
+                        hew_compile::FrontendDiagnosticKind::Type(err) => err.message.clone(),
+                        hew_compile::FrontendDiagnosticKind::Hir(err) => format!("{err:?}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Err(format!(
+                    "cannot check {label}: {}\n{diag_text}",
+                    failure.message
+                ));
+            }
+            extract_wire_schemas(&state, label)
+        }
+
+        let mut frontend =
+            hew_compile::SourceAnalysisBatch::new(hew_compile::FrontendOptions::default());
+        let current_wires = load_source(&mut frontend, current, "current.hew")?;
+        let baseline_wires = load_source(&mut frontend, baseline, "baseline.hew")?;
+        Ok(compare_wire_schemas(&current_wires, &baseline_wires))
+    }
+
+    fn assert_incompatible_cases(cases: &[(&str, &str, &str, &[&str])]) {
+        for &(name, current, baseline, needles) in cases {
+            let report = check_wire_sources(current, baseline)
+                .unwrap_or_else(|e| panic!("{name} failed frontend: {e}"));
+            assert!(
+                report.has_errors(),
+                "{name}: expected compatibility error, got warnings={:?}",
+                report.warnings
+            );
+            for needle in needles {
+                assert!(
+                    report.errors.iter().any(|err| err.contains(needle)),
+                    "{name}: expected `{needle}` in {:?}",
+                    report.errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wire_schema_compatible_cases() {
+        let compatible_clean: &[(&str, &str, &str)] = &[
+            (
+                "effective_text_keys",
+                r#"#[wire] type Message { #[serial(key = "id")] number: i64 @1; }"#,
+                r#"#[wire] type Message { #[serial(key = "id")] value: i64 @1; }"#,
+            ),
+            (
+                "ignores_unencoded_fields",
+                "#[wire] type Message { id: i64 @1; #[serial(skip)] scratch: Option<i64> @2; }",
+                "#[wire] type Message { id: i64 @1; #[serial(skip)] scratch: Option<string> @2; }",
+            ),
+            (
+                "compares_resolved_aliases",
+                "type Counter = i64; #[wire] type Message { value: Counter @1; }",
+                "#[wire] type Message { value: i64 @1; }",
+            ),
+            (
+                "since_suppresses_new_required_field_warning",
+                "#[wire(version = 2)]\ntype Msg {\n    id: string @1;\n    extra: i32 @2 since 2;\n}\n",
+                "#[wire(version = 1)]\ntype Msg {\n    id: string @1;\n}\n",
+            ),
+            (
+                "allows_removed_optional_field",
+                "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n    tag: Option<string> @2 optional;\n}\n",
+            ),
+            (
+                "reordered_wire_enum_variants_with_stable_tags",
+                "#[wire]\nenum Command {\n    Start @0;\n    Stop @2;\n    Pause @1;\n}\n",
+                "#[wire]\nenum Command {\n    Start @0;\n    Pause @1;\n    Stop @2;\n}\n",
+            ),
+            (
+                "auto_enum_explicit_tags",
+                "#[wire] enum State { Ready @1; Waiting @0; }",
+                "#[wire] enum State { Waiting @0; Ready @1; }",
+            ),
+            (
+                "generic_parameter_alpha_rename",
+                "#[wire] type Pair<A, B> { first: A; second: B; } #[wire] enum Choice<A, B> { First(A); Second(B); }",
+                "#[wire] type Pair<T, U> { first: T; second: U; } #[wire] enum Choice<T, U> { First(T); Second(U); }",
+            ),
+        ];
+
+        for &(name, current, baseline) in compatible_clean {
+            let report = check_wire_sources(current, baseline)
+                .unwrap_or_else(|e| panic!("{name} failed frontend: {e}"));
+            assert!(!report.has_errors(), "{name}: {:?}", report.errors);
+            match name {
+                "since_suppresses_new_required_field_warning" => assert!(
+                    !report.warnings.iter().any(|w| w.contains("Msg.extra @2")),
+                    "{name} expected no new-required-field warning: {:?}",
+                    report.warnings
+                ),
+                "allows_removed_optional_field" => assert!(
+                    report.warnings.is_empty(),
+                    "{name} expected no warnings: {:?}",
+                    report.warnings
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn wire_schema_warning_cases() {
+        let warning_cases: &[(&str, &str, &str, &str)] = &[
+            (
+                "new_required_field_without_since",
+                "#[wire]\ntype Msg {\n    id: string @1;\n    extra: i32 @2;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+                "Msg.extra @2",
+            ),
+            (
+                "deprecated_field",
+                "#[wire]\ntype Msg {\n    id: string @1;\n    legacy: i32 @2 deprecated;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n    legacy: i32 @2;\n}\n",
+                "Msg.legacy @2",
+            ),
+            (
+                "version_advance",
+                "#[wire(version = 3)]\ntype Config {\n    host: string @1;\n}\n",
+                "#[wire(version = 1)]\ntype Config {\n    host: string @1;\n}\n",
+                "Config",
+            ),
+            (
+                "new_wire_struct_required_fields",
+                "#[wire]\ntype NewMessage {\n    id: string @1;\n    payload: string @2;\n}\n",
+                "",
+                "NewMessage.id @1",
+            ),
+            (
+                "new_wire_struct_deprecated_field",
+                "#[wire]\ntype NewMessage {\n    id: string @1;\n    legacy: i32 @2 deprecated;\n}\n",
+                "",
+                "NewMessage.legacy @2",
+            ),
+        ];
+
+        for &(name, current, baseline, needle) in warning_cases {
+            let report = check_wire_sources(current, baseline)
+                .unwrap_or_else(|e| panic!("{name} failed frontend: {e}"));
+            assert!(!report.has_errors(), "{name}: {:?}", report.errors);
+            assert!(
+                report.warnings.iter().any(|w| w.contains(needle)),
+                "{name}: expected warning containing `{needle}`, got {:?}",
+                report.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn wire_schema_incompatible_struct_and_version_cases() {
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            (
+                "changed_serial_key",
+                r#"#[wire] type Message { #[serial(key = "number")] value: i64 @1; }"#,
+                r#"#[wire] type Message { #[serial(key = "id")] value: i64 @1; }"#,
+                &["Message"],
+            ),
+            (
+                "field_tag_reassigned",
+                "#[wire]\ntype Msg {\n    label: string @1;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+                &["Msg"],
+            ),
+            (
+                "field_type_change",
+                "#[wire]\ntype Msg {\n    count: i32 @1;\n}\n",
+                "#[wire]\ntype Msg {\n    count: string @1;\n}\n",
+                &["Msg.count @1"],
+            ),
+            (
+                "scalar_to_collection",
+                "#[wire]\ntype Msg {\n    tags: Vec<string> @1;\n}\n",
+                "#[wire]\ntype Msg {\n    tags: string @1;\n}\n",
+                &["Msg.tags @1"],
+            ),
+            (
+                "optional_to_required",
+                "#[wire]\ntype Msg {\n    name: Option<string> @1;\n}\n",
+                "#[wire]\ntype Msg {\n    name: Option<string> @1 optional;\n}\n",
+                &["Msg.name @1"],
+            ),
+            (
+                "required_to_optional",
+                "#[wire]\ntype Msg {\n    name: Option<string> @1 optional;\n}\n",
+                "#[wire]\ntype Msg {\n    name: Option<string> @1;\n}\n",
+                &["Msg.name @1"],
+            ),
+            (
+                "removed_required_field",
+                "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n    count: i32 @2;\n}\n",
+                &["Msg.count @2"],
+            ),
+            (
+                "min_version_higher_than_baseline",
+                "#[wire(version = 3, min_version = 3)]\ntype Config {\n    host: string @1;\n}\n",
+                "#[wire(version = 1)]\ntype Config {\n    host: string @1;\n}\n",
+                &["Config"],
+            ),
+            (
+                "struct_to_enum_kind_change",
+                "#[wire]\nenum Msg {\n    Ok @0;\n    Err @1;\n}\n",
+                "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+                &["Msg"],
+            ),
+            (
+                "removed_wire_struct_with_required_fields",
+                "",
+                "#[wire]\ntype Request {\n    id: string @1;\n    payload: string @2;\n}\n",
+                &["Request.id @1"],
+            ),
+        ];
+        assert_incompatible_cases(cases);
+    }
+
+    #[test]
+    fn wire_schema_incompatible_enum_and_generic_cases() {
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            (
+                "checked_variant_text_keys",
+                r#"#[wire] #[serial(case = "snake_case")] enum Event { StartTask @1; }"#,
+                "#[wire] enum Event { StartTask @1; }",
+                &["Event", "start_task"],
+            ),
+            (
+                "removed_wire_enum",
+                "",
+                "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
+                &["Status"],
+            ),
+            (
+                "enum_variant_addition",
+                "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n    Pending @2;\n}\n",
+                "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
+                &["Status.Pending"],
+            ),
+            (
+                "enum_variant_removal",
+                "#[wire]\nenum Status {\n    Active @0;\n}\n",
+                "#[wire]\nenum Status {\n    Active @0;\n    Inactive @1;\n}\n",
+                &["Status.Inactive"],
+            ),
+            (
+                "enum_variant_payload_shape_change",
+                "#[wire]\nenum Cmd {\n    Start(string) @0;\n}\n",
+                "#[wire]\nenum Cmd {\n    Start @0;\n}\n",
+                &["Cmd.Start"],
+            ),
+            (
+                "enum_tuple_payload_type_change",
+                "#[wire]\nenum Cmd {\n    Data(i32) @0;\n}\n",
+                "#[wire]\nenum Cmd {\n    Data(string) @0;\n}\n",
+                &["Cmd.Data"],
+            ),
+            (
+                "enum_struct_variant_field_type_change",
+                "#[wire]\nenum Cmd {\n    Data { value: i32;  } @0;\n}\n",
+                "#[wire]\nenum Cmd {\n    Data { value: string;  } @0;\n}\n",
+                &["Cmd.Data"],
+            ),
+            (
+                "enum_variant_tag_reassigned",
+                "#[wire]\nenum Command {\n    Start @0;\n    Pause @1;\n    Stop @2;\n}\n",
+                "#[wire]\nenum Command {\n    Start @0;\n    Stop @1;\n    Pause @2;\n}\n",
+                &["Command"],
+            ),
+            (
+                "enum_payload_arity_change",
+                "#[wire]\nenum Command {\n    Start @0;\n    Data(string) @1;\n}\n",
+                "#[wire]\nenum Command {\n    Start @0;\n    Data(string, u32) @1;\n}\n",
+                &["Command.Data"],
+            ),
+            (
+                "enum_struct_variant_field_rename",
+                "#[wire]\nenum Command {\n    Data { new_value: string;  } @0;\n}\n",
+                "#[wire]\nenum Command {\n    Data { value: string;  } @0;\n}\n",
+                &["Command.Data"],
+            ),
+            (
+                "reordered_generic_parameters",
+                "#[wire] type Pair<U, T> { first: T; second: U; } #[wire] enum Choice<U, T> { First(T); Second(U); }",
+                "#[wire] type Pair<T, U> { first: T; second: U; } #[wire] enum Choice<T, U> { First(T); Second(U); }",
+                &["Pair.first", "Choice.First"],
+            ),
+            (
+                "changed_generic_arity",
+                "#[wire] type Box<T, U> { value: T; }",
+                "#[wire] type Box<T> { value: T; }",
+                &["Box"],
+            ),
+            (
+                "auto_enum_tags_reordering",
+                "#[wire] enum State { Ready; Waiting; }",
+                "#[wire] enum State { Waiting; Ready; }",
+                &["State"],
+            ),
+        ];
+        assert_incompatible_cases(cases);
+    }
+
+    #[test]
+    fn wire_schema_frontend_rejections_and_machines() {
+        let dup_current = check_wire_sources(
+            "#[wire]\ntype Msg { id: string @1; also_id: i32 @1; }\n",
+            "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+        );
+        assert!(
+            dup_current.as_ref().is_err_and(|err| err.contains("@1")),
+            "{dup_current:?}"
+        );
+
+        let dup_baseline = check_wire_sources(
+            "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+            "#[wire]\ntype Msg { id: string @1; also_id: i32 @1; }\n",
+        );
+        assert!(
+            dup_baseline.as_ref().is_err_and(|err| err.contains("@1")),
+            "{dup_baseline:?}"
+        );
+
+        let dup_decl = check_wire_sources(
+            "#[wire]\ntype Msg {\n    id: string @1;\n}\n\n#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+            "#[wire]\ntype Msg {\n    id: string @1;\n}\n",
+        );
+        match dup_decl {
+            Err(err) => assert!(err.contains("Msg"), "{err}"),
+            Ok(report) => assert!(
+                report.errors.iter().any(|e| e.contains("Msg")),
+                "{report:?}"
+            ),
+        }
+
+        let machine_schema = |parameter: &str, states: &str| {
+            format!(
+                r"#[wire] machine Switch<{parameter}> {{
+        events {{ Set {{ value: {parameter}; }} }}
+        {states}
+        on Set: Off => On {{ value: event.value }}
+        default {{ state }}
+    }}"
+            )
+        };
+        let baseline = machine_schema("T", "state Off; state On { value: T; }");
+        let renamed = machine_schema("U", "state Off; state On { value: U; }");
+        let clean = check_wire_sources(&renamed, &baseline).unwrap();
+        assert!(!clean.has_errors(), "{clean:?}");
+
+        let reordered = machine_schema("T", "state On { value: T; } state Off;");
+        let reordered_report = check_wire_sources(&reordered, &baseline).unwrap();
+        assert!(
+            reordered_report.errors.iter().any(|e| e.contains("Switch")),
+            "{reordered_report:?}"
+        );
+
+        let versioned_baseline = baseline.replace("#[wire]", "#[wire(version = 1)]");
+        let raised_minimum = renamed.replace("#[wire]", "#[wire(version = 2, min_version = 2)]");
+        let min_ver_report = check_wire_sources(&raised_minimum, &versioned_baseline).unwrap();
+        assert!(
+            min_ver_report.errors.iter().any(|e| e.contains("Switch")),
+            "{min_ver_report:?}"
+        );
     }
 }

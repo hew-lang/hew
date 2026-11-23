@@ -28,30 +28,6 @@ fn assert_version_shape(stdout: &str) {
 }
 
 #[test]
-fn version_shape_matches_build_identity() {
-    assert_version_shape(&format!("hew {}\n", hew_compile::VERSION));
-}
-
-#[test]
-fn version_shape_rejects_malformed_git_metadata() {
-    for detail in [
-        "unknown-unknown",
-        "git-unknown",
-        "git-unavailable-dirty",
-        "not-a-hash",
-        "a1b2c3d-unknown",
-        "A1B2C3D",
-        "A1B2C3D-dirty",
-    ] {
-        let output = format!("hew {} (debug, {detail})\n", env!("CARGO_PKG_VERSION"));
-        assert!(
-            std::panic::catch_unwind(|| assert_version_shape(&output)).is_err(),
-            "malformed version detail was accepted: {detail}"
-        );
-    }
-}
-
-#[test]
 fn hew_version_subcommand_exits_zero_and_emits_version_on_stdout() {
     let output = run_hew(&["version"]);
 

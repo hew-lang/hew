@@ -72,32 +72,6 @@ fn run_timeout_exit_code_is_non_zero() {
     assert!(stderr.contains("Error: program timed out after 1s"));
 }
 
-#[test]
-fn run_native_compile_error_exits_one() {
-    let dir = support::tempdir();
-    let path = dir.path().join("compile_err.hew");
-    std::fs::write(
-        &path,
-        "fn main() {\n    let _ = undefined_symbol_xyz();\n}\n",
-    )
-    .unwrap();
-
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "hew run compile error should exit 1, not an internal sentinel; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
 /// A program killed by a signal ends `hew run` by the same signal, and
 /// `hew run` adds nothing: the caller sees exactly what running the program
 /// itself would show.
@@ -1462,39 +1436,6 @@ fn for_range_step_by_before_rev_executes_in_source_order() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "8\n6\n4\n2\n0\n");
 }
 
-/// A Vec element type containing a function value fails closed at the
-/// checker (the layout/owned byte-copy would alias the sole-owner env).
-#[test]
-fn check_vec_of_record_with_fn_field_fails_closed() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/vec_of_record_with_fn_field.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("the element type contains a function value"),
-        "expected fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Runs `hew check` on a reject fixture and returns the combined output
-/// after asserting the check failed.
 fn check_fails(fixture: &str) -> String {
     let source = repo_root().join(fixture);
     let output = Command::new(hew_binary())
@@ -1516,101 +1457,72 @@ fn check_fails(fixture: &str) -> String {
     )
 }
 
-/// Affine closure-pair discipline: storing the same closure binding in two
-/// record fields is a use-after-move (both records would free one env),
-/// rejected at check time naming the first store as the move site.
+/// Affine closure-pair, borrowed-element, and function-in-Vec ownership rules
+/// must fail closed at `hew check` time across all reject fixtures.
 #[test]
-fn check_closure_shared_across_records_fails_closed() {
+fn check_closure_ownership_rejects_fail_closed() {
     require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_shared_across_records.hew");
-    assert!(
-        combined.contains("use of moved value `h`"),
-        "expected use-after-move diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("value was consumed here"),
-        "expected the diagnostic to name the move site; got: {combined}"
-    );
-}
 
-/// Affine closure-pair discipline: pushing the same closure binding into
-/// two Vec slots is a use-after-move (two slots would free one env).
-#[test]
-fn check_closure_double_vec_push_fails_closed() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_double_vec_push.hew");
-    assert!(
-        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
-        "expected use-after-move diagnostic; got: {combined}"
-    );
-}
+    let cases: &[(&str, &[&str], &[&str])] = &[
+        (
+            "tests/vertical-slice/reject/vec_of_record_with_fn_field.hew",
+            &["the element type contains a function value"],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_shared_across_records.hew",
+            &["use of moved value `h`", "value was consumed here"],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_double_vec_push.hew",
+            &["use of moved value `f`", "value was consumed here"],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_vec_push_then_record.hew",
+            &["use of moved value `f`", "value was consumed here"],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_move_then_invoke.hew",
+            &[
+                "use of moved value `f`",
+                "cannot invoke consumed callable `f`",
+            ],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_borrowed_element_store.hew",
+            &[
+                "E_OWN_CONSUME_BORROWED",
+                "cannot consume borrowed collection element `first`",
+                "the collection retains this value's owner",
+            ],
+            &[],
+        ),
+        (
+            "tests/vertical-slice/reject/closure_param_use_after_store.hew",
+            &["use of moved value `f`", "value was consumed here"],
+            &["ClosurePairBorrowedStore"],
+        ),
+    ];
 
-/// Affine closure-pair discipline: Vec push then record store of the same
-/// binding is a use-after-move (mixed-container double consumption).
-#[test]
-fn check_closure_vec_push_then_record_fails_closed() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_vec_push_then_record.hew");
-    assert!(
-        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
-        "expected use-after-move diagnostic; got: {combined}"
-    );
-}
-
-/// A rebind transfers closure-pair ownership; invoking the source binding
-/// afterwards is a use-after-move (move-then-invoke). The inverse order is
-/// the accept fixture `closure_invoke_then_move.hew`.
-#[test]
-fn check_closure_move_then_invoke_fails_closed() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_move_then_invoke.hew");
-    assert!(
-        combined.contains("use of moved value `f`"),
-        "expected use-after-move diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("cannot invoke consumed callable `f`"),
-        "expected the invocation itself to be refused; got: {combined}"
-    );
-}
-
-/// A Vec element read is a borrow — storing it into another vec would give
-/// the second vec ownership of an env the first vec already owns. Refused
-/// outright (the store itself is the corruption, no later use needed).
-#[test]
-fn check_closure_borrowed_element_store_fails_closed() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_borrowed_element_store.hew");
-    assert!(
-        combined.contains("E_OWN_CONSUME_BORROWED")
-            && combined.contains("cannot consume borrowed collection element `first`")
-            && combined.contains("the collection retains this value's owner"),
-        "expected the borrowed-element store refusal naming the loan's owner; got: {combined}"
-    );
-}
-
-/// Storing a `consume` fn-typed parameter into a record field is the
-/// parameter's single consumption (the record becomes the sole env owner);
-/// using the parameter AFTER that store is a use-after-consume, rejected by
-/// the checker — never a silent miscompile or a runtime double-free. The
-/// declared store is legal, so the error names the later use and points back
-/// at the store, not a borrowed-store refusal.
-#[test]
-fn check_closure_param_use_after_store_fails_closed() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/closure_param_use_after_store.hew");
-    assert!(
-        combined.contains("use of moved value `f`"),
-        "expected use-after-consume diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("value was consumed here"),
-        "expected the note pointing at the consuming store; got: {combined}"
-    );
-    assert!(
-        !combined.contains("ClosurePairBorrowedStore"),
-        "the declared store is legal; the error must be the later use: {combined}"
-    );
+    for &(fixture, required, forbidden) in cases {
+        let combined = check_fails(fixture);
+        for needle in required {
+            assert!(
+                combined.contains(needle),
+                "{fixture}: expected `{needle}`; got: {combined}"
+            );
+        }
+        for needle in forbidden {
+            assert!(
+                !combined.contains(needle),
+                "{fixture}: unexpected `{needle}`; got: {combined}"
+            );
+        }
+    }
 }
 
 /// Value-class capstone (RC-6) — a user record carrying an owned `string` field

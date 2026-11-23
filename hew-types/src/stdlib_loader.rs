@@ -13,9 +13,10 @@ use hew_parser::ast::{
 };
 use hew_parser::parse;
 
+use crate::builtin_type::{lookup_builtin_type, BuiltinType};
 use crate::check::admissibility::signature_contains_error_type;
 use crate::module_registry::ModuleError;
-use crate::ty::Ty;
+use crate::ty::{Ty, TypeHead};
 
 /// A C function signature extracted from an `extern` block.
 #[derive(Debug, Clone)]
@@ -419,7 +420,7 @@ fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<
         TypeExpr::Named {
             path: named_path, ..
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             if name.contains('.') {
                 Some(name.clone())
             } else {
@@ -466,7 +467,6 @@ fn extract_impl_info(
     // only keeps older loader tests honest while stdlib migrates.
     if let Some(ref tb) = impl_decl.trait_bound {
         if tb.path.to_string() == "Drop" {
-            // TRANSITION(P1): deleted by A1 commit 2
             if let Some(qualified) = impl_type_name.as_ref() {
                 info.drop_types.push(qualified.clone());
                 // Extract the C drop function from `fn drop { ... }`.
@@ -621,11 +621,11 @@ fn type_expr_to_ty_with_context(
             path: named_path,
             type_args,
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                // Primitive types never take type args; delegate entirely to the
-                                                // canonical primitive table so names like `string`, `bool`, `char`,
-                                                // `bytes`, `duration`, `isize`, `usize` are recognised instead of
-                                                // falling through to module-qualification.
+            let name = &named_path.to_string();
+            // Primitive types never take type args; delegate entirely to the
+            // canonical primitive table so names like `string`, `bool`, `char`,
+            // `bytes`, `duration`, `isize`, `usize` are recognised instead of
+            // falling through to module-qualification.
             let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
             if !has_args {
                 if let Some(prim) = Ty::from_name(name.as_str()) {
@@ -644,7 +644,7 @@ fn type_expr_to_ty_with_context(
                             ));
                         }
                     }
-                    Ty::registry_named("Option", vec![])
+                    Ty::builtin_named(BuiltinType::Option, vec![])
                 }
                 // Result<O, E> → Ty::result() helper
                 "Result" => {
@@ -656,10 +656,10 @@ fn type_expr_to_ty_with_context(
                             );
                         }
                     }
-                    Ty::registry_named("Result", vec![])
+                    Ty::builtin_named(BuiltinType::Result, vec![])
                 }
                 // Canonical named builtins — do NOT module-qualify.
-                builtin if Ty::is_named_builtin(builtin) => {
+                other => {
                     let args = type_args
                         .as_ref()
                         .map(|a| {
@@ -670,36 +670,16 @@ fn type_expr_to_ty_with_context(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    Ty::registry_named(builtin, args)
+                    if let Some(builtin) = lookup_builtin_type(other) {
+                        Ty::named_head(TypeHead::Builtin(builtin), args)
+                    } else if other.contains('.') {
+                        // Qualified handle type like "json.Value"
+                        Ty::registry_named(other, args)
+                    } else {
+                        // Unqualified type name — qualify with module short name
+                        Ty::registry_named(&format!("{module_short}.{other}"), args)
+                    }
                 }
-                // Qualified handle type like "json.Value"
-                n if n.contains('.') => Ty::registry_named(
-                    n,
-                    type_args
-                        .as_ref()
-                        .map(|args| {
-                            args.iter()
-                                .map(|(te, _)| {
-                                    type_expr_to_ty_with_context(te, module_short, context)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
-                // Unqualified type name — qualify with module short name
-                other => Ty::registry_named(
-                    &format!("{module_short}.{other}"),
-                    type_args
-                        .as_ref()
-                        .map(|args| {
-                            args.iter()
-                                .map(|(te, _)| {
-                                    type_expr_to_ty_with_context(te, module_short, context)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
             }
         }
         TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_context(
@@ -730,8 +710,8 @@ fn type_expr_to_ty_with_context(
             )),
             *size,
         ),
-        TypeExpr::Slice(element) => Ty::registry_named(
-            "Vec",
+        TypeExpr::Slice(element) => Ty::builtin_named(
+            BuiltinType::Vec,
             vec![type_expr_to_ty_with_context(
                 &element.0,
                 module_short,
@@ -1129,7 +1109,7 @@ fn wrapper_constructor_call_from_expr_inner(
             fields,
             base: None,
             ..
-        } if crate::short_name(&path.to_string()) == wrapper_simple_name // TRANSITION(P1): deleted by A1 commit 2
+        } if crate::short_name(&path.to_string()) == wrapper_simple_name
             && fields.len() == 1
             && field_names.len() == 1 =>
         {
@@ -1161,7 +1141,7 @@ fn extract_handle_methods(
         TypeExpr::Named {
             path: named_path, ..
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             if name.contains('.') {
                 name.clone()
             } else {
@@ -1206,7 +1186,7 @@ fn extract_handle_methods(
             let TypeExpr::Named { path, .. } = &return_type.0 else {
                 return None;
             };
-            let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &path.to_string();
             let qualified = if name.contains('.') {
                 name.clone()
             } else {
@@ -1929,7 +1909,7 @@ mod tests {
 
         assert_eq!(
             type_expr_to_ty(&texpr, "mymod"),
-            Ty::registry_named("Vec", vec![Ty::I32]),
+            Ty::builtin_named(BuiltinType::Vec, vec![Ty::I32]),
             "slice annotations must alias to Vec<T> in registry-loaded signatures"
         );
     }

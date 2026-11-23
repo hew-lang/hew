@@ -308,9 +308,7 @@ pub(super) fn collect_supertypes(
                             lo,
                             parse_result,
                             &bound.path.to_string(),
-                        )
-                        // TRANSITION(P1): deleted by A1 commit 2
-                        {
+                        ) {
                             supers.push(hi);
                         }
                     }
@@ -320,7 +318,7 @@ pub(super) fn collect_supertypes(
             // For types, find impl blocks: `impl TraitName for TypeName`
             Item::Impl(impl_decl) => {
                 let target = match &impl_decl.target_type.0 {
-                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(),
                     _ => continue,
                 };
                 if target == name {
@@ -331,9 +329,7 @@ pub(super) fn collect_supertypes(
                             lo,
                             parse_result,
                             &bound.path.to_string(),
-                        )
-                        // TRANSITION(P1): deleted by A1 commit 2
-                        {
+                        ) {
                             supers.push(hi);
                         }
                     }
@@ -359,9 +355,8 @@ pub(super) fn collect_subtypes(
         if let Item::Impl(impl_decl) = item {
             if let Some(bound) = &impl_decl.trait_bound {
                 if bound.path.to_string() == trait_name {
-                    // TRANSITION(P1): deleted by A1 commit 2
                     let target = match &impl_decl.target_type.0 {
-                        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(),
                         _ => continue,
                     };
                     if let Some(hi) =
@@ -379,7 +374,6 @@ pub(super) fn collect_subtypes(
         if let Item::Actor(a) = item {
             if let Some(bounds) = &a.super_traits {
                 if bounds.iter().any(|b| b.path.to_string() == trait_name) {
-                    // TRANSITION(P1): deleted by A1 commit 2
                     if let Some(hi) = find_type_hierarchy_item(
                         uri,
                         source,
@@ -599,7 +593,7 @@ pub(super) fn find_incoming_calls(
             }
             Item::Impl(i) => {
                 let impl_name = match &i.target_type.0 {
-                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(),
                     _ => "<impl>".to_string(),
                 };
                 let range = span_to_range(source, lo, item_span);

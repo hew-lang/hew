@@ -168,10 +168,13 @@ fn intoiterator_trait_locks_assoc_type_bound() {
         })
         .expect("IntoIterator must declare assoc type `IntoIter`");
     assert!(
-        into_iter_bounds.iter().any(
-            |tb| tb.path.to_string() == "Iterator" // TRANSITION(P1): deleted by A1 commit 2
-                && tb.assoc_type_bindings.iter().any(|b| b.name == Ident::new("Item"))
-        ),
+        into_iter_bounds
+            .iter()
+            .any(|tb| tb.path.to_string() == "Iterator"
+                && tb
+                    .assoc_type_bindings
+                    .iter()
+                    .any(|b| b.name == Ident::new("Item"))),
         "IntoIter must be bounded by `Iterator<Item = ...>`; got: {into_iter_bounds:#?}"
     );
 

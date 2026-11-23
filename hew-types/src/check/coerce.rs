@@ -1275,7 +1275,7 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
             path: named_path,
             type_args,
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             if name == "Self" {
                 return true;
             }

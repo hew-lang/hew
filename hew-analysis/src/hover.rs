@@ -1230,7 +1230,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
     if let Some(type_args) = &bound.type_args {
         format!(
             "{}<{}>",
-            bound.path, // TRANSITION(P1): deleted by A1 commit 2
+            bound.path,
             type_args
                 .iter()
                 .map(|(arg, _)| format_type_expr_hover(arg))
@@ -1238,7 +1238,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
                 .join(", ")
         )
     } else {
-        bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+        bound.path.to_string()
     }
 }
 

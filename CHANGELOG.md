@@ -2,14 +2,44 @@
 
 ## [Unreleased]
 
-- Use `hew build` to produce an executable. Scripts using `hew compile` for
-  intermediate artefacts or IR dumps can switch to `hew tool compile` with
-  the same arguments. Bare `hew file.hew` keeps its existing artefact paths.
-  Playground verification is available as `hew tool playground-verify`.
-- Large static O2 builds on Linux x86-64 can generate native objects in
-  parallel when the build has sufficient CPU and memory headroom and the
-  ELF link tools are available. Hew verifies the linked source ranges
-  before using the split object.
+## [0.11.2] - 2026-11-23
+
+- Top-level `hew compile` and `hew playground verify` have been removed. Use
+  `hew build` to produce an executable, replace `hew compile` with
+  `hew tool compile` (same arguments; bare `hew file.hew` keeps its existing
+  artifact paths) and replace `hew playground verify` with
+  `hew tool playground-verify`.
+- Support module-private fields on named records, enforced at the declaring
+  module and reflected in completions, documentation and syntax highlighting.
+- `std.cache.Cache` fields are now module-private; migrate direct field reads
+  and writes to `capacity()`, `ttl()` and `set_limits(capacity, ttl)`. Add
+  `touch(key)` and `eviction: .Lru` in `std.cache`, and update `CacheError`
+  display messages to carry a `cache:` prefix.
+- Run weighted random draws in `std.random` in Hew across native and browser
+  targets.
+- Resume newline scans across chunked input in `std.stream`, drop the
+  `T: Clone` bound on `Arena.contains` and `Arena.remove`, preserve owned
+  vector elements, numeric representation-limit errors and UTF-8 boundaries in
+  HTTP and streams, preserve indentation in multiline YAML strings, normalize
+  empty Markdown heading ranges in `std.text.markdown` / `hew doc` (vendored
+  `pulldown-cmark`) and preserve source grouping, macro input and comments in
+  the formatter.
+- Large static `--release` builds (or `--opt-level 2` without `-g`) on Linux
+  x86-64 (glibc) can generate native objects in parallel when sufficient CPU
+  and memory headroom, `ld.lld` and `llvm-objcopy` or `objcopy` are available.
+  Hew verifies the linked source ranges before using the split object.
+- Show authored function names for split-coroutine DWARF frames, reduce
+  coroutine frame, ownership verification, runtime allocation and actor-wait
+  overhead, count unrecovered supervised crashes consistently across native and
+  WASI execution and report local capacity or shutdown errors when an unstarted
+  remote send cannot proceed.
+- Update `url` to `2.5.9` (`RUSTSEC-2026-0592`) and align `regex` `1.13.2`
+  across Hew and its fuzz targets.
+
+See the [0.11.2 release notes](docs/releases/v0.11.2.md) for behaviour,
+migration guidance and details.
+
+## [0.11.1] - 2026-11-20
 
 - `hew build --link=dynamic` and `hew run --link=dynamic` link programs
   against the shared Hew runtime instead of copying it in. The shared runtime
@@ -93,6 +123,9 @@
   `HewTcpTransport` should use `hew_pkg::client::RegistryClient` for registry
   operations. For other HTTP requests, configure your HTTP client's connector
   directly. Hew's native client handles IPv4 and IPv6 connection racing.
+
+See the [0.11.1 release notes](docs/releases/v0.11.1.md) for behaviour,
+migration guidance and known limitations.
 
 ## [0.11.0] - 2026-11-12
 

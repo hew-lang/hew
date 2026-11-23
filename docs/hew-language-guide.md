@@ -1443,7 +1443,7 @@ fn main() {
 Record fields use `name: T;` with semicolons and no `let`/`var` prefix. A `let`
 binding is immutable; a `var` binding permits field updates.
 
-Module-private record fields were added after Hew 0.11.1. The defining module
+Module-private record fields were added in Hew 0.11.2. The defining module
 can mark a field `private`. Callers can read `label` on this record and obtain
 `sequence` through the module’s API.
 

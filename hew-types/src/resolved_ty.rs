@@ -467,16 +467,17 @@ impl ResolvedTy {
                 args: args.clone(),
             }),
             // A lifecycle builtin is declared in its owning std module.
-            // TRANSITION(A1 commit 3): the declaration is read through its
-            // canonical path until the builtin carries its declaration id.
             Self::Named {
                 head: TypeHead::Builtin(builtin),
                 args,
                 ..
-            } => Some(NominalInstance {
-                nominal: defs.lookup_nominal(builtin.source_owned_path()?)?,
-                args: args.clone(),
-            }),
+            } => {
+                let _ = builtin.source_owned_path()?;
+                Some(NominalInstance {
+                    nominal: defs.builtin_declaration(*builtin)?,
+                    args: args.clone(),
+                })
+            }
             _ => None,
         }
     }
@@ -525,21 +526,12 @@ impl ResolvedTy {
 
                     BuiltinType::NodeId => BuiltinAnchor::NodeId,
                     BuiltinType::Location => BuiltinAnchor::Location,
-                    // A shipped `#[opaque]` encoding value (`json.Value`) is a
-                    // declaration in its own module; the catalogue owns that
-                    // module path.
-                    // TRANSITION(P2): deleted by A1 commit 2.
-                    other if other.is_encoding_value() => {
-                        return Some(NominalInstance {
-                            nominal: defs.lookup_nominal(other.canonical_name())?,
-                            args: args.clone(),
-                        });
-                    }
-                    // A std-declared lifecycle record or monomorphic enum
-                    // (`SendError`, `CrashKind`, ...) anchors on that
-                    // declaration's id.
+                    // A std-declared opaque encoding value (`json.Value`),
+                    // lifecycle record, or monomorphic enum (`SendError`,
+                    // `CrashKind`, ...) anchors on that declaration's id.
                     other
-                        if other.source_owned_path().is_some()
+                        if other.is_encoding_value()
+                            || other.source_owned_path().is_some()
                             || crate::builtin_enums::monomorphic_canonical_name(*other)
                                 .is_some() =>
                     {

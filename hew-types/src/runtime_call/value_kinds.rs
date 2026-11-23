@@ -948,19 +948,6 @@ pub fn actor_request_owner_ty() -> ResolvedTy {
     )
 }
 
-/// Whether one checked type is the paired pipe allocation.
-///
-/// TRANSITION(A1 commit 3): matched by the contract's canonical path.
-#[must_use]
-pub fn is_stream_pair_ty(ty: &ResolvedTy) -> bool {
-    crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel").is_some_and(
-        |contract| {
-            matches!(ty, ResolvedTy::Named { head, args, .. }
-                if args.is_empty() && head.registry_key() == contract.resource_type)
-        },
-    )
-}
-
 /// Recognize supported canonical collection instances and their exact arity.
 #[must_use]
 pub fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[ResolvedTy])> {

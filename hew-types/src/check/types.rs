@@ -1605,44 +1605,16 @@ impl TypeCheckOutput {
         TypeDefView::new(&self.defs, &self.type_defs)
     }
 
-    /// The type definition filed under a declaration path.
-    ///
-    /// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+    /// The type definition filed under a declaration path (used by tests).
     #[must_use]
     pub fn type_def_at_path(&self, path: &str) -> Option<&TypeDef> {
         self.types().at_path(path)
-    }
-
-    /// The type definitions keyed by their rendered declaration path.
-    ///
-    /// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
-    /// declaration.
-    #[must_use]
-    pub fn type_defs_by_path(&self) -> HashMap<String, TypeDef> {
-        self.type_defs
-            .iter()
-            .map(|(id, type_def)| {
-                (
-                    self.defs.path(id.declaration()).to_string(),
-                    type_def.clone(),
-                )
-            })
-            .collect()
     }
 
     /// The function signatures, read by the keys callers spell.
     #[must_use]
     pub fn sigs(&self) -> FnSigView<'_> {
         FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
-    }
-
-    /// The function signatures keyed by every spelling the checker published.
-    ///
-    /// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
-    /// declaration.
-    #[must_use]
-    pub fn fn_sigs_by_path(&self) -> HashMap<String, FnSig> {
-        self.sigs().by_key()
     }
 
     /// Record an expression's checker type, keeping the `Ty`-typed
@@ -2678,14 +2650,6 @@ impl<'a> FnSigView<'a> {
             .iter()
             .filter_map(move |(key, id)| Some((key.as_str(), self.sigs.get(id)?)))
             .chain(self.builtins.iter().map(|(name, sig)| (name.as_str(), sig)))
-    }
-
-    /// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
-    #[must_use]
-    pub fn by_key(self) -> HashMap<String, FnSig> {
-        self.entries()
-            .map(|(key, sig)| (key.to_string(), sig.clone()))
-            .collect()
     }
 }
 

@@ -486,7 +486,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_take(
     op: *mut HewSupervisorConstruction,
     fault: *mut *mut HewFault,
 ) -> HewLocalPidId {
-    if op.is_null() || fault.is_null() {
+    if op.is_null() {
         if !fault.is_null() {
             // SAFETY: caller supplied a non-null out-slot.
             unsafe { *fault = ptr::null_mut() };
@@ -504,8 +504,19 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_take(
             std::process::abort();
         }
         op.taken = true;
-        *fault = std::mem::replace(&mut op.fault, ptr::null_mut());
-        op.result
+        let op_fault = std::mem::replace(&mut op.fault, ptr::null_mut());
+        let result = std::mem::replace(&mut op.result, HewLocalPidId::INVALID);
+        if fault.is_null() {
+            if !op_fault.is_null() {
+                crate::fault::hew_fault_drop(op_fault);
+            }
+            if result != HewLocalPidId::INVALID {
+                super::lifecycle::stop_local_supervisor(result, true);
+            }
+            return HewLocalPidId::INVALID;
+        }
+        *fault = op_fault;
+        result
     }
 }
 
@@ -1321,6 +1332,78 @@ mod tests {
                 HewLocalPidId::INVALID
             );
             hew_supervisor_native_spawn_free(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn spawn_take_with_null_fault_cleans_fault_or_retires_result_for_clean_free() {
+        unsafe extern "C-unwind" fn dummy_spawn(
+            _owner: HewLocalPidId,
+            _cfg: *const c_void,
+            _out: *mut HewLocalPidId,
+            _fault: *mut *mut HewFault,
+            _state: *mut HewCoroState,
+        ) -> *mut c_void {
+            ptr::null_mut()
+        }
+
+        let _runtime = crate::runtime_test_guard();
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let bad_child = HewNativeChildSpec {
+            restart_policy: RESTART_PERMANENT,
+            role_kind: ROLE_KIND_ACTOR,
+            spawn: dummy_spawn,
+            name: ptr::null(),
+            stop_ns: 0,
+            startup_rank: 0,
+            dispatch: None,
+            backoff_initial_ns: 0,
+            backoff_maximum_ns: 0,
+        };
+
+        // SAFETY: both operations reach terminal state before `take` and `free`.
+        unsafe {
+            // Valid completed failed operation with null `fault` drops fault cleanly so `free` succeeds.
+            let op_fail = hew_supervisor_native_spawn_new(
+                STRATEGY_SIMPLE_ONE_FOR_ONE,
+                3,
+                5,
+                ptr::null_mut(),
+                None,
+                &raw const bad_child,
+                1,
+                -1,
+                waker.descriptor(),
+                ptr::null(),
+            );
+            assert!(!op_fail.is_null());
+            assert_eq!(hew_supervisor_native_spawn_poll(op_fail, 0), 1);
+            assert_eq!(
+                hew_supervisor_native_spawn_take(op_fail, ptr::null_mut()),
+                HewLocalPidId::INVALID
+            );
+            hew_supervisor_native_spawn_free(op_fail);
+
+            // Valid completed succeeded operation with null `fault` retires supervisor cleanly so `free` succeeds.
+            let op_ok = hew_supervisor_native_spawn_new(
+                STRATEGY_ONE_FOR_ONE,
+                3,
+                5,
+                ptr::null_mut(),
+                None,
+                ptr::null(),
+                0,
+                0,
+                waker.descriptor(),
+                ptr::null(),
+            );
+            assert!(!op_ok.is_null());
+            assert_eq!(hew_supervisor_native_spawn_poll(op_ok, 0), 1);
+            assert_eq!(
+                hew_supervisor_native_spawn_take(op_ok, ptr::null_mut()),
+                HewLocalPidId::INVALID
+            );
+            hew_supervisor_native_spawn_free(op_ok);
         }
     }
 }

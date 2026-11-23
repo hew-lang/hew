@@ -785,9 +785,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1804] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_arc_new",
      "{\"native\": \"fn hew_arc_new( *const u8, usize, usize, Option<unsafe "
-     "extern \\\"C\\\" fn(*mut u8)>, ) -> *mut u8\", \"wasm32-wasip1\": \"fn "
-     "hew_arc_new( *const u8, usize, usize, Option<unsafe extern \\\"C\\\" "
-     "fn(*mut u8)>, ) -> *mut u8\"}",
+     "extern \\\"C-unwind\\\" fn(*mut u8)>, ) -> *mut u8\", \"wasm32-wasip1\": "
+     "\"fn hew_arc_new( *const u8, usize, usize, Option<unsafe extern "
+     "\\\"C-unwind\\\" fn(*mut u8)>, ) -> *mut u8\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_arc_strong_count",

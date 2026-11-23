@@ -432,41 +432,64 @@ type MemberChangeCallback = unsafe extern "C" fn(u16, i32, u64);
 pub type HewMembershipCallback = extern "C" fn(u16, u8, *mut c_void);
 
 /// Snapshot of the currently installed membership callback slot.
-#[derive(Clone, Copy, Debug, Default)]
+/// Snapshot of the currently installed membership callback slot.
+#[derive(Debug, Default)]
 pub(crate) struct MembershipCallbackBinding {
     pub(crate) callback: Option<HewMembershipCallback>,
-    user_data_bits: usize,
+    user_data: Option<crate::send_ptr::SendPtr<c_void>>,
 }
 
 impl MembershipCallbackBinding {
     pub(crate) fn new(callback: Option<HewMembershipCallback>, user_data: *mut c_void) -> Self {
         Self {
             callback,
-            user_data_bits: user_data as usize,
+            // SAFETY: callers registering a membership callback guarantee `user_data` may be
+            // dispatched across cluster worker threads for the binding lifetime.
+            user_data: (!user_data.is_null())
+                .then(|| unsafe { crate::send_ptr::SendPtr::new(user_data) }),
         }
     }
 
-    pub(crate) fn user_data(self) -> *mut c_void {
-        self.user_data_bits as *mut c_void
+    pub(crate) fn user_data(&self) -> *mut c_void {
+        self.user_data
+            .as_ref()
+            .map_or(std::ptr::null_mut(), crate::send_ptr::SendPtr::as_ptr)
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+impl Clone for MembershipCallbackBinding {
+    fn clone(&self) -> Self {
+        Self::new(self.callback, self.user_data())
+    }
+}
+
+#[derive(Debug, Default)]
 struct RegistryCallbackBinding {
     callback: Option<HewRegistryGossipCallback>,
-    user_data_bits: usize,
+    user_data: Option<crate::send_ptr::SendPtr<c_void>>,
 }
 
 impl RegistryCallbackBinding {
     fn new(callback: Option<HewRegistryGossipCallback>, user_data: *mut c_void) -> Self {
         Self {
             callback,
-            user_data_bits: user_data as usize,
+            // SAFETY: callers registering a registry callback guarantee `user_data` may be
+            // dispatched across cluster worker threads for the binding lifetime.
+            user_data: (!user_data.is_null())
+                .then(|| unsafe { crate::send_ptr::SendPtr::new(user_data) }),
         }
     }
 
-    fn user_data(self) -> *mut c_void {
-        self.user_data_bits as *mut c_void
+    fn user_data(&self) -> *mut c_void {
+        self.user_data
+            .as_ref()
+            .map_or(std::ptr::null_mut(), crate::send_ptr::SendPtr::as_ptr)
+    }
+}
+
+impl Clone for RegistryCallbackBinding {
+    fn clone(&self) -> Self {
+        Self::new(self.callback, self.user_data())
     }
 }
 
@@ -1678,9 +1701,10 @@ impl HewCluster {
         &self,
         invoke: impl FnOnce(HewMembershipCallback, *mut c_void) -> R,
     ) -> Option<R> {
-        let binding = *self.membership_callback_binding.lock_or_recover();
-        let callback = binding.callback?;
-        let user_data = binding.user_data();
+        let (callback, user_data) = {
+            let binding = self.membership_callback_binding.lock_or_recover();
+            (binding.callback?, binding.user_data())
+        };
         Some(invoke(callback, user_data))
     }
 
@@ -2406,20 +2430,18 @@ impl HewCluster {
 
     /// Process an inbound registry gossip event received from a peer.
     pub fn apply_registry_event(&self, name: &str, location: Location, is_add: bool) {
-        let binding = *self.registry_callback_binding.lock_or_recover();
-        let Some(cb) = binding.callback else {
-            return;
+        let (cb, user_data) = {
+            let binding = self.registry_callback_binding.lock_or_recover();
+            let Some(cb) = binding.callback else {
+                return;
+            };
+            (cb, binding.user_data())
         };
         let Ok(c_name) = std::ffi::CString::new(name) else {
             return;
         };
         let location = HewLocation::from(location);
-        cb(
-            c_name.as_ptr(),
-            &raw const location,
-            is_add,
-            binding.user_data(),
-        );
+        cb(c_name.as_ptr(), &raw const location, is_add, user_data);
     }
 
     // ── SWIM membership gossip (piggyback dissemination) ────────────────

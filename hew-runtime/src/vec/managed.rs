@@ -112,10 +112,11 @@ pub unsafe extern "C-unwind" fn hew_vec_set_managed(
     cabi_guard!(cleanup.is_null(), hew_cabi::managed::UNDESCRIBED);
     // SAFETY: caller retains cleanup writable; clear it before checking inputs.
     unsafe { cleanup.write(ptr::null_mut()) };
-    cabi_guard!(
-        vector.is_null() || data.is_null(),
-        hew_cabi::managed::UNDESCRIBED
-    );
+    cabi_guard!(vector.is_null(), hew_cabi::managed::UNDESCRIBED);
+    // SAFETY: `vector` was verified non-null above.
+    if data.is_null() && unsafe { super::vec_needs_slot_data(vector) } {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: the caller retains the original inputs until success.
     unsafe {
         let Some(element_index) = checked_index(index, (*vector).len) else {

@@ -393,14 +393,21 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
     // SAFETY: this call owns the complete payload, including every failure leg.
     unsafe {
         if channel.is_null() {
-            drop_payload(payload);
-            crate::mem::buf_free(payload);
+            if !payload.is_null() {
+                drop_payload(payload);
+                crate::mem::buf_free(payload);
+            }
+            return AskError::SendFailed as i32;
+        }
+        if size > 0 && payload.is_null() {
             return AskError::SendFailed as i32;
         }
         let envelope = crate::mailbox::hew_msg_envelope_new(payload, size, Some(drop_payload));
         if envelope.is_null() {
-            drop_payload(payload);
-            crate::mem::buf_free(payload);
+            if !payload.is_null() {
+                drop_payload(payload);
+                crate::mem::buf_free(payload);
+            }
             return AskError::SendFailed as i32;
         }
         hew_reply_channel_retain(channel);
@@ -906,6 +913,39 @@ mod tests {
                 AskError::SendFailed as i32
             );
             hew_reply_channel_free(ch2);
+
+            // Null `payload` to hew_actor_ask_submit_native skips `drop_payload` on null channel
+            // and fails closed on non-zero size.
+            DROPS.store(0, Ordering::SeqCst);
+            assert_eq!(
+                hew_actor_ask_submit_native(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    drop_payload,
+                    ptr::null_mut(),
+                ),
+                AskError::SendFailed as i32
+            );
+            assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+
+            let ch3 = hew_reply_channel_new_native(waker.descriptor(), None, None, ptr::null());
+            hew_reply_channel_retain(ch3);
+            assert_eq!(
+                hew_actor_ask_submit_native(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    1,
+                    ptr::null_mut(),
+                    16,
+                    drop_payload,
+                    ch3,
+                ),
+                AskError::SendFailed as i32
+            );
+            assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+            hew_reply_channel_free(ch3);
+            hew_reply_channel_free(ch3);
         }
     }
 }

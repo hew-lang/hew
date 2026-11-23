@@ -593,7 +593,7 @@ pub unsafe extern "C" fn hew_msg_envelope_new(
 ///
 /// `env` must be live and the caller must own exactly one reference.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msg_envelope_release(env: *mut HewMsgEnvelope) {
+pub unsafe extern "C-unwind" fn hew_msg_envelope_release(env: *mut HewMsgEnvelope) {
     cabi_guard!(env.is_null());
     // SAFETY: the C ABI contract requires a live envelope reference.
     unsafe { crate::cow_envelope::release(env) }
@@ -708,13 +708,15 @@ unsafe fn msg_node_alloc_with_trace(
     trace_context: HewTraceContext,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewMsgNode {
+    if data.is_null() && data_size > 0 {
+        set_last_error("msg_node_alloc_with_trace: null payload with non-zero size");
+        return ptr::null_mut();
+    }
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
     if node.is_null() {
         return ptr::null_mut();
     }
-
-    let data_size = if data.is_null() { 0 } else { data_size };
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
         ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
@@ -1562,15 +1564,20 @@ pub struct HewMailbox {
     pub(crate) capacity: i64,
     /// Policy applied when user-queue is at capacity.
     overflow: HewOverflowPolicy,
-    /// Optional exact key matcher used by [`HewOverflowPolicy::Coalesce`],
-    /// type-erased in an atomic pointer so updates never alias `&mut`.
-    coalesce_match_fn: AtomicPtr<c_void>,
+    /// Presence flag paired with [`Self::coalesce_match_fn`] so sends with no
+    /// matcher pay one acquire load.
+    has_coalesce_match_fn: std::sync::atomic::AtomicBool,
+    /// Optional exact key matcher used by [`HewOverflowPolicy::Coalesce`].
+    coalesce_match_fn: Mutex<Option<HewCoalesceMatchFn>>,
     /// Fallback policy (`HewOverflowPolicy` discriminant) used when coalesce
     /// finds no matching key.
     coalesce_fallback: AtomicI32,
+    /// Presence flag paired with [`Self::message_drop_fn`] so sends with no
+    /// drop callback pay one acquire load.
+    has_message_drop_fn: std::sync::atomic::AtomicBool,
     /// Typed destructor copied into raw C ingress envelopes before
     /// dispatch can move their owned fields out.
-    message_drop_fn: AtomicPtr<c_void>,
+    message_drop_fn: Mutex<Option<HewMessageDropFn>>,
     /// Closed bit and number of producers inside admission. A single atomic
     /// makes close and the last accepted publication one ordering decision.
     admission: AtomicUsize,
@@ -1681,19 +1688,17 @@ impl HewMailbox {
     }
 
     fn load_coalesce_match_fn(&self) -> Option<HewCoalesceMatchFn> {
-        let raw = self.coalesce_match_fn.load(Ordering::Acquire);
-        if raw.is_null() {
-            None
-        } else {
-            // SAFETY: `coalesce_match_fn` only stores null or a valid
-            // `HewCoalesceMatchFn` function pointer via `store_coalesce_match_fn`.
-            Some(unsafe { std::mem::transmute::<*mut c_void, HewCoalesceMatchFn>(raw) })
+        if !self.has_coalesce_match_fn.load(Ordering::Acquire) {
+            return None;
         }
+        *self.coalesce_match_fn.lock_or_recover()
     }
 
     fn store_coalesce_match_fn(&self, match_fn: Option<HewCoalesceMatchFn>) {
-        let raw = match_fn.map_or(ptr::null_mut(), |f| f as *mut c_void);
-        self.coalesce_match_fn.store(raw, Ordering::Release);
+        let mut slot = self.coalesce_match_fn.lock_or_recover();
+        *slot = match_fn;
+        self.has_coalesce_match_fn
+            .store(match_fn.is_some(), Ordering::Release);
     }
 
     fn load_coalesce_fallback(&self) -> HewOverflowPolicy {
@@ -1712,19 +1717,17 @@ impl HewMailbox {
     }
 
     fn load_message_drop_fn(&self) -> Option<HewMessageDropFn> {
-        let raw = self.message_drop_fn.load(Ordering::Acquire);
-        if raw.is_null() {
-            None
-        } else {
-            // SAFETY: `message_drop_fn` only stores null or a valid
-            // `HewMessageDropFn` function pointer via `store_message_drop_fn`.
-            Some(unsafe { std::mem::transmute::<*mut c_void, HewMessageDropFn>(raw) })
+        if !self.has_message_drop_fn.load(Ordering::Acquire) {
+            return None;
         }
+        *self.message_drop_fn.lock_or_recover()
     }
 
     fn store_message_drop_fn(&self, drop_fn: Option<HewMessageDropFn>) {
-        let raw = drop_fn.map_or(ptr::null_mut(), |f| f as *mut c_void);
-        self.message_drop_fn.store(raw, Ordering::Release);
+        let mut slot = self.message_drop_fn.lock_or_recover();
+        *slot = drop_fn;
+        self.has_message_drop_fn
+            .store(drop_fn.is_some(), Ordering::Release);
     }
 
     /// Read-only accessor: `true` when the mailbox uses the mutex
@@ -1821,9 +1824,11 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         sys_count: AtomicUsize::new(0),
         capacity: -1,
         overflow: HewOverflowPolicy::DropNew,
-        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        has_coalesce_match_fn: std::sync::atomic::AtomicBool::new(false),
+        coalesce_match_fn: Mutex::new(None),
         coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
-        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        has_message_drop_fn: std::sync::atomic::AtomicBool::new(false),
+        message_drop_fn: Mutex::new(None),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1866,9 +1871,11 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
         overflow: policy,
-        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        has_coalesce_match_fn: std::sync::atomic::AtomicBool::new(false),
+        coalesce_match_fn: Mutex::new(None),
         coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
-        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        has_message_drop_fn: std::sync::atomic::AtomicBool::new(false),
+        message_drop_fn: Mutex::new(None),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1920,9 +1927,11 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         sys_count: AtomicUsize::new(0),
         capacity: cap,
         overflow: policy,
-        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        has_coalesce_match_fn: std::sync::atomic::AtomicBool::new(false),
+        coalesce_match_fn: Mutex::new(None),
         coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
-        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        has_message_drop_fn: std::sync::atomic::AtomicBool::new(false),
+        message_drop_fn: Mutex::new(None),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1994,12 +2003,13 @@ unsafe fn consume_dropped_incoming(
     data_size: usize,
 ) {
     mb.record_loss(0);
-    let data_size = if data.is_null() { 0 } else { data_size };
-    if let Some(drop_fn) = mb.load_message_drop_fn() {
-        // SAFETY: send_with_overflow's caller guarantees the payload bytes are
-        // valid for the duration of the call. DropNew reports success, so the
-        // runtime must discharge the prepared owner before returning.
-        unsafe { drop_fn(msg_type, data.cast_mut(), data_size) };
+    if !data.is_null() {
+        if let Some(drop_fn) = mb.load_message_drop_fn() {
+            // SAFETY: send_with_overflow's caller guarantees the payload bytes are
+            // valid for the duration of the call. DropNew reports success, so the
+            // runtime must discharge the prepared owner before returning.
+            unsafe { drop_fn(msg_type, data.cast_mut(), data_size) };
+        }
     }
 }
 
@@ -2075,6 +2085,10 @@ unsafe fn send_with_overflow(
     reply_channel: *mut c_void,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
+    if data.is_null() && data_size > 0 {
+        set_last_error("send_with_overflow: null payload with non-zero size");
+        return SendOutcome::Failed;
+    }
     let Some(_admission) = mb.enter_admission() else {
         return SendOutcome::Closed;
     };
@@ -2786,13 +2800,17 @@ unsafe fn admit_native_request(
 /// - `data` must point to at least `size` readable bytes, or be null
 ///   when `size` is 0.
 #[no_mangle]
-pub unsafe extern "C" fn hew_mailbox_send(
+pub unsafe extern "C-unwind" fn hew_mailbox_send(
     mb: *mut HewMailbox,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
 ) -> i32 {
     cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
+    if data.is_null() && size > 0 {
+        set_last_error("hew_mailbox_send: null payload with non-zero size");
+        return HewError::ErrMailboxFull as i32;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -2849,6 +2867,10 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     cabi_guard!(mb.is_null(), SendOutcome::Closed);
+    if data.is_null() && size > 0 {
+        set_last_error("hew_mailbox_send_fire_and_forget: null payload with non-zero size");
+        return SendOutcome::Failed;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb_ref = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -2886,6 +2908,10 @@ pub(crate) unsafe fn mailbox_await_send(
 ) -> (i32, BlockedSenderId) {
     if mb.is_null() || slot.is_null() {
         return (HewError::ErrClosed as i32, 0);
+    }
+    if data.is_null() && size > 0 {
+        set_last_error("mailbox_await_send: null payload with non-zero size");
+        return (HewError::ErrMailboxFull as i32, 0);
     }
     // SAFETY: caller guarantees a live mailbox.
     let mailbox = unsafe { &*mb };
@@ -2978,6 +3004,10 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
 ) -> i32 {
     if mb.is_null() || reply_channel.is_null() {
         return HewError::ErrClosed as i32;
+    }
+    if data.is_null() && size > 0 {
+        set_last_error("mailbox_send_with_reply_cooperative: null payload with non-zero size");
+        return HewError::ErrMailboxFull as i32;
     }
     // SAFETY: caller guarantees a live mailbox.
     let mailbox = unsafe { &*mb };
@@ -3105,7 +3135,7 @@ unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
 ///   when `size` is 0.
 /// - `reply_channel` must be a valid reply channel pointer (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_mailbox_send_with_reply(
+pub unsafe extern "C-unwind" fn hew_mailbox_send_with_reply(
     mb: *mut HewMailbox,
     msg_type: i32,
     data: *mut c_void,
@@ -3113,6 +3143,10 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
     reply_channel: *mut c_void,
 ) -> i32 {
     cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
+    if data.is_null() && size > 0 {
+        set_last_error("hew_mailbox_send_with_reply: null payload with non-zero size");
+        return HewError::ErrMailboxFull as i32;
+    }
     // SAFETY: forwards the live mailbox and unpublished message.
     unsafe {
         mailbox_send_with_reply(
@@ -3135,6 +3169,10 @@ unsafe fn mailbox_send_with_reply(
     caller: crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
+    if data.is_null() && size > 0 {
+        set_last_error("mailbox_send_with_reply: null payload with non-zero size");
+        return HewError::ErrMailboxFull as i32;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -3165,13 +3203,17 @@ unsafe fn mailbox_send_with_reply(
 ///
 /// Same requirements as [`hew_mailbox_send`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_mailbox_try_send(
+pub unsafe extern "C-unwind" fn hew_mailbox_try_send(
     mb: *mut HewMailbox,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
 ) -> i32 {
     cabi_guard!(mb.is_null(), HewError::ErrClosed as i32);
+    if data.is_null() && size > 0 {
+        set_last_error("hew_mailbox_try_send: null payload with non-zero size");
+        return HewError::ErrMailboxFull as i32;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -3213,6 +3255,10 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     size: usize,
 ) {
     cabi_guard!(mb.is_null());
+    if data.is_null() && size > 0 {
+        set_last_error("hew_mailbox_send_sys: null payload with non-zero size");
+        return;
+    }
     let Some(kind) = HewSysMsg::from_raw(sys_msg) else {
         set_last_error(format!(
             "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg}"
@@ -3244,6 +3290,10 @@ pub(crate) unsafe fn mailbox_send_sys_checked(
     size: usize,
 ) -> bool {
     cabi_guard!(mb.is_null(), false);
+    if data.is_null() && size > 0 {
+        set_last_error("mailbox_send_sys_checked: null payload with non-zero size");
+        return false;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
 
@@ -6850,7 +6900,7 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_replacement_updates_metadata_and_null_data_normalizes_size() {
+    fn coalesce_replacement_updates_metadata_and_null_data_rejects_nonzero_size() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         COALESCE_TEST_DROPS.store(0, Ordering::SeqCst);
         // SAFETY: mailbox, nodes, and envelopes are uniquely owned by this test.
@@ -6863,10 +6913,10 @@ mod tests {
                 HewTraceContext::default(),
                 crate::actor_caller::local_sender(),
             );
-            assert!(!null_node.is_null());
-            assert!((*null_node).data.is_null());
-            assert_eq!((*null_node).data_size, 0);
-            hew_msg_node_free(null_node);
+            assert!(
+                null_node.is_null(),
+                "null payload with non-zero size must fail closed"
+            );
 
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Coalesce);
             hew_mailbox_set_coalesce_config(
@@ -6931,6 +6981,52 @@ mod tests {
             hew_msg_node_free(node);
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 2);
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn null_payload_with_nonzero_size_fails_closed_without_calling_drop_fn() {
+        static NULL_REJECT_DROPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn count_drop(_msg_type: i32, _data: *mut c_void, _size: usize) {
+            NULL_REJECT_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        NULL_REJECT_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: bounded and unbounded mailboxes are uniquely owned by this test.
+        unsafe {
+            let full_drop_new = hew_mailbox_new_with_policy(1, HewOverflowPolicy::DropNew);
+            hew_mailbox_set_message_drop_fn(full_drop_new, Some(count_drop));
+            let val = 1_u64;
+            assert_eq!(
+                hew_mailbox_send(full_drop_new, 1, (&raw const val).cast_mut().cast(), 8),
+                0
+            );
+            assert_eq!(
+                hew_mailbox_send(full_drop_new, 2, ptr::null_mut(), 64),
+                HewError::ErrMailboxFull as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(full_drop_new, 2, ptr::null_mut(), 64),
+                HewError::ErrMailboxFull as i32
+            );
+            assert_eq!(
+                hew_mailbox_send_with_reply(full_drop_new, 2, ptr::null_mut(), 64, ptr::null_mut()),
+                HewError::ErrMailboxFull as i32
+            );
+            assert_eq!(NULL_REJECT_DROPS.load(Ordering::SeqCst), 0);
+
+            let unbounded = hew_mailbox_new();
+            hew_mailbox_set_message_drop_fn(unbounded, Some(count_drop));
+            assert_ne!(hew_mailbox_send(unbounded, 1, ptr::null_mut(), 64), 0);
+            hew_mailbox_send_sys(unbounded, 0, ptr::null_mut(), 64);
+            assert_eq!(hew_mailbox_has_messages(unbounded), 0);
+            assert_eq!(NULL_REJECT_DROPS.load(Ordering::SeqCst), 0);
+
+            hew_mailbox_free(unbounded);
+            assert_eq!(NULL_REJECT_DROPS.load(Ordering::SeqCst), 0);
+            hew_mailbox_free(full_drop_new);
+            assert_eq!(NULL_REJECT_DROPS.load(Ordering::SeqCst), 1);
         }
     }
 }

@@ -875,7 +875,15 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_clone_layout(
         hew_cabi::managed::UNDESCRIBED
     );
     // SAFETY: `m` is verified non-null above.
-    if unsafe { (*m).val_layout.size > 0 } && val.is_null() {
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
         return hew_cabi::managed::UNDESCRIBED;
     }
     // SAFETY: the caller lends initialized operands matching the descriptors.
@@ -927,7 +935,15 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
         hew_cabi::managed::UNDESCRIBED
     );
     // SAFETY: `m` is verified non-null above.
-    if unsafe { (*m).val_layout.size > 0 } && val.is_null() {
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
         return hew_cabi::managed::UNDESCRIBED;
     }
     // SAFETY: the caller lends initialized operands matching the descriptors.
@@ -985,7 +1001,15 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_layout(
         hew_cabi::managed::UNDESCRIBED
     );
     // SAFETY: `m` is verified non-null above.
-    if unsafe { (*m).val_layout.size > 0 } && val.is_null() {
+    if unsafe {
+        (*m).val_layout.size > 0
+            || (*m).val_layout.clone_fn.is_some()
+            || (*m).val_layout.drop_fn.is_some()
+            || (*m).val_layout.release_start.is_some()
+    } && val.is_null()
+    {
+        // SAFETY: `fault_out` was verified non-null above.
+        unsafe { *fault_out = ptr::null_mut() };
         return hew_cabi::managed::UNDESCRIBED;
     }
     // SAFETY: caller supplies independent key/value owners of matching layouts.
@@ -1740,4 +1764,65 @@ pub unsafe extern "C" fn hew_hashmap_values_layout(m: *const HewLayoutHashMap) -
     let map = unsafe { &*m };
     // SAFETY: the descriptor and offset describe an initialized field in every occupied slot.
     unsafe { collect_layout_field(map, map.val_layout, map.val_offset) }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::layout_intrinsics::{hew_layout_key_i64, hew_layout_val_i64};
+
+    #[test]
+    fn insert_layout_null_val_clears_fault_out_before_returning_undescribed() {
+        // SAFETY: map, key, and output pointers are valid stack locals owned by test.
+        unsafe {
+            let map = hew_hashmap_new_with_layout(
+                &raw const hew_layout_key_i64,
+                &raw const hew_layout_val_i64,
+            );
+            let key = 1_i64;
+            let mut present = false;
+            let sentinel = core::ptr::without_provenance_mut::<c_void>(0x1234);
+
+            let mut fault_clone = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_clone_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_clone,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_clone.is_null());
+
+            let mut fault_take = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_take_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_take,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_take.is_null());
+
+            let mut fault_raw = sentinel;
+            assert_eq!(
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    ptr::null(),
+                    &raw mut present,
+                    &raw mut fault_raw,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert!(fault_raw.is_null());
+
+            hew_hashmap_free_layout(map);
+        }
+    }
 }

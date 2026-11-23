@@ -155,9 +155,10 @@ impl Mesh {
         let node = HewCluster::new(make_config(slot));
         node.upsert_member(slot, MEMBER_ALIVE, 1, &[]);
         node.events.lock_or_recover().clear();
-        *node.membership_callback_binding.lock_or_recover() = *self.nodes[index]
+        *node.membership_callback_binding.lock_or_recover() = self.nodes[index]
             .membership_callback_binding
-            .lock_or_recover();
+            .lock_or_recover()
+            .clone();
         self.nodes[index] = node;
         if self.stalled == Some(slot) {
             self.stalled = None;

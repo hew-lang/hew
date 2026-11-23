@@ -10,7 +10,7 @@ use super::{
 use crate::owned_value_budget::{BackingChange, ManagedStorage};
 use crate::release_walker::{hew_release_sync, HewReleaseCursor};
 use core::{ffi::c_void, ptr};
-use hew_cabi::map::{HewMapProbeStatus, HewValueLayout};
+use hew_cabi::map::{HewMapProbeStatus, HewValueDropThunk, HewValueLayout};
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
@@ -440,7 +440,14 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_remove_take(
     out: *mut c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    if release_out.is_null() {
+        // SAFETY: caller transferred exclusive ownership of `probe`; free it on fail-closed refusal.
+        drop(unsafe { Box::from_raw(probe) });
+        return false;
+    }
     // SAFETY: release_out is writable; clear it before checking remaining preconditions.
     unsafe { *release_out = ptr::null_mut() };
     // SAFETY: forwarded ready probe, live receiver and disjoint output contract.
@@ -562,20 +569,38 @@ struct InsertScratch {
 
 impl Drop for InsertScratch {
     fn drop(&mut self) {
+        struct ScratchDeallocGuard(*mut u8, usize, usize);
+        impl Drop for ScratchDeallocGuard {
+            fn drop(&mut self) {
+                // SAFETY: `self.0` was allocated with `alloc_layout_entries(1, self.1, self.2)`.
+                unsafe { dealloc_layout_entries(self.0, 1, self.1, self.2) };
+            }
+        }
+        struct ScratchSlotDropGuard(*mut u8, Option<HewValueDropThunk>);
+        impl Drop for ScratchSlotDropGuard {
+            fn drop(&mut self) {
+                if let Some(drop_fn) = self.1 {
+                    // SAFETY: slot pointer is in-bounds and live whenever armed.
+                    unsafe { drop_fn(self.0.cast()) };
+                }
+            }
+        }
+
+        let _dealloc_guard = ScratchDeallocGuard(self.ptr, self.stride, self.alignment);
+        let _key_guard = self.key_live.then(|| {
+            // SAFETY: `key_offset` stays within the single allocated scratch entry.
+            ScratchSlotDropGuard(
+                unsafe { self.ptr.add(self.key_offset) },
+                self.key_layout.drop_fn,
+            )
+        });
         if self.val_live {
             if let Some(drop_fn) = self.value_layout.drop_fn {
-                // SAFETY: val_live is set only after the scratch value slot is initialized.
+                // SAFETY: val_live is set only after the scratch value slot is initialized;
+                // `_key_guard` and `_dealloc_guard` still run if `drop_fn` unwinds.
                 unsafe { drop_fn(self.ptr.add(self.val_offset).cast()) };
             }
         }
-        if self.key_live {
-            if let Some(drop_fn) = self.key_layout.drop_fn {
-                // SAFETY: key_live is set only after the scratch key slot is initialized.
-                unsafe { drop_fn(self.ptr.add(self.key_offset).cast()) };
-            }
-        }
-        // SAFETY: ptr was allocated with alloc_layout_entries(1, stride, alignment).
-        unsafe { dealloc_layout_entries(self.ptr, 1, self.stride, self.alignment) };
     }
 }
 
@@ -623,6 +648,15 @@ unsafe fn insert_prepared(
     unsafe {
         let key = scratch.add(key_offset);
         let val = scratch.add(val_offset);
+        if mode != InsertMode::Clone {
+            if value_layout.size > 0 {
+                ptr::copy_nonoverlapping(value.cast::<u8>(), val, value_layout.size);
+            }
+            if mode == InsertMode::TakeValue {
+                // Take ownership before cloning key so a key-clone unwind still drops `value`.
+                guard.val_live = true;
+            }
+        }
         if matches!(mode, InsertMode::Clone | InsertMode::TakeValue) {
             require_clone(&key_layout, "map insert key");
             clone_layout_blob(key_layout, probe.key.cast(), key, "map insert key");
@@ -634,8 +668,6 @@ unsafe fn insert_prepared(
             require_clone(&value_layout, "map insert value");
             clone_layout_blob(value_layout, value.cast(), val, "map insert value");
             guard.val_live = true;
-        } else if value_layout.size > 0 && !value.is_null() {
-            ptr::copy_nonoverlapping(value.cast::<u8>(), val, value_layout.size);
         }
         adopt_input(key_permit, &key_layout, key.cast());
         adopt_input(value_permit, &value_layout, val.cast());
@@ -786,6 +818,13 @@ pub unsafe extern "C" fn hew_hashmap_probe_get_clone_checked(
     }
 }
 
+const fn requires_value_pointer(layout: HewValueLayout, clone_semantics: bool) -> bool {
+    layout.size > 0
+        || layout.drop_fn.is_some()
+        || layout.release_start.is_some()
+        || (clone_semantics && layout.clone_fn.is_some())
+}
+
 /// Checked copied insertion; refusal preserves the ready probe and all loans.
 /// # Safety
 /// Arguments satisfy insert-clone and status is a writable compiler output.
@@ -800,6 +839,13 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone_checked(
     // SAFETY: status is writable; guard remaining required pointers before forwarding.
     unsafe { status.write(0) };
     if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
+    // SAFETY: caller guarantees `probe` points to a live probe attached to a live map.
+    let val_layout = unsafe { (*(*probe).map).val_layout };
+    if value.is_null() && requires_value_pointer(val_layout, true) {
         // SAFETY: status verified non-null above.
         unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
         return false;
@@ -822,6 +868,13 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take_checked(
     // SAFETY: status is writable; guard remaining required pointers before forwarding.
     unsafe { status.write(0) };
     if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
+    // SAFETY: caller guarantees `probe` points to a live probe attached to a live map.
+    let val_layout = unsafe { (*(*probe).map).val_layout };
+    if value.is_null() && requires_value_pointer(val_layout, false) {
         // SAFETY: status verified non-null above.
         unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
         return false;
@@ -889,7 +942,20 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone(
     value: *const c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `probe` owns a live allocation attached to a live map.
+    let val_layout = unsafe { (*(*probe).map).val_layout };
+    if release_out.is_null() || (value.is_null() && requires_value_pointer(val_layout, true)) {
+        // SAFETY: caller transferred exclusive ownership of `probe`; drop it on fail-closed refusal.
+        drop(unsafe { Box::from_raw(probe) });
+        if !release_out.is_null() {
+            // SAFETY: caller provided a writable release output slot.
+            unsafe { *release_out = ptr::null_mut() };
+        }
+        return false;
+    }
     // SAFETY: forwarded live insertion operands and ready probe ownership.
     unsafe { insert(ready(probe), value, InsertMode::Clone, release_out) }
 }
@@ -903,7 +969,26 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take(
     value: *const c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `probe` owns a live allocation attached to a live map.
+    let val_layout = unsafe { (*(*probe).map).val_layout };
+    if release_out.is_null() || (value.is_null() && requires_value_pointer(val_layout, false)) {
+        // SAFETY: caller transferred exclusive ownership of `probe` and any non-null `value`.
+        drop(unsafe { Box::from_raw(probe) });
+        if !value.is_null() {
+            // SAFETY: discharge transferred value owner on fail-closed refusal.
+            unsafe {
+                hew_release_sync(HewReleaseCursor::detached(value.cast_mut(), val_layout));
+            }
+        }
+        if !release_out.is_null() {
+            // SAFETY: caller provided a writable release output slot.
+            unsafe { *release_out = ptr::null_mut() };
+        }
+        return false;
+    }
     // SAFETY: forwarded key loan, value transfer and ready probe ownership.
     unsafe { insert(ready(probe), value, InsertMode::TakeValue, release_out) }
 }
@@ -916,7 +1001,14 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    if release_out.is_null() {
+        // SAFETY: caller transferred exclusive ownership of `probe`; drop it on fail-closed refusal.
+        drop(unsafe { Box::from_raw(probe) });
+        return false;
+    }
     // SAFETY: a set probe's value descriptor is the plain zero-sized marker.
     unsafe { insert(ready(probe), ptr::null(), InsertMode::Clone, release_out) }
 }
@@ -929,7 +1021,22 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    if release_out.is_null() {
+        // SAFETY: caller transferred exclusive ownership of `probe` and `probe.key`;
+        // drop the probe allocation and release the transferred element owner.
+        unsafe {
+            let key_layout = (*(*probe).map).key_layout.value;
+            let key = (*probe).key;
+            drop(Box::from_raw(probe));
+            if !key.is_null() {
+                hew_release_sync(HewReleaseCursor::detached(key.cast_mut(), key_layout));
+            }
+        }
+        return false;
+    }
     // SAFETY: the caller transfers the query owner; a set's value is plain ZST.
     unsafe {
         insert(
@@ -949,7 +1056,14 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_remove(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
-    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    if probe.is_null() {
+        return false;
+    }
+    if release_out.is_null() {
+        // SAFETY: caller transferred exclusive ownership of `probe`; drop it on fail-closed refusal.
+        drop(unsafe { Box::from_raw(probe) });
+        return false;
+    }
     // SAFETY: the set probe borrows its wrapped map, whose value is plain ZST.
     unsafe { remove(&ready(probe), None, release_out) }
 }
@@ -1039,5 +1153,251 @@ pub(super) unsafe fn insert_transfer(probe: *mut HewLayoutMapProbe, value: *cons
         );
         hew_release_sync(cursor);
         inserted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hashmap::{hew_hashmap_free_layout, hew_hashmap_new_with_layout};
+    use crate::hashset::{hew_hashset_free_layout, hew_hashset_new_with_layout};
+    use crate::layout_intrinsics::{hew_layout_key_i64, hew_layout_val_i64, hew_layout_val_unit};
+    use hew_cabi::map::HewMapKeyLayout;
+    use hew_cabi::value::HewTypeOwnershipKind;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static KEY_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static VAL_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn dummy_hash(
+        _key: *const c_void,
+        out: *mut u64,
+        fault: *mut *mut c_void,
+    ) -> i32 {
+        // SAFETY: test passes writable aligned out slots.
+        unsafe {
+            *out = 1;
+            *fault = ptr::null_mut();
+        }
+        0
+    }
+
+    unsafe extern "C" fn dummy_eq(
+        lhs: *const c_void,
+        rhs: *const c_void,
+        out: *mut bool,
+        fault: *mut *mut c_void,
+    ) -> i32 {
+        // SAFETY: test passes two initialized i64 slots and writable outputs.
+        unsafe {
+            *out = lhs.cast::<i64>().read() == rhs.cast::<i64>().read();
+            *fault = ptr::null_mut();
+        }
+        0
+    }
+
+    unsafe extern "C" fn copy_i64_key(src: *const c_void, dst: *mut c_void) -> i32 {
+        // SAFETY: test passes valid initialized i64 buffers.
+        unsafe {
+            dst.cast::<i64>().write(src.cast::<i64>().read());
+        }
+        0
+    }
+
+    unsafe extern "C-unwind" fn drop_counted_key(_slot: *mut c_void) {
+        KEY_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C-unwind" fn drop_counted_val(_slot: *mut c_void) {
+        VAL_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn drive_ready(probe: *mut HewLayoutMapProbe) -> *mut HewLayoutMapProbe {
+        loop {
+            // SAFETY: caller exclusively drives a live probe.
+            match unsafe { (*probe).advance() } {
+                HewMapProbeStatus::Ready => return probe,
+                HewMapProbeStatus::NeedHash => {
+                    // SAFETY: test key is i64.
+                    unsafe { hew_hashmap_probe_submit_hash(probe, 1) };
+                }
+                HewMapProbeStatus::NeedEq => {
+                    // SAFETY: both keys are initialized i64 slots.
+                    unsafe {
+                        let eq = hew_hashmap_probe_left(probe).cast::<i64>().read()
+                            == hew_hashmap_probe_right(probe).cast::<i64>().read();
+                        hew_hashmap_probe_submit_eq(probe, eq);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn probe_insert_rejects_null_value_for_valued_maps() {
+        let zst_drop_val = HewValueLayout {
+            drop_fn: Some(drop_counted_val),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            ..hew_layout_val_unit
+        };
+        let zst_clone_val = HewValueLayout {
+            clone_fn: Some(copy_i64_key),
+            drop_fn: Some(drop_counted_val),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            ..hew_layout_val_unit
+        };
+
+        // SAFETY: all descriptors, keys, and probes are owned by this test.
+        unsafe {
+            for val_layout in [hew_layout_val_i64, zst_drop_val, zst_clone_val] {
+                let map = hew_hashmap_new_with_layout(
+                    &raw const hew_layout_key_i64,
+                    &raw const val_layout,
+                );
+                let key = 7_i64;
+
+                // Checked variants reject null value without consuming probe.
+                let probe = drive_ready(hew_hashmap_probe_begin(map, (&raw const key).cast(), 1));
+                let mut release = ptr::null_mut();
+                let mut status = 0_i32;
+                assert!(!hew_hashmap_probe_insert_clone_checked(
+                    probe,
+                    ptr::null(),
+                    &raw mut release,
+                    &raw mut status,
+                ));
+                assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+                status = 0;
+                assert!(!hew_hashmap_probe_insert_take_checked(
+                    probe,
+                    ptr::null(),
+                    &raw mut release,
+                    &raw mut status,
+                ));
+                assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+                hew_hashmap_probe_free(probe);
+
+                // Unchecked variants consume/free probe on null value refusal.
+                let p_clone = drive_ready(hew_hashmap_probe_begin(map, (&raw const key).cast(), 1));
+                assert!(!hew_hashmap_probe_insert_clone(
+                    p_clone,
+                    ptr::null(),
+                    &raw mut release,
+                ));
+                assert!(release.is_null());
+
+                let p_take = drive_ready(hew_hashmap_probe_begin(map, (&raw const key).cast(), 1));
+                assert!(!hew_hashmap_probe_insert_take(
+                    p_take,
+                    ptr::null(),
+                    &raw mut release,
+                ));
+                assert!(release.is_null());
+
+                hew_hashmap_free_layout(map);
+            }
+        }
+    }
+
+    #[test]
+    fn unchecked_probe_ops_free_probe_and_drop_inputs_on_null_release_out() {
+        KEY_DROPS.store(0, Ordering::SeqCst);
+        VAL_DROPS.store(0, Ordering::SeqCst);
+        let zst_drop_val = HewValueLayout {
+            drop_fn: Some(drop_counted_val),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            ..hew_layout_val_unit
+        };
+        let counted_key_layout = HewMapKeyLayout {
+            value: HewValueLayout {
+                clone_fn: Some(copy_i64_key),
+                drop_fn: Some(drop_counted_key),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                ..hew_layout_key_i64.value
+            },
+            hash_fn: Some(dummy_hash),
+            eq_fn: Some(dummy_eq),
+        };
+
+        // SAFETY: all descriptors, keys, values, and probes are owned by this test.
+        unsafe {
+            // Null `release_out` on non-checked probe ops frees probe and drops moved value/element.
+            let drop_only_map =
+                hew_hashmap_new_with_layout(&raw const counted_key_layout, &raw const zst_drop_val);
+            let k1 = 11_i64;
+            let v1 = 0_u8;
+            let p_take_null_rel = drive_ready(hew_hashmap_probe_begin(
+                drop_only_map,
+                (&raw const k1).cast(),
+                1,
+            ));
+            assert!(!hew_hashmap_probe_insert_take(
+                p_take_null_rel,
+                (&raw const v1).cast(),
+                ptr::null_mut(),
+            ));
+            assert_eq!(VAL_DROPS.load(Ordering::SeqCst), 1);
+
+            let p_clone_null_rel = drive_ready(hew_hashmap_probe_begin(
+                drop_only_map,
+                (&raw const k1).cast(),
+                1,
+            ));
+            assert!(!hew_hashmap_probe_insert_clone(
+                p_clone_null_rel,
+                (&raw const v1).cast(),
+                ptr::null_mut(),
+            ));
+
+            let p_rem_null_rel = drive_ready(hew_hashmap_probe_begin(
+                drop_only_map,
+                (&raw const k1).cast(),
+                0,
+            ));
+            assert!(!hew_hashmap_probe_remove_take(
+                p_rem_null_rel,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ));
+            hew_hashmap_free_layout(drop_only_map);
+
+            // HashSet null `release_out` on insert_take drops transferred element and frees probe.
+            let set = hew_hashset_new_with_layout(&raw const counted_key_layout);
+            let k2 = 22_i64;
+            let s_take = drive_ready(crate::hashset::hew_hashset_probe_begin(
+                set,
+                (&raw const k2).cast(),
+                1,
+            ));
+            assert!(!hew_hashset_probe_insert_take(s_take, ptr::null_mut()));
+            assert_eq!(KEY_DROPS.load(Ordering::SeqCst), 1);
+
+            let s_clone = drive_ready(crate::hashset::hew_hashset_probe_begin(
+                set,
+                (&raw const k2).cast(),
+                1,
+            ));
+            assert!(!hew_hashset_probe_insert_clone(s_clone, ptr::null_mut()));
+
+            let s_rem = drive_ready(crate::hashset::hew_hashset_probe_begin(
+                set,
+                (&raw const k2).cast(),
+                0,
+            ));
+            assert!(!hew_hashset_probe_remove(s_rem, ptr::null_mut()));
+
+            // Valid HashSet insert_clone with null value via unit descriptor still succeeds.
+            let s_ok = drive_ready(crate::hashset::hew_hashset_probe_begin(
+                set,
+                (&raw const k2).cast(),
+                1,
+            ));
+            let mut set_rel = ptr::null_mut();
+            assert!(hew_hashset_probe_insert_clone(s_ok, &raw mut set_rel));
+            hew_release_sync(set_rel);
+            hew_hashset_free_layout(set);
+            assert_eq!(KEY_DROPS.load(Ordering::SeqCst), 2);
+        }
     }
 }

@@ -7493,5 +7493,36 @@ fn actor_spawn_fails_closed_on_mailbox_oom() {
             )
             .is_null());
         }
+
+        let mut fault: *mut crate::fault::HewFault = ptr::null_mut();
+        assert_eq!(
+            hew_actor_publish_native(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                &raw mut fault,
+            ),
+            1
+        );
+        assert!(!fault.is_null());
+        crate::fault::hew_fault_drop(fault);
+
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let coro = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+        let mut fault2: *mut crate::fault::HewFault = ptr::null_mut();
+        assert_eq!(
+            hew_actor_publish_native(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+                0,
+                coro,
+                &raw mut fault2,
+            ),
+            1
+        );
+        assert!(!fault2.is_null());
+        crate::fault::hew_fault_drop(fault2);
+        crate::coro_state::hew_coro_state_free(coro);
     }
 }

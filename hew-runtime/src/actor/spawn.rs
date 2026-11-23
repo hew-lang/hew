@@ -977,16 +977,43 @@ pub unsafe extern "C" fn hew_actor_publish_native(
     construction: *mut crate::coro_state::HewCoroState,
     fault: *mut *mut crate::fault::HewFault,
 ) -> i32 {
+    unsafe fn write_publish_fault(fault: *mut *mut crate::fault::HewFault, code: i32) {
+        if !fault.is_null() {
+            // SAFETY: caller supplies a writable fault output slot.
+            unsafe { *fault = crate::fault::hew_fault_new(code) };
+        }
+    }
+
+    if !fault.is_null() {
+        // SAFETY: caller supplies a writable fault output slot; clear before failing or returning 0.
+        unsafe { *fault = ptr::null_mut() };
+    }
     if construction.is_null() {
+        // SAFETY: caller-provided optional fault slot was checked above.
+        unsafe { write_publish_fault(fault, crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED) };
         return 1;
     }
     let Some(id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
+        // SAFETY: caller-provided optional fault slot was checked above.
+        unsafe {
+            write_publish_fault(
+                fault,
+                crate::internal::types::HewError::ErrActorStopped as i32,
+            );
+        }
         return 1;
     };
     live_actors::with_actor_send_by_id(id, |raw| {
         // SAFETY: the guard pins the actor; its constructor is the sole state owner.
         let actor = unsafe { &*raw };
         let Some(completion) = actor.native_completion.as_ref() else {
+            // SAFETY: caller-provided optional fault slot was checked above.
+            unsafe {
+                write_publish_fault(
+                    fault,
+                    crate::internal::types::HewError::ErrActorStopped as i32,
+                );
+            }
             return 1;
         };
         let mut registration = completion.construction.lock_or_recover();
@@ -996,19 +1023,22 @@ pub unsafe extern "C" fn hew_actor_publish_native(
                 || mailbox::mailbox_is_closed(actor.mailbox.cast())
         };
         if cancelled {
-            if !fault.is_null() {
-                // SAFETY: the caller supplies an empty fault output.
-                unsafe {
-                    *fault = crate::fault::hew_fault_new(
-                        crate::coro_state::hew_coro_state_cancel_code(construction),
-                    );
-                }
+            // SAFETY: caller-provided optional fault slot was checked above.
+            unsafe {
+                write_publish_fault(
+                    fault,
+                    crate::coro_state::hew_coro_state_cancel_code(construction),
+                );
             }
             return 1;
         }
         let handlers = if periodic_count == 0 {
             &[]
         } else if periodic.is_null() {
+            // SAFETY: caller-provided optional fault slot was checked above.
+            unsafe {
+                write_publish_fault(fault, crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+            }
             return 1;
         } else {
             // SAFETY: generated code provides this static descriptor slice.
@@ -1016,13 +1046,9 @@ pub unsafe extern "C" fn hew_actor_publish_native(
         };
         // SAFETY: the actor is pinned and undispatchable until publication.
         if !unsafe { crate::timer_periodic::start_actor_periodic(raw, handlers) } {
-            if !fault.is_null() {
-                // SAFETY: the caller provides an empty fault output.
-                unsafe {
-                    *fault = crate::fault::hew_fault_new(
-                        crate::internal::types::HewError::ErrOom as i32,
-                    );
-                }
+            // SAFETY: caller-provided optional fault slot was checked above.
+            unsafe {
+                write_publish_fault(fault, crate::internal::types::HewError::ErrOom as i32);
             }
             return 1;
         }
@@ -1049,7 +1075,16 @@ pub unsafe extern "C" fn hew_actor_publish_native(
         }
         0
     })
-    .unwrap_or(1)
+    .unwrap_or_else(|| {
+        // SAFETY: caller-provided optional fault slot was checked above.
+        unsafe {
+            write_publish_fault(
+                fault,
+                crate::internal::types::HewError::ErrActorStopped as i32,
+            );
+        }
+        1
+    })
 }
 
 /// Return failed construction to the actor's ordinary terminal cleanup owner.

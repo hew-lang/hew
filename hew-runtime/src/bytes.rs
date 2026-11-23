@@ -614,19 +614,37 @@ pub unsafe extern "C-unwind" fn hew_bytes_push_owned(
     byte: u8,
     out: *mut BytesTriple,
 ) {
+    struct MovedBytesGuard(BytesTriple);
+    impl MovedBytesGuard {
+        fn into_inner(mut self) -> BytesTriple {
+            let value = self.0;
+            self.0.ptr = std::ptr::null_mut();
+            std::mem::forget(self);
+            value
+        }
+    }
+    impl Drop for MovedBytesGuard {
+        fn drop(&mut self) {
+            if !self.0.ptr.is_null() {
+                // SAFETY: `self.0` owns one reference taken from `old`.
+                unsafe { hew_bytes_drop(self.0.ptr) };
+            }
+        }
+    }
+
     cabi_guard!(old.is_null() || out.is_null());
     // SAFETY: old is initialized and uniquely writable by the caller's contract.
-    let mut value = unsafe {
+    let mut value = MovedBytesGuard(unsafe {
         old.replace(BytesTriple {
             ptr: std::ptr::null_mut(),
             offset: 0,
             len: 0,
         })
-    };
+    });
     // SAFETY: value now owns the reference taken from old.
-    unsafe { hew_bytes_push(&mut value, byte) };
+    unsafe { hew_bytes_push(&mut value.0, byte) };
     // SAFETY: out is distinct, uninitialized storage for the transferred owner.
-    unsafe { out.write(value) };
+    unsafe { out.write(value.into_inner()) };
 }
 
 /// Transfer bytes into an output owner after appending a borrowed buffer.
@@ -646,32 +664,59 @@ pub unsafe extern "C-unwind" fn hew_bytes_append_owned(
     source: *const BytesTriple,
     out: *mut BytesTriple,
 ) {
+    struct MovedBytesGuard(BytesTriple);
+    impl MovedBytesGuard {
+        fn into_inner(mut self) -> BytesTriple {
+            let value = self.0;
+            self.0.ptr = std::ptr::null_mut();
+            std::mem::forget(self);
+            value
+        }
+    }
+    impl Drop for MovedBytesGuard {
+        fn drop(&mut self) {
+            if !self.0.ptr.is_null() {
+                // SAFETY: `self.0` owns one reference taken from `old`.
+                unsafe { hew_bytes_drop(self.0.ptr) };
+            }
+        }
+    }
+    struct PinnedBytesGuard(*mut u8);
+    impl Drop for PinnedBytesGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: releases the temporary reference retained before append.
+                unsafe { hew_bytes_drop(self.0) };
+            }
+        }
+    }
+
     cabi_guard!(old.is_null() || source.is_null() || out.is_null());
     // SAFETY: source is initialized; copy its header before clearing old,
     // because source may be the receiver itself.
     let source = unsafe { source.read() };
     // SAFETY: old is initialized and uniquely writable by the caller's contract.
-    let mut value = unsafe {
+    let mut value = MovedBytesGuard(unsafe {
         old.replace(BytesTriple {
             ptr: std::ptr::null_mut(),
             offset: 0,
             len: 0,
         })
-    };
-    let shared_source = !source.ptr.is_null() && source.ptr == value.ptr;
-    if shared_source {
+    });
+    let shared_source = !source.ptr.is_null() && source.ptr == value.0.ptr;
+    let source_pin = PinnedBytesGuard(if shared_source {
         // SAFETY: the receiver still owns the live shared allocation. Pin it
         // so append cannot invalidate the source through growth or compaction.
         unsafe { hew_bytes_clone_ref(source.ptr) };
-    }
+        source.ptr
+    } else {
+        std::ptr::null_mut()
+    });
     // SAFETY: value owns the receiver and the borrowed source remains valid.
-    unsafe { hew_bytes_append(&mut value, source.ptr, source.offset, source.len) };
-    if shared_source {
-        // SAFETY: release precisely the temporary reference retained above.
-        unsafe { hew_bytes_drop(source.ptr) };
-    }
+    unsafe { hew_bytes_append(&mut value.0, source.ptr, source.offset, source.len) };
+    drop(source_pin);
     // SAFETY: out is distinct uninitialized storage for the transferred owner.
-    unsafe { out.write(value) };
+    unsafe { out.write(value.into_inner()) };
 }
 
 /// Remove and return the last byte, using copy-on-write if shared.
@@ -2853,6 +2898,37 @@ mod tests {
             assert!(!hew_bytes_starts_with(std::ptr::null(), &raw const dst));
             assert!(!hew_bytes_ends_with(std::ptr::null(), &raw const dst));
             hew_bytes_slice_owned(std::ptr::null(), 0, 1, std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn bytes_owned_push_and_append_aliasing_manage_refcounts_cleanly() {
+        // SAFETY: exercises moved-triple ownership and aliased CoW source pinning.
+        unsafe {
+            let mut empty = BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            let mut pushed = empty;
+            hew_bytes_push_owned(&raw mut empty, b'a', &raw mut pushed);
+            assert!(empty.ptr.is_null());
+            assert_eq!(pushed.len, 1);
+
+            let mut doubled = BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            // Self-append (`old` and `source` share the same buffer).
+            hew_bytes_append_owned(&raw mut pushed, &raw const pushed, &raw mut doubled);
+            assert!(pushed.ptr.is_null());
+            assert_eq!(doubled.len, 2);
+            assert_eq!(
+                std::slice::from_raw_parts(doubled.ptr.add(doubled.offset as usize), 2),
+                b"aa"
+            );
+            hew_bytes_drop(doubled.ptr);
         }
     }
 }

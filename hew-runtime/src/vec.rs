@@ -93,6 +93,30 @@ pub(crate) fn capacity_for(capacity: usize, needed: usize) -> Option<usize> {
     Some(new_cap)
 }
 
+/// Check whether a value descriptor requires a non-null element slot pointer.
+#[inline]
+pub(crate) unsafe fn layout_needs_slot(layout: &HewValueLayout) -> bool {
+    // SAFETY: caller guarantees `layout.managed` is either null or a valid descriptor.
+    let managed_visit = unsafe { layout.managed.as_ref() }.is_some_and(|m| m.visit.is_some());
+    layout.size != 0
+        || layout.clone_fn.is_some()
+        || layout.drop_fn.is_some()
+        || layout.release_start.is_some()
+        || managed_visit
+}
+
+/// Check whether `v` requires a non-null element slot pointer.
+#[inline]
+pub(crate) unsafe fn vec_needs_slot_data(v: *const HewVec) -> bool {
+    // SAFETY: caller guarantees `v` is live and `(*v).layout` is either null or valid.
+    unsafe { (*v).layout.as_ref() }.map_or_else(
+        // SAFETY: caller guarantees `v` is live.
+        || unsafe { (*v).elem_size != 0 },
+        // SAFETY: descriptor reference is live for this vec.
+        |layout| unsafe { layout_needs_slot(layout) },
+    )
+}
+
 /// Push through a checked managed-storage boundary before changing any input.
 /// # Safety
 /// Vector, element and invocation are live and match the compiler descriptor.
@@ -103,10 +127,11 @@ pub unsafe extern "C" fn hew_vec_push_managed(
     moved: u32,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> i32 {
-    cabi_guard!(
-        v.is_null() || data.is_null(),
-        hew_cabi::managed::UNDESCRIBED
-    );
+    cabi_guard!(v.is_null(), hew_cabi::managed::UNDESCRIBED);
+    // SAFETY: `v` was verified non-null above.
+    if data.is_null() && unsafe { vec_needs_slot_data(v) } {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     // SAFETY: the caller retains the invocation and both typed inputs.
     let Some(owner) =
         (unsafe { crate::owned_value_budget::materialize::invocation_owner(invocation) })
@@ -3068,10 +3093,13 @@ unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
 /// `descriptor.size` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::ffi::c_void) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    cabi_guard!(v.is_null());
+    // SAFETY: guards reject null `v`; descriptor presence is validated.
     unsafe {
         let layout = owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(layout) {
+            return;
+        }
         let elem_size = layout.size;
         let clone_fn = owned_clone_fn(layout);
         let len = (*v).len;
@@ -3082,7 +3110,9 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         let dst = (*v).data.add(len * elem_size);
         // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
         // the clone thunk to deep-copy the owned heap (clone-fn contract).
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        if elem_size > 0 {
+            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        }
         let status = clone_fn.map_or(0, |clone_fn| {
             clone_fn(data, dst.cast::<core::ffi::c_void>())
         });
@@ -3112,10 +3142,13 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
 /// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const core::ffi::c_void) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    cabi_guard!(v.is_null());
+    // SAFETY: guards reject null `v`; descriptor presence is validated.
     unsafe {
         let layout = owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(layout) {
+            return;
+        }
         let elem_size = layout.size;
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
@@ -3126,7 +3159,9 @@ pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const co
         // Move-in: byte-copy transfers the element (BitCopy fields, enum tag
         // bytes, AND owned-heap pointers) into the slot. No `clone_fn` — the
         // source's heap is now owned by the Vec; the source is dead.
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        if elem_size > 0 {
+            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        }
         (*v).len = new_len;
     }
 }
@@ -3346,15 +3381,45 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move_release(
 
 struct OwnedScratchGuard {
     ptr: *mut u8,
-    size: usize,
-    align: usize,
+    layout: HewValueLayout,
+    scratch_size: usize,
+    live: bool,
 }
 
 impl Drop for OwnedScratchGuard {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            // SAFETY: allocated with hew_alloc(size, align) for this scratch slot.
-            unsafe { crate::mem::hew_dealloc(self.ptr, self.size as u64, self.align as u64) };
+            if self.live {
+                // SAFETY: `self.ptr` holds an initialized value matching `self.layout`.
+                let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast(), self.layout) };
+                // SAFETY: synchronous vec set owns this scratch value if unwinding before publish.
+                unsafe { release_walker::hew_release_sync(cursor) };
+            }
+            // SAFETY: allocated with hew_alloc(scratch_size, layout.align) for this scratch slot.
+            unsafe {
+                crate::mem::hew_dealloc(
+                    self.ptr,
+                    self.scratch_size as u64,
+                    self.layout.align as u64,
+                );
+            }
+        }
+    }
+}
+
+struct MovedValueGuard {
+    ptr: *const c_void,
+    layout: HewValueLayout,
+    armed: bool,
+}
+
+impl Drop for MovedValueGuard {
+    fn drop(&mut self) {
+        if self.armed && !self.ptr.is_null() {
+            // SAFETY: `self.ptr` holds the caller-transferred owner that was not installed.
+            let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast_mut(), self.layout) };
+            // SAFETY: synchronous release drops the moved owner if OOB or CoW clone unwinds.
+            unsafe { crate::release_walker::hew_release_sync(cursor) };
         }
     }
 }
@@ -3365,10 +3430,18 @@ unsafe fn set_owned_release(
     data: *const c_void,
     copy: bool,
 ) -> *mut HewReleaseCursor {
-    cabi_guard!(v.is_null() || data.is_null(), ptr::null_mut());
+    cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: the caller supplies initialized, correctly laid out slots.
     unsafe {
         let layout = *owned_descriptor(v);
+        if data.is_null() && layout_needs_slot(&layout) {
+            return ptr::null_mut();
+        }
+        let mut moved_guard = MovedValueGuard {
+            ptr: data,
+            layout,
+            armed: !copy,
+        };
         let index = require_index(index, (*v).len, "Vec.set()");
         let data = ensure_cap_with_source(v, (*v).len, data);
         let slot = (*v).data.add(index * layout.size);
@@ -3378,15 +3451,19 @@ unsafe fn set_owned_release(
             && layout.release_start.is_none()
         {
             // The borrowed replacement may be this element or another slot.
-            ptr::copy(data.cast::<u8>(), slot, layout.size);
+            if layout.size > 0 {
+                ptr::copy(data.cast::<u8>(), slot, layout.size);
+            }
+            moved_guard.armed = false;
             return ptr::null_mut();
         }
         let scratch_size = layout.size.max(1);
         let scratch = crate::mem::hew_alloc(scratch_size as u64, layout.align as u64);
-        let _scratch_guard = OwnedScratchGuard {
+        let mut scratch_guard = OwnedScratchGuard {
             ptr: scratch,
-            size: scratch_size,
-            align: layout.align,
+            layout,
+            scratch_size,
+            live: false,
         };
         ptr::copy_nonoverlapping(data.cast::<u8>(), scratch, layout.size);
         if copy {
@@ -3395,9 +3472,14 @@ unsafe fn set_owned_release(
                 write_stderr(b"PANIC: Vec owned element clone failed\n");
                 abort_vector();
             }
+            scratch_guard.live = true;
+        } else {
+            scratch_guard.live = true;
+            moved_guard.armed = false;
         }
         let displaced = HewReleaseCursor::detached(slot.cast(), layout);
         ptr::copy_nonoverlapping(scratch, slot, layout.size);
+        scratch_guard.live = false;
         displaced
     }
 }
@@ -6315,6 +6397,70 @@ mod vec_owned_tests {
             LIVE_VEC.store(core::ptr::null_mut(), Ordering::SeqCst);
             hew_vec_free(v);
             let _ = AtomicUsize::new(0);
+        }
+    }
+
+    #[test]
+    fn zst_plain_managed_vec_accepts_null_data_while_callback_zst_rejects() {
+        unsafe extern "C-unwind" fn noop_drop(_slot: *mut c_void) {}
+        static DROP_ZST_MANAGED: hew_cabi::managed::HewManagedValueDescriptor =
+            hew_cabi::managed::HewManagedValueDescriptor {
+                slot_bytes: 0,
+                visit: None,
+            };
+        static DROP_ZST_LAYOUT: HewValueLayout = HewValueLayout {
+            size: 0,
+            align: 1,
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(noop_drop),
+            release_start: None,
+            code_owner: core::ptr::null(),
+            managed: &raw const DROP_ZST_MANAGED,
+        };
+
+        // SAFETY: exercises plain ZST null data acceptance vs callback ZST refusal.
+        unsafe {
+            let v_unit = hew_vec_new_with_elem_layout(
+                &raw const crate::layout_intrinsics::hew_layout_val_unit,
+            );
+            assert_eq!(
+                hew_vec_push_managed(v_unit, core::ptr::null(), 0, core::ptr::null()),
+                0
+            );
+            assert_eq!(hew_vec_len(v_unit), 1);
+            let mut cleanup = core::ptr::null_mut();
+            assert_eq!(
+                super::managed::hew_vec_set_managed(
+                    v_unit,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    &raw mut cleanup,
+                ),
+                0
+            );
+            release_walker::hew_release_sync(cleanup);
+            hew_vec_free_owned(v_unit);
+
+            let v_drop = hew_vec_new_with_elem_layout(&raw const DROP_ZST_LAYOUT);
+            assert_eq!(
+                hew_vec_push_managed(v_drop, core::ptr::null(), 0, core::ptr::null()),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            assert_eq!(
+                super::managed::hew_vec_set_managed(
+                    v_drop,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    &raw mut cleanup,
+                ),
+                hew_cabi::managed::UNDESCRIBED
+            );
+            hew_vec_free_owned(v_drop);
         }
     }
 }

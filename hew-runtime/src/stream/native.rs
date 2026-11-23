@@ -435,12 +435,14 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     cabi_guard!(out_status.is_null(), std::ptr::null_mut());
     // SAFETY: out_status is writable; clear it before validating other pointers.
     unsafe { out_status.write(0) };
-    if sink.is_null()
-        || waker.is_null()
-        || data.is_null()
-        || layout.is_null()
-        || sink_layout.is_null()
-    {
+    if sink.is_null() || waker.is_null() || layout.is_null() || sink_layout.is_null() {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `layout` was verified non-null above.
+    let needs_data = unsafe { crate::vec::layout_needs_slot(&*layout) };
+    if data.is_null() && needs_data {
         // SAFETY: out_status verified non-null above.
         unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
         return std::ptr::null_mut();

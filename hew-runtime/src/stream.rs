@@ -1795,7 +1795,7 @@ pub unsafe extern "C" fn hew_stream_recv_cancel_cleanup(
 /// `stream` must be a valid pointer created by one of the `hew_stream_*`
 /// constructor functions, and must not be used after this call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
+pub unsafe extern "C-unwind" fn hew_stream_close(stream: *mut HewStream) {
     if !stream.is_null() {
         crate::tracing::record_channel_event(stream as u64, crate::tracing::SPAN_STREAM_CLOSED);
         // SAFETY: the foreign synchronous boundary transfers this unique handle to its value cursor.
@@ -1864,7 +1864,7 @@ pub unsafe extern "C" fn hew_stream_release_begin(
 ///
 /// Same preconditions as [`hew_stream_close`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_read_stream_close(stream: *mut HewStream) {
+pub unsafe extern "C-unwind" fn hew_file_read_stream_close(stream: *mut HewStream) {
     // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
     unsafe { hew_stream_close(stream) };
 }
@@ -1907,7 +1907,7 @@ pub unsafe extern "C" fn hew_sink_flush(sink: *mut HewSink) {
 /// `sink` must be a valid pointer created by one of the `hew_stream_*`
 /// constructor functions, and must not be used after this call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
+pub unsafe extern "C-unwind" fn hew_sink_close(sink: *mut HewSink) {
     if !sink.is_null() {
         crate::tracing::record_channel_event(sink as u64, crate::tracing::SPAN_SINK_CLOSED);
         // SAFETY: synchronous foreign callers own the handle and finish I/O before its owners drain.

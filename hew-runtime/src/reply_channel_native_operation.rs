@@ -175,7 +175,7 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_poll_native(
     operation: *mut HewNativeReply,
     parent: *mut HewCoroState,
 ) -> i32 {
-    if operation.is_null() || parent.is_null() {
+    if operation.is_null() {
         return CoroStatus::Complete as i32;
     }
     // SAFETY: the checked continuation owns this operation until terminal cleanup.
@@ -187,6 +187,14 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_poll_native(
         }
         let channel = operation.channel;
         if channel.is_null() {
+            operation.terminal = true;
+            return CoroStatus::Complete as i32;
+        }
+        if parent.is_null() {
+            operation.transfer = None;
+            release_gate(channel, identity);
+            operation.channel = ptr::null_mut();
+            super::super::hew_reply_channel_publish_task_failed(channel);
             operation.terminal = true;
             return CoroStatus::Complete as i32;
         }
@@ -753,6 +761,50 @@ mod tests {
             );
             assert!(hew_actor_reply_take_cleanup_native(ptr::null_mut()).is_null());
             hew_actor_reply_free_native(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn poll_with_null_parent_completes_terminal_failure_without_aborting_cleanup() {
+        let (_ready, wake) = Readiness::new();
+        // SAFETY: fixture owns channel, parent coro state, value, and operation cleanly.
+        unsafe {
+            let channel = super::super::hew_reply_channel_new_native(
+                wake.descriptor(),
+                None,
+                None,
+                &raw const SCALAR,
+            );
+            super::super::super::hew_reply_channel_retain(channel);
+            let _context = TestExecutionContext::install(HewExecutionContext {
+                reply_channel: channel.cast(),
+                ..HewExecutionContext::default()
+            });
+            let parent = crate::coro_state::hew_coro_state_new(wake.descriptor(), ptr::null_mut());
+            let mut value = 99_u64;
+            let mut status = -1;
+            let operation = hew_actor_reply_start_native(
+                (&raw mut value).cast(),
+                &raw const SCALAR,
+                parent,
+                &raw mut status,
+            );
+            assert!(!operation.is_null());
+            assert_eq!(status, 0);
+
+            assert_eq!(
+                hew_actor_reply_poll_native(operation, ptr::null_mut()),
+                CoroStatus::Complete as i32
+            );
+            let cleanup = hew_actor_reply_take_cleanup_native(operation);
+            assert!(!cleanup.is_null());
+            let mut driver = crate::release_walker::ReleaseDriver::new(cleanup);
+            assert!(driver.poll(parent));
+            assert!(driver.take_fault().is_null());
+            drop(driver);
+            hew_actor_reply_free_native(operation);
+            super::super::super::hew_reply_channel_free(channel);
+            crate::coro_state::hew_coro_state_free(parent);
         }
     }
 }

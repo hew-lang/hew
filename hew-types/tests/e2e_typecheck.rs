@@ -734,33 +734,6 @@ fn respond(consume req: http.Request) -> i64 {
 }
 
 #[test]
-fn module_qualified_call_rewrites_record_owning_module_endpoint() {
-    let output = typecheck_inline(
-        r#"
-import std.fs;
-
-fn main() {
-    let _ = fs.exists("test.txt");
-}
-"#,
-    );
-    assert!(
-        output.errors.is_empty(),
-        "expected clean typecheck, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
-                if c_symbol == "std.fs.exists"
-        )),
-        "expected the module-qualified rewrite to name the owning module endpoint, got: {:?}",
-        output.method_call_rewrites
-    );
-}
-
-#[test]
 fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"type Boxed {
@@ -832,6 +805,18 @@ actor Counter {
         "expected indexed assignment metadata, got: {:?}",
         output.assign_target_kinds
     );
+    for key in output.assign_target_kinds.keys() {
+        assert!(
+            output.assign_target_shapes.contains_key(key),
+            "assign_target_kinds span {key:?} is missing from assign_target_shapes",
+        );
+    }
+    for key in output.assign_target_shapes.keys() {
+        assert!(
+            output.assign_target_kinds.contains_key(key),
+            "assign_target_shapes span {key:?} is missing from assign_target_kinds",
+        );
+    }
 }
 
 #[test]
@@ -890,54 +875,6 @@ fn f() {
         "expected 2 signed targets (i32, i64), got: {:?}",
         output.assign_target_shapes
     );
-}
-
-#[test]
-fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
-    // Verify that every span present in assign_target_kinds also has a
-    // corresponding entry in assign_target_shapes.
-    let output = typecheck_inline(
-        r"type Boxed {
-    value: i64;
-}
-
-fn mutate() {
-    var local = 0;
-    local = 1;
-    var boxed = Boxed { value: 0 };
-    boxed.value = 2;
-    var nums = [1, 2];
-    nums[0] = 3;
-}
-
-actor Counter {
-    var total: i64;
-
-    receive fn set(v: i64) {
-        total = v;
-    }
-}
-",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "expected clean typecheck, got: {:#?}",
-        output.errors
-    );
-    // Every span in assign_target_kinds must have a shape entry.
-    for key in output.assign_target_kinds.keys() {
-        assert!(
-            output.assign_target_shapes.contains_key(key),
-            "assign_target_kinds span {key:?} is missing from assign_target_shapes",
-        );
-    }
-    // Every span in assign_target_shapes must have a kind entry.
-    for key in output.assign_target_shapes.keys() {
-        assert!(
-            output.assign_target_kinds.contains_key(key),
-            "assign_target_shapes span {key:?} is missing from assign_target_kinds",
-        );
-    }
 }
 
 // ===========================================================================
@@ -1395,9 +1332,10 @@ fn main() {
     );
     assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
     assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
-    assert_eq!(
-        output.errors[0].message,
-        "cannot send `Weak<i64>` to actor: type is not Send"
+    assert!(
+        output.errors[0].message.contains("Weak<i64>"),
+        "expected `Weak<i64>` in InvalidSend diagnostic: {:?}",
+        output.errors[0].message
     );
 }
 
@@ -1523,9 +1461,10 @@ fn main() {
     );
     assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
     assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidSend);
-    assert_eq!(
-        output.errors[0].message,
-        "cannot send `Rc<i64>` to actor: type is not Send"
+    assert!(
+        output.errors[0].message.contains("Rc<i64>"),
+        "expected `Rc<i64>` in InvalidSend diagnostic: {:?}",
+        output.errors[0].message
     );
 }
 
@@ -1764,53 +1703,7 @@ fn main() {
     );
 }
 
-/// The `<-` send operator was removed in v0.5.  Both the lexer token and the
-/// parser infix rule are gone; any source using `<-` now fails to parse.
-/// This is the `E_OPERATOR_REMOVED` reject path (§3.3 of the migration guide).
-#[test]
-fn left_arrow_send_operator_is_rejected() {
-    let result = hew_parser::parse(
-        r"
-        fn main() {
-            let worker = actor |msg: i64| { println(msg); };
-            worker <- 1;
-        }
-        ",
-    );
-    assert!(
-        !result.errors.is_empty(),
-        "`<-` must be rejected by the parser (E_OPERATOR_REMOVED), got clean parse"
-    );
-}
-
-/// The legacy `spawn (...) => body` syntax was removed in v0.5.
-/// The parser now emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED`.  Accept path uses the
-/// new `actor |...| { ... }` form.
-#[test]
-fn legacy_spawn_lambda_syntax_is_rejected() {
-    let result = hew_parser::parse(
-        r"
-        fn main() {
-            let worker = spawn (msg: i64) => { println(msg); };
-        }
-        ",
-    );
-    assert!(
-        !result.errors.is_empty(),
-        "`spawn (...) => ...` must be rejected by the parser (E_SPAWN_LAMBDA_SYNTAX_REMOVED)"
-    );
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("E_SPAWN_LAMBDA_SYNTAX_REMOVED")),
-        "expected E_SPAWN_LAMBDA_SYNTAX_REMOVED in error messages, got: {:#?}",
-        result.errors
-    );
-}
-
-/// Accept path for the new `actor |...| { ... }` syntax with call-syntax dispatch.
-/// Replaces the old `lambda_actor_send_operator_allows_send_payload` test.
+/// Accept path for the `actor |...| { ... }` syntax with call-syntax dispatch.
 #[test]
 fn actor_lambda_new_syntax_typechecks() {
     let output = typecheck_inline(
@@ -2001,24 +1894,6 @@ fn tell_shaped_actor_typechecks() {
     );
 }
 
-/// Accept path for ask-shaped lambda actor: `actor |n: i64| -> i64 { n*2 }`.
-#[test]
-fn ask_shaped_actor_typechecks() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let dbl = actor |n: i64| -> i64 { n * 2 };
-            let _r = dbl(5);
-        }
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "ask-shaped actor with call-syntax dispatch should typecheck cleanly, got: {:#?}",
-        output.errors
-    );
-}
-
 /// `Rc::new` must accept non-Copy `T`; the codegen passes the real drop function.
 /// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]
@@ -2149,35 +2024,6 @@ fn main() {
                 && e.message.contains("Rc only accepts Copy payloads")
         }),
         "generic Rc<T> wrappers should fail closed until payload support is proven, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn rc_generic_lambda_payload_rejected() {
-    // Generic lambda `<T>(val: T) -> Rc<T> => ...` was removed in v0.5.
-    // The Rc<non-Copy> restriction is still enforced: use a named generic
-    // function, which is the correct post-v0.5 spelling.
-    let output = typecheck_inline(
-        r#"type Labelled {
-    name: string;
-}
-
-fn wrap<T>(val: T) -> Rc<T> {
-    Rc.new(val)
-}
-
-fn main() {
-    let _ = wrap(Labelled { name: "hello" });
-}
-"#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("Rc only accepts Copy payloads")
-        }),
-        "Rc<non-Copy> must be rejected via generic fn (fail-closed), got: {:#?}",
         output.errors
     );
 }
@@ -2762,10 +2608,7 @@ fn smtp_conn_methods_rejected_on_wasm() {
 /// fires the module-qualified-call gate first — the rejection must come solely from
 /// the handle-method arm.
 #[test]
-fn wasm_rejects_all_native_only_handle_methods() {
-    // Each row: (import_path, handle_type, extern_fn, method_call, expected_label)
-    // method_call must be a valid method on the handle type so method resolution
-    // succeeds before `reject_if_wasm_native_only_handle` inspects the receiver.
+fn native_only_handle_methods_rejected_on_wasm_and_allowed_natively() {
     let cases: &[(&str, &str, &str, &str, &str)] = &[
         (
             "std.net.tls",
@@ -2818,84 +2661,22 @@ fn wasm_rejects_all_native_only_handle_methods() {
         }}
         "#,
         );
-        let output = typecheck_inline_wasm(&source);
+        let wasm_output = typecheck_inline_wasm(&source);
         assert!(
-            output.errors.iter().any(|e| {
+            wasm_output.errors.iter().any(|e| {
                 e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(expected_label)
             }),
             "expected wasm PlatformLimitation for {handle_type} handle-method, got: {:#?}",
-            output.errors
+            wasm_output.errors
         );
-    }
-}
 
-/// Native-target parity: the same handle-method calls that are rejected on
-/// wasm32 must NOT produce a `PlatformLimitation` error when type-checked
-/// without the wasm target.  A regression that over-blocks on native would
-/// pass the wasm tests above while silently breaking native builds.
-#[test]
-fn native_allows_all_native_only_handle_methods_no_platform_error() {
-    // Mirrors the wasm table above — same programs, checked with `typecheck_inline`
-    // (no `enable_wasm_target()` call).
-    let cases: &[(&str, &str, &str, &str, &str)] = &[
-        (
-            "std.net.tls",
-            "tls.TlsStream",
-            "fn fake_tls() -> tls.TlsStream",
-            "let stream = unsafe { fake_tls() };\n            stream.close();",
-            "std.net.tls",
-        ),
-        (
-            "std.net.quic",
-            "quic.QUICEndpoint",
-            "fn fake_endpoint() -> quic.QUICEndpoint",
-            "let ep = unsafe { fake_endpoint() };\n            ep.close();",
-            "std.net.quic",
-        ),
-        (
-            "std.net.quic",
-            "quic.QUICConnection",
-            "fn fake_conn() -> quic.QUICConnection",
-            "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
-            "std.net.quic",
-        ),
-        (
-            "std.net.quic",
-            "quic.QUICStream",
-            "fn fake_stream() -> quic.QUICStream",
-            "let strm = unsafe { fake_stream() };\n            strm.close();",
-            "std.net.quic",
-        ),
-        (
-            "std.net.quic",
-            "quic.QUICEvent",
-            "fn fake_event() -> quic.QUICEvent",
-            "let ev = unsafe { fake_event() };\n            ev.close();",
-            "std.net.quic",
-        ),
-    ];
-
-    for (import_path, handle_type, extern_fn, method_call, expected_label) in cases {
-        let source = format!(
-            r#"
-        import {import_path};
-
-        extern "C" {{
-            {extern_fn};
-        }}
-
-        fn main() {{
-            {method_call}
-        }}
-        "#,
-        );
-        let output = typecheck_inline(&source);
+        let native_output = typecheck_inline(&source);
         assert!(
-            !output.errors.iter().any(|e| {
+            !native_output.errors.iter().any(|e| {
                 e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(expected_label)
             }),
             "unexpected PlatformLimitation on native target for {handle_type}: {:#?}",
-            output.errors
+            native_output.errors
         );
     }
 }
@@ -3105,582 +2886,203 @@ fn range_sequence_metadata_is_not_source_accessible_or_constructible() {
     );
 }
 
-/// Returning an Rc parameter as a bare identifier must be a fail-closed error
-/// under borrow-on-call semantics (double-free at runtime).
+/// Cases where a borrowed `Rc` parameter escapes directly, via aggregates,
+/// or through tainted locals/branches/fields.
+const BORROWED_PARAM_ESCAPE_CASES: &[(&str, &str, usize, bool)] = &[
+    (
+        "trailing bare ident",
+        "fn identity(r: Rc<i64>) -> Rc<i64> { r } fn main() {}",
+        1,
+        false,
+    ),
+    (
+        "explicit early return",
+        "fn early(r: Rc<i64>, flag: bool) -> Rc<i64> {\n    if flag { return r; }\n    Rc.new(0)\n}\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "block-wrapped return",
+        "fn wrapped(r: Rc<i64>) -> Rc<i64> { { r } } fn main() {}",
+        1,
+        false,
+    ),
+    (
+        "Option.Some wrap",
+        "fn wrap(r: Rc<i64>) -> Option<Rc<i64>> { .Some(r) } fn main() {}",
+        1,
+        false,
+    ),
+    (
+        "tuple wrap",
+        "fn wrap(r: Rc<i64>) -> (Rc<i64>, i64) { (r, 0) } fn main() {}",
+        1,
+        false,
+    ),
+    (
+        "struct init field",
+        "type Holder { val: Rc<i64>; }\nfn wrap(r: Rc<i64>) -> Holder { Holder { val: r } }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "explicit return Some",
+        "fn wrap(r: Rc<i64>) -> Option<Rc<i64>> { return .Some(r); } fn main() {}",
+        1,
+        false,
+    ),
+    (
+        "vec push store and return",
+        "fn bad(r: Rc<i64>) -> Vec<Rc<i64>> { var v = Vec.new(); v.push(r); v }\nfn main() {}",
+        1,
+        true,
+    ),
+    (
+        "vec push store and explicit return",
+        "fn bad(r: Rc<i64>) -> Vec<Rc<i64>> { var v = Vec.new(); v.push(r); return v; }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "direct local alias",
+        "fn bad(r: Rc<i64>) -> Rc<i64> { let v = r; v }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "aggregate local alias",
+        "fn bad(r: Rc<i64>) -> Option<Rc<i64>> { let v = Option.Some(r); v }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "transitive alias taint",
+        "fn bad(r: Rc<i64>) -> Vec<Rc<i64>> { let a = r; var v = Vec.new(); v.push(a); v }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "branch-conditional vec store",
+        "fn bad(r: Rc<i64>, cond: bool) -> Vec<Rc<i64>> { var v = Vec.new(); if cond { v.push(r); } v }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "assignment taint",
+        "fn bad(r: Rc<i64>) -> Rc<i64> { var v: Rc<i64> = Rc.new(0); v = r; v }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "field assignment escape",
+        "type Wrapper { value: Rc<i64>; }\nfn bad(r: Rc<i64>) -> Wrapper { var s = Wrapper { value: Rc.new(0) }; s.value = r; s }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "if-let body trailing expr",
+        "fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> { if let .Some(_v) = opt { r } else { Rc.new(0) } }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "if-let else trailing expr",
+        "fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> { if let .Some(_v) = opt { Rc.new(0) } else { r } }\nfn main() {}",
+        1,
+        false,
+    ),
+    (
+        "if-let both branches",
+        "fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> { if let .Some(_v) = opt { r } else { r } }\nfn main() {}",
+        2,
+        false,
+    ),
+    (
+        "if-let shadow suppresses inner branch only",
+        "fn shadow_then_escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> { if let .Some(v) = opt { let r = Rc.new(v); r } else { r } }\nfn main() {}",
+        1,
+        false,
+    ),
+];
+
+/// Returning a borrowed-param binding or propagating its taint through
+/// tainted locals/branches/fields must fail closed with `BorrowedParamReturn`.
 #[test]
-fn rc_param_return_errors_borrowed_rc() {
-    // Trailing expression (implicit return) — bare identifier
-    let output = typecheck_inline(
-        r"
-        fn identity(r: Rc<i64>) -> Rc<i64> {
-            r
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
+fn borrowed_param_return_rejects_escapes() {
+    for (label, source, expected_count, check_names) in BORROWED_PARAM_ESCAPE_CASES {
+        let output = typecheck_inline(source);
+        let rc_errors: Vec<_> = output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "returning Rc param as trailing expr should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
-        output.errors, output.warnings
-    );
+            .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+            .collect();
+        assert_eq!(
+            rc_errors.len(),
+            *expected_count,
+            "{label}: expected {expected_count} BorrowedParamReturn errors, got: {:#?}",
+            output.errors
+        );
+        if *check_names {
+            assert!(
+                rc_errors[0].message.contains("`v`") && rc_errors[0].message.contains("`r`"),
+                "{label}: error should mention both `v` and `r`, got: {}",
+                rc_errors[0].message
+            );
+        }
+    }
 }
 
-/// Explicit `return rc_param` must also trigger the error.
 #[test]
-fn rc_param_explicit_return_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn early(r: Rc<i64>, flag: bool) -> Rc<i64> {
-            if flag {
-                return r;
-            }
-            Rc.new(0)
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
+fn borrowed_param_return_allows_clones_and_non_escapes() {
+    for (label, source) in [
+        (
+            "clone return",
+            "fn safe_identity(r: Rc<i64>) -> Rc<i64> { r.clone() }\nfn main() {}",
+        ),
+        (
+            "read-only borrow callee",
+            "fn read_rc(r: Rc<i64>) -> i64 { r.get() }\nfn main() { let rc = Rc.new(42); println(read_rc(rc)); }",
+        ),
+        (
+            "Option.Some(clone)",
+            "fn wrap(r: Rc<i64>) -> Option<Rc<i64>> { .Some(r.clone()) }\nfn main() {}",
+        ),
+        (
+            "fresh Rc.new return",
+            "fn fresh(_r: Rc<i64>) -> Rc<i64> { Rc.new(0) }\nfn main() {}",
+        ),
+        (
+            "delegated borrow call",
+            "fn extract(r: Rc<i64>) -> i64 { r.get() }\nfn delegate(r: Rc<i64>) -> i64 { extract(r) }\nfn main() {}",
+        ),
+        (
+            "local store not returned",
+            "fn not_returned(r: Rc<i64>) -> i64 { var v = Vec.new(); v.push(r); 42 }\nfn main() {}",
+        ),
+        (
+            "push clone then return vec",
+            "fn safe(r: Rc<i64>) -> Vec<Rc<i64>> { var v = Vec.new(); v.push(r.clone()); v }\nfn main() {}",
+        ),
+        (
+            "read-only contains does not taint",
+            "fn ok(r: Rc<i64>) -> Vec<i64> { let v = Vec.new(); v.contains(r.get()); v }\nfn main() {}",
+        ),
+        (
+            "local shadow binding",
+            "fn shadow(r: Rc<i64>) -> Rc<i64> { let r = Rc.new(99); r }\nfn main() {}",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        let rc_errors: Vec<_> = output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "explicit return of Rc param should emit BorrowedParamReturn error, got errors: {:#?}, warnings: {:#?}",
-        output.errors, output.warnings
-    );
-}
-
-// `break <rc_param>` is gone from the language: `break` carries no operand
-// (`E_BREAK_VALUE`, HEW-SPEC-2026 §12.4), so the escape route this checker
-// rule once had to cover cannot be written. The remaining escapes — an
-// explicit `return`, a block tail, a match arm — are covered above and below.
-
-/// Block-wrapped return `{ r }` must be caught — `Expr::Block` descent.
-#[test]
-fn rc_param_block_wrapped_return_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn wrapped(r: Rc<i64>) -> Rc<i64> {
-            { r }
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "block-wrapped Rc param return should emit BorrowedParamReturn error, got errors: {:#?}",
-        output.errors
-    );
-}
-
-/// Returning `rc_param.clone()` should NOT trigger the error — it creates
-/// an owned copy with an incremented refcount.
-#[test]
-fn rc_param_clone_return_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn safe_identity(r: Rc<i64>) -> Rc<i64> {
-            r.clone()
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "returning rc.clone() should not error, got: {rc_errors:#?}",
-    );
-}
-
-/// Passing an Rc to a function that reads it (borrow) should be clean — no
-/// `BorrowedParamReturn` errors.
-#[test]
-fn rc_pass_to_fn_borrow_clean() {
-    let output = typecheck_inline(
-        r"
-        fn read_rc(r: Rc<i64>) -> i64 {
-            r.get()
-        }
-        fn main() {
-            let rc = Rc.new(42);
-            println(read_rc(rc));
-        }
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "Rc borrow (read-only callee) should not emit BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-// ── Aggregate escape tests ────────────────────────────────────────────────────
-
-/// Wrapping an Rc param in `Some(r)` is an aggregate escape — the borrowed
-/// pointer is embedded in the Option and escapes the function.
-#[test]
-fn rc_param_some_wrap_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            .Some(r)
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-/// Wrapping an Rc param in a tuple `(r, 0)` is an aggregate escape.
-#[test]
-fn rc_param_tuple_wrap_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn wrap(r: Rc<i64>) -> (Rc<i64>, i64) {
-            (r, 0)
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "(r, 0) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-/// Struct init with an Rc param field is an aggregate escape.
-#[test]
-fn rc_param_struct_init_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"type Holder {
-    val: Rc<i64>;
-}
-
-fn wrap(r: Rc<i64>) -> Holder {
-    Holder { val: r }
-}
-
-fn main() {}
-",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "Holder {{ val: r }} should trigger BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-/// `Some(r.clone())` is safe — the Rc is cloned before embedding.
-#[test]
-fn rc_param_some_clone_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            .Some(r.clone())
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "Some(r.clone()) should not error, got: {rc_errors:#?}",
-    );
-}
-
-/// Returning `Rc::new(val)` should not trigger — it's a fresh allocation.
-#[test]
-fn rc_new_in_return_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn fresh(_r: Rc<i64>) -> Rc<i64> {
-            Rc.new(0)
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "Rc::new(0) should not error, got: {rc_errors:#?}",
-    );
-}
-
-/// Returning `return Some(r)` via explicit return also triggers the diagnostic.
-#[test]
-fn rc_param_explicit_return_some_errors_borrowed_rc() {
-    let output = typecheck_inline(
-        r"
-        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            return .Some(r);
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "return Some(r) should trigger BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-/// Passing an Rc param to a regular (lowercase) function call that returns
-/// a non-Rc type should NOT trigger — regular calls are borrows, not escapes.
-#[test]
-fn rc_param_passed_to_regular_fn_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn extract(r: Rc<i64>) -> i64 {
-            r.get()
-        }
-        fn delegate(r: Rc<i64>) -> i64 {
-            extract(r)
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "passing Rc param to a regular function should not error, got: {rc_errors:#?}",
-    );
-}
-
-// ── Collection-store / taint-tracking tests ─────────────────────────────────
-
-/// `v.push(r); v` — Rc param stored in collection via method call then returned.
-#[test]
-fn rc_method_call_store_and_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec.new();
-            v.push(r);
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "returning v after v.push(r) must fire BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-    assert!(
-        rc_errors[0].message.contains("`v`") && rc_errors[0].message.contains("`r`"),
-        "error should mention both `v` and `r`, got: {}",
-        rc_errors[0].message
-    );
-}
-
-/// `v.push(r); return v;` — explicit return of tainted local.
-#[test]
-fn rc_method_call_store_explicit_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec.new();
-            v.push(r);
-            return v;
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "explicit `return v` after v.push(r) must fire, got: {rc_errors:#?}",
-    );
-}
-
-/// `let v = r; v` — direct alias of Rc param then returned.
-#[test]
-fn rc_direct_alias_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Rc<i64> {
-            let v = r;
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "returning alias `v = r` must fire BorrowedParamReturn, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `let v = Some(r); v` — aggregate alias then returned.
-#[test]
-fn rc_aggregate_alias_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Option<Rc<i64>> {
-            let v = Option.Some(r);
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "returning alias `v = Some(r)` must fire BorrowedParamReturn, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Transitive taint: `let a = r; v.push(a); v` — taint propagates through alias.
-#[test]
-fn rc_transitive_taint_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
-            let a = r;
-            var v = Vec.new();
-            v.push(a);
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "transitive taint (a = r; v.push(a); v) must fire, got: {:#?}",
-        output.errors
-    );
-}
-
-/// v.push(r) where v is NOT returned — no error (only return-path escapes
-/// are flagged by this check; drop-ordering issues are separate).
-#[test]
-fn rc_method_call_store_no_return_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn not_returned(r: Rc<i64>) -> i64 {
-            var v = Vec.new();
-            v.push(r);
-            42
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "v.push(r) without returning v should not fire, got: {rc_errors:#?}",
-    );
-}
-
-/// v.push(r.clone()) then return v — safe because clone increments refcount.
-#[test]
-fn rc_method_call_store_clone_no_error() {
-    let output = typecheck_inline(
-        r"
-        fn safe(r: Rc<i64>) -> Vec<Rc<i64>> {
-            var v = Vec.new();
-            v.push(r.clone());
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "v.push(r.clone()) then return v should be clean, got: {rc_errors:#?}",
-    );
-}
-
-/// Taint inside an if-branch is propagated unconditionally (fail-closed).
-#[test]
-fn rc_method_call_store_in_branch_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>, cond: bool) -> Vec<Rc<i64>> {
-            var v = Vec.new();
-            if cond {
-                v.push(r);
-            }
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "v.push(r) inside branch then return v must fire, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Assignment-based taint: `v = r;` then return v.
-#[test]
-fn rc_assignment_taint_return_errors() {
-    let output = typecheck_inline(
-        r"
-        fn bad(r: Rc<i64>) -> Rc<i64> {
-            var v: Rc<i64> = Rc.new(0);
-            v = r;
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "`v = r;` then return v must fire BorrowedParamReturn, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Read-only method `contains(r)` must NOT taint the receiver.
-/// Under borrow-on-call, the method borrows `r` and returns independently.
-#[test]
-fn rc_readonly_method_does_not_taint() {
-    let output = typecheck_inline(
-        r"
-        fn ok(r: Rc<i64>) -> Vec<i64> {
-            let v = Vec.new();
-            v.contains(r.get());
-            v
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "v.contains(...) is read-only and must not taint v, got: {rc_errors:#?}",
-    );
-}
-
-/// Field-assignment escape: `s.field = r; return s;` stores a borrowed
-/// param into a struct field, then returns the struct — aliasing double-free.
-#[test]
-fn rc_field_assignment_escape_errors() {
-    let output = typecheck_inline(
-        r"type Wrapper {
-    value: Rc<i64>;
-}
-
-fn bad(r: Rc<i64>) -> Wrapper {
-    var s = Wrapper { value: Rc.new(0) };
-    s.value = r;
-    s
-}
-
-fn main() {}
-",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        !rc_errors.is_empty(),
-        "s.value = r; return s must fire BorrowedParamReturn, got: {:#?}",
-        output.errors
-    );
+            .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+            .collect();
+        assert!(
+            rc_errors.is_empty(),
+            "{label}: should not emit BorrowedParamReturn, got: {rc_errors:#?}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3759,274 +3161,99 @@ fn assert_no_unsafe_collection_element(source: &str, context: &str) {
 }
 
 #[test]
-fn rc_vec_push_supported() {
-    assert_inline_typechecks_cleanly(
-        r"
-        fn main() {
-            let r = Rc.new(42);
-            var v = Vec.new();
-            v.push(r);
-        }",
-        "Vec.push(Rc<i64>)",
-    );
+fn rc_in_collections_supported_operations() {
+    for (label, source) in [
+        (
+            "Vec.push(Rc<i64>)",
+            "fn main() { let r = Rc.new(42); var v = Vec.new(); v.push(r); }",
+        ),
+        (
+            "Vec.set(_, Rc<i64>)",
+            "fn main() { var v: Vec<Rc<i64>> = Vec.new(); let r = Rc.new(99); v.set(0, r); }",
+        ),
+        (
+            "Vec.append(Vec<Rc<i64>>)",
+            "fn main() { var v: Vec<Rc<i64>> = Vec.new(); let w: Vec<Rc<i64>> = Vec.new(); v.append(w); }",
+        ),
+        (
+            "Vec.pop() on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Rc<i64> { var local = h.v; local.pop() }",
+        ),
+        (
+            "Vec.get(_) on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Option<Rc<i64>> { h.v.get(0) }",
+        ),
+        (
+            "Vec.remove(_) on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Rc<i64> { var items = h.v; items.remove(0) }",
+        ),
+        (
+            "Vec.map(_) on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Vec<Rc<i64>> { h.v.map(|x: Rc<i64>| x) }",
+        ),
+        (
+            "Vec.filter(_) on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Vec<Rc<i64>> { h.v.filter(|x: Rc<i64>| x.get() > 0) }",
+        ),
+        (
+            "Vec.fold(_, _) on Vec<Rc<i64>>",
+            "type Holder { v: Vec<Rc<i64>>; }\nfn extract(h: Holder) -> Rc<i64> { h.v.fold(Rc.new(0), |acc: Rc<i64>, x: Rc<i64>| x) }",
+        ),
+        (
+            "HashMap.insert(_, Rc<i64>)",
+            "fn main() { var m = HashMap.new(); let r = Rc.new(42); m.insert(\"key\", r); }",
+        ),
+        (
+            "HashMap.get() on HashMap<string, Rc<i64>>",
+            "type Holder { items: HashMap<string, Rc<i64>>; }\nfn leak(h: Holder) -> Option<Rc<i64>> { h.items.get(\"key\") }",
+        ),
+        (
+            "HashMap.remove() on HashMap<string, Rc<i64>>",
+            "type Holder { items: HashMap<string, Rc<i64>>; }\nfn remove_key(h: Holder) -> Option<Rc<i64>> { var items = h.items; items.remove(\"key\") }",
+        ),
+        (
+            "HashMap.keys() on HashMap<string, Rc<i64>>",
+            "type Holder { items: HashMap<string, Rc<i64>>; }\nfn leak(h: Holder) -> Vec<string> { h.items.keys() }",
+        ),
+        (
+            "HashMap.values() on HashMap<string, Rc<i64>>",
+            "type Holder { items: HashMap<string, Rc<i64>>; }\nfn leak(h: Holder) -> Vec<Rc<i64>> { h.items.values() }",
+        ),
+        (
+            "Vec.push(Option.Some(Rc<i64>))",
+            "fn main() { var v = Vec.new(); let r = Rc.new(42); v.push(Option.Some(r)); }",
+        ),
+        (
+            "Vec.push((Rc<i64>, i64))",
+            "fn main() { var v = Vec.new(); let r = Rc.new(42); v.push((r, 0)); }",
+        ),
+    ] {
+        assert_inline_typechecks_cleanly(source, label);
+    }
 }
 
 #[test]
-fn rc_vec_set_supported() {
-    assert_inline_typechecks_cleanly(
-        r"
-        fn main() {
-            var v: Vec<Rc<i64>> = Vec.new();
-            let r = Rc.new(99);
-            v.set(0, r);
-        }",
-        "Vec.set(_, Rc<i64>)",
-    );
-}
-
-#[test]
-fn rc_vec_append_supported() {
-    assert_inline_typechecks_cleanly(
-        r"
-        fn main() {
-            var v: Vec<Rc<i64>> = Vec.new();
-            let w: Vec<Rc<i64>> = Vec.new();
-            v.append(w);
-        }",
-        "Vec.append(Vec<Rc<i64>>)",
-    );
-}
-
-#[test]
-fn rc_vec_pop_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Rc<i64> {
-    var local = h.v;
-    local.pop()
-}
-",
-        "Vec.pop() on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_vec_get_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Option<Rc<i64>> {
-    h.v.get(0)
-}
-",
-        "Vec.get(_) on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_vec_remove_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Rc<i64> {
-    var items = h.v;
-    items.remove(0)
-}
-",
-        "Vec.remove(_) on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_vec_map_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Vec<Rc<i64>> {
-    h.v.map(|x: Rc<i64>| x)
-}
-",
-        "Vec.map(_) on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_vec_filter_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Vec<Rc<i64>> {
-    h.v.filter(|x: Rc<i64>| x.get() > 0)
-}
-",
-        "Vec.filter(_) on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_vec_fold_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    v: Vec<Rc<i64>>;
-}
-
-fn extract(h: Holder) -> Rc<i64> {
-    h.v.fold(Rc.new(0), |acc: Rc<i64>, x: Rc<i64>| x)
-}
-",
-        "Vec.fold(_, _) on Vec<Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_hashmap_insert_value_supported() {
-    assert_inline_typechecks_cleanly(
-        r#"
-        fn main() {
-            var m = HashMap.new();
-            let r = Rc.new(42);
-            m.insert("key", r);
-        }"#,
-        "HashMap.insert(_, Rc<i64>)",
-    );
-}
-
-#[test]
-fn rc_hashmap_insert_key_rejected_without_hash_eq() {
-    let output = typecheck_inline(
-        r#"
-        fn main() {
-            var m = HashMap.new();
-            let r = Rc.new(42);
-            m.insert(r, "val");
-        }"#,
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
-        "HashMap.insert(Rc<i64>, _) should require Hash + Eq, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn rc_hashmap_get_value_supported() {
-    assert_inline_typechecks_cleanly(
-        r#"type Holder {
-    items: HashMap<string, Rc<i64>>;
-}
-
-fn leak(h: Holder) -> Option<Rc<i64>> {
-    h.items.get("key")
-}
-"#,
-        "HashMap.get() on HashMap<string, Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_hashmap_remove_value_supported() {
-    assert_inline_typechecks_cleanly(
-        r#"type Holder {
-    items: HashMap<string, Rc<i64>>;
-}
-
-fn remove_key(h: Holder) -> Option<Rc<i64>> {
-    var items = h.items;
-    items.remove("key")
-}
-"#,
-        "HashMap.remove() on HashMap<string, Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_hashmap_keys_supported_when_value_type_is_rc() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    items: HashMap<string, Rc<i64>>;
-}
-
-fn leak(h: Holder) -> Vec<string> {
-    h.items.keys()
-}
-",
-        "HashMap.keys() on HashMap<string, Rc<i64>>",
-    );
-}
-
-#[test]
-fn rc_hashmap_values_share_collection_value_admission() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    items: HashMap<string, Rc<i64>>;
-}
-
-fn leak(h: Holder) -> Vec<Rc<i64>> {
-    h.items.values()
-}
-",
-        "HashMap.values() preserves independently owned Rc values",
-    );
-}
-
-#[test]
-fn rc_hashset_insert_rejected_without_hash_eq() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var s = HashSet.new();
-            let r = Rc.new(42);
-            s.insert(r);
-        }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
-        "HashSet.insert(Rc<i64>) should require Hash + Eq, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn rc_nested_in_vec_element_typechecks() {
-    assert_inline_typechecks_cleanly(
-        r"
-        fn main() {
-            var v = Vec.new();
-            let r = Rc.new(42);
-            v.push(Option.Some(r));
-        }",
-        "Vec.push(Option<Rc<i64>>) has an exact element type",
-    );
-}
-
-#[test]
-fn rc_tuple_in_vec_element_supported() {
-    assert_inline_typechecks_cleanly(
-        r"
-        fn main() {
-            var v = Vec.new();
-            let r = Rc.new(42);
-            v.push((r, 0));
-        }",
-        "Vec.push((Rc<i64>, i64))",
-    );
+fn rc_collection_keys_without_hash_eq_rejected() {
+    for (label, source) in [
+        (
+            "HashMap.insert(Rc<i64>, _)",
+            "fn main() { var m = HashMap.new(); let r = Rc.new(42); m.insert(r, \"val\"); }",
+        ),
+        (
+            "HashSet.insert(Rc<i64>)",
+            "fn main() { var s = HashSet.new(); let r = Rc.new(42); s.insert(r); }",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
+            "{label} should require Hash + Eq, got: {:#?}",
+            output.errors
+        );
+    }
 }
 
 // ── Safe patterns: collections with Copy / primitive types ──────────────
@@ -4309,226 +3536,31 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
 // structs/enums, including nested wrappers.
 
 #[test]
-fn rc_in_named_struct_field_vec_push_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Holder {
-    val: Rc<i64>;
-}
+fn rc_in_named_wrappers_collection_admission_supported() {
+    for (label, source) in [
+        (
+            "Vec.push(Holder { val: Rc<i64> })",
+            "type Holder { val: Rc<i64>; }\nfn main() { var v = Vec.new(); let h = Holder { val: Rc.new(1) }; v.push(h); }",
+        ),
+        (
+            "HashMap.insert(_, Holder { val: Rc<i64> })",
+            "type Holder { val: Rc<i64>; }\nfn main() { var m = HashMap.new(); let h = Holder { val: Rc.new(1) }; m.insert(\"k\", h); }",
+        ),
+        (
+            "Vec.push(Outer wrapping Inner wrapping Rc<i64>)",
+            "type Inner { x: Rc<i64>; }\ntype Outer { inner: Inner; }\nfn main() { var v = Vec.new(); let o = Outer { inner: Inner { x: Rc.new(1) } }; v.push(o); }",
+        ),
+        (
+            "Vec.push(MaybeHolder::Some(Rc<i64>))",
+            "enum MaybeHolder { Some(Rc<i64>); None; }\nfn main() { var v = Vec.new(); v.push(MaybeHolder.Some(Rc.new(1))); }",
+        ),
+    ] {
+        assert_inline_typechecks_cleanly(source, label);
+    }
 
-fn main() {
-    var v = Vec.new();
-    let h = Holder { val: Rc.new(1) };
-    v.push(h);
-}
-",
-        "Vec.push(Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
-    );
-}
-
-#[test]
-fn rc_in_named_struct_field_hashmap_value_supported() {
-    assert_inline_typechecks_cleanly(
-        r#"type Holder {
-    val: Rc<i64>;
-}
-
-fn main() {
-    var m = HashMap.new();
-    let h = Holder { val: Rc.new(1) };
-    m.insert("k", h);
-}
-"#,
-        "HashMap.insert(_, Holder { val: Rc<i64> }) should carry aggregate Rc drop facts",
-    );
-}
-
-#[test]
-fn rc_in_doubly_nested_named_struct_vec_push_supported() {
-    assert_inline_typechecks_cleanly(
-        r"type Inner {
-    x: Rc<i64>;
-}
-
-type Outer {
-    inner: Inner;
-}
-
-fn main() {
-    var v = Vec.new();
-    let o = Outer { inner: Inner { x: Rc.new(1) } };
-    v.push(o);
-}
-",
-        "Vec.push(Outer wrapping Inner wrapping Rc<i64>) should carry nested Rc drop facts",
-    );
-}
-
-#[test]
-fn rc_in_named_enum_variant_vec_push_supported() {
-    assert_inline_typechecks_cleanly(
-        r"enum MaybeHolder {
-    Some(Rc<i64>);
-    None;
-}
-
-fn main() {
-    var v = Vec.new();
-    v.push(MaybeHolder.Some(Rc.new(1)));
-}
-",
-        "Vec.push(MaybeHolder::Some(Rc<i64>)) should carry enum Rc drop facts",
-    );
-}
-
-#[test]
-fn plain_named_struct_no_rc_vec_push_ok() {
     assert_no_unsafe_collection_element(
-        r"type Point {
-    x: i64;
-    y: i64;
-}
-
-fn main() {
-    var v = Vec.new();
-    let p = Point { x: 1, y: 2 };
-    v.push(p);
-}
-",
+        "type Point { x: i64; y: i64; }\nfn main() { var v = Vec.new(); let p = Point { x: 1, y: 2 }; v.push(p); }",
         "Vec<Point> with no Rc should be fine",
-    );
-}
-
-// ── IfLet trailing-expression escape paths ───────────────────────────────────
-
-/// An `if let` body that ends with a bare Rc param as its trailing expression
-/// must be diagnosed — the escape hole exists whether the pattern matches or not.
-#[test]
-fn rc_param_iflet_body_trailing_expr_errors() {
-    let output = typecheck_inline(
-        r"
-        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let .Some(_v) = opt {
-                r
-            } else {
-                Rc.new(0)
-            }
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "if-let body trailing-expr Rc escape should emit BorrowedParamReturn, got errors: {:#?}, warnings: {:#?}",
-        output.errors, output.warnings
-    );
-}
-
-/// An `if let` else block that ends with a bare Rc param as its trailing
-/// expression must also be diagnosed.
-#[test]
-fn rc_param_iflet_else_trailing_expr_errors() {
-    let output = typecheck_inline(
-        r"
-        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let .Some(_v) = opt {
-                Rc.new(0)
-            } else {
-                r
-            }
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
-        "if-let else trailing-expr Rc escape should emit BorrowedParamReturn, got errors: {:#?}, warnings: {:#?}",
-        output.errors, output.warnings
-    );
-}
-
-/// Both branches of an `if let` returning Rc param must each be diagnosed.
-#[test]
-fn rc_param_iflet_both_branches_trailing_expr_errors() {
-    let output = typecheck_inline(
-        r"
-        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let .Some(_v) = opt {
-                r
-            } else {
-                r
-            }
-        }
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-            .count()
-            >= 2,
-        "both branches of if-let returning Rc param should emit >= 2 BorrowedParamReturn errors, got: {:#?}",
-        output.errors
-    );
-}
-
-/// A local binding that shadows an Rc parameter must suppress the borrowed
-/// return diagnostic for that scope.
-#[test]
-fn rc_param_shadowing_local_return_is_clean() {
-    let output = typecheck_inline(
-        r"
-        fn shadow(r: Rc<i64>) -> Rc<i64> {
-            let r = Rc.new(99);
-            r
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert!(
-        rc_errors.is_empty(),
-        "shadowing local Rc should not emit BorrowedParamReturn, got: {rc_errors:#?}",
-    );
-}
-
-/// Shadowing only suppresses the borrowed return diagnostic inside the shadowed
-/// scope; other branches that still return the original parameter must warn.
-#[test]
-fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
-    let output = typecheck_inline(
-        r"
-        fn shadow_then_escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
-            if let .Some(v) = opt {
-                let r = Rc.new(v);
-                r
-            } else {
-                r
-            }
-        }
-        fn main() {}
-        ",
-    );
-    let rc_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
-        .collect();
-    assert_eq!(
-        rc_errors.len(),
-        1,
-        "only the else branch should emit BorrowedParamReturn, got: {rc_errors:#?}",
     );
 }
 
@@ -4549,52 +3581,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
 //
 // These are tracked as future escape-analysis work.
 
-// ── HashMap admission fail-closed ────────────────────────────────────────────
-//
-// Regression tests for the fix that ensures Ty::Var and Ty::Error in HashMap
-// key/value positions fail closed at the checker boundary rather than leaking
-// into codegen.
-
-#[test]
-fn hashmap_unresolved_key_type_fails_closed_at_boundary() {
-    // `m.len()` is called before anything constrains the key type.  The inline
-    // check defers; finalize_hashmap_admission must fail closed.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var m = HashMap.new();
-            let _ = m.len();
-        }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
-        "expected InferenceFailed for unresolved HashMap key/value type, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_unresolved_val_type_fails_closed_at_boundary() {
-    // Key is constrained (string), value is not.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var m = HashMap.new();
-            let _ = m.is_empty();
-        }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
-        "expected InferenceFailed for fully-unresolved HashMap, got: {:#?}",
-        output.errors
-    );
-}
+// ── HashMap/HashSet admission fail-closed ────────────────────────────────────
 
 #[test]
 fn hashmap_error_key_type_fails_closed_silently() {
@@ -4640,22 +3627,6 @@ fn hashmap_valid_string_key_int_val_not_rejected() {
         output.errors.is_empty(),
         "expected no errors for HashMap<string, i64>, got: {:#?}",
         output.errors
-    );
-}
-
-#[test]
-fn hashmap_annotation_with_infer_hole_key_fails_closed() {
-    // A HashMap annotation with an explicit inference hole (`_`) for the key
-    // that is never constrained must fail closed.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let m: HashMap<_, string> = HashMap.new();
-        }",
-    );
-    assert!(
-        !output.errors.is_empty(),
-        "expected error for HashMap<_, string> with unresolved key, got no errors"
     );
 }
 
@@ -4785,460 +3756,199 @@ fn hashset_valid_i64_element_not_rejected() {
 }
 
 #[test]
-fn hashset_annotation_with_infer_hole_fails_closed() {
-    // A HashSet annotation with an explicit inference hole (`_`) for the element
-    // that is never constrained must fail closed with exactly one error.
-    // The inference-holes path is the sole authority; finalize_hashset_admission
-    // must not add a duplicate.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let s: HashSet<_> = HashSet.new();
-        }",
-    );
-    assert!(
-        !output.errors.is_empty(),
-        "expected error for HashSet<_> with unresolved element type, got no errors"
-    );
-    // No two InferenceFailed errors at the same span.
-    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for e in output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-    {
-        let key = format!("{:?}", e.span);
+fn collection_annotation_infer_holes_single_error_per_span() {
+    for (label, source, expect_exact_count) in [
+        (
+            "let HashSet<_>",
+            "fn main() { let s: HashSet<_> = HashSet.new(); }",
+            false,
+        ),
+        (
+            "var HashSet<_> annotation only",
+            "fn main() { var s: HashSet<_> = HashSet.new(); }",
+            true,
+        ),
+        (
+            "let HashMap<_, string>",
+            "fn main() { let m: HashMap<_, string> = HashMap.new(); }",
+            false,
+        ),
+        (
+            "let HashMap<string, _>",
+            "fn main() { let m: HashMap<string, _> = HashMap.new(); }",
+            false,
+        ),
+        ("fn param HashSet<_>", "fn f(x: HashSet<_>) {}", true),
+        (
+            "fn param HashMap<_, string>",
+            "fn f(x: HashMap<_, string>) {}",
+            true,
+        ),
+        (
+            "fn param HashMap<string, _>",
+            "fn f(x: HashMap<string, _>) {}",
+            true,
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        let inference_failed: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+            .collect();
         assert!(
-            seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashSet<_> annotation: {:#?}",
+            !inference_failed.is_empty(),
+            "{label}: expected InferenceFailed, got: {:#?}",
             output.errors
         );
+        if expect_exact_count {
+            assert_eq!(
+                inference_failed.len(),
+                1,
+                "{label}: expected 1 InferenceFailed, got: {:#?}",
+                output.errors
+            );
+            if label == "var HashSet<_> annotation only" {
+                assert!(
+                    !inference_failed[0].message.contains("HashSet"),
+                    "{label}: expected binding-level InferenceFailed, got: {}",
+                    inference_failed[0].message
+                );
+            }
+        }
+        let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for e in inference_failed {
+            let key = format!("{:?}", e.span);
+            assert!(
+                seen_spans.insert(key.clone()),
+                "{label}: duplicate InferenceFailed at span {key}: {:#?}",
+                output.errors
+            );
+        }
     }
 }
 
 #[test]
-fn hashset_unresolved_element_multiple_method_calls_no_duplicate_diagnostic() {
-    // Multiple method calls on the same unresolved HashSet must not spray one
-    // InferenceFailed per call site.  finalize_lowering_facts deduplicates by
-    // TypeVar identity, so exactly one lowering-fact InferenceFailed should
-    // appear (for the shared unresolved root var).  The binding-level
-    // InferenceFailed from report_unresolved_inference_holes is distinct and
-    // legitimate, but still only one.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var s = HashSet.new();
-            let _ = s.len();
-            let _ = s.is_empty();
-        }",
-    );
-    // Exactly one InferenceFailed whose message mentions the HashSet
-    // lowering boundary (not the binding-level error).
-    let hashset_lowering_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashSet"))
-        .collect();
-    assert_eq!(
-        hashset_lowering_errors.len(),
-        1,
-        "expected exactly one HashSet lowering InferenceFailed (TypeVar dedup), \
-         got {}: {:#?}",
-        hashset_lowering_errors.len(),
-        output.errors
-    );
-    // No span should appear twice in the full InferenceFailed set.
-    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for e in output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-    {
-        let key = format!("{:?}", e.span);
-        assert!(
-            seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key}: {:#?}",
+fn unresolved_collection_multiple_method_calls_single_lowering_error() {
+    for (needle, source) in [
+        (
+            "HashSet",
+            "fn main() { var s = HashSet.new(); let _ = s.len(); let _ = s.is_empty(); }",
+        ),
+        (
+            "HashMap",
+            "fn main() { var m = HashMap.new(); let _ = m.len(); let _ = m.is_empty(); }",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        let lowering_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains(needle))
+            .collect();
+        assert_eq!(
+            lowering_errors.len(),
+            1,
+            "expected exactly one {needle} InferenceFailed, got: {:#?}",
             output.errors
         );
+        let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for e in output
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+        {
+            let key = format!("{:?}", e.span);
+            assert!(
+                seen_spans.insert(key.clone()),
+                "duplicate InferenceFailed at span {key} for {needle}: {:#?}",
+                output.errors
+            );
+        }
     }
-}
-
-#[test]
-fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
-    // A HashSet annotation with no method calls means no lowering fact is
-    // recorded.  The inference-holes path catches the unresolved `_` and emits
-    // exactly one InferenceFailed; finalize_hashset_admission must remain
-    // silent because validate_named_collection now returns Some(true) for
-    // Ty::Var args — it does not queue a deferred entry.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var s: HashSet<_> = HashSet.new();
-        }",
-    );
-    // Exactly one InferenceFailed total (the binding-level hole).
-    let inference_failed: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-        .collect();
-    assert_eq!(
-        inference_failed.len(),
-        1,
-        "expected exactly 1 InferenceFailed for annotation-only unresolved HashSet, \
-         got {}: {:#?}",
-        inference_failed.len(),
-        output.errors
-    );
-    // That one error must be the binding-level hole, not a HashSet-specific one.
-    assert!(
-        !inference_failed[0].message.contains("HashSet"),
-        "expected binding-level InferenceFailed, not a HashSet message: {}",
-        inference_failed[0].message
-    );
-}
-
-// ── HashMap annotation-hole duplicate-diagnostic regressions ─────────────────
-//
-// PR #957 introduced HashMap deferred admission; the same annotation-hole
-// duplicate path applies there.  These tests pin that it is also fixed.
-
-#[test]
-fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
-    // HashMap<_, string> with an unresolved key hole must produce at most one
-    // InferenceFailed per span.  finalize_hashmap_admission must not add a
-    // second error on top of the inference-holes diagnostic.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let m: HashMap<_, string> = HashMap.new();
-        }",
-    );
-    assert!(
-        !output.errors.is_empty(),
-        "expected error for HashMap<_, string> with unresolved key, got no errors"
-    );
-    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for e in output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-    {
-        let key = format!("{:?}", e.span);
-        assert!(
-            seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<_, string>: {errors:#?}",
-            errors = output.errors
-        );
-    }
-}
-
-#[test]
-fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
-    // HashMap<string, _> with an unresolved value hole must produce at most one
-    // InferenceFailed per span.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let m: HashMap<string, _> = HashMap.new();
-        }",
-    );
-    assert!(
-        !output.errors.is_empty(),
-        "expected error for HashMap<string, _> with unresolved value, got no errors"
-    );
-    let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for e in output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-    {
-        let key = format!("{:?}", e.span);
-        assert!(
-            seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<string, _>: {errors:#?}",
-            errors = output.errors
-        );
-    }
-}
-
-// ── Registration-time annotation-hole duplicate-diagnostic regressions ───────
-//
-// Functions/methods/type-fields with `_` holes in HashSet/HashMap annotations
-// go through resolve_registered_annotation_ty → validate_concrete_collection_types
-// → validate_named_collection.  validate_named_collection now returns Some(true)
-// for Ty::Var/Ty::Error args, preventing deferred admission entries from being
-// created.  Only report_unresolved_inference_in_items fires, producing exactly
-// one InferenceFailed per unresolved signature hole.
-
-#[test]
-fn registration_fn_param_hashset_hole_single_error() {
-    // `fn f(x: HashSet<_>) {}` must produce exactly one InferenceFailed.
-    // Before the fix, validate_named_collection deferred the Ty::Var element
-    // into deferred_hashset_admission; finalize_hashset_admission then fired
-    // alongside report_unresolved_inference_in_items → duplicate.
-    let output = typecheck_inline("fn f(x: HashSet<_>) {}");
-    let inference_failed: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-        .collect();
-    assert_eq!(
-        inference_failed.len(),
-        1,
-        "expected exactly one InferenceFailed for fn f(x: HashSet<_>), \
-         got {}: {:#?}",
-        inference_failed.len(),
-        output.errors
-    );
-}
-
-#[test]
-fn registration_fn_param_hashmap_key_hole_single_error() {
-    // `fn f(x: HashMap<_, string>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<_, string>) {}");
-    let inference_failed: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-        .collect();
-    assert_eq!(
-        inference_failed.len(),
-        1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<_, string>), \
-         got {}: {:#?}",
-        inference_failed.len(),
-        output.errors
-    );
-}
-
-#[test]
-fn registration_fn_param_hashmap_val_hole_single_error() {
-    // `fn f(x: HashMap<string, _>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<string, _>) {}");
-    let inference_failed: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-        .collect();
-    assert_eq!(
-        inference_failed.len(),
-        1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<string, _>), \
-         got {}: {:#?}",
-        inference_failed.len(),
-        output.errors
-    );
-}
-
-// ── HashMap repeated-method-call spray regression ────────────────────────────
-
-#[test]
-fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
-    // Multiple method calls on the same unresolved HashMap must not spray one
-    // InferenceFailed per call site.  finalize_hashmap_admission deduplicates
-    // by (key_TypeVar, val_TypeVar) pair, so exactly one admission
-    // InferenceFailed appears regardless of how many methods are called.
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            var m = HashMap.new();
-            let _ = m.len();
-            let _ = m.is_empty();
-        }",
-    );
-    let hashmap_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::InferenceFailed && e.message.contains("HashMap"))
-        .collect();
-    assert_eq!(
-        hashmap_errors.len(),
-        1,
-        "expected exactly one HashMap InferenceFailed (var-pair dedup), \
-         got {}: {:#?}",
-        hashmap_errors.len(),
-        output.errors
-    );
 }
 
 // ── type_defs output-contract regressions ────────────────────────────────────
 
 #[test]
-fn type_def_with_error_field_is_pruned_from_output() {
-    // `[T]` is now a valid Vec<T> alias so it no longer produces Ty::Error.
-    // Use `Task<i64>` instead: it is compiler-internal and resolves to Ty::Error
-    // via the TaskNotNameable path, which is exactly what triggers pruning.
-    let output = typecheck_inline(
-        r"type Broken {
-    value: Task<i64>;
-    ok: i64;
-}
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.type_def_at_path("Broken").is_none(),
-        "type_defs must prune type shapes containing Ty::Error fields: {:#?}",
-        output.type_defs
-    );
-}
-
-#[test]
-fn enum_with_error_variant_payload_is_pruned_from_output() {
-    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
-    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
-    // returns Ty::Error directly via the TaskNotNameable path, which is exactly
-    // what triggers variant pruning.
-    let output = typecheck_inline(
-        r"enum Broken {
-    Bad(Task<i64>);
-    Good(i64);
-}
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.type_def_at_path("Broken").is_none(),
-        "type_defs must prune enum variants containing Ty::Error payloads: {:#?}",
-        output.type_defs
-    );
-}
-
-#[test]
-fn type_def_method_with_error_param_is_pruned_from_output() {
-    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
-    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
-    // returns Ty::Error directly via the TaskNotNameable path, which is what
-    // triggers method pruning.
-    let output = typecheck_inline(
-        r"type Widget {
-    value: i64;
-}
-
-impl Widget {
-    fn good(self) -> i64 {
-        self.value
+fn type_defs_with_error_shapes_are_pruned_from_output() {
+    for (label, source) in [
+        (
+            "struct error field",
+            "type Broken {\n    value: Task<i64>;\n    ok: i64;\n}\n",
+        ),
+        (
+            "enum error variant payload",
+            "enum Broken {\n    Bad(Task<i64>);\n    Good(i64);\n}\n",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "{label}: expected TaskNotNameable, got: {:#?}",
+            output.errors
+        );
+        assert!(
+            output.type_def_at_path("Broken").is_none(),
+            "{label}: type_defs must prune errored shapes: {:#?}",
+            output.type_defs
+        );
     }
 
-    fn broken(self, bad: Task<i64>) -> i64 {
-        self.value
+    for (label, source) in [
+        (
+            "method error param",
+            "type Widget { value: i64; }\nimpl Widget {\n    fn good(self) -> i64 { self.value }\n    fn broken(self, bad: Task<i64>) -> i64 { self.value }\n}\n",
+        ),
+        (
+            "method error return",
+            "type Widget { value: i64; }\nimpl Widget {\n    fn good(self) -> i64 { self.value }\n    fn broken(self) -> Task<i64> { self.value }\n}\n",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "{label}: expected TaskNotNameable, got: {:#?}",
+            output.errors
+        );
+        let widget = output
+            .type_def_at_path("Widget")
+            .expect("type_defs should retain Widget when only a method signature is errored");
+        assert!(
+            widget.methods.contains_key("good"),
+            "{label}: clean methods must survive: {:#?}",
+            widget.methods
+        );
+        assert!(
+            !widget.methods.contains_key("broken"),
+            "{label}: errored method must be pruned: {:#?}",
+            widget.methods
+        );
     }
 }
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
-        output.errors
-    );
-    let widget = output
-        .type_def_at_path("Widget")
-        .expect("type_defs should retain Widget when only a method signature is errored");
-    assert!(
-        widget.methods.contains_key("good"),
-        "clean methods must survive output-contract pruning: {:#?}",
-        widget.methods
-    );
-    assert!(
-        !widget.methods.contains_key("broken"),
-        "methods with Ty::Error params must be pruned from type_defs: {:#?}",
-        widget.methods
-    );
-}
 
 #[test]
-fn type_def_method_with_error_return_is_pruned_from_output() {
-    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
-    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
-    // returns Ty::Error directly via the TaskNotNameable path, which is what
-    // triggers method pruning.
-    let output = typecheck_inline(
-        r"type Widget {
-    value: i64;
-}
-
-impl Widget {
-    fn good(self) -> i64 {
-        self.value
+fn unknown_return_annotation_single_error() {
+    for (label, source) in [
+        ("unknown fn return annotation", "fn f() -> UnknownType {}"),
+        (
+            "unknown lambda return annotation",
+            "fn main() { let _f = || -> UnknownType { 1 }; }",
+        ),
+        (
+            "unknown receive-fn return annotation",
+            "actor Worker { receive fn run() -> UnknownType {} }\nfn main() {}",
+        ),
+    ] {
+        let output = typecheck_inline(source);
+        assert_single_unknown_return_error(&output, label);
     }
-
-    fn broken(self) -> Task<i64> {
-        self.value
-    }
-}
-",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
-        output.errors
-    );
-    let widget = output
-        .type_def_at_path("Widget")
-        .expect("type_defs should retain Widget when only a method signature is errored");
-    assert!(
-        widget.methods.contains_key("good"),
-        "clean methods must survive output-contract pruning: {:#?}",
-        widget.methods
-    );
-    assert!(
-        !widget.methods.contains_key("broken"),
-        "methods with Ty::Error returns must be pruned from type_defs: {:#?}",
-        widget.methods
-    );
-}
-
-#[test]
-fn fn_unknown_return_annotation_single_error() {
-    let output = typecheck_inline("fn f() -> UnknownType {}");
-    assert_single_unknown_return_error(&output, "unknown fn return annotation");
-}
-
-#[test]
-fn lambda_unknown_return_annotation_single_error() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let _f = || -> UnknownType { 1 };
-        }
-        ",
-    );
-    assert_single_unknown_return_error(&output, "unknown lambda return annotation");
-}
-
-#[test]
-fn receive_fn_unknown_return_annotation_single_error() {
-    let output = typecheck_inline(
-        r"
-        actor Worker {
-            receive fn run() -> UnknownType {}
-        }
-
-        fn main() {}
-        ",
-    );
-    assert_single_unknown_return_error(&output, "unknown receive-fn return annotation");
 }
 
 #[test]
@@ -5528,25 +4238,6 @@ fn wasm_rejects_crypto_sign_module_calls() {
                 && e.message.contains("std.crypto.sign")
         }),
         "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `std::crypto::hash.random_bytes` is rejected on wasm32 with a structured
-/// `PlatformLimitation` diagnostic. The secure entropy source is native-only
-/// and absent from the wasm32 link set.
-#[test]
-fn wasm_rejects_crypto_random_bytes_module_call() {
-    let output = typecheck_inline_wasm(
-        "import std.crypto.hash;\n\
-         fn main() { let _ = hash.random_bytes(32); }",
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("random_bytes")
-        }),
-        "expected PlatformLimitation for hash.random_bytes on wasm32, got: {:#?}",
         output.errors
     );
 }

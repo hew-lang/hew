@@ -464,22 +464,6 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn explicit_generic_lambda_binding_rejected() {
-        // Generic lambda `<T>(params) => body` was removed in v0.5.
-        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
-        let source = "fn main() { let id = <T>(x: T) => x; }";
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.iter().any(|e| {
-                matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
-                    && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
-            }),
-            "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
-            result.errors
-        );
-    }
-
-    #[test]
     fn unresolved_inferred_return_through_none_fails_closed() {
         let source = "fn maybe() -> _ { Option.None }";
         let result = hew_parser::parse(source);

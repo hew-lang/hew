@@ -13,14 +13,12 @@ fn warn_unused_variable() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
-    assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("unused variable `unused_var`")),
-        "expected unused variable warning, got: {:?}",
-        output.warnings
-    );
+    let hit = output
+        .warnings
+        .iter()
+        .find(|w| w.message.contains("unused variable `unused_var`"))
+        .expect("expected unused variable warning");
+    assert_eq!(hit.kind, TypeErrorKind::UnusedVariable);
 }
 
 #[test]
@@ -167,13 +165,16 @@ fn warn_var_never_mutated() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
+    let hit = output
+        .warnings
+        .iter()
+        .find(|w| w.message.contains("never reassigned"))
+        .expect("expected unmutated var warning");
+    assert_eq!(hit.kind, TypeErrorKind::UnusedMut);
     assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.message.contains("never reassigned")),
-        "expected unmutated var warning, got: {:?}",
-        output.warnings
+        hit.suggestions.iter().any(|s| s.contains("let")),
+        "should suggest using `let`, got: {:?}",
+        hit.suggestions
     );
 }
 
@@ -969,43 +970,32 @@ fn mutable_param_index_assignment_root_counts_as_mutation() {
 }
 
 #[test]
-fn warn_var_never_mutated_suggestion() {
-    let (_, warnings) = parse_and_check("fn main() { var x = 10; println(x); }");
-    let w = warnings
-        .iter()
-        .find(|w| w.message.contains("never reassigned"))
-        .expect("expected never-reassigned warning");
-    assert!(
-        w.suggestions.iter().any(|s| s.contains("let")),
-        "should suggest using `let`, got: {:?}",
-        w.suggestions
-    );
-}
-
-// ---- assignment LHS not false-positive as "used" ----
-
-#[test]
 fn warn_write_only_variable() {
-    // `x` is only written to, never read — should get unused warning
     let (_, warnings) = parse_and_check("fn main() { var x = 0; x = 1; }");
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.message.contains("unused variable `x`")),
+        warnings.iter().any(|w| {
+            w.kind == TypeErrorKind::UnusedVariable && w.message.contains("unused variable `x`")
+        }),
         "write-only variable should be warned as unused, got: {warnings:?}"
     );
 }
 
 #[test]
 fn no_warn_variable_used_then_assigned() {
-    // `x` is read (println) AND then written — it's genuinely used
-    let (_, warnings) = parse_and_check("fn main() { var x = 0; println(x); x = 1; println(x); }");
-    assert!(
-        !warnings
-            .iter()
-            .any(|w| w.message.contains("unused variable `x`")),
-        "variable that is read should not get unused warning, got: {warnings:?}"
-    );
+    // `x` is read (println) and then written — both with and without a trailing read.
+    for source in [
+        "fn main() { var x = 0; println(x); x = 1; println(x); }",
+        "fn main() { var x = 0; println(x); x = 1; }",
+    ] {
+        let (errors, warnings) = parse_and_check(source);
+        assert!(errors.is_empty(), "{source}: {errors:?}");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("unused variable `x`")),
+            "variable that is read should not get unused warning for `{source}`, got: {warnings:?}"
+        );
+    }
 }
 
 // ---- while true → loop ----
@@ -2340,34 +2330,6 @@ fn dead_code_suppressed_by_directive() {
     );
 }
 
-#[test]
-fn unused_variable_has_correct_kind() {
-    let (_, warnings) = parse_and_check("fn main() { let unused = 42; }");
-    let w = warnings
-        .iter()
-        .find(|w| w.message.contains("unused"))
-        .unwrap();
-    assert!(
-        matches!(w.kind, TypeErrorKind::UnusedVariable),
-        "expected UnusedVariable kind, got: {:?}",
-        w.kind
-    );
-}
-
-#[test]
-fn never_mutated_has_correct_kind() {
-    let (_, warnings) = parse_and_check("fn main() { var x = 10; println(x); }");
-    let w = warnings
-        .iter()
-        .find(|w| w.message.contains("never reassigned"))
-        .unwrap();
-    assert!(
-        matches!(w.kind, TypeErrorKind::UnusedMut),
-        "expected UnusedMut kind, got: {:?}",
-        w.kind
-    );
-}
-
 // ---- multiple warnings in one function ----
 
 #[test]
@@ -2407,14 +2369,12 @@ fn warn_unreachable_after_return() {
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
-    assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::UnreachableCode),
-        "expected unreachable code warning, got: {:?}",
-        output.warnings
-    );
+    let hit = output
+        .warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::UnreachableCode)
+        .expect("expected unreachable code warning");
+    assert_eq!(hit.severity, Severity::Warning);
 }
 
 #[test]
@@ -2454,28 +2414,35 @@ fn error_same_scope_shadowing() {
 
 #[test]
 fn warn_nested_scope_shadowing() {
-    // Nested/child scope shadowing is a warning, not an error.
+    // Nested/child scope shadowing is a warning with a note pointing back to
+    // the original binding, not an error.
     let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
     let result = hew_parser::parse(source);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
+    let hit = output
+        .warnings
+        .iter()
+        .find(|w| {
+            w.kind == TypeErrorKind::Shadowing
+                && w.message.contains("shadows a binding in an outer scope")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected outer-scope shadowing warning, got warnings: {:?}, errors: {:?}",
+                output.warnings, output.errors
+            )
+        });
     assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::Shadowing
-                && w.message.contains("shadows a binding in an outer scope")),
-        "expected outer-scope shadowing warning, got warnings: {:?}, errors: {:?}",
-        output.warnings,
-        output.errors
+        !hit.notes.is_empty(),
+        "shadowing warning should have a note pointing to the original definition"
     );
     assert!(
         !output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::Shadowing),
-        "outer-scope shadowing of a local should not be an error: {:?}",
-        output.errors
+        "nested scope shadowing should not be an error"
     );
 }
 
@@ -3449,116 +3416,41 @@ fn assert_primitive_trait_dispatch_records_metadata(
 }
 
 #[test]
-fn primitive_impl_dispatch_resolves_int_receiver() {
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            impl Display for i64 {
-                fn fmt(self) -> string { "" }
-            }
-            fn main() {
-                let x: i64 = 42;
-                let _ = x.fmt();
-            }
-        "#,
-        "i64",
-        "std.builtins.Display",
-    );
-}
-
-#[test]
-fn primitive_impl_dispatch_resolves_bool_receiver() {
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            impl Display for bool {
-                fn fmt(self) -> string { "" }
-            }
-            fn main() {
-                let b: bool = true;
-                let _ = b.fmt();
-            }
-        "#,
-        "bool",
-        "std.builtins.Display",
-    );
-}
-
-#[test]
-fn primitive_impl_dispatch_resolves_char_receiver() {
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            impl Display for char {
-                fn fmt(self) -> string { "" }
-            }
-            fn main() {
-                let c: char = 'a';
-                let _ = c.fmt();
-            }
-        "#,
-        "char",
-        "std.builtins.Display",
-    );
-}
-
-#[test]
-fn primitive_impl_dispatch_resolves_i32_receiver() {
-    // Width-aliased integer kinds dispatch through the same canonical key
-    // as their `Ty::I32` variant — `i32` here, not `i64`.
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            impl Display for i32 {
-                fn fmt(self) -> string { "" }
-            }
-            fn main() {
-                let n: i32 = 7;
-                let _ = n.fmt();
-            }
-        "#,
-        "i32",
-        "std.builtins.Display",
-    );
-}
-
-#[test]
-fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_method() {
-    // string routes through the declarative receiver dispatch fallback, not
-    // the wildcard.  This sentinel guarantees that path consults the side
-    // table for a method name that does NOT collide with a builtin string
-    // method (so the not-found branch is the one that runs).  We use a Display
-    // method named `to_display_string` to avoid the impl-on-string body
-    // type-check issue tracked separately (see issue #1565 follow-ups).
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            pub trait MyShow { fn show(self) -> i64; }
-            impl MyShow for string {
-                fn show(self) -> i64 { 0 }
-            }
-            fn main() {
-                let s: string = "hi";
-                let _: i64 = s.show();
-            }
-        "#,
-        "string",
-        "MyShow",
-    );
-}
-
-#[test]
-fn primitive_impl_dispatch_resolves_vec_receiver() {
-    // Vec routes through `check_vec_method`'s not-found arm.
-    assert_primitive_trait_dispatch_records_metadata(
-        r#"
-            pub trait RenderVec { fn fmt(self) -> string; }
-            impl RenderVec for Vec<i32> {
-                fn fmt(self) -> string { "" }
-            }
-            fn main() {
-                let v: Vec<i32> = Vec.new();
-                let _ = v.fmt();
-            }
-        "#,
-        "Vec",
-        "RenderVec",
-    );
+fn primitive_impl_dispatch_resolves_receivers() {
+    for (source, canonical, trait_name) in [
+        (
+            "impl Display for i64 { fn fmt(self) -> string { \"\" } }\nfn main() { let x: i64 = 42; let _ = x.fmt(); }",
+            "i64",
+            "std.builtins.Display",
+        ),
+        (
+            "impl Display for bool { fn fmt(self) -> string { \"\" } }\nfn main() { let b: bool = true; let _ = b.fmt(); }",
+            "bool",
+            "std.builtins.Display",
+        ),
+        (
+            "impl Display for char { fn fmt(self) -> string { \"\" } }\nfn main() { let c: char = 'a'; let _ = c.fmt(); }",
+            "char",
+            "std.builtins.Display",
+        ),
+        (
+            "impl Display for i32 { fn fmt(self) -> string { \"\" } }\nfn main() { let n: i32 = 7; let _ = n.fmt(); }",
+            "i32",
+            "std.builtins.Display",
+        ),
+        (
+            "pub trait MyShow { fn show(self) -> i64; }\nimpl MyShow for string { fn show(self) -> i64 { 0 } }\nfn main() { let s: string = \"hi\"; let _: i64 = s.show(); }",
+            "string",
+            "MyShow",
+        ),
+        (
+            "pub trait RenderVec { fn fmt(self) -> string; }\nimpl RenderVec for Vec<i32> { fn fmt(self) -> string { \"\" } }\nfn main() { let v: Vec<i32> = Vec.new(); let _ = v.fmt(); }",
+            "Vec",
+            "RenderVec",
+        ),
+    ] {
+        assert_primitive_trait_dispatch_records_metadata(source, canonical, trait_name);
+    }
 }
 
 #[test]
@@ -4225,63 +4117,11 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
     );
 }
 
-// ── Warning severity tests ──────────────────────────────────────────
-
-#[test]
-fn unreachable_code_has_warning_severity() {
-    let source = "fn foo() -> i32 { return 1; let x = 2; x }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::UnreachableCode);
-    assert!(w.is_some(), "expected unreachable warning");
-    assert_eq!(
-        w.unwrap().severity,
-        crate::error::Severity::Warning,
-        "unreachable code should have Warning severity"
-    );
-}
-
-#[test]
-fn shadowing_warning_has_note_for_original_definition() {
-    // The warning for outer-scope shadowing must include a note pointing back
-    // to where the original binding was defined.
-    let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::Shadowing);
-    assert!(w.is_some(), "expected shadowing warning");
-    assert!(
-        !w.unwrap().notes.is_empty(),
-        "shadowing warning should have a note pointing to the original definition"
-    );
-}
-
-// ── Bug fix regression tests ────────────────────────────────────────
-
-#[test]
-fn no_warn_unused_read_then_assign() {
-    // Bug 1: var x = 0; println(x); x = 1; should NOT warn about unused x
-    let (errors, warnings) = parse_and_check("fn main() { var x = 0; println(x); x = 1; }");
-    assert!(errors.is_empty(), "errors: {errors:?}");
-    assert!(
-        !warnings
-            .iter()
-            .any(|w| w.message.contains("unused variable `x`")),
-        "read-then-assign should not produce unused warning, got: {warnings:?}"
-    );
-}
+// ── Control-flow unreachability tests ─────────────────────────────────
 
 #[test]
 fn warn_unreachable_after_if_all_branches_return() {
-    // Bug 2: if where all branches return should mark subsequent code unreachable
+    // If all branches return, subsequent statements are unreachable.
     let (_, warnings) = parse_and_check(
         "fn foo() -> i32 { if true { return 1; } else { return 2; } let y = 3; y }",
     );
@@ -4355,7 +4195,7 @@ fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
 const SLEEP_LOOP_REPRO: &str = "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        while running {\n            sleep(10ms);\n        }\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n";
 
 #[test]
-fn sleep_loop_blocks_mailbox_flags_sibling_stopped_loop() {
+fn sleep_loop_blocks_mailbox_flags_and_routes() {
     let (errors, warnings) = parse_and_check(SLEEP_LOOP_REPRO);
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     let hit = warnings
@@ -4373,136 +4213,88 @@ fn sleep_loop_blocks_mailbox_flags_sibling_stopped_loop() {
         "suggestion should name the periodic receive alternative: {:?}",
         hit.suggestions
     );
-}
 
-#[test]
-fn sleep_loop_blocks_mailbox_flags_unconditional_loop() {
-    let (errors, warnings) = parse_and_check(
+    let (uncond_errors, uncond_warnings) = parse_and_check(
         "actor Worker { receive fn run() { let t = instant.now(); loop { sleep_until(t); } } }\n",
     );
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        1,
-        "unconditional sleep_until loop should warn: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_bounded_counter_loop() {
-    let (errors, warnings) = parse_and_check(
-        "actor Ticker {\n\
-         receive fn tick(count: i64) {\n\
-             var i: i64 = 0;\n\
-             while i < count {\n\
-                 sleep(5ms);\n\
-                 i = i + 1;\n\
-             }\n\
-         }\n\
-         }\n",
-    );
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "derived-progress loop conditions are not candidates: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
-    let (errors, warnings) =
-        parse_and_check("fn main() { var running: bool = true; while running { sleep(10ms); } }\n");
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "sleep loops outside receive handlers must be silent: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
-    let (errors, warnings) = parse_and_check(
-        "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        let f = || {\n            while running {\n                sleep(10ms);\n            }\n        };\n        let _ = f;\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n",
-    );
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "sleep loops inside closures do not block the enclosing handler's mailbox: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
-    let (errors, warnings) = parse_and_check(
-        "actor Worker {\n    var flag: bool = false;\n    receive fn run() {\n        while true {\n            sleep(1s);\n            if flag {\n                break;\n            }\n        }\n    }\n}\n",
-    );
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "a reachable break is an in-handler exit path: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_bare_sleep_without_loop() {
-    let (errors, warnings) =
-        parse_and_check("actor Worker { receive fn run() { sleep(100ms); } }\n");
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "a one-shot sleep does not starve the mailbox forever: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
-    let (errors, warnings) = parse_and_check(
-        "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        while running {\n            sleep(10ms);\n            running = false;\n        }\n    }\n}\n",
-    );
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_sleep_loop_blocks_mailbox(&warnings),
-        0,
-        "an assignment to the guard inside the loop is an in-handler exit path: {warnings:?}"
-    );
-}
-
-#[test]
-fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
-    const SOURCE: &str = "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        // hew:allow(sleep_loop_blocks_mailbox)\n        while running {\n            sleep(10ms);\n        }\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n";
-    let out = check_with_lint_level(SOURCE, LintId::SleepLoopBlocksMailbox, LintLevel::Warn);
     assert!(
-        out.errors.is_empty(),
-        "fixture should type-check: {:?}",
-        out.errors
+        uncond_errors.is_empty(),
+        "fixture should type-check: {uncond_errors:?}"
     );
     assert_eq!(
-        count_sleep_loop_blocks_mailbox(&out.warnings),
+        count_sleep_loop_blocks_mailbox(&uncond_warnings),
+        1,
+        "unconditional sleep_until loop should warn: {uncond_warnings:?}"
+    );
+
+    let suppressed_src = "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        // hew:allow(sleep_loop_blocks_mailbox)\n        while running {\n            sleep(10ms);\n        }\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n";
+    let suppressed = check_with_lint_level(
+        suppressed_src,
+        LintId::SleepLoopBlocksMailbox,
+        LintLevel::Warn,
+    );
+    assert!(
+        suppressed.errors.is_empty(),
+        "fixture should type-check: {:?}",
+        suppressed.errors
+    );
+    assert_eq!(
+        count_sleep_loop_blocks_mailbox(&suppressed.warnings),
         0,
         "a directive above the loop must suppress the lint: {:?}",
-        out.warnings
+        suppressed.warnings
     );
-}
 
-#[test]
-fn sleep_loop_blocks_mailbox_deny_routes_to_errors() {
-    let out = check_with_lint_level(
+    let denied = check_with_lint_level(
         SLEEP_LOOP_REPRO,
         LintId::SleepLoopBlocksMailbox,
         LintLevel::Deny,
     );
     assert_eq!(
-        count_sleep_loop_blocks_mailbox(&out.errors),
+        count_sleep_loop_blocks_mailbox(&denied.errors),
         1,
         "deny should route the lint into errors: {:?}",
-        out.errors
+        denied.errors
     );
-    assert_eq!(count_sleep_loop_blocks_mailbox(&out.warnings), 0);
+    assert_eq!(count_sleep_loop_blocks_mailbox(&denied.warnings), 0);
+}
+
+#[test]
+fn sleep_loop_blocks_mailbox_ignores_bounded_and_exiting_loops() {
+    for (label, source) in [
+        (
+            "bounded counter loop",
+            "actor Ticker {\nreceive fn tick(count: i64) {\n    var i: i64 = 0;\n    while i < count {\n        sleep(5ms);\n        i = i + 1;\n    }\n}\n}\n",
+        ),
+        (
+            "non-actor function",
+            "fn main() { var running: bool = true; while running { sleep(10ms); } }\n",
+        ),
+        (
+            "sleep loop inside lambda",
+            "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        let f = || {\n            while running {\n                sleep(10ms);\n            }\n        };\n        let _ = f;\n    }\n    receive fn halt() {\n        running = false;\n    }\n}\n",
+        ),
+        (
+            "loop with reachable break",
+            "actor Worker {\n    var flag: bool = false;\n    receive fn run() {\n        while true {\n            sleep(1s);\n            if flag {\n                break;\n            }\n        }\n    }\n}\n",
+        ),
+        (
+            "bare sleep without loop",
+            "actor Worker { receive fn run() { sleep(100ms); } }\n",
+        ),
+        (
+            "loop assigning its guard",
+            "actor Worker {\n    var running: bool = true;\n    receive fn run() {\n        while running {\n            sleep(10ms);\n            running = false;\n        }\n    }\n}\n",
+        ),
+    ] {
+        let (errors, warnings) = parse_and_check(source);
+        assert!(errors.is_empty(), "{label} should type-check: {errors:?}");
+        assert_eq!(
+            count_sleep_loop_blocks_mailbox(&warnings),
+            0,
+            "{label} should not warn: {warnings:?}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -4524,169 +4316,98 @@ fn count_invisible_codepoint(diags: &[TypeError]) -> usize {
 }
 
 #[test]
-fn text_direction_codepoint_flags_line_comment_by_default_as_error() {
-    let out = check_with_lint_defaults("// \u{202E}\nfn main() {}\n");
-    let hit = out
-        .errors
-        .iter()
-        .find(|e| e.kind == TypeErrorKind::Lint(LintId::TextDirectionCodepointInComment))
-        .expect("RLO in a line comment must be denied by default");
-    assert_eq!(hit.severity, crate::error::Severity::Error);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-}
+fn comment_codepoint_lints_cover_comment_forms_and_levels() {
+    for (label, source) in [
+        ("line comment", "// \u{202E}\nfn main() {}\n"),
+        ("outer doc comment", "/// \u{202E}\nfn main() {}\n"),
+        ("inner doc comment", "//! \u{202E}\nfn main() {}\n"),
+        (
+            "nested block comment",
+            "/* outer /* inner \u{2066} */ done */\nfn main() {}\n",
+        ),
+        (
+            "top-of-file scanned once per module",
+            "// top \u{202E}\nfn a() {}\nfn b() {}\nfn main() { a(); b(); }\n",
+        ),
+    ] {
+        let out = check_with_lint_defaults(source);
+        let hits: Vec<_> = out
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::Lint(LintId::TextDirectionCodepointInComment))
+            .collect();
+        assert_eq!(hits.len(), 1, "{label}: {:?}", out.errors);
+        assert_eq!(hits[0].severity, crate::error::Severity::Error);
+        assert_eq!(count_text_direction_codepoint(&out.warnings), 0, "{label}");
+    }
 
-#[test]
-fn text_direction_codepoint_flags_outer_doc_comment() {
-    let out = check_with_lint_defaults("/// \u{202E}\nfn main() {}\n");
+    let zwsp = check_with_lint_defaults("// hidden\u{200B}gap\nfn main() {}\n");
     assert_eq!(
-        count_text_direction_codepoint(&out.errors),
-        1,
-        "outer doc comments are source comments for this lint: {:?}",
-        out.errors
-    );
-}
-
-#[test]
-fn text_direction_codepoint_flags_inner_doc_comment() {
-    let out = check_with_lint_defaults("//! \u{202E}\nfn main() {}\n");
-    assert_eq!(
-        count_text_direction_codepoint(&out.errors),
-        1,
-        "inner doc comments are source comments for this lint: {:?}",
-        out.errors
-    );
-}
-
-#[test]
-fn text_direction_codepoint_flags_nested_block_comment() {
-    let out = check_with_lint_defaults("/* outer /* inner \u{2066} */ done */\nfn main() {}\n");
-    assert_eq!(
-        count_text_direction_codepoint(&out.errors),
-        1,
-        "nested block comments must be scanned once: {:?}",
-        out.errors
-    );
-}
-
-#[test]
-fn invisible_codepoint_flags_zero_width_space_without_bidi_duplication() {
-    let out = check_with_lint_defaults("// hidden\u{200B}gap\nfn main() {}\n");
-    assert_eq!(
-        count_invisible_codepoint(&out.warnings),
+        count_invisible_codepoint(&zwsp.warnings),
         1,
         "zero-width space should warn: {:?}",
-        out.warnings
+        zwsp.warnings
     );
-    assert_eq!(count_invisible_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-}
+    assert_eq!(count_invisible_codepoint(&zwsp.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&zwsp.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&zwsp.warnings), 0);
 
-#[test]
-fn comment_lints_allow_readable_non_ascii_prose() {
-    let out = check_with_lint_defaults(
-        "// café — déjà vu, naïve façade\n// 世界 😀 → value\nfn main() {}\n",
-    );
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-    assert_eq!(count_invisible_codepoint(&out.errors), 0);
-    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
-}
-
-#[test]
-fn comment_lints_do_not_scan_literal_content() {
-    // Issue #2109 scopes this lint to comments; literal output escaping is owned
-    // by the formatter, so raw literal content is a boundary case here.
-    let out = check_with_lint_defaults(
-        "fn main() {\n    let _url = \"http://example.com\";\n    let _s = \"\u{202E}\";\n}\n",
-    );
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-    assert_eq!(count_invisible_codepoint(&out.errors), 0);
-    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
-}
-
-#[test]
-fn source_comment_scan_runs_once_per_module() {
-    let out = check_with_lint_defaults(
-        "// top \u{202E}\nfn a() {}\nfn b() {}\nfn main() { a(); b(); }\n",
-    );
-    assert_eq!(
-        count_text_direction_codepoint(&out.errors),
-        1,
-        "a top-of-file comment must not be re-scanned for each item: {:?}",
-        out.errors
-    );
-}
-
-#[test]
-fn text_direction_codepoint_suppressed_by_directive_above_comment() {
-    let out = check_with_lint_defaults(
-        "// hew:allow(text_direction_codepoint_in_comment)\n// \u{202E}\nfn main() {}\n",
-    );
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-}
-
-#[test]
-fn text_direction_codepoint_warn_level_routes_to_warnings() {
-    let out = check_with_lint_level(
+    let warn_bidi = check_with_lint_level(
         "// \u{202E}\nfn main() {}\n",
         LintId::TextDirectionCodepointInComment,
         LintLevel::Warn,
     );
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(
-        count_text_direction_codepoint(&out.warnings),
-        1,
-        "explicit warn should downgrade the deny-default lint: {:?}",
-        out.warnings
-    );
-}
+    assert_eq!(count_text_direction_codepoint(&warn_bidi.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&warn_bidi.warnings), 1);
 
-#[test]
-fn text_direction_codepoint_allow_level_suppresses() {
-    let out = check_with_lint_level(
+    let allow_bidi = check_with_lint_level(
         "// \u{202E}\nfn main() {}\n",
         LintId::TextDirectionCodepointInComment,
         LintLevel::Allow,
     );
-    assert_eq!(count_text_direction_codepoint(&out.errors), 0);
-    assert_eq!(count_text_direction_codepoint(&out.warnings), 0);
-}
+    assert_eq!(count_text_direction_codepoint(&allow_bidi.errors), 0);
+    assert_eq!(count_text_direction_codepoint(&allow_bidi.warnings), 0);
 
-#[test]
-fn invisible_codepoint_deny_level_routes_to_errors() {
-    let out = check_with_lint_level(
+    let deny_inv = check_with_lint_level(
         "// hidden\u{FE0F}\nfn main() {}\n",
         LintId::InvisibleCodepointInComment,
         LintLevel::Deny,
     );
-    assert_eq!(
-        count_invisible_codepoint(&out.errors),
-        1,
-        "explicit deny should promote the invisible-codepoint lint: {:?}",
-        out.errors
-    );
-    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
-}
+    assert_eq!(count_invisible_codepoint(&deny_inv.errors), 1);
+    assert_eq!(count_invisible_codepoint(&deny_inv.warnings), 0);
 
-#[test]
-fn invisible_codepoint_allow_level_suppresses() {
-    let out = check_with_lint_level(
+    let allow_inv = check_with_lint_level(
         "// hidden\u{FE0F}\nfn main() {}\n",
         LintId::InvisibleCodepointInComment,
         LintLevel::Allow,
     );
-    assert_eq!(count_invisible_codepoint(&out.errors), 0);
-    assert_eq!(count_invisible_codepoint(&out.warnings), 0);
+    assert_eq!(count_invisible_codepoint(&allow_inv.errors), 0);
+    assert_eq!(count_invisible_codepoint(&allow_inv.warnings), 0);
 }
 
-// -----------------------------------------------------------------------
-// Module namespacing tests
-// -----------------------------------------------------------------------
-
-// -- should_import_name --
+#[test]
+fn comment_codepoint_lints_ignore_prose_literals_and_directives() {
+    for (label, source) in [
+        (
+            "readable non-ASCII prose",
+            "// café — déjà vu, naïve façade\n// 世界 😀 → value\nfn main() {}\n",
+        ),
+        (
+            "string literals",
+            "fn main() {\n    let _url = \"http://example.com\";\n    let _s = \"\u{202E}\";\n}\n",
+        ),
+        (
+            "directive above comment",
+            "// hew:allow(text_direction_codepoint_in_comment)\n// \u{202E}\nfn main() {}\n",
+        ),
+    ] {
+        let out = check_with_lint_defaults(source);
+        assert_eq!(count_text_direction_codepoint(&out.errors), 0, "{label}");
+        assert_eq!(count_text_direction_codepoint(&out.warnings), 0, "{label}");
+        assert_eq!(count_invisible_codepoint(&out.errors), 0, "{label}");
+        assert_eq!(count_invisible_codepoint(&out.warnings), 0, "{label}");
+    }
+}
 
 #[test]
 fn lambda_actor_private_capture_leaves_an_outer_var_unwritten() {

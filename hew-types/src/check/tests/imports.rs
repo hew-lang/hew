@@ -1832,12 +1832,8 @@ fn assert_same_leaf_canonical_type_defs_keep_distinct_shapes(left_first: bool) {
 }
 
 #[test]
-fn same_leaf_type_defs_keep_distinct_full_owners_left_then_right() {
+fn same_leaf_type_defs_keep_distinct_full_owners_in_both_orders() {
     assert_same_leaf_canonical_type_defs_keep_distinct_shapes(true);
-}
-
-#[test]
-fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
     assert_same_leaf_canonical_type_defs_keep_distinct_shapes(false);
 }
 

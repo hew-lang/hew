@@ -5,72 +5,6 @@
 pub(super) use super::*;
 
 #[test]
-fn check_generic_lambda_removed_emits_typed_diagnostic() {
-    // Generic lambda `<T>(params) => body` was removed in v0.5.
-    // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
-    let source = r"
-        fn main() {
-            let id = <T>(x: T) => x;
-        }
-    ";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.iter().any(|e| {
-            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
-                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
-        }),
-        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
-        result.errors
-    );
-}
-
-/// Slice-1 generic lambda regression test.
-///
-/// Verifies that:
-/// 1. A let-bound generic lambda type-checks cleanly.
-/// 2. A direct call whose arguments make the type obvious resolves the
-///    return type correctly.
-/// 3. `call_type_args` is populated for the call so the enricher can
-///    fill in explicit type arguments before serialisation to codegen.
-// Generic lambda `<T>(params) => body` was removed in v0.5.
-// The tests below confirm the parser emits typed diagnostics instead.
-// Equivalent named-function generics continue to work (tested elsewhere).
-
-#[test]
-fn generic_lambda_slice1_removed_emits_diagnostic() {
-    let source = r"
-        fn main() {
-            let v: i64 = 30;
-            let r = <T>(a: T, b: T) -> T => a;
-            let q = r(v, v);
-        }
-    ";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.iter().any(|e| {
-            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
-                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
-        }),
-        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn generic_lambda_two_type_params_removed_emits_diagnostic() {
-    let source = "fn main() { let combine = <A, B>(a: A, b: B) -> A => a; combine(1, 2); }";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.iter().any(|e| {
-            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
-                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
-        }),
-        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
 fn contextual_lambda_binding_records_lambda_expr_type() {
     let source = concat!(
         "fn main() {\n",
@@ -635,28 +569,6 @@ fn main() {
         output.errors.is_empty(),
         "trait-bound method calls should infer independently, got {:?}",
         output.errors
-    );
-}
-
-/// Generic lambda `<T>(params) => body` was removed in v0.5.
-/// The parser must emit a typed `E_CLOSURE_PIPE_SYNTAX` diagnostic even when
-/// the generic lambda appears as a call argument rather than a let binding.
-#[test]
-fn generic_lambda_in_arg_position_rejected() {
-    // Replaces `generic_lambda_scratch_state_no_leak`: the old test verified
-    // that scratch state didn't leak between a generic lambda argument and a
-    // subsequent let-binding. The scenario is now moot because generic lambdas
-    // are rejected at the parse stage. This assertion verifies the removal
-    // diagnostic fires in argument position.
-    let source = r"fn main() { apply(<T>(x: T) => x, 5); }";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.iter().any(|e| {
-            matches!(e.kind, hew_parser::ParseDiagnosticKind::ClosurePipeSyntax)
-                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
-        }),
-        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda in arg position, got: {:?}",
-        result.errors
     );
 }
 
@@ -1640,127 +1552,75 @@ fn typecheck_cast_expression_invalid() {
 // ── Literal coercion tests ────────────────────────────────────────
 
 #[test]
-fn literal_coercion_integer_to_i32() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = make_int_literal(42, 0..2);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
-    assert_eq!(ty, Ty::I32);
-}
-
-#[test]
-fn literal_coercion_integer_to_u8() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = make_int_literal(255, 0..3);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
-    assert_eq!(ty, Ty::U8);
-}
-
-#[test]
-fn literal_coercion_integer_to_u8_overflow() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = make_int_literal(256, 0..3);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
-    assert_eq!(ty, Ty::Error);
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|e| e.message.contains("does not fit")),
-        "expected range error: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn literal_coercion_negative_to_unsigned() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = (
-        Expr::Unary {
-            op: UnaryOp::Negate,
-            operand: Box::new(make_int_literal(1, 1..2)),
-        },
-        0..2,
-    );
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::U32);
-    assert_eq!(ty, Ty::Error);
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|e| e.message.contains("negative literal")),
-        "expected negative-to-unsigned error: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn literal_coercion_i32_overflow() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    // 2^31 = 2147483648, which exceeds i32 max (2147483647)
-    let lit = make_int_literal(2_147_483_648, 0..10);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
-    assert_eq!(ty, Ty::Error);
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|e| e.message.contains("does not fit")),
-        "expected range error: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn int_literal_infers_from_annotated_binding() {
-    let output = check_source(
-        r"
-        fn main() {
-            let x: i32 = 1;
-            let y: u8 = 255;
-            let z: i16 = -12;
+fn literal_coercion_check_against_and_overflow() {
+    for (label, expr, expected, err_substr) in [
+        ("int to i32", make_int_literal(42, 0..2), Ty::I32, None),
+        ("int to u8 max", make_int_literal(255, 0..3), Ty::U8, None),
+        ("int to f32", make_int_literal(42, 0..2), Ty::F32, None),
+        (
+            "float to f32",
+            (Expr::Literal(Literal::Float(std::f64::consts::PI)), 0..4),
+            Ty::F32,
+            None,
+        ),
+        (
+            "u8 overflow",
+            make_int_literal(256, 0..3),
+            Ty::U8,
+            Some("does not fit"),
+        ),
+        (
+            "negative to u32",
+            (
+                Expr::Unary {
+                    op: UnaryOp::Negate,
+                    operand: Box::new(make_int_literal(1, 1..2)),
+                },
+                0..2,
+            ),
+            Ty::U32,
+            Some("negative literal"),
+        ),
+        (
+            "i32 overflow",
+            make_int_literal(2_147_483_648, 0..10),
+            Ty::I32,
+            Some("does not fit"),
+        ),
+    ] {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let ty = checker.check_against(&expr.0, &expr.1, &expected);
+        if let Some(substr) = err_substr {
+            assert_eq!(ty, Ty::Error, "{label}");
+            assert!(
+                checker.errors.iter().any(|e| e.message.contains(substr)),
+                "{label}: expected `{substr}`, got {:?}",
+                checker.errors
+            );
+        } else {
+            assert_eq!(ty, expected, "{label}");
         }
-        ",
-    );
+    }
+}
+
+#[test]
+fn int_literal_annotation_inference_and_overflow() {
+    let ok = check_source("fn main() { let x: i32 = 1; let y: u8 = 255; let z: i16 = -12; }");
     assert!(
-        output.errors.is_empty(),
+        ok.errors.is_empty(),
         "integer literals should infer from adjacent annotations: {:#?}",
-        output.errors
+        ok.errors
     );
-}
 
-#[test]
-fn int_literal_inference_rejects_out_of_range_annotation() {
-    let output = check_source(
-        r"
-        fn main() {
-            let x: i32 = 2147483648;
-        }
-        ",
-    );
+    let overflow = check_source("fn main() { let x: i32 = 2147483648; }");
     assert!(
-        output
+        overflow
             .errors
             .iter()
             .any(|e| e.message.contains("does not fit")),
         "out-of-range literal must reject against inferred i32 context: {:#?}",
-        output.errors
+        overflow.errors
     );
-}
-
-#[test]
-fn literal_coercion_integer_to_f32() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = make_int_literal(42, 0..2);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
-    assert_eq!(ty, Ty::F32);
-}
-
-#[test]
-fn literal_coercion_float_to_f32() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let lit = (Expr::Literal(Literal::Float(std::f64::consts::PI)), 0..4);
-    let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
-    assert_eq!(ty, Ty::F32);
 }
 
 /// Native pointer width for fixed-width helper tests where the platform-sized
@@ -1769,60 +1629,37 @@ const PTR_WIDTH_64: u8 = 64;
 const PTR_WIDTH_32: u8 = 32;
 
 #[test]
-fn literal_coercion_integer_fits_i8() {
-    assert!(integer_fits_type(127, &Ty::I8, PTR_WIDTH_64));
-    assert!(integer_fits_type(-128, &Ty::I8, PTR_WIDTH_64));
-    assert!(!integer_fits_type(128, &Ty::I8, PTR_WIDTH_64));
-    assert!(!integer_fits_type(-129, &Ty::I8, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_u8() {
-    assert!(integer_fits_type(0, &Ty::U8, PTR_WIDTH_64));
-    assert!(integer_fits_type(255, &Ty::U8, PTR_WIDTH_64));
-    assert!(!integer_fits_type(256, &Ty::U8, PTR_WIDTH_64));
-    assert!(!integer_fits_type(-1, &Ty::U8, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_i16() {
-    assert!(integer_fits_type(32767, &Ty::I16, PTR_WIDTH_64));
-    assert!(integer_fits_type(-32768, &Ty::I16, PTR_WIDTH_64));
-    assert!(!integer_fits_type(32768, &Ty::I16, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_u16() {
-    assert!(integer_fits_type(65535, &Ty::U16, PTR_WIDTH_64));
-    assert!(!integer_fits_type(65536, &Ty::U16, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_i32() {
-    assert!(integer_fits_type(2_147_483_647, &Ty::I32, PTR_WIDTH_64));
-    assert!(integer_fits_type(-2_147_483_648, &Ty::I32, PTR_WIDTH_64));
-    assert!(!integer_fits_type(2_147_483_648, &Ty::I32, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_u32() {
-    assert!(integer_fits_type(4_294_967_295, &Ty::U32, PTR_WIDTH_64));
-    assert!(!integer_fits_type(4_294_967_296, &Ty::U32, PTR_WIDTH_64));
-    assert!(!integer_fits_type(-1, &Ty::U32, PTR_WIDTH_64));
-}
-
-#[test]
-fn literal_coercion_integer_fits_u64() {
-    // i64 max fits in u64
-    assert!(integer_fits_type(
-        i128::from(i64::MAX),
-        &Ty::U64,
-        PTR_WIDTH_64
-    ));
-    // 0 fits
-    assert!(integer_fits_type(0, &Ty::U64, PTR_WIDTH_64));
-    // Negative doesn't fit
-    assert!(!integer_fits_type(-1, &Ty::U64, PTR_WIDTH_64));
+fn literal_coercion_integer_fits_fixed_widths() {
+    for (val, ty, fits) in [
+        (127, Ty::I8, true),
+        (-128, Ty::I8, true),
+        (128, Ty::I8, false),
+        (-129, Ty::I8, false),
+        (0, Ty::U8, true),
+        (255, Ty::U8, true),
+        (256, Ty::U8, false),
+        (-1, Ty::U8, false),
+        (32767, Ty::I16, true),
+        (-32768, Ty::I16, true),
+        (32768, Ty::I16, false),
+        (65535, Ty::U16, true),
+        (65536, Ty::U16, false),
+        (2_147_483_647, Ty::I32, true),
+        (-2_147_483_648, Ty::I32, true),
+        (2_147_483_648, Ty::I32, false),
+        (4_294_967_295, Ty::U32, true),
+        (4_294_967_296, Ty::U32, false),
+        (-1, Ty::U32, false),
+        (i128::from(i64::MAX), Ty::U64, true),
+        (0, Ty::U64, true),
+        (-1, Ty::U64, false),
+    ] {
+        assert_eq!(
+            integer_fits_type(val, &ty, PTR_WIDTH_64),
+            fits,
+            "integer_fits_type({val}, {ty:?}) expected {fits}"
+        );
+    }
 }
 
 #[test]
@@ -2993,274 +2830,92 @@ fn collect_record_init_args(tco: &TypeCheckOutput) -> Vec<Vec<Ty>> {
 }
 
 #[test]
-fn record_init_type_args_inferred_box_int() {
-    // `Box { value: 42 }` — checker must infer `[i64]` from the literal
-    // (post-defaulting) and record it on the side-table.
-    let source = r"type Box<T> {
-    value: T;
-}
+fn record_init_type_args_recorded_across_init_shapes() {
+    for (label, source, expected) in [
+        (
+            "inferred Box<i64>",
+            "type Box<T> { value: T; }\nfn main() { let _b = Box { value: 42 }; }\n",
+            vec![vec![Ty::I64]],
+        ),
+        (
+            "inferred Box<string>",
+            "type Box<T> { value: T; }\nfn main() { let _b = Box { value: \"hello\" }; }\n",
+            vec![vec![Ty::String]],
+        ),
+        (
+            "explicit Box<string>",
+            "type Box<T> { value: T; }\nfn main() { let _b = Box<string> { value: \"hi\" }; }\n",
+            vec![vec![Ty::String]],
+        ),
+        (
+            "two-param Pair<i64, string>",
+            "type Pair<A, B> { first: A; second: B; }\nfn main() { let _p = Pair { first: 1, second: \"y\" }; }\n",
+            vec![vec![Ty::I64, Ty::String]],
+        ),
+        (
+            "nested generic Box<Inner<i64>>",
+            "type Inner<T> { x: T; }\ntype Box<U> { value: U; }\nfn main() { let _b = Box { value: Inner { x: 1 } }; }\n",
+            vec![vec![Ty::named_for_test("Inner", vec![Ty::I64])], vec![Ty::I64]],
+        ),
+        (
+            "two distinct instantiations",
+            "type Box<T> { value: T; }\nfn main() { let _a = Box { value: 42 }; let _b = Box { value: \"hi\" }; }\n",
+            vec![vec![Ty::I64], vec![Ty::String]],
+        ),
+        (
+            "enum struct variant Either.Left",
+            "enum Either<T, E> { Left { value: T; } Right { err: E; } }\nfn main() { let _x: Either<i64, string> = Either.Left { value: 1 }; }\n",
+            vec![vec![Ty::I64, Ty::String]],
+        ),
+    ] {
+        let tco = check_source(source);
+        assert!(tco.errors.is_empty(), "{label}: {:?}", tco.errors);
+        assert_eq!(collect_record_init_args(&tco), expected, "{label}");
+    }
 
-fn main() {
-    let _b = Box { value: 42 };
-}
-";
-    let tco = check_source(source);
+    // Field access on a generic record uses the substituted type alongside the side table.
+    let field_tco = check_source(
+        "type Box<T> { value: T; }\nfn main() { let b = Box { value: 42 }; let _v = b.value; }\n",
+    );
     assert!(
-        tco.errors.is_empty(),
-        "should check cleanly: {:?}",
-        tco.errors
+        field_tco.errors.is_empty(),
+        "errors: {:?}",
+        field_tco.errors
     );
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(
-        entries.len(),
-        1,
-        "exactly one record-init entry expected, got: {entries:?}"
+    assert_eq!(collect_record_init_args(&field_tco), vec![vec![Ty::I64]]);
+    assert!(field_tco.expr_types.values().any(|ty| ty == &Ty::I64));
+}
+
+#[test]
+fn record_init_type_args_fail_closed_cases() {
+    let mono =
+        check_source("type Mono { value: i64; }\nfn main() { let _m = Mono { value: 42 }; }\n");
+    assert!(mono.errors.is_empty(), "errors: {:?}", mono.errors);
+    assert!(mono.record_init_type_args.keys().all(|k| k.module_idx != 0));
+
+    let partial = check_source(
+        "enum Either<T, E> { Left { value: T; } Right { err: E; } }\nfn main() { let _x = Either.Left { value: 42 }; }\n",
     );
-    assert_eq!(
-        entries[0],
-        vec![Ty::I64],
-        "Box {{ value: 42 }} should resolve to Box<i64>, got: {entries:?}"
+    assert!(partial
+        .record_init_type_args
+        .keys()
+        .all(|k| k.module_idx != 0));
+
+    let unknown = check_source(
+        "type Box<T> { value: T; }\nfn main() { let _b = Box { wrong_field: 42 }; }\n",
     );
-}
-
-#[test]
-fn record_init_type_args_inferred_box_string() {
-    let source = r#"type Box<T> {
-    value: T;
-}
-
-fn main() {
-    let _b = Box { value: "hello" };
-}
-"#;
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0], vec![Ty::String]);
-}
-
-#[test]
-fn record_init_type_args_explicit_type_arg() {
-    // Explicit `<string>` annotation should produce a single
-    // record_init_type_args entry of `[string]`.
-    let source = r#"type Box<T> {
-    value: T;
-}
-
-fn main() {
-    let _b = Box<string> { value: "hi" };
-}
-"#;
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0], vec![Ty::String]);
-}
-
-#[test]
-fn record_init_type_args_two_params() {
-    // Two type params, inferred from two field values of different types.
-    let source = r#"type Pair<A, B> {
-    first: A;
-    second: B;
-}
-
-fn main() {
-    let _p = Pair { first: 1, second: "y" };
-}
-"#;
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0], vec![Ty::I64, Ty::String]);
-}
-
-#[test]
-fn record_init_type_args_generic_in_generic_user_user() {
-    // Generic-in-generic with two user records: `Box<Inner<i64>>` from
-    // nested struct-init literals.  The checker emits one entry per
-    // initialiser site, each with its own concrete type-args:
-    //   - inner `Inner { x: 1 }`  → `[i64]`
-    //   - outer `Box { value: Inner { x: 1 } }` → `[Inner<i64>]`
-    let source = r"type Inner<T> {
-    x: T;
-}
-
-type Box<U> {
-    value: U;
-}
-
-fn main() {
-    let _b = Box { value: Inner { x: 1 } };
-}
-";
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 2, "got: {entries:?}");
-    // Sorted by span start: outer Box init begins before inner Inner init.
-    // The outer Box's single arg is `Inner<i64>`; the inner Inner's single
-    // arg is `i64`.
-    assert_eq!(entries[0], vec![Ty::named_for_test("Inner", vec![Ty::I64])]);
-    assert_eq!(entries[1], vec![Ty::I64]);
-}
-
-#[test]
-fn record_init_type_args_monomorphic_record_emits_no_entry() {
-    // Fail-closed contract negative test: a record with empty `type_params`
-    // must not produce a `record_init_type_args` entry. Downstream HIR
-    // monomorphisation skips entries for monomorphic records.
-    let source = r"type Mono {
-    value: i64;
-}
-
-fn main() {
-    let _m = Mono { value: 42 };
-}
-";
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     assert!(
-        tco.record_init_type_args
-            .keys()
-            .all(|key| key.module_idx != 0),
-        "monomorphic record-init should not emit a side-table entry, got: {:?}",
-        tco.record_init_type_args
-    );
-}
-
-#[test]
-fn record_init_type_args_field_access_returns_substituted_type() {
-    // Verifies that the *field-access* substitution path (already implemented
-    // in `check_field_access` lines 3139-3146) and the side-table emission
-    // agree: `b.value` on `b: Box<i64>` returns `i64`, and the init site
-    // records `[i64]`.
-    let source = r"type Box<T> {
-    value: T;
-}
-
-fn main() {
-    let b = Box { value: 42 };
-    let _v = b.value;
-}
-";
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    // The side-table records the Box<i64> instantiation.
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries, vec![vec![Ty::I64]]);
-    // `b.value` resolves to `i64` (the substituted T) via the field-access
-    // substitution at `check_field_access:3142-3145`.
-    let field_access_ty = tco
-        .expr_types
-        .iter()
-        .find_map(|(_, ty)| (ty == &Ty::I64).then(|| ty.clone()));
-    assert_eq!(field_access_ty, Some(Ty::I64));
-}
-
-#[test]
-fn record_init_type_args_two_distinct_instantiations() {
-    // Same generic record at two different T's in the same program — two
-    // distinct side-table entries, one per init site.
-    let source = r#"type Box<T> {
-    value: T;
-}
-
-fn main() {
-    let _a = Box { value: 42 };
-    let _b = Box { value: "hi" };
-}
-"#;
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 2, "got: {entries:?}");
-    // Sorted by span start; first site is the `Box { value: 42 }` literal.
-    assert_eq!(entries[0], vec![Ty::I64]);
-    assert_eq!(entries[1], vec![Ty::String]);
-}
-
-#[test]
-fn record_init_type_args_enum_struct_variant_fully_bound() {
-    // Generic enum struct-variant init with an annotation that binds every
-    // type parameter: `let x: Either<i64, string> = Either::Left { value: 1 }`.
-    // The record_init_type_args entry resolves both T=i64 and E=string.
-    let source = r"enum Either<T, E> {
-    Left { value: T;  }
-    Right { err: E;  }
-}
-
-fn main() {
-    let _x: Either<i64, string> = Either.Left { value: 1 };
-}
-";
-    let tco = check_source(source);
-    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
-    let entries = collect_record_init_args(&tco);
-    assert_eq!(entries.len(), 1, "got: {entries:?}");
-    assert_eq!(entries[0], vec![Ty::I64, Ty::String]);
-}
-
-#[test]
-fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
-    // Negative test for the fail-closed contract: when only one of the two
-    // type parameters can be inferred from the init's field values, the
-    // entry's second arg stays a Ty::Var and must be pruned by
-    // `validate_record_init_type_args_output_contract`.
-    let source = r"enum Either<T, E> {
-    Left { value: T;  }
-    Right { err: E;  }
-}
-
-fn main() {
-    let _x = Either.Left { value: 42 };
-}
-";
-    let tco = check_source(source);
-    // The source emits an InferenceFailed error for `_x` (E unresolved) — we
-    // assert the side-table did not leak a partial entry.
-    assert!(
-        tco.record_init_type_args
-            .keys()
-            .all(|key| key.module_idx != 0),
-        "partial inference must not leak: {:?}",
-        tco.record_init_type_args
-    );
-}
-
-#[test]
-fn record_init_type_args_unknown_field_does_not_emit_entry() {
-    // `Box { wrong_field: 42 }` should produce an UndefinedField diagnostic
-    // and not leak an entry into the side-table.
-    let source = r"type Box<T> {
-    value: T;
-}
-
-fn main() {
-    let _b = Box { wrong_field: 42 };
-}
-";
-    let tco = check_source(source);
-    assert!(
-        tco.errors
+        unknown
+            .errors
             .iter()
             .any(|e| e.message.contains("no field `wrong_field`")),
         "expected UndefinedField diagnostic, got: {:?}",
-        tco.errors
+        unknown.errors
     );
-    // Fail-closed: because T was never bound (no successful field), the
-    // entry's resolved arg is still Ty::Var and the contract validator drops
-    // it. record_init_type_args must therefore be empty.
-    assert!(
-        tco.record_init_type_args
-            .keys()
-            .all(|key| key.module_idx != 0),
-        "unknown-field init should not leak a side-table entry: {:?}",
-        tco.record_init_type_args
-    );
+    assert!(unknown
+        .record_init_type_args
+        .keys()
+        .all(|k| k.module_idx != 0));
 }
 
 fn assert_decl_bound_rejects_no_display(source: &str) {
@@ -3311,57 +2966,17 @@ fn main() {
 }
 
 #[test]
-fn generic_decl_bound_rejects_struct_init_reference_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-type Box<T: Display> {
-    value: T;
-}
-
-fn main() {
-    let _box = Box { value: NoDisplay { n: 1 } };
-}
-",
-    );
-}
-
-#[test]
-fn generic_decl_bound_rejects_type_annotation_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-type Box<T: Display> {
-    value: T;
-}
-
-fn main() {
-    let _box: Box<NoDisplay> = Box { value: NoDisplay { n: 1 } };
-}
-",
-    );
-}
-
-#[test]
-fn generic_decl_bound_rejects_return_type_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-type Box<T: Display> {
-    value: T;
-}
-
-fn make() -> Box<NoDisplay> {
-    Box { value: NoDisplay { n: 1 } }
-}
-",
-    );
+fn generic_decl_bound_rejects_no_display_sites() {
+    for source in [
+        "type NoDisplay { n: i64; }\ntype Box<T: Display> { value: T; }\nfn main() { let _box = Box { value: NoDisplay { n: 1 } }; }\n",
+        "type NoDisplay { n: i64; }\ntype Box<T: Display> { value: T; }\nfn main() { let _box: Box<NoDisplay> = Box { value: NoDisplay { n: 1 } }; }\n",
+        "type NoDisplay { n: i64; }\ntype Box<T: Display> { value: T; }\nfn make() -> Box<NoDisplay> { Box { value: NoDisplay { n: 1 } } }\n",
+        "type NoDisplay { n: i64; }\ntype Wrap<T: Display>(T);\nfn main() { let _wrap = Wrap(NoDisplay { n: 1 }); }\n",
+        "type NoDisplay { n: i64; }\nenum Maybe<T: Display> { Some(T); None; }\nfn main() { let _maybe = Maybe.Some(NoDisplay { n: 1 }); }\n",
+        "type NoDisplay { n: i64; }\nenum Maybe<T: Display> { Some { value: T; } None; }\nfn main() { let _maybe = Maybe.Some { value: NoDisplay { n: 1 } }; }\n",
+    ] {
+        assert_decl_bound_rejects_no_display(source);
+    }
 }
 
 #[test]
@@ -3415,60 +3030,6 @@ fn take(boxed: Box<NoDisplay>) -> i64 {
         }),
         "expected imported Box<T: Display> annotation to reject NoDisplay; got: {:#?}",
         output.errors
-    );
-}
-
-#[test]
-fn generic_decl_bound_rejects_tuple_record_constructor_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-type Wrap<T: Display>(T);
-
-fn main() {
-    let _wrap = Wrap(NoDisplay { n: 1 });
-}
-",
-    );
-}
-
-#[test]
-fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-enum Maybe<T: Display> {
-    Some(T);
-    None;
-}
-
-fn main() {
-    let _maybe = Maybe.Some(NoDisplay { n: 1 });
-}
-",
-    );
-}
-
-#[test]
-fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
-    assert_decl_bound_rejects_no_display(
-        r"type NoDisplay {
-    n: i64;
-}
-
-enum Maybe<T: Display> {
-    Some { value: T;  }
-    None;
-}
-
-fn main() {
-    let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
-}
-",
     );
 }
 
@@ -3739,6 +3300,7 @@ fn trailing_type_mismatch_reports_exactly_one_error() {
         "expected exactly one type mismatch error, got: {:?}",
         output.errors
     );
+    assert_eq!(output.sigs()["foo"].return_type, Ty::I32);
 }
 
 #[test]

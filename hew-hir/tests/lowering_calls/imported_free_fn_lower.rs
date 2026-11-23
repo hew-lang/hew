@@ -183,24 +183,22 @@ pub fn entry(n: i64) -> i64 { peer(n) }
 
 #[test]
 fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
-    for import in std::iter::once("import m.{entry};") {
-        let program = build_program_with_imported_module(
-            "pub fn entry(n: i64) -> i64 { n + 1 }",
-            &format!("{import}\nfn main() -> i64 {{ entry(41) }}"),
-        );
-        let (output, tco) = lower_with_checker(&program);
+    let program = build_program_with_imported_module(
+        "pub fn entry(n: i64) -> i64 { n + 1 }",
+        "import m.{entry};\nfn main() -> i64 { entry(41) }",
+    );
+    let (output, tco) = lower_with_checker(&program);
 
-        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-        assert!(
-            output.diagnostics.is_empty(),
-            "selected imported function should lower cleanly: {:#?}",
-            output.diagnostics
-        );
-        assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "main")),
-            Some("m$entry")
-        );
-    }
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "selected imported function should lower cleanly: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("m$entry")
+    );
 }
 
 #[test]
@@ -288,118 +286,106 @@ fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
 
 #[test]
 fn root_local_free_function_shadows_import_with_matching_signature() {
-    for import in std::iter::once("import m.{foo};") {
-        let program = build_program_with_imported_module(
-            "pub fn foo() -> i64 { 99 }",
-            &format!("{import}\nfn foo() -> i64 {{ 1 }}\nfn main() -> i64 {{ foo() }}"),
-        );
-        let (output, tco) = lower_with_checker(&program);
+    let program = build_program_with_imported_module(
+        "pub fn foo() -> i64 { 99 }",
+        "import m.{foo};\nfn foo() -> i64 { 1 }\nfn main() -> i64 { foo() }",
+    );
+    let (output, tco) = lower_with_checker(&program);
 
-        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-        assert!(
-            output.diagnostics.is_empty(),
-            "local shadow should lower cleanly: {:#?}",
-            output.diagnostics
-        );
-        assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "main")),
-            Some("foo")
-        );
-    }
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "local shadow should lower cleanly: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("foo")
+    );
 }
 
 #[test]
 fn root_local_free_function_shadows_import_with_mismatched_signature() {
-    for import in std::iter::once("import m.{foo};") {
-        let program = build_program_with_imported_module(
-            "pub fn foo() -> i64 { 99 }",
-            &format!(
-                "{import}\nfn foo() -> string {{ \"local\" }}\nfn sample() -> string {{ foo() }}"
-            ),
-        );
-        let (output, tco) = lower_with_checker(&program);
+    let program = build_program_with_imported_module(
+        "pub fn foo() -> i64 { 99 }",
+        "import m.{foo};\nfn foo() -> string { \"local\" }\nfn sample() -> string { foo() }",
+    );
+    let (output, tco) = lower_with_checker(&program);
 
-        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-        assert!(
-            output.diagnostics.is_empty(),
-            "checker and HIR should agree on the local binding: {:#?}",
-            output.diagnostics
-        );
-        assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "sample")),
-            Some("foo")
-        );
-    }
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "checker and HIR should agree on the local binding: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "sample")),
+        Some("foo")
+    );
 }
 
 #[test]
 fn root_local_const_shadows_imported_free_function() {
-    for import in std::iter::once("import m.{answer};") {
-        let program = build_program_with_imported_module(
-            "pub fn answer() -> i64 { 7 }",
-            &format!("{import}\nconst answer: i64 = 99;\nfn main() -> i64 {{ answer + 1 }}"),
-        );
-        let (output, tco) = lower_with_checker(&program);
+    let program = build_program_with_imported_module(
+        "pub fn answer() -> i64 { 7 }",
+        "import m.{answer};\nconst answer: i64 = 99;\nfn main() -> i64 { answer + 1 }",
+    );
+    let (output, tco) = lower_with_checker(&program);
 
-        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-        assert!(
-            tco.root_value_bindings.contains("answer"),
-            "checker must publish the root const in its value namespace"
-        );
-        assert!(
-            output.diagnostics.is_empty(),
-            "checker and HIR should agree on the local const binding: {:#?}",
-            output.diagnostics
-        );
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        tco.root_value_bindings.contains("answer"),
+        "checker must publish the root const in its value namespace"
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "checker and HIR should agree on the local const binding: {:#?}",
+        output.diagnostics
+    );
 
-        let tail = function_by_name(&output, "main")
-            .body
-            .tail
-            .as_deref()
-            .expect("main tail");
-        let Some((left, _, _)) = tail.kind.as_binary_pair() else {
-            panic!("expected binary tail, got: {tail:#?}");
-        };
-        let HirExprKind::BindingRef { name, resolved } = &left.kind else {
-            panic!("expected const binding ref, got: {left:#?}");
-        };
-        assert_eq!(name, "answer");
-        assert!(matches!(resolved, ResolvedRef::Const(_)));
-    }
+    let tail = function_by_name(&output, "main")
+        .body
+        .tail
+        .as_deref()
+        .expect("main tail");
+    let Some((left, _, _)) = tail.kind.as_binary_pair() else {
+        panic!("expected binary tail, got: {tail:#?}");
+    };
+    let HirExprKind::BindingRef { name, resolved } = &left.kind else {
+        panic!("expected const binding ref, got: {left:#?}");
+    };
+    assert_eq!(name, "answer");
+    assert!(matches!(resolved, ResolvedRef::Const(_)));
 }
 
 #[test]
 fn root_local_extern_function_shadows_imported_free_function() {
-    for import in std::iter::once("import m.{answer};") {
-        let program = build_program_with_imported_module(
-            "pub fn answer() -> i64 { 7 }",
-            &format!(
-                r#"{import}
-extern "C" {{
+    let program = build_program_with_imported_module(
+        "pub fn answer() -> i64 { 7 }",
+        r#"import m.{answer};
+extern "C" {
     fn answer() -> i64;
-}}
-fn main() -> i64 {{
-    unsafe {{ answer() }}
-}}"#
-            ),
-        );
-        let (output, tco) = lower_with_checker(&program);
+}
+fn main() -> i64 {
+    unsafe { answer() }
+}"#,
+    );
+    let (output, tco) = lower_with_checker(&program);
 
-        assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
-        assert!(
-            tco.root_value_bindings.contains("answer"),
-            "checker must publish the root extern fn in its value namespace"
-        );
-        assert!(
-            output.diagnostics.is_empty(),
-            "checker and HIR should agree on the local extern binding: {:#?}",
-            output.diagnostics
-        );
-        assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "main")),
-            Some("answer")
-        );
-    }
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        tco.root_value_bindings.contains("answer"),
+        "checker must publish the root extern fn in its value namespace"
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "checker and HIR should agree on the local extern binding: {:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        tail_call_callee_name(function_by_name(&output, "main")),
+        Some("answer")
+    );
 }
 
 #[test]

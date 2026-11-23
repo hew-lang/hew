@@ -106,14 +106,6 @@ pub fn distance(p1: Point, p2: Point) -> int {
         !has_coroutine_unsupported,
         "Pure data program should not trigger coroutine gate"
     );
-
-    assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| { matches!(d.kind, HirDiagnosticKind::TargetCoroutineUnsupported { .. }) }),
-        "Pure data program should not have target-gate errors"
-    );
     let result = output.into_result();
     assert!(
         result.is_ok()
@@ -127,7 +119,7 @@ pub fn distance(p1: Point, p2: Point) -> int {
 }
 
 #[test]
-fn native_target_accepts_actors() {
+fn native_targets_accept_actors() {
     let source = r"actor Counter {
     var count: int = 0;
     receive fn increment() {
@@ -135,31 +127,17 @@ fn native_target_accepts_actors() {
     }
 }
 ";
-    let output = lower(source, TargetArch::X86_64);
-
-    let has_coroutine_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::TargetCoroutineUnsupported { .. }));
-    assert!(!has_coroutine_unsupported, "x86_64 should support actors");
-}
-
-#[test]
-fn aarch64_target_accepts_actors() {
-    let source = r"actor Counter {
-    var count: int = 0;
-    receive fn increment() {
-        self.count += 1;
+    for target in [TargetArch::X86_64, TargetArch::Aarch64] {
+        let output = lower(source, target);
+        let has_coroutine_unsupported = output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::TargetCoroutineUnsupported { .. }));
+        assert!(
+            !has_coroutine_unsupported,
+            "{target:?} should support actors"
+        );
     }
-}
-";
-    let output = lower(source, TargetArch::Aarch64);
-
-    let has_coroutine_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::TargetCoroutineUnsupported { .. }));
-    assert!(!has_coroutine_unsupported, "aarch64 should support actors");
 }
 
 // The former P0.3/P0.4 wasm32 blocking-channel-recv gate is gone along with

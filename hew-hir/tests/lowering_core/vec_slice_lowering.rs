@@ -49,21 +49,68 @@ fn tail_kind<'a>(out: &'a hew_hir::LowerOutput, fn_name: &str) -> &'a HirExprKin
 }
 
 #[test]
-fn closed_slice_a_b_lowers_to_hir_slice() {
-    // `xs[a..b]` lowers to HirExprKind::Slice (NOT Index).
-    let out = lower("fn f(xs: Vec<i64>, a: i64, b: i64) -> Vec<i64> { xs[a..b] }");
-    let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice { start, end, .. } = kind else {
-        panic!("xs[a..b] must lower to HirExprKind::Slice; got {kind:?}");
-    };
-    assert!(start.is_some(), "closed start must lower to Some");
-    assert!(end.is_some(), "closed end must lower to Some");
-    let end = end.as_ref().expect("closed end");
-    assert!(
-        !matches!(end.kind, HirExprKind::Binary { .. }),
-        "`..` must carry the source bound unchanged; got {:?}",
-        end.kind
-    );
+fn slice_forms_lower_to_hir_slice_with_vec_type_and_verify() {
+    for (source, expect_start, expect_end) in [
+        (
+            "fn f(xs: Vec<i64>, a: i64, b: i64) -> Vec<i64> { xs[a..b] }",
+            true,
+            true,
+        ),
+        (
+            "fn f(xs: Vec<i64>, b: i64) -> Vec<i64> { xs[..b] }",
+            false,
+            true,
+        ),
+        (
+            "fn f(xs: Vec<i64>, a: i64) -> Vec<i64> { xs[a..] }",
+            true,
+            false,
+        ),
+        ("fn f(xs: Vec<i64>) -> Vec<i64> { xs[..] }", false, false),
+    ] {
+        let out = lower(source);
+        let func = out
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                hew_hir::HirItem::Function(f) if f.name == "f" => Some(f),
+                _ => None,
+            })
+            .expect("function must be in HIR module");
+        let tail = func.body.tail.as_ref().expect("body has tail");
+        let HirExprKind::Slice { start, end, .. } = &tail.kind else {
+            panic!(
+                "{source}: must lower to HirExprKind::Slice; got {:?}",
+                tail.kind
+            );
+        };
+        assert_eq!(start.is_some(), expect_start, "{source}: start");
+        assert_eq!(end.is_some(), expect_end, "{source}: end");
+        if expect_start && expect_end {
+            assert!(
+                !matches!(end.as_ref().unwrap().kind, HirExprKind::Binary { .. }),
+                "`..` must carry the source bound unchanged; got {:?}",
+                end.as_ref().unwrap().kind
+            );
+        }
+        match &tail.ty {
+            ResolvedTy::Named {
+                head: name_head,
+                args,
+                ..
+            } => {
+                assert_eq!(name_head.spelling(), "Vec");
+                assert_eq!(args.as_slice(), &[ResolvedTy::I64]);
+            }
+            other => panic!("slice result type must be Vec<i64>; got {other:?}"),
+        }
+        let diags = verify_hir(&out.module);
+        assert!(
+            diags.is_empty(),
+            "{source}: HIR verify must pass; got {diags:?}"
+        );
+    }
 }
 
 #[test]
@@ -90,90 +137,4 @@ fn inclusive_slice_a_eq_b_lowers_to_an_exclusive_bound_plus_one() {
         right.kind
     );
     assert_eq!(end.ty, ResolvedTy::I64, "the added bound keeps its width");
-}
-
-#[test]
-fn open_start_slice_lowers_with_none_start() {
-    let out = lower("fn f(xs: Vec<i64>, b: i64) -> Vec<i64> { xs[..b] }");
-    let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice { start, end, .. } = kind else {
-        panic!("xs[..b] must lower to HirExprKind::Slice; got {kind:?}");
-    };
-    assert!(start.is_none(), "open start must lower to None in HIR");
-    assert!(end.is_some(), "closed end must lower to Some");
-}
-
-#[test]
-fn open_end_slice_lowers_with_none_end() {
-    let out = lower("fn f(xs: Vec<i64>, a: i64) -> Vec<i64> { xs[a..] }");
-    let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice { start, end, .. } = kind else {
-        panic!("xs[a..] must lower to HirExprKind::Slice; got {kind:?}");
-    };
-    assert!(start.is_some(), "closed start must lower to Some");
-    assert!(end.is_none(), "open end must lower to None in HIR");
-}
-
-#[test]
-fn fully_open_slice_lowers_with_both_none() {
-    let out = lower("fn f(xs: Vec<i64>) -> Vec<i64> { xs[..] }");
-    let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice { start, end, .. } = kind else {
-        panic!("xs[..] must lower to HirExprKind::Slice; got {kind:?}");
-    };
-    assert!(start.is_none(), "open start must be None");
-    assert!(end.is_none(), "open end must be None");
-}
-
-#[test]
-fn slice_result_type_is_vec_t_not_t() {
-    // The expression type of a range-slice is Vec<T> (a fresh copy),
-    // NOT the element type T. LESSONS: `checker-authority` (P0).
-    let out = lower("fn f(xs: Vec<i64>) -> Vec<i64> { xs[..] }");
-    let func = out
-        .module
-        .items
-        .iter()
-        .find_map(|item| {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "f" {
-                    return Some(f);
-                }
-            }
-            None
-        })
-        .expect("function must be in HIR module");
-    let tail = func.body.tail.as_ref().expect("tail must exist");
-    match &tail.ty {
-        ResolvedTy::Named {
-            head: name_head,
-            args,
-            ..
-        } => {
-            assert_eq!(name_head.spelling(), "Vec");
-            assert_eq!(args.len(), 1);
-            assert_eq!(args[0], ResolvedTy::I64);
-        }
-        other => panic!("slice result type must be Vec<i64>; got {other:?}"),
-    }
-}
-
-#[test]
-fn single_element_index_still_lowers_to_index() {
-    // Regression guard: `xs[i]` must continue to produce HirExprKind::Index
-    // (NOT Slice). The C-3 routing only activates when the bracket
-    // contents are a range expression.
-    let out = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
-    let kind = tail_kind(&out, "f");
-    assert!(
-        matches!(kind, HirExprKind::Index { .. }),
-        "xs[i] must lower to HirExprKind::Index; got {kind:?}"
-    );
-}
-
-#[test]
-fn slice_verify_passes() {
-    let out = lower("fn f(xs: Vec<i64>) -> Vec<i64> { xs[..] }");
-    let diags = verify_hir(&out.module);
-    assert!(diags.is_empty(), "HIR verify must pass; got {diags:?}");
 }

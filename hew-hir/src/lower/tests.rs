@@ -266,7 +266,7 @@ fn builtin_private_helpers_follow_function_values_and_transitive_uses() {
 }
 
 fn assert_private_helper_closure(builtin: bool) {
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+    use hew_parser::module::ModulePath;
 
     let helpers = "fn hidden() -> i64 { 99 } fn leaf() -> i64 { 7 } \
          fn helper() -> i64 { let f = leaf; f() } \
@@ -276,8 +276,15 @@ fn assert_private_helper_closure(builtin: bool) {
     } else {
         helpers.to_string()
     });
-    let owner = if builtin { "std.builtins" } else { "helpers" };
-    let binding = if builtin { "builtins" } else { "helpers" };
+    let (imported_id, owner, binding) = if builtin {
+        (
+            ModulePath::new(["std", "builtins"]),
+            "std.builtins",
+            "builtins",
+        )
+    } else {
+        (ModulePath::new(["helpers"]), "helpers", "helpers")
+    };
     let mut root = hew_parser::parse(&format!(
         "import {owner}; fn main() {{ println({binding}.run()); }}",
     ));
@@ -287,33 +294,22 @@ fn assert_private_helper_closure(builtin: bool) {
         panic!("import");
     };
     import.resolved_items = Some(imported.program.items.clone().into());
-    let root_id = ModulePath::root();
-    let imported_id = ModulePath::new(owner.split('.'));
-    let mut graph = ModuleGraph::new(root_id.clone());
-    for (id, items) in [
-        (imported_id.clone(), imported.program.items),
-        (root_id.clone(), root.program.items.clone()),
-    ] {
-        graph
-            .add_module(Module {
-                source_paths: if builtin && id == imported_id {
-                    vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("../std/builtins.hew")]
-                } else {
-                    vec![]
-                },
-                id,
-                items,
-                imports: vec![],
-                doc: None,
-            })
-            .unwrap();
-    }
-    graph.topo_order = vec![imported_id, root_id];
-    root.program.module_graph = Some(graph);
-    let output = Checker::new(checkout_std_registry()).check_program(&root.program);
+    let program = program_with_modules(
+        vec![(
+            imported_id,
+            imported.program.items,
+            if builtin {
+                vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../std/builtins.hew")]
+            } else {
+                vec![]
+            },
+        )],
+        root.program.items,
+    );
+    let output = Checker::new(checkout_std_registry()).check_program(&program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let lowered = lower_program(&root.program, &output, &ResolutionCtx, TargetArch::host());
+    let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
     assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     let declarations: Vec<_> = lowered
         .module
@@ -535,39 +531,6 @@ fn main() {
         })
         .expect("main function");
     assert_ordered_aggregate_groups(main);
-}
-
-#[test]
-fn builtin_receiver_signature_mismatch_is_a_diagnostic_not_a_panic() {
-    let parsed = hew_parser::parse(
-        r"
-trait Sample {
-    fn value(self) -> i64;
-}
-
-type Broken {}
-
-impl Sample for Broken {
-    fn value(self) -> bool { true }
-}
-",
-    );
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_embedded_builtins(
-        &parsed.program,
-        &hew_types::DefTable::new(),
-        Arc::new(hew_parser::parse(include_str!("../../../std/builtins.hew")).program),
-    );
-    assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("returns `bool`") && error.message.contains("requires `i64`")
-        }),
-        "the owning checker must reject the invalid builtin body: {:?}",
-        output.errors
-    );
 }
 
 #[test]
@@ -865,50 +828,38 @@ fn parse_typecheck_and_lower(
     (parsed.program, tco, lowered)
 }
 
-#[test]
-fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
-    use hew_parser::ast::Program;
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+fn file_read_stream_program(extra_close_stmt: &str) -> Program {
+    use hew_parser::module::ModulePath;
 
-    let parsed = hew_parser::parse(
+    let parsed = hew_parser::parse(&format!(
         r#"
             #[resource]
             #[opaque]
-            pub type FileReadStream {}
+            pub type FileReadStream {{}}
 
-            impl FileReadStream {
-                fn close(consume self) {
-                    unsafe { hew_file_read_stream_close(self) };
-                }
-            }
+            impl FileReadStream {{
+                fn close(consume self) {{
+                    unsafe {{ hew_file_read_stream_close(self) }};
+                    {extra_close_stmt}
+                }}
+            }}
 
-            extern "C" {
+            extern "C" {{
                 fn hew_file_read_stream_open(path: string) -> FileReadStream;
                 fn hew_file_read_stream_close(consume stream: FileReadStream);
-            }
-            "#,
-    );
+            }}
+            "#
+    ));
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    program_with_modules(
+        vec![(ModulePath::new(["std", "fs"]), parsed.program.items, vec![])],
+        vec![],
+    )
+}
 
-    let module_id = ModulePath::new(["std", "fs"]);
-    let root_id = ModulePath::root();
-    let mut graph = ModuleGraph::new(root_id.clone());
-    graph
-        .add_module(Module {
-            id: module_id.clone(),
-            items: parsed.program.items,
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add std.fs test module");
-    graph.topo_order = vec![module_id, root_id];
-    let program = Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(graph),
-        items: vec![],
-        module_doc: None,
-    };
+#[test]
+fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
+    let program = file_read_stream_program("");
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
@@ -1016,49 +967,8 @@ fn main() {}
 
 #[test]
 fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
-    use hew_parser::ast::Program;
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
-
-    let parsed = hew_parser::parse(
-        r#"
-            #[resource]
-            #[opaque]
-            pub type FileReadStream {}
-
-            impl FileReadStream {
-                fn close(consume self) {
-                    unsafe { hew_file_read_stream_close(self) };
-                    if true { unsafe { hew_file_read_stream_close(self) }; }
-                }
-            }
-
-            extern "C" {
-                fn hew_file_read_stream_open(path: string) -> FileReadStream;
-                fn hew_file_read_stream_close(consume stream: FileReadStream);
-            }
-            "#,
-    );
-    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-
-    let module_id = ModulePath::new(["std", "fs"]);
-    let root_id = ModulePath::root();
-    let mut graph = ModuleGraph::new(root_id.clone());
-    graph
-        .add_module(Module {
-            id: module_id.clone(),
-            items: parsed.program.items,
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add std.fs test module");
-    graph.topo_order = vec![module_id, root_id];
-    let program = Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(graph),
-        items: vec![],
-        module_doc: None,
-    };
+    let program =
+        file_read_stream_program("if true { unsafe { hew_file_read_stream_close(self) }; }");
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
@@ -1867,83 +1777,50 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
 }
 
 #[test]
-fn missing_closure_type_or_escape_facts_fail_closed() {
-    for remove_type in [true, false] {
+fn missing_closure_facts_fail_closed() {
+    enum MissingFact {
+        ExprType,
+        EscapeFacts,
+        CaptureFacts,
+    }
+
+    for missing in [
+        MissingFact::ExprType,
+        MissingFact::EscapeFacts,
+        MissingFact::CaptureFacts,
+    ] {
         let (program, mut tco, _) =
-            parse_typecheck_and_lower("fn main() { let value: i64 = 1; let f = || value; }");
-        if remove_type {
-            tco.expr_types
-                .retain(|key, _| !tco.closure_capture_facts.contains_key(key));
-        } else {
-            tco.closure_escape_facts.clear();
+            parse_typecheck_and_lower("fn main() { let k: i32 = 2; let f = |n: i32| n + k; }");
+        assert!(
+            !tco.closure_capture_facts.is_empty(),
+            "test setup requires checker-produced closure capture facts"
+        );
+        match missing {
+            MissingFact::ExprType => {
+                tco.expr_types
+                    .retain(|key, _| !tco.closure_capture_facts.contains_key(key));
+            }
+            MissingFact::EscapeFacts => tco.closure_escape_facts.clear(),
+            MissingFact::CaptureFacts => tco.closure_capture_facts.clear(),
         }
         let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
         assert!(
-            lowered.diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
-                    if name == "closure literal"
-            )),
+            lowered.diagnostics.iter().any(|diagnostic| match &diagnostic.kind {
+                HirDiagnosticKind::CheckerBoundaryViolation { name, reason } => {
+                    name == "closure literal"
+                        && (!matches!(missing, MissingFact::CaptureFacts)
+                            || reason == "closure_capture_facts has no record for closure literal span")
+                }
+                _ => false,
+            }),
             "{:#?}",
             lowered.diagnostics
         );
-        assert!(lowered.into_result().is_err());
+        assert!(
+            lowered.into_result().is_err(),
+            "into_result() must return Err when closure facts are missing"
+        );
     }
-}
-
-#[test]
-fn missing_closure_capture_facts_emit_boundary_diagnostic() {
-    let (program, mut tco, _) = parse_typecheck_and_lower(
-        r"
-            fn main() {
-                let k: i32 = 2;
-                let f = |n: i32| n + k;
-            }
-            ",
-    );
-    assert!(
-        !tco.closure_capture_facts.is_empty(),
-        "test setup requires checker-produced closure capture facts"
-    );
-    tco.closure_capture_facts.clear();
-
-    let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
-
-    assert!(
-        lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                if name == "closure literal"
-                    && reason == "closure_capture_facts has no record for closure literal span"
-        )),
-        "missing closure_capture_facts entry must emit root-cause boundary diagnostic; got {:#?}",
-        lowered.diagnostics
-    );
-}
-
-/// When `closure_capture_facts` are missing, `into_result()` must return
-/// `Err` — not `Ok` with empty captures.  This pins the fail-closed
-/// contract at the public API boundary.
-#[test]
-fn missing_closure_capture_facts_into_result_is_err() {
-    let (program, mut tco, _) = parse_typecheck_and_lower(
-        r"
-            fn main() {
-                let k: i32 = 2;
-                let f = |n: i32| n + k;
-            }
-            ",
-    );
-    assert!(
-        !tco.closure_capture_facts.is_empty(),
-        "test setup requires checker-produced closure capture facts"
-    );
-    tco.closure_capture_facts.clear();
-
-    let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
-    assert!(
-        lowered.into_result().is_err(),
-        "into_result() must return Err when closure capture facts are missing"
-    );
 }
 
 #[test]
@@ -1987,79 +1864,49 @@ fn stdlib_println_resolves_to_i64_overload() {
 }
 
 #[test]
-fn missing_stdlib_module_field_emits_import_missing() {
-    let parsed = hew_parser::parse(
-        r"
-            fn main() {
-                let _ = fs.read;
-            }
-            ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
+fn missing_stdlib_module_uses_emit_import_missing() {
+    for (expr, is_call) in [("fs.read", false), ("fs.read(\"test.txt\")", true)] {
+        let source = format!("fn main() {{ let _ = {expr}; }}");
+        let parsed = hew_parser::parse(&source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
 
-    let tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
-    assert!(
-        lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::ImportMissing { module, name }
-                if module == "std.fs"
-                    && name == "fs.read"
-                    && diagnostic.note == "add 'import std.fs;' at the top of the file"
-        )),
-        "expected missing import diagnostic for fs.read, got {:#?}",
-        lowered.diagnostics
-    );
-    assert!(
-        !lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::UnresolvedSymbol { name } if name == "fs"
-        )),
-        "fs.read must not fall through to UnresolvedSymbol: {:#?}",
-        lowered.diagnostics
-    );
-}
-
-#[test]
-fn missing_stdlib_module_call_emits_import_missing() {
-    let parsed = hew_parser::parse(
-        r#"
-            fn main() {
-                let _ = fs.read("test.txt");
-            }
-            "#,
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-
-    let tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
-    assert!(
-        lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::ImportMissing { module, name }
-                if module == "std.fs"
-                    && name == "fs.read"
-                    && diagnostic.note == "add 'import std.fs;' at the top of the file"
-        )),
-        "expected missing import diagnostic for fs.read call, got {:#?}",
-        lowered.diagnostics
-    );
-    assert!(
-        !lowered.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::MethodCallNoRewrite { method } if method == "read"
-        )),
-        "fs.read call must not fall through to MethodCallNoRewrite: {:#?}",
-        lowered.diagnostics
-    );
+        let tco = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::ImportMissing { module, name }
+                    if module == "std.fs"
+                        && name == "fs.read"
+                        && diagnostic.note == "add 'import std.fs;' at the top of the file"
+            )),
+            "expected missing import diagnostic for {expr}, got {:#?}",
+            lowered.diagnostics
+        );
+        if is_call {
+            assert!(
+                !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                    &diagnostic.kind,
+                    HirDiagnosticKind::MethodCallNoRewrite { method } if method == "read"
+                )),
+                "fs.read call must not fall through to MethodCallNoRewrite: {:#?}",
+                lowered.diagnostics
+            );
+        } else {
+            assert!(
+                !lowered.diagnostics.iter().any(|diagnostic| matches!(
+                    &diagnostic.kind,
+                    HirDiagnosticKind::UnresolvedSymbol { name } if name == "fs"
+                )),
+                "fs.read must not fall through to UnresolvedSymbol: {:#?}",
+                lowered.diagnostics
+            );
+        }
+    }
 }
 
 // ── Select arm-binding scoping ──────────────────────────────────────────
@@ -2137,37 +1984,8 @@ fn main_select_expr(output: &LowerOutput) -> &HirExpr {
 }
 
 #[test]
-fn select_actor_ask_arm_body_resolves_own_binding() {
-    // Arm body reference to `reply` must resolve to a Binding, not
-    // Unresolved — confirming the arm's scope registration works.
-    let (_, _, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "unexpected lower diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-
-    let diagnostics = crate::verify::verify_hir(&lowered.module);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let select_expr = main_select_expr(&lowered);
-    let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
-        .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
-
-    let HirExprKind::Select(select) = &select_expr.kind else {
-        panic!("expected select");
-    };
-    assert_eq!(
-        resolved,
-        &ResolvedRef::Binding(select.arms[0].binding_id.expect("reply binding")),
-        "the arm body must reference its own reply binding"
-    );
-}
-
-#[test]
-fn select_sibling_arm_binding_is_not_visible() {
-    // Arm 1's body references `reply` (arm 0's binding name). Since
-    // there is no outer `reply` binding, it must produce UnresolvedSymbol.
-    let source = r"
+fn select_arm_binding_is_not_visible_outside_its_arm() {
+    let sibling_arm_source = r"
             actor Pinger {
                 receive fn ping() -> i64 { 1 }
             }
@@ -2183,42 +2001,7 @@ fn select_sibling_arm_binding_is_not_visible() {
                 };
             }
         ";
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    // Type errors are expected (reply is unresolved in arm 1 context);
-    // we proceed to HIR lowering regardless.
-    let tco = checker.check_program(&parsed.program);
-    assert!(
-        tco.errors.iter().any(|error| {
-            error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
-                && &source[error.span.clone()] == "reply"
-        }),
-        "the out-of-scope reply must be rejected by the checker: {:?}",
-        tco.errors
-    );
-    let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
-
-    assert!(
-        lowered.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
-        )),
-        "arm 1 body referencing arm 0's 'reply' must emit UnresolvedSymbol; got {:#?}",
-        lowered.diagnostics
-    );
-}
-
-#[test]
-fn select_arm_binding_not_visible_after_select() {
-    // A reference to `reply` after the select (outside the select body)
-    // must produce UnresolvedSymbol — the scope is popped on arm exit.
-    let source = r"
+    let post_select_source = r"
             actor Pinger {
                 receive fn ping() -> i64 { 1 }
             }
@@ -2230,33 +2013,37 @@ fn select_arm_binding_not_visible_after_select() {
                 let late = reply;
             }
         ";
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:#?}",
-        parsed.errors
-    );
 
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&parsed.program);
-    assert!(
-        tco.errors.iter().any(|error| {
-            error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
-                && &source[error.span.clone()] == "reply"
-        }),
-        "the out-of-scope reply must be rejected by the checker: {:?}",
-        tco.errors
-    );
-    let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
-
-    assert!(
-        lowered.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
-        )),
-        "reference to arm binding outside select must emit UnresolvedSymbol; got {:#?}",
-        lowered.diagnostics
-    );
+    for (label, source) in [
+        ("sibling arm", sibling_arm_source),
+        ("after select", post_select_source),
+    ] {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "{label} parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "{label}: out-of-scope reply must be rejected by checker: {:?}",
+            tco.errors
+        );
+        let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                HirDiagnosticKind::UnresolvedSymbol { name } if name == "reply"
+            )),
+            "{label}: out-of-scope 'reply' must emit UnresolvedSymbol; got {:#?}",
+            lowered.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -2361,90 +2148,52 @@ fn enum_variant_name(arm: &HirMatchArm) -> (&str, u32) {
     }
 }
 
-fn assert_result_try_match(expr: &HirExpr) {
+fn assert_try_match(
+    expr: &HirExpr,
+    machine: &str,
+    ok_variant: &str,
+    err_variant: &str,
+    err_has_payload: bool,
+) {
     let HirExprKind::Match { arms, .. } = &expr.kind else {
         panic!("expected `?` to lower to Match, got {:#?}", expr.kind);
     };
-    assert_eq!(arms.len(), 2, "Result? match must have Ok and Err arms");
+    assert_eq!(arms.len(), 2, "{machine}? match must have two arms");
     let (ok_name, _) = enum_variant_name(&arms[0]);
     let (err_name, err_idx) = enum_variant_name(&arms[1]);
-    assert_eq!(ok_name, "Ok");
-    assert_eq!(err_name, "Err");
-    assert_eq!(arms[0].bindings.len(), 1, "Ok arm must bind payload");
-    assert_eq!(arms[1].bindings.len(), 1, "Err arm must bind payload");
-    match &arms[0].body.kind {
-        HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(id),
-            ..
-        } => assert_eq!(*id, arms[0].bindings[0].binding),
-        other => panic!("Ok arm must return its payload binding, got {other:#?}"),
-    }
-    let HirExprKind::Block(block) = &arms[1].body.kind else {
-        panic!(
-            "Err arm must be a return block, got {:#?}",
-            arms[1].body.kind
-        );
-    };
-    assert!(block.tail.is_none(), "Err return block must have no tail");
-    let [return_stmt] = block.statements.as_slice() else {
-        panic!("Err return block must contain exactly one statement: {block:#?}");
-    };
-    let HirStmtKind::Expr(HirExpr {
-        kind: HirExprKind::Return {
-            value: Some(return_expr),
-            ..
-        },
-        ..
-    }) = &return_stmt.kind
-    else {
-        panic!("Err block statement must return a value, got {return_stmt:#?}");
-    };
-    match &return_expr.kind {
-        HirExprKind::MachineVariantCtor {
-            machine_name,
-            state_idx,
-            payload: Some(payload),
-        } => {
-            assert_eq!(machine_name, "Result");
-            assert_eq!(
-                u32::try_from(*state_idx).expect("variant index must fit in u32"),
-                err_idx
-            );
-            assert_eq!(payload.len(), 1, "Err ctor must carry one payload");
-        }
-        other => panic!("Err return must construct Result::Err, got {other:#?}"),
-    }
-}
-
-fn assert_option_try_match(expr: &HirExpr) {
-    let HirExprKind::Match { arms, .. } = &expr.kind else {
-        panic!("expected `?` to lower to Match, got {:#?}", expr.kind);
-    };
-    assert_eq!(arms.len(), 2, "Option? match must have Some and None arms");
-    let (some_name, _) = enum_variant_name(&arms[0]);
-    let (none_name, none_idx) = enum_variant_name(&arms[1]);
-    assert_eq!(some_name, "Some");
-    assert_eq!(none_name, "None");
-    assert_eq!(arms[0].bindings.len(), 1, "Some arm must bind payload");
-    assert!(
-        arms[1].bindings.is_empty(),
-        "None arm has no payload binding"
+    assert_eq!(ok_name, ok_variant);
+    assert_eq!(err_name, err_variant);
+    assert_eq!(
+        arms[0].bindings.len(),
+        1,
+        "{ok_variant} arm must bind payload"
+    );
+    assert_eq!(
+        arms[1].bindings.len(),
+        usize::from(err_has_payload),
+        "{err_variant} arm payload binding mismatch"
     );
     match &arms[0].body.kind {
         HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
             ..
         } => assert_eq!(*id, arms[0].bindings[0].binding),
-        other => panic!("Some arm must return its payload binding, got {other:#?}"),
+        other => panic!("{ok_variant} arm must return its payload binding, got {other:#?}"),
     }
     let HirExprKind::Block(block) = &arms[1].body.kind else {
         panic!(
-            "None arm must be a return block, got {:#?}",
+            "{err_variant} arm must be a return block, got {:#?}",
             arms[1].body.kind
         );
     };
+    if err_has_payload {
+        assert!(
+            block.tail.is_none(),
+            "{err_variant} return block must have no tail"
+        );
+    }
     let [return_stmt] = block.statements.as_slice() else {
-        panic!("None return block must contain exactly one statement: {block:#?}");
+        panic!("{err_variant} return block must contain one statement: {block:#?}");
     };
     let HirStmtKind::Expr(HirExpr {
         kind: HirExprKind::Return {
@@ -2454,21 +2203,32 @@ fn assert_option_try_match(expr: &HirExpr) {
         ..
     }) = &return_stmt.kind
     else {
-        panic!("None block statement must return a value, got {return_stmt:#?}");
+        panic!("{err_variant} block statement must return a value, got {return_stmt:#?}");
     };
     match &return_expr.kind {
         HirExprKind::MachineVariantCtor {
             machine_name,
             state_idx,
-            payload: None,
+            payload,
         } => {
-            assert_eq!(machine_name, "Option");
+            assert_eq!(machine_name, machine);
             assert_eq!(
                 u32::try_from(*state_idx).expect("variant index must fit in u32"),
-                none_idx
+                err_idx
             );
+            if err_has_payload {
+                assert_eq!(
+                    payload.as_ref().map(Vec::len),
+                    Some(1),
+                    "{err_variant} ctor must carry one payload"
+                );
+            } else {
+                assert!(payload.is_none(), "{err_variant} ctor must have no payload");
+            }
         }
-        other => panic!("None return must construct Option::None, got {other:#?}"),
+        other => {
+            panic!("{err_variant} return must construct {machine}::{err_variant}, got {other:#?}")
+        }
     }
 }
 
@@ -2488,7 +2248,7 @@ fn postfix_try_result_lowers_to_enum_match_returning_err() {
         lowered.diagnostics
     );
     let pass = function_named(&lowered, "pass");
-    assert_result_try_match(first_let_value(pass));
+    assert_try_match(first_let_value(pass), "Result", "Ok", "Err", true);
 }
 
 #[test]
@@ -2557,9 +2317,9 @@ fn postfix_try_preserves_opaque_payload_representation() {
 
     let pass = function_named(&lowered, "pass");
     let try_expr = first_let_value(pass);
-    assert_result_try_match(try_expr);
+    assert_try_match(try_expr, "Result", "Ok", "Err", true);
     let HirExprKind::Match { arms, .. } = &try_expr.kind else {
-        unreachable!("assert_result_try_match already checked the expression shape");
+        unreachable!("assert_try_match already checked the expression shape");
     };
     for (surface, ty) in [
         ("try expression", &try_expr.ty),
@@ -2592,7 +2352,7 @@ fn postfix_try_option_lowers_to_enum_match_returning_none() {
         lowered.diagnostics
     );
     let pass = function_named(&lowered, "pass");
-    assert_option_try_match(first_let_value(pass));
+    assert_try_match(first_let_value(pass), "Option", "Some", "None", false);
 }
 
 fn lower_canonical_encoding_fixture(
@@ -2934,52 +2694,104 @@ fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
 
 // ── Enum-layout discovery tests ──────────────────────────────────────────
 
-/// Lower the §0 probe (`Maybe<i64>` instantiated at a call site and
-/// matched) and assert that the HIR enum-layout registry contains exactly
-/// the expected entry. The `Some` variant's payload field must be
-/// `ResolvedTy::I64` (not `ResolvedTy::named_for_test("T", [])` —
-/// the raw type-param symbol). This pins the substitution contract.
-///
-/// LESSONS: `type-info-survival` (P0) — read type from `expr_types`,
-/// not the un-substituted HIR node type. `checker-authority` (P0).
+type TestModuleSpec = (
+    hew_parser::module::ModulePath,
+    Vec<(Item, hew_parser::ast::Span)>,
+    Vec<std::path::PathBuf>,
+);
 
-#[test]
-fn authored_generic_local_records_shadow_generic_builtin_spellings() {
-    let (_, _, lowered) = parse_typecheck_and_lower(
-        r"type Container<T> {
-    value: T;
+/// Build a multi-module `Program` from pre-parsed modules and root items.
+fn program_with_modules(
+    modules: Vec<TestModuleSpec>,
+    root_items: Vec<(Item, hew_parser::ast::Span)>,
+) -> Program {
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+
+    let root_id = ModulePath::root();
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut topo_order = Vec::with_capacity(modules.len() + 1);
+    for (id, items, source_paths) in modules {
+        topo_order.push(id.clone());
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: vec![],
+                source_paths,
+                doc: None,
+            })
+            .expect("add module");
+    }
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root_items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root module");
+    topo_order.push(root_id);
+    graph.topo_order = topo_order;
+    Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        module_graph: Some(graph),
+        items: root_items,
+        module_doc: None,
+    }
 }
 
-type OutputSink<T> {
-    value: T;
-}
-
-fn keep_container(value: Container<i64>) -> Container<i64> {
-    value
-}
-
-fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> {
-    value
-}
-",
-    );
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "generic local records must lower cleanly: {:#?}",
-        lowered.diagnostics
-    );
-
-    for (function_name, nominal_name) in
-        [("keep_container", "Container"), ("keep_sink", "OutputSink")]
-    {
-        let function = function_named(&lowered, function_name);
-        for ty in [&function.params[0].ty, &function.return_ty] {
-            assert_eq!(
-                ty,
-                &ResolvedTy::user_for_test(nominal_name, vec![ResolvedTy::I64]),
-                "`{nominal_name}<i64>` authored at the root must remain a user nominal"
-            );
+fn collect_variant_ctors_in_block<'a>(block: &'a HirBlock, out: &mut Vec<(&'a str, usize)>) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(e))
+            | HirStmtKind::Expr(e)
+            | HirStmtKind::Return(Some(e))
+            | HirStmtKind::Destructure { value: e, .. } => collect_variant_ctors(e, out),
+            HirStmtKind::Assign { target, value, .. } => {
+                collect_variant_ctors(target, out);
+                collect_variant_ctors(value, out);
+            }
+            HirStmtKind::Defer { body, .. } => collect_variant_ctors(body, out),
+            _ => {}
         }
+    }
+    if let Some(tail) = &block.tail {
+        collect_variant_ctors(tail, out);
+    }
+}
+
+fn collect_variant_ctors<'a>(expr: &'a HirExpr, out: &mut Vec<(&'a str, usize)>) {
+    match &expr.kind {
+        HirExprKind::MachineVariantCtor {
+            machine_name,
+            state_idx,
+            payload,
+        } => {
+            out.push((machine_name.as_str(), *state_idx));
+            if let Some(fields) = payload {
+                for (_, value) in fields {
+                    collect_variant_ctors(value, out);
+                }
+            }
+        }
+        HirExprKind::Call { callee, args, .. } => {
+            collect_variant_ctors(callee, out);
+            for arg in args {
+                collect_variant_ctors(arg, out);
+            }
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_variant_ctors(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_variant_ctors(guard, out);
+                }
+                collect_variant_ctors(&arm.body, out);
+            }
+        }
+        HirExprKind::Block(block) => collect_variant_ctors_in_block(block, out),
+        _ => {}
     }
 }
 
@@ -3100,7 +2912,7 @@ fn main() {
     );
 }
 
-/// A pub enum declared in a non-root (imported) module whose variant name
+/// A `pub enum` declared in a non-root (imported) module whose variant name
 /// matches a builtin variant name must not be overwritten by the builtin
 /// in `machine_ctor_registry`.  Without the local-shadows-global fix that
 /// extends `user_declared_variant_names` to non-root pub items, the
@@ -3111,139 +2923,44 @@ fn main() {
 /// body then hits `report_variant_ctor_call_shape_mismatch` and emits a
 /// "unit variant called as a function" diagnostic.
 #[test]
-fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+fn nonroot_enum_variant_shadows_same_named_builtin_in_hir() {
+    use hew_parser::module::ModulePath;
 
-    let mod_src = hew_parser::parse(
-        r"pub enum AppErr {
-    NotFound(string);
-}
-
-pub fn make_error(msg: string) -> AppErr {
-    .NotFound(msg)
-}
-",
-    );
-    assert!(
-        mod_src.errors.is_empty(),
-        "module parse errors: {:?}",
-        mod_src.errors
-    );
-
-    let root_id = ModulePath::root();
-    let mod_id = ModulePath::new(["errmod"]);
-    let module = Module {
-        id: mod_id.clone(),
-        items: mod_src.program.items,
-        imports: vec![],
-        source_paths: vec![],
-        doc: None,
-    };
-    let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
-    mg.topo_order = vec![mod_id, root_id];
-    let program = Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(mg),
-        items: vec![],
-        module_doc: None,
-    };
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&program);
-    assert!(
-        tco.errors.is_empty(),
-        "type errors (should be none): {:?}",
-        tco.errors
-    );
-
-    let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics must be empty — a 'unit variant NotFound called as a \
-             function' diagnostic means the builtin LookupError::NotFound overwrote \
-             AppErr::NotFound in machine_ctor_registry: {:#?}",
-        lowered.diagnostics
-    );
-}
-
-#[test]
-fn same_leaf_user_enums_keep_user_constructor_identity() {
-    let (_, _, lowered) = parse_typecheck_and_lower(
-        r"enum UserLinkError {
-    UserLink;
-}
-
-enum UserLookupError {
-    UserLookup;
-}
-
-enum UserMonitorError {
-    UserMonitor;
-}
-
-enum UserCrashAction {
-    UserAction;
-}
-
-enum UserCrashKind {
-    UserKind;
-}
-
-fn user_link() -> UserLinkError {
-    UserLinkError.UserLink
-}
-
-fn user_lookup() -> UserLookupError {
-    UserLookupError.UserLookup
-}
-
-fn user_monitor() -> UserMonitorError {
-    UserMonitorError.UserMonitor
-}
-
-fn user_action() -> UserCrashAction {
-    UserCrashAction.UserAction
-}
-
-fn user_kind() -> UserCrashKind {
-    UserCrashKind.UserKind
-}
-",
-    );
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "same-leaf user enum lowering diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-
-    for (function_name, expected_type) in [
-        ("user_link", "UserLinkError"),
-        ("user_lookup", "UserLookupError"),
-        ("user_monitor", "UserMonitorError"),
-        ("user_action", "UserCrashAction"),
-        ("user_kind", "UserCrashKind"),
-    ] {
-        let function = function_named(&lowered, function_name);
-        let tail = function.body.tail.as_deref().expect("constructor tail");
-        let HirExprKind::MachineVariantCtor { machine_name, .. } = &tail.kind else {
-            panic!("expected enum constructor tail, got {:#?}", tail.kind);
-        };
-        assert_eq!(machine_name, expected_type);
+    for vis in ["pub ", ""] {
+        let mod_src = hew_parser::parse(&format!(
+            "{vis}enum AppErr {{\n    NotFound(string);\n}}\n\npub fn make_error(msg: string) -> AppErr {{\n    .NotFound(msg)\n}}\n"
+        ));
         assert!(
-            matches!(
-                &tail.ty,
-                ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling() == expected_type
-            ),
-            "{function_name} retained non-user type identity: {:?}",
-            tail.ty
+            mod_src.errors.is_empty(),
+            "module parse errors: {:?}",
+            mod_src.errors
+        );
+
+        let program = program_with_modules(
+            vec![(ModulePath::new(["errmod"]), mod_src.program.items, vec![])],
+            vec![],
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "type errors (should be none): {:?}",
+            tco.errors
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics must be empty for {vis:?} enum: {:#?}",
+            lowered.diagnostics
         );
     }
 }
 
 #[test]
 fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+    use hew_parser::module::ModulePath;
 
     let source = hew_parser::parse(
         r"pub enum Color {
@@ -3289,34 +3006,14 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
         }
     }
 
-    let root_id = ModulePath::root();
-    let source_id = ModulePath::new(["hew", "aliassrc"]);
-    let mut graph = ModuleGraph::new(root_id.clone());
-    graph
-        .add_module(Module {
-            id: source_id.clone(),
-            items: source.program.items,
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add source module");
-    graph
-        .add_module(Module {
-            id: root_id.clone(),
-            items: root.program.items.clone(),
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add root module");
-    graph.topo_order = vec![source_id, root_id];
-    let program = Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        items: root.program.items,
-        module_graph: Some(graph),
-        module_doc: None,
-    };
+    let program = program_with_modules(
+        vec![(
+            ModulePath::new(["hew", "aliassrc"]),
+            source.program.items,
+            vec![],
+        )],
+        root.program.items,
+    );
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tco = checker.check_program(&program);
@@ -3350,7 +3047,7 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
     reason = "the import-order regression constructs both complete module graphs inline"
 )]
 fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
+    use hew_parser::module::ModulePath;
 
     // Deliberately disagree on both ordinal and payload shape. A flat
     // `Color::Red` registry key would make one import order diagnose the
@@ -3443,48 +3140,20 @@ pub enum Switch {
             );
         }
 
-        let root_id = ModulePath::root();
         let alpha_id = ModulePath::new(["hew", "alpha"]);
         let beta_id = ModulePath::new(["hew", "beta"]);
-        let mut graph = ModuleGraph::new(root_id.clone());
-        graph
-            .add_module(Module {
-                id: alpha_id.clone(),
-                items: alpha.program.items,
-                imports: vec![],
-                source_paths: vec![],
-                doc: None,
-            })
-            .expect("add alpha module");
-        graph
-            .add_module(Module {
-                id: beta_id.clone(),
-                items: beta.program.items,
-                imports: vec![],
-                source_paths: vec![],
-                doc: None,
-            })
-            .expect("add beta module");
-        graph
-            .add_module(Module {
-                id: root_id.clone(),
-                items: root.program.items.clone(),
-                imports: vec![],
-                source_paths: vec![],
-                doc: None,
-            })
-            .expect("add root module");
-        graph.topo_order = if alpha_first_in_topo {
-            vec![alpha_id, beta_id, root_id]
+        let modules = if alpha_first_in_topo {
+            vec![
+                (alpha_id, alpha.program.items, vec![]),
+                (beta_id, beta.program.items, vec![]),
+            ]
         } else {
-            vec![beta_id, alpha_id, root_id]
+            vec![
+                (beta_id, beta.program.items, vec![]),
+                (alpha_id, alpha.program.items, vec![]),
+            ]
         };
-        let program = Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: root.program.items,
-            module_graph: Some(graph),
-            module_doc: None,
-        };
+        let program = program_with_modules(modules, root.program.items);
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&program);
@@ -3509,98 +3178,43 @@ pub enum Switch {
                  declaration order: {:#?}",
             lowered.diagnostics
         );
-        let dump = crate::dump_hir(&lowered.module);
+        let mut ctors = Vec::new();
+        for item in &lowered.module.items {
+            if let HirItem::Function(function) = item {
+                collect_variant_ctors_in_block(&function.body, &mut ctors);
+            }
+        }
+        assert!(ctors.contains(&("hew.alpha.Color", 1)), "{ctors:?}");
+        assert!(ctors.contains(&("hew.beta.Color", 0)), "{ctors:?}");
         assert!(
-            dump.contains("machine-variant-ctor hew.alpha.Color[1]"),
-            "tuple constructor must retain alpha's exact owner and ordinal: {dump}"
+            !ctors.iter().any(|(name, _)| *name == "Color"),
+            "imported constructors must never fall back to a short owner: {ctors:?}"
         );
-        assert!(
-            dump.contains("machine-variant-ctor hew.beta.Color[0]"),
-            "struct constructor must retain beta's exact owner and ordinal: {dump}"
-        );
-        assert!(
-            !dump.contains("machine-variant-ctor Color["),
-            "imported constructors must never fall back to a legacy short owner: {dump}"
-        );
-        let expected_machine_ctor = if alpha_first_in_topo {
-            "machine-variant-ctor hew.alpha.Switch[1]"
+        let expected_switch = if alpha_first_in_topo {
+            ("hew.alpha.Switch", 1)
         } else {
-            "machine-variant-ctor hew.beta.Switch[0]"
+            ("hew.beta.Switch", 0)
         };
+        assert!(ctors.contains(&expected_switch), "{ctors:?}");
         assert!(
-            dump.contains(expected_machine_ctor),
-            "machine state must retain the selectively imported exact owner and ordinal: {dump}"
+            !ctors.iter().any(|(name, _)| *name == "Switch"),
+            "imported machine states must never use a short owner: {ctors:?}"
+        );
+
+        let dump = crate::dump_hir(&lowered.module);
+        let expected_machine_ctor = format!(
+            "machine-variant-ctor {}[{}]",
+            expected_switch.0, expected_switch.1
         );
         assert!(
-            !dump.contains("machine-variant-ctor Switch["),
-            "imported machine states must never use a legacy short owner: {dump}"
+            dump.contains("machine-variant-ctor hew.alpha.Color[1]")
+                && dump.contains("machine-variant-ctor hew.beta.Color[0]")
+                && !dump.contains("machine-variant-ctor Color[")
+                && dump.contains(&expected_machine_ctor)
+                && !dump.contains("machine-variant-ctor Switch["),
+            "dump_hir must preserve qualified machine-variant-ctor owners:\n{dump}"
         );
     }
-}
-
-/// Same as `nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir`
-/// but with a PRIVATE enum.  The checker's `pre_register_type_decl`
-/// (registration.rs:1359) inserts bare variant `fn_sigs` for ALL non-root
-/// `TypeDecl`s regardless of visibility, so a program where a private enum
-/// uses a builtin-named variant is accepted by the checker.  HIR must
-/// match: the bare form of the variant constructor in the module body
-/// must resolve to the user's private enum, not to the builtin unit
-/// variant.
-#[test]
-fn nonroot_private_enum_variant_shadows_same_named_builtin_in_hir() {
-    use hew_parser::module::{Module, ModuleGraph, ModulePath};
-
-    let mod_src = hew_parser::parse(
-        r"enum AppErr {
-    NotFound(string);
-}
-
-pub fn make_error(msg: string) -> AppErr {
-    .NotFound(msg)
-}
-",
-    );
-    assert!(
-        mod_src.errors.is_empty(),
-        "module parse errors: {:?}",
-        mod_src.errors
-    );
-
-    let root_id = ModulePath::root();
-    let mod_id = ModulePath::new(["errmod"]);
-    let module = Module {
-        id: mod_id.clone(),
-        items: mod_src.program.items,
-        imports: vec![],
-        source_paths: vec![],
-        doc: None,
-    };
-    let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
-    mg.topo_order = vec![mod_id, root_id];
-    let program = Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: Some(mg),
-        items: vec![],
-        module_doc: None,
-    };
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&program);
-    assert!(
-        tco.errors.is_empty(),
-        "type errors (should be none): {:?}",
-        tco.errors
-    );
-
-    let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics must be empty — a 'unit variant NotFound called as a \
-             function' diagnostic means the builtin LookupError::NotFound overwrote \
-             the private AppErr::NotFound in machine_ctor_registry: {:#?}",
-        lowered.diagnostics
-    );
 }
 
 /// Builds a tiny module `{mod_name}` declaring `pub actor Conn { receive

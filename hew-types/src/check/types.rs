@@ -1219,6 +1219,22 @@ pub struct IndirectCallCandidates {
     pub may_be_unknown: bool,
 }
 
+/// The deepest member projection a callable provenance records.
+const MAX_PROJECTION_DEPTH: usize = 32;
+
+impl CallableCandidate {
+    /// How many member projections separate this provenance from its source.
+    fn projection_depth(&self) -> usize {
+        let mut depth = 0;
+        let mut candidate = self;
+        while let Self::Field { receiver, .. } | Self::Element { receiver, .. } = candidate {
+            depth += 1;
+            candidate = receiver;
+        }
+        depth
+    }
+}
+
 impl IndirectCallCandidates {
     #[must_use]
     pub fn unknown() -> Self {
@@ -1246,24 +1262,36 @@ impl IndirectCallCandidates {
 
     /// Select a checked record field or positional member from each possible source.
     pub(super) fn project_member(&self, owner: Option<crate::NominalId>, index: usize) -> Self {
-        Self {
-            known: self
-                .known
-                .iter()
-                .map(|receiver| match owner {
-                    Some(owner) => CallableCandidate::Field {
-                        receiver: Box::new(receiver.clone()),
-                        owner,
-                        index: u32::try_from(index).expect("checked field index"),
-                    },
-                    None => CallableCandidate::Element {
-                        receiver: Box::new(receiver.clone()),
-                        index,
-                    },
-                })
-                .collect(),
+        self.project(|receiver| match owner {
+            Some(owner) => CallableCandidate::Field {
+                receiver: Box::new(receiver),
+                owner,
+                index: u32::try_from(index).expect("checked field index"),
+            },
+            None => CallableCandidate::Element {
+                receiver: Box::new(receiver),
+                index,
+            },
+        })
+    }
+
+    /// Wrap each source in one more member projection. A source already
+    /// [`MAX_PROJECTION_DEPTH`] projections deep becomes unknown instead: a
+    /// long field chain would otherwise carry, copy and compare a provenance
+    /// as deep as the chain at every link.
+    pub(super) fn project(&self, wrap: impl Fn(CallableCandidate) -> CallableCandidate) -> Self {
+        let mut projected = Self {
+            known: Vec::new(),
             may_be_unknown: self.may_be_unknown,
+        };
+        for receiver in &self.known {
+            if receiver.projection_depth() < MAX_PROJECTION_DEPTH {
+                projected.known.push(wrap(receiver.clone()));
+            } else {
+                projected.may_be_unknown = true;
+            }
         }
+        projected
     }
 
     pub(crate) fn join(&mut self, other: Self) {

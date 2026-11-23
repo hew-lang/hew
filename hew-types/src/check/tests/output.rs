@@ -1737,3 +1737,31 @@ fn source_type_parameters_publish_distinct_declaration_owned_ids() {
     assert_eq!(parameters.len(), 2);
     assert_ne!(parameters[0], parameters[1]);
 }
+
+#[test]
+fn callable_field_projection_depth_is_bounded_on_deep_chains() {
+    let links = ".kids[0]".repeat(128);
+    let source = format!(
+        "type Node {{ kids: Vec<Node>; op: fn(i64) -> i64; }}\n\
+         fn twice(x: i64) -> i64 {{ x * 2 }}\n\
+         fn f(n: Node) -> i64 {{ (n{links}.op)(1) }}\n\
+         fn main() {{ println(f(Node {{ kids: Vec.new(), op: twice }})); }}\n"
+    );
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let field_start = source.rfind(".op").unwrap();
+    let candidates = output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx == 0 && key.start <= field_start && field_start < key.end)
+        .map(|(_, candidates)| candidates)
+        .expect("indirect call provenance for deep field chain");
+    assert!(
+        candidates.may_be_unknown,
+        "projection depth past the cap should fall back to unknown provenance: {candidates:#?}"
+    );
+    assert!(
+        candidates.known.is_empty(),
+        "truncated deep projection should not retain an unbounded candidate chain: {candidates:#?}"
+    );
+}

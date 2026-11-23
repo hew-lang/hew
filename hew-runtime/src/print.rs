@@ -3,10 +3,6 @@
 //! Compiled Hew programs call a generic C ABI print entrypoint with a type tag
 //! plus payload bits. The value is rendered here and its bytes join the one
 //! ordered output queue ([`crate::output`]).
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use hew_cabi::string::{string_as_bytes, HewString};
 

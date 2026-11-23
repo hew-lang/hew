@@ -5071,8 +5071,10 @@ mod tests {
             assert!(!node.is_null());
 
             let (hook, entered, release) = SysCountPublicationHookGuard::install(HewSysMsg::Exit);
-            let mb_send = crate::send_ptr::SendPtr::new(mb);
-            let node_send = crate::send_ptr::SendPtr::new(node);
+            // SAFETY: mailbox and node outlive the joined producer.
+            let mb_send = unsafe { crate::send_ptr::SendPtr::new(mb) };
+            // SAFETY: node remains live until consumed or freed by this test.
+            let node_send = unsafe { crate::send_ptr::SendPtr::new(node) };
             let producer = std::thread::spawn(move || {
                 let mb_send = mb_send;
                 let node_send = node_send;
@@ -5172,8 +5174,10 @@ mod tests {
             assert!(!node.is_null());
 
             let (hook, entered, release) = UserCountPublicationHookGuard::install(node);
-            let mb_send = crate::send_ptr::SendPtr::new(mb);
-            let node_send = crate::send_ptr::SendPtr::new(node);
+            // SAFETY: mailbox and node outlive the joined producer.
+            let mb_send = unsafe { crate::send_ptr::SendPtr::new(mb) };
+            // SAFETY: node remains live until consumed or freed by this test.
+            let node_send = unsafe { crate::send_ptr::SendPtr::new(node) };
             let producer = std::thread::spawn(move || {
                 let mb_send = mb_send;
                 let node_send = node_send;

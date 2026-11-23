@@ -22,10 +22,6 @@
 //! platform with no implementation) records the failure on the result instead
 //! of returning zero matches, so a caller can tell "nothing matched" apart from
 //! "the walk never completed".
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::ffi::CStr;

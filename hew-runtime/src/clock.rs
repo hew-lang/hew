@@ -4,10 +4,6 @@
 //! arithmetic, and `wasm32-wasip1` supplies both through wasi-libc. Suspending
 //! callers never reach `hew_sleep_ns` — MIR lowering arms the timer wheel
 //! through `coro_sleep` instead — so this module holds no scheduler state.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 pub use crate::duration::{hew_milliseconds, hew_seconds, HewDuration};
 

@@ -5,10 +5,6 @@
 //! String inputs borrow managed UTF-8 handles. String results transfer one
 //! owner, released with `hew_string_drop`; null is the canonical empty value.
 //! File contents retain embedded NUL. OS paths reject NUL before any I/O.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::generator::Access;
 use crate::stream_error::{

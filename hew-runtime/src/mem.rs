@@ -71,10 +71,6 @@
 //! `arena_wasm.rs:26-33`). `std::alloc::{alloc, realloc, dealloc}` therefore
 //! resolve on wasm32 with no target-specific code, and so there is no wasm
 //! parity gap to track for this module.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;

@@ -7,10 +7,6 @@
 //!
 //! [`CrashStats`] is the supervisor's per-child sliding window, exchanged with
 //! generated code through the C ABI below.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

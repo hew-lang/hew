@@ -5271,10 +5271,13 @@ mod tests {
             .state
             .cast::<HeapState>();
         assert!(!spec_template.is_null());
-        let payload = (*spec_template).payload;
-        assert!(!payload.is_null());
-        crate::mem::buf_free(payload.cast::<c_void>());
-        payload
+        // SAFETY: `spec_template` is valid for this test fixture and owns `payload`.
+        unsafe {
+            let payload = (*spec_template).payload;
+            assert!(!payload.is_null());
+            crate::mem::buf_free(payload.cast::<c_void>());
+            payload
+        }
     }
 
     unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
@@ -5285,15 +5288,18 @@ mod tests {
         // a `state_clone_fn` now refuses the restart outright, so this
         // probe proves the refusal instead of the fault.
         let _rt = crate::runtime_test_guard();
-        let (sup, _template) = make_supervisor_with_heap_child(false);
-        let _dangling_payload = free_spec_template_payload(sup);
+        // SAFETY: test subprocess owns `sup` until exit.
+        unsafe {
+            let (sup, _template) = make_supervisor_with_heap_child(false);
+            let _dangling_payload = free_spec_template_payload(sup);
 
-        let restarted = restart_child_from_spec(sup, 0);
-        assert!(
-            restarted.is_null(),
-            "a state_drop_fn registered without state_clone_fn must refuse the restart, \
-             not byte-copy a freed spec payload"
-        );
+            let restarted = restart_child_from_spec(sup, 0);
+            assert!(
+                restarted.is_null(),
+                "a state_drop_fn registered without state_clone_fn must refuse the restart, \
+                 not byte-copy a freed spec payload"
+            );
+        }
 
         std::process::exit(0);
     }

@@ -6,10 +6,6 @@
 //! Windows. Every arm is one-shot: one arm reports at most one readiness, and
 //! the waiting task re-arms after its next syscall would block. Arming is
 //! thread-safe, so the task that met `WouldBlock` arms from its own worker.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use hew_cabi::string::HewString;
 use std::ffi::c_int;
@@ -828,7 +824,8 @@ mod platform {
             interest: c_int,
             context: usize,
         ) -> io::Result<()> {
-            let poll = &mut *poll;
+            // SAFETY: caller guarantees `poll` stays live and unmoved until dequeued.
+            let poll = unsafe { &mut *poll };
             poll.info.Timeout = i64::MAX;
             poll.info.NumberOfHandles = 1;
             poll.info.Exclusive = 0;
@@ -838,18 +835,21 @@ mod platform {
             poll.iosb.status = STATUS_PENDING as isize;
             let info = ptr::addr_of_mut!(poll.info).cast::<c_void>();
             let size = std::mem::size_of::<AFD_POLL_INFO>() as u32;
-            let status = NtDeviceIoControlFile(
-                self.afd,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                context as *mut c_void,
-                ptr::addr_of_mut!(poll.iosb),
-                IOCTL_AFD_POLL,
-                info,
-                size,
-                info,
-                size,
-            );
+            // SAFETY: `self.afd`, `info`, and `poll.iosb` remain live until completion.
+            let status = unsafe {
+                NtDeviceIoControlFile(
+                    self.afd,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    context as *mut c_void,
+                    ptr::addr_of_mut!(poll.iosb),
+                    IOCTL_AFD_POLL,
+                    info,
+                    size,
+                    info,
+                    size,
+                )
+            };
             if status == STATUS_PENDING || status == STATUS_SUCCESS {
                 Ok(())
             } else {
@@ -868,11 +868,14 @@ mod platform {
                 status: 0,
                 information: 0,
             };
-            NtCancelIoFileEx(
-                self.afd,
-                ptr::addr_of_mut!((*poll).iosb),
-                ptr::addr_of_mut!(cancel),
-            );
+            // SAFETY: `poll` has an in-flight arm whose `iosb` remains live.
+            unsafe {
+                NtCancelIoFileEx(
+                    self.afd,
+                    ptr::addr_of_mut!((*poll).iosb),
+                    ptr::addr_of_mut!(cancel),
+                );
+            }
         }
 
         pub(crate) fn bind_pipe(&self, pipe: HANDLE) -> io::Result<()> {

@@ -78,10 +78,24 @@ impl Checker {
             let actor_ty = if let Some(super::scope::Resolution::Nominal(actor)) =
                 self.resolve_type_path(&c.actor_type)
             {
-                Ty::named_head(self.head_of_declaration(actor), type_args)
+                let child_span = c
+                    .actor_type
+                    .segments
+                    .last()
+                    .map_or(&c.span, |(_, span)| span);
+                if c.actor_type.segments.len() > 1
+                    && !self.check_declaration_visible(actor.declaration(), child_span)
+                {
+                    Ty::Error
+                } else {
+                    Ty::named_head(self.head_of_declaration(actor), type_args)
+                }
             } else {
-                let child_type = c.actor_type.to_string();
-                self.named_ty_for_key(&child_type, type_args)
+                let child_type = crate::Symbol::intern(&c.actor_type.to_string());
+                Ty::Named {
+                    head: crate::TypeHead::Unresolved(child_type),
+                    args: type_args,
+                }
             };
             let entry = (c.name.to_string(), Ty::actor_handle_of(&actor_ty));
             if c.is_pool {

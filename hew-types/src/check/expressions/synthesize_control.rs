@@ -26,13 +26,14 @@ use std::collections::VecDeque;
 impl Checker {
     #[expect(
         clippy::too_many_arguments,
-        reason = "struct-variant checking threads the surface label, resolved nominal, and fields together"
+        reason = "struct-variant checking threads the surface label, resolved nominal, fields, and labels together"
     )]
     fn check_struct_variant_against_expected(
         &mut self,
         surface_name: &dyn std::fmt::Display,
         variant_name: &str,
         fields: &[(Ident, Spanned<Expr>)],
+        field_labels: &[hew_parser::ast::FieldLabel],
         span: &Span,
         expected_head: crate::TypeHead,
         expected_args: &[Ty],
@@ -48,13 +49,23 @@ impl Checker {
         if type_params.len() != expected_args.len() || type_params.is_empty() {
             return None;
         }
+        let mut named: HashSet<&str> = HashSet::new();
+        for (field_name, (_, field_span)) in fields {
+            if !named.insert(field_name.name.as_str()) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    field_span,
+                    format!("record literal names field `{field_name}` more than once"),
+                );
+            }
+        }
         let mut type_arg_map: HashMap<crate::ParamHead, Ty> = type_params
             .iter()
             .zip(expected_args.iter())
             .map(|(p, a)| (*p, a.clone()))
             .collect();
 
-        for (field_name, (fexpr, fs)) in fields {
+        for (field_index, (field_name, (fexpr, fs))) in fields.iter().enumerate() {
             if let Some((_, declared_ty)) = variant_fields
                 .iter()
                 .find(|(n, _)| n == field_name.name.as_str())
@@ -74,9 +85,10 @@ impl Checker {
                     field_name.name.as_str(),
                     variant_fields.iter().map(|(n, _)| n.as_str()),
                 );
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedField,
                     span,
+                    field_labels.get(field_index).map(|label| &label.span),
                     format!("no field `{field_name}` on variant `{surface_name}`"),
                     similar,
                 );
@@ -703,11 +715,23 @@ impl Checker {
                         args: expected_args,
                     } = expected
                     {
+                        if let Some(base) = &record.base {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::InvalidOperation,
+                                &base.1,
+                                "enum variant constructors do not support record update syntax"
+                                    .to_string(),
+                                vec!["match the enum to name its payload, then construct the \
+                                     required variant with explicit fields"
+                                    .to_string()],
+                            );
+                        }
                         let surface_name = format!("{owner}.{}", context.name);
                         if let Some(checked) = self.check_struct_variant_against_expected(
                             &surface_name,
                             context.name.name.as_str(),
                             &record.fields,
+                            &record.field_labels,
                             span,
                             *expected_head,
                             expected_args,
@@ -716,19 +740,39 @@ impl Checker {
                             checked
                         } else {
                             let qualified_name = format!("{owner}::{}", context.name);
-                            let resolution = expected_head.nominal().map(|_| {
-                                super::super::scope::Resolution::Variant(*expected_head, 0)
-                            });
+                            let resolution =
+                                expected_head.declaration(&self.defs).and_then(|owner_id| {
+                                    let variant_name = context.name.name;
+                                    self.defs
+                                        .member_of_kind(
+                                            owner_id.declaration(),
+                                            variant_name,
+                                            crate::DeclarationKind::Variant,
+                                        )
+                                        .or_else(|| {
+                                            self.defs.member_of_kind(
+                                                owner_id.declaration(),
+                                                variant_name,
+                                                crate::DeclarationKind::MachineState,
+                                            )
+                                        })
+                                        .map(|declaration| {
+                                            super::super::scope::Resolution::of_member(
+                                                &self.defs,
+                                                declaration,
+                                            )
+                                        })
+                                });
                             let variant_path = Path::single(context.name, span.clone());
                             let actual = self.check_struct_init(
                                 &qualified_name,
                                 resolution,
                                 &record.fields,
                                 None,
-                                record.base.as_deref(),
+                                None,
                                 super::synthesize_spawn_forms::StructInitSite {
                                     path: &variant_path,
-                                    field_labels: &[],
+                                    field_labels: &record.field_labels,
                                     span,
                                 },
                             );
@@ -1510,19 +1554,54 @@ impl Checker {
                 Expr::StructInit {
                     path: named_path,
                     fields,
+                    field_labels,
                     type_args,
-                    ..
+                    base: None,
                 },
                 Ty::Named {
                     head: expected_head,
                     args: expected_args,
                 },
             ) => {
+                let resolution = if named_path.segments.len() > 1 {
+                    self.scope_site().and_then(|site| {
+                        self.scopes
+                            .resolve(
+                                &self.env,
+                                site,
+                                super::super::scope::Namespace::Value,
+                                &named_path.segments,
+                            )
+                            .ok()
+                    })
+                } else {
+                    self.resolve_type_path(named_path)
+                };
+                if named_path.segments.len() > 1 {
+                    let declaration = match resolution {
+                        Some(super::super::scope::Resolution::Nominal(id)) => {
+                            Some(id.declaration())
+                        }
+                        Some(super::super::scope::Resolution::Variant(owner, _)) => owner
+                            .declaration(&self.defs)
+                            .map(crate::NominalId::declaration),
+                        _ => None,
+                    };
+                    if declaration.is_some_and(|id| !self.check_declaration_visible(id, span)) {
+                        return Ty::Error;
+                    }
+                }
+                let variant_matches_expected = matches!(
+                    resolution,
+                    Some(super::super::scope::Resolution::Variant(owner_head, _))
+                        if owner_head == *expected_head
+                );
+                let short = named_path.last().map_or("", |ident| ident.name.as_str());
                 // Fail-closed: explicit type args on enum variant struct forms are not
                 // yet supported in the check_against path.  The expected type already
                 // provides the type args from the binding site, so there is no safe
                 // way to reconcile conflicting annotations here for this slice.
-                if type_args.is_some() {
+                if variant_matches_expected && type_args.is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -1532,31 +1611,23 @@ impl Checker {
                         ),
                     );
                 }
-                let short = named_path.last().map_or("", |ident| ident.name.as_str());
-                // Reject a mismatched qualified owner (e.g.
-                // `right.Status::Ready` when the expected nominal is
-                // `left.Status`). Alias and current-module lexical spellings
-                // are projected by the shared exact variant-owner authority.
-                let expected_nominal = Ty::Named {
-                    head: *expected_head,
-                    args: expected_args.clone(),
-                };
-                let checked = (self.variant_path_owner_matches(named_path, &expected_nominal)
-                    && !short.is_empty())
-                .then(|| {
-                    self.check_struct_variant_against_expected(
-                        named_path,
-                        short,
-                        fields,
-                        span,
-                        *expected_head,
-                        expected_args,
-                        expected,
-                    )
-                })
-                .flatten();
+                let checked = (variant_matches_expected && !short.is_empty())
+                    .then(|| {
+                        self.check_struct_variant_against_expected(
+                            named_path,
+                            short,
+                            fields,
+                            field_labels,
+                            span,
+                            *expected_head,
+                            expected_args,
+                            expected,
+                        )
+                    })
+                    .flatten();
 
                 if let Some(resolved_expected) = checked {
+                    self.resolve_type_path_head(named_path);
                     resolved_expected
                 } else {
                     // Variant not found in the expected enum, non-generic, or

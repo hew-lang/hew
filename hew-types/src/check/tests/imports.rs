@@ -3833,3 +3833,200 @@ fn wrong_owner_variant_prefix_is_rejected_against_expected_nominal() {
         output.errors
     );
 }
+
+fn check_struct_variant_module_root(root_source: &str) -> TypeCheckOutput {
+    let module = hew_parser::parse(
+        "pub enum Boxed<T> {\n    First { value: T; }\n    Item { value: T; }\n}\n\nenum Secret<T> {\n    Hidden { value: T; }\n}\n",
+    );
+    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
+    let mut root = hew_parser::parse(root_source);
+    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.to_string() == "m" {
+                import.resolved_items = Some(module.program.items.clone().into());
+            }
+        }
+    }
+    let root_id = ModulePath::root();
+    let m_id = ModulePath::new(["m"]);
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    module_graph
+        .add_module(Module {
+            id: m_id.clone(),
+            items: module.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add module m");
+    module_graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![hew_parser::module::ModuleImport {
+                target: m_id.clone(),
+                spec: None,
+                span: 0..8,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("add root module");
+    module_graph.topo_order = vec![m_id, root_id];
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        expansions: root.program.expansions,
+        items: root.program.items,
+        module_graph: Some(module_graph),
+        module_doc: None,
+    })
+}
+
+#[test]
+fn module_qualified_generic_struct_variant_tracks_import_and_publishes_resolutions() {
+    let source = "import m;\n\nfn make() -> m.Boxed<i64> {\n    m.Boxed.Item { value: 42 }\n}\n";
+    let output = check_struct_variant_module_root(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+        "using `m.Boxed.Item` must count `import m;` as used: {:#?}",
+        output.warnings
+    );
+    assert!(
+        !output.used_imports.is_empty(),
+        "expected `import m;` to be recorded in `used_imports`"
+    );
+    let call_start = source.find("m.Boxed.Item").expect("variant init start");
+    let item_start = call_start + "m.Boxed.".len();
+    assert!(
+        matches!(
+            output
+                .resolutions
+                .get(&SpanKey::in_module(&(item_start..item_start + 4), 0)),
+            Some(super::super::scope::Resolution::Variant(_, 1))
+        ),
+        "expected variant resolution published on `Item`; resolutions: {:#?}",
+        output.resolutions
+    );
+}
+
+#[test]
+fn expected_generic_struct_variant_rejects_unimported_private_and_shadowed_paths() {
+    let unimported = check_struct_variant_module_root(
+        "import m;\n\nfn accept(b: m.Boxed<i64>) {}\nfn main() {\n    accept(Boxed.Item { value: 1 });\n}\n",
+    );
+    assert!(
+        !unimported.errors.is_empty(),
+        "unimported bare `Boxed.Item` must not resolve through expected type"
+    );
+
+    let private = check_struct_variant_module_root(
+        "import m;\n\nfn main() -> m.Boxed<i64> {\n    m.Secret.Hidden { value: 1 }\n}\n",
+    );
+    assert!(
+        private
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::VisibilityViolationPrivate { .. })),
+        "private enum variant must emit VisibilityViolationPrivate: {:#?}",
+        private.errors
+    );
+
+    let shadowed = check_struct_variant_module_root(
+        "import m;\n\nfn main() -> m.Boxed<i64> {\n    let Boxed = 7;\n    Boxed.Item { value: 1 }\n}\n",
+    );
+    assert!(
+        !shadowed.errors.is_empty(),
+        "local `let Boxed = 7` must shadow unimported/value paths cleanly"
+    );
+}
+
+#[test]
+fn struct_variant_rejects_record_update_and_duplicate_fields_on_named_and_context_forms() {
+    for source in [
+        "enum Boxed<T> { Item { value: T; } }\nfn bad(other: Boxed<i64>) -> Boxed<i64> { Boxed.Item { value: 1, ..other } }",
+        "enum Boxed<T> { Item { value: T; } }\nfn bad(other: Boxed<i64>) -> Boxed<i64> { .Item { value: 1, ..other } }",
+        "enum Plain { Item { value: i64; } }\nfn bad(other: Plain) -> Plain { .Item { value: 1, ..other } }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|e| {
+                e.kind == TypeErrorKind::InvalidOperation
+                    && e.message
+                        .contains("enum variant constructors do not support record update syntax")
+            }),
+            "expected record-update refusal for `{source}`; got: {:#?}",
+            output.errors
+        );
+    }
+
+    for source in [
+        "enum Boxed<T> { Item { value: T; } }\nfn bad() -> Boxed<i64> { Boxed.Item { value: 1, value: 2 } }",
+        "enum Boxed<T> { Item { value: T; } }\nfn bad() -> Boxed<i64> { .Item { value: 1, value: 2 } }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|e| {
+                e.kind == TypeErrorKind::InvalidOperation
+                    && e.message.contains("more than once")
+            }),
+            "expected duplicate-field error for `{source}`; got: {:#?}",
+            output.errors
+        );
+    }
+
+    let bogus_src =
+        "enum Boxed<T> { Item { value: T; } }\nfn bad() -> Boxed<i64> { Boxed.Item { valu: 1 } }";
+    let bogus_out = check_source(bogus_src);
+    let bogus_start = bogus_src.rfind("valu").expect("bogus field");
+    assert!(
+        bogus_out.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::UndefinedField
+                && e.fixes.iter().any(|fix| {
+                    fix.edits
+                        .iter()
+                        .any(|edit| edit.span == (bogus_start..bogus_start + 4).into())
+                })
+        }),
+        "expected UndefinedField fix span pointing at `valu`; got: {:#?}",
+        bogus_out.errors
+    );
+
+    let ctx_bogus_src =
+        "enum Plain { First; Second { value: i64; } }\nfn bad() -> Plain { .Second { valu: 1 } }";
+    let ctx_bogus_out = check_source(ctx_bogus_src);
+    let ctx_bogus_start = ctx_bogus_src.rfind("valu").expect("bogus field");
+    assert!(
+        ctx_bogus_out.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::UndefinedField
+                && e.fixes.iter().any(|fix| {
+                    fix.edits
+                        .iter()
+                        .any(|edit| edit.span == (ctx_bogus_start..ctx_bogus_start + 4).into())
+                })
+        }),
+        "expected UndefinedField fix span pointing at `valu` in context variant; got: {:#?}",
+        ctx_bogus_out.errors
+    );
+
+    let ctx_ok_src =
+        "enum Plain { First; Second { value: i64; } }\nfn ok() -> Plain { .Second { value: 1 } }";
+    let ctx_ok_out = check_source(ctx_ok_src);
+    assert!(ctx_ok_out.errors.is_empty(), "{:#?}", ctx_ok_out.errors);
+    let ctx_expr = ".Second { value: 1 }";
+    let second_start = ctx_ok_src.find(ctx_expr).expect("second variant");
+    assert!(
+        ctx_ok_out.resolutions.iter().any(|(key, res)| {
+            key.module_idx == 0
+                && key.start == second_start
+                && key.end >= second_start + ctx_expr.len()
+                && matches!(res, super::super::scope::Resolution::Variant(_, 1))
+        }),
+        "expected true variant ordinal `1` on `.Second`; resolutions: {:#?}",
+        ctx_ok_out.resolutions
+    );
+}

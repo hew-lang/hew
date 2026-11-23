@@ -492,6 +492,12 @@ impl Checker {
         let super::super::scope::Resolution::Nominal(owner) = self.resolve_type_path(path)? else {
             return None;
         };
+        if path.segments.len() > 1 {
+            let child_span = path.segments.last().map_or(&(0..0), |(_, span)| span);
+            if !self.check_declaration_visible(owner.declaration(), child_span) {
+                return None;
+            }
+        }
         Some(self.defs.path(owner.declaration()).to_string())
     }
 

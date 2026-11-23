@@ -181,6 +181,11 @@ impl Checker {
                         }
                     }
                     for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                        self.current_item_source = item_sources
+                            .as_ref()
+                            .and_then(|sources| sources.get(item_idx))
+                            .or_else(|| module.source_paths.first())
+                            .cloned();
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or_default();
@@ -238,6 +243,7 @@ impl Checker {
                             _ => {}
                         }
                     }
+                    self.current_item_source = None;
                     for e in &mut self.errors[err_before..] {
                         if e.source_module.is_none() {
                             e.source_module = Some(module_name.clone());

@@ -466,7 +466,11 @@ fn extract_impl_info(
     // programs are rejected by the checker before codegen; this path
     // only keeps older loader tests honest while stdlib migrates.
     if let Some(ref tb) = impl_decl.trait_bound {
-        if tb.path.to_string() == "Drop" {
+        if tb
+            .path
+            .as_single()
+            .is_some_and(|ident| ident.name.as_str() == "Drop")
+        {
             if let Some(qualified) = impl_type_name.as_ref() {
                 info.drop_types.push(qualified.clone());
                 // Extract the C drop function from `fn drop { ... }`.
@@ -1109,7 +1113,9 @@ fn wrapper_constructor_call_from_expr_inner(
             fields,
             base: None,
             ..
-        } if crate::short_name(&path.to_string()) == wrapper_simple_name
+        } if path
+            .last()
+            .is_some_and(|ident| ident.name.as_str() == wrapper_simple_name)
             && fields.len() == 1
             && field_names.len() == 1 =>
         {

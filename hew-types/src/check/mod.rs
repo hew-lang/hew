@@ -3618,33 +3618,33 @@ impl Checker {
                         self.is_stdlib_source = true;
                     }
 
-                    for item_idx in return_inference::body_order(&module.items) {
+                    let check_dependency_item = |checker: &mut Self, item_idx: usize| {
                         let (item, span) = &module.items[item_idx];
-                        self.current_item_source = self
+                        checker.current_item_source = checker
                             .module_item_sources
                             .get(&module_name)
                             .and_then(|sources| sources.get(item_idx))
                             .or_else(|| module.source_paths.first())
                             .cloned();
-                        self.current_module_idx = span_indices
+                        checker.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
-                            .unwrap_or(self.current_module_idx);
-                        let diagnostic_source = self
+                            .unwrap_or(checker.current_module_idx);
+                        let diagnostic_source = checker
                             .item_file_routing_token(
                                 Some(&module_name),
-                                self.current_item_source.as_ref(),
+                                checker.current_item_source.as_ref(),
                             )
                             .unwrap_or_else(|| module_name.clone());
-                        let err_before = self.errors.len();
-                        let warn_before = self.warnings.len();
-                        self.check_item(item, span);
+                        let err_before = checker.errors.len();
+                        let warn_before = checker.warnings.len();
+                        checker.check_item(item, span);
 
                         // An assembled peer retains file-relative spans, so
                         // tag each item's diagnostics before advancing to the
                         // next file. Replace the aggregate module fallback as
                         // well as an absent source, while preserving an
                         // explicitly different diagnostic owner.
-                        for error in &mut self.errors[err_before..] {
+                        for error in &mut checker.errors[err_before..] {
                             if error
                                 .source_module
                                 .as_deref()
@@ -3653,7 +3653,7 @@ impl Checker {
                                 error.source_module = Some(diagnostic_source.clone());
                             }
                         }
-                        for warning in &mut self.warnings[warn_before..] {
+                        for warning in &mut checker.warnings[warn_before..] {
                             if warning
                                 .source_module
                                 .as_deref()
@@ -3661,6 +3661,19 @@ impl Checker {
                             {
                                 warning.source_module = Some(diagnostic_source.clone());
                             }
+                        }
+                    };
+                    // Resolve declared supervisor child types before any
+                    // module body projects a child role, matching
+                    // `check_root_bodies`.
+                    for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                        if matches!(item, Item::Supervisor(_)) {
+                            check_dependency_item(self, item_idx);
+                        }
+                    }
+                    for item_idx in return_inference::body_order(&module.items) {
+                        if !matches!(module.items[item_idx].0, Item::Supervisor(_)) {
+                            check_dependency_item(self, item_idx);
                         }
                     }
                     self.current_item_source = None;

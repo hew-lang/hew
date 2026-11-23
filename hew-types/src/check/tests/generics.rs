@@ -2860,55 +2860,22 @@ fn main() {
 fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     // Explicit type args on an enum variant struct initializer when the expected
     // type is already known should produce an error (fail-closed for this slice).
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    // Register a generic enum `Keeper<T>` with a struct variant `Holding { value: T }`
-    let mut variant_fields = HashMap::new();
-    variant_fields.insert(
-        "Holding".to_string(),
-        VariantDef::Struct(vec![(
-            "value".to_string(),
-            Ty::param(crate::ParamHead::for_test("T")),
-        )]),
-    );
-    let __id = checker.test_declaration("Keeper");
-    checker.type_defs.insert(
-        __id,
-        TypeDef {
-            kind: TypeDefKind::Enum,
-            name: "Keeper".to_string(),
-            type_params: vec![crate::ParamHead::for_test("T")],
-            bounds: crate::check::ParamBounds::default(),
-            fields: HashMap::new(),
-            variants: variant_fields,
-            implicit_variant_fields: HashMap::default(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            field_order: vec![],
-            is_indirect: false,
-        },
-    );
+    let source = r"enum Keeper<T> {
+    Holding { value: T; }
+}
 
-    let span = 0..30_usize;
-    // Explicit type args on an enum variant struct form in check_against path.
-    let type_args = Some(vec![(
-        TypeExpr::Named {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
-            type_args: None,
-        },
-        0..3_usize,
-    )]);
-    let init = Expr::StructInit {
-        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Holding"), 0..0),
-        fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
-        field_labels: Vec::new(),
-        type_args,
-        base: None,
-    };
-    let expected = checker.test_named("Keeper", vec![Ty::I64]);
-    checker.check_against(&init, &span, &expected);
+fn main() {
+    let k: Keeper<i64> = Keeper.Holding<i64> { value: 42 };
+}
+";
+    let tco = check_source(source);
     assert!(
-        !checker.errors.is_empty(),
-        "explicit type args on enum variant struct form in check_against should produce an error"
+        tco.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("cannot include explicit type arguments")
+        }),
+        "explicit type args on enum variant struct form in check_against should produce an error, got: {:?}",
+        tco.errors
     );
 }
 

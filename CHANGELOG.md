@@ -6,10 +6,27 @@
   intermediate artefacts or IR dumps can switch to `hew tool compile` with
   the same arguments. Bare `hew file.hew` keeps its existing artefact paths.
   Playground verification is available as `hew tool playground-verify`.
+- Support module-private fields on named records, enforced at the declaring
+  module and reflected in completions, documentation and syntax highlighting.
+- Add cache touch, least-recently-used eviction and in-place limit updates in
+  `std.cache`, and run weighted random draws in Hew across native and browser
+  targets.
+- Preserve owned arena and vector elements, numeric representation-limit errors
+  and UTF-8 boundaries in HTTP and streams; preserve indentation in multiline
+  YAML strings; and preserve source grouping, macro input and comments in the
+  formatter.
 - Large static O2 builds on Linux x86-64 can generate native objects in
   parallel when the build has sufficient CPU and memory headroom and the
   ELF link tools are available. Hew verifies the linked source ranges
   before using the split object.
+- Reduce coroutine frame, ownership verification, runtime allocation and
+  actor-wait overhead, and keep blocking sends queued when another worker
+  cannot start.
+
+See the [0.11.2 release notes](docs/releases/v0.11.2.md) for behaviour,
+migration guidance and details.
+
+## [0.11.1] - 2026-11-20
 
 - `hew build --link=dynamic` and `hew run --link=dynamic` link programs
   against the shared Hew runtime instead of copying it in. The shared runtime
@@ -93,6 +110,9 @@
   `HewTcpTransport` should use `hew_pkg::client::RegistryClient` for registry
   operations. For other HTTP requests, configure your HTTP client's connector
   directly. Hew's native client handles IPv4 and IPv6 connection racing.
+
+See the [0.11.1 release notes](docs/releases/v0.11.1.md) for behaviour,
+migration guidance and known limitations.
 
 ## [0.11.0] - 2026-11-12
 

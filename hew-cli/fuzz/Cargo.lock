@@ -1171,9 +1171,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -1411,7 +1411,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1423,21 +1423,21 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-calendar"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "time",
 ]
 
 [[package]]
 name = "hew-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "cc",
  "clap",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codec"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "ayaml",
  "base64 0.22.1",
@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codegen-rs"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "cc",
  "hew-cabi",
@@ -1518,13 +1518,15 @@ dependencies = [
  "hew-types",
  "inkwell",
  "llvm-sys",
+ "object 0.40.0",
  "serde_json",
  "shlex",
+ "tempfile",
 ]
 
 [[package]]
 name = "hew-compile"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-expand",
  "hew-hir",
@@ -1541,11 +1543,11 @@ dependencies = [
 
 [[package]]
 name = "hew-debug-abi"
-version = "0.11.1"
+version = "0.11.2"
 
 [[package]]
 name = "hew-expand"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1553,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1562,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "logos",
  "serde",
@@ -1570,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "hew-live"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "clap",
  "hew-cabi",
@@ -1585,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "clap",
  "dashmap",
@@ -1606,7 +1608,7 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-debug-abi",
  "hew-parser",
@@ -1617,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "clap",
  "crossterm",
@@ -1631,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe-protocol"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1639,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -1651,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "base64 0.22.1",
  "cargo-config2",
@@ -1676,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "bytes",
  "cap-std",
@@ -1714,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-codec",
  "hew-hir",
@@ -1724,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "hew-symbolize"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "addr2line",
  "crc32fast",
@@ -1737,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "heck",
  "hew-codec",
@@ -1754,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "hew-analysis",
  "hew-calendar",
@@ -4453,9 +4455,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

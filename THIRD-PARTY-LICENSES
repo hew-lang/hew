@@ -6412,7 +6412,7 @@ Apache License 2.0
   * find-msvc-tools 0.1.14 — https://github.com/rust-lang/cc-rs
   * flate2 1.1.10 — https://github.com/rust-lang/flate2-rs
   * fnv 1.0.7 — https://github.com/servo/rust-fnv
-  * form_urlencoded 1.2.2 — https://github.com/servo/rust-url
+  * form_urlencoded 1.2.3 — https://github.com/servo/rust-url
   * fs-set-times 0.20.3 — https://github.com/bytecodealliance/fs-set-times
   * getopts 0.2.24 — https://github.com/rust-lang/getopts
   * gimli 0.33.0 — https://github.com/gimli-rs/gimli
@@ -6452,10 +6452,10 @@ Apache License 2.0
   * proptest 1.11.0 — https://github.com/proptest-rs/proptest
   * rayon-core 1.13.0 — https://github.com/rayon-rs/rayon
   * rayon 1.12.0 — https://github.com/rayon-rs/rayon
-  * regex-automata 0.4.18 — https://github.com/rust-lang/regex
+  * regex-automata 0.4.19 — https://github.com/rust-lang/regex
   * regex-lite 0.1.9 — https://github.com/rust-lang/regex
-  * regex-syntax 0.8.11 — https://github.com/rust-lang/regex
-  * regex 1.13.1 — https://github.com/rust-lang/regex
+  * regex-syntax 0.8.12 — https://github.com/rust-lang/regex
+  * regex 1.13.2 — https://github.com/rust-lang/regex
   * ring 0.17.14 — https://github.com/briansmith/ring
   * rustc-demangle 0.1.28 — https://github.com/rust-lang/rustc-demangle
   * rustc_version 0.4.1 — https://github.com/djc/rustc-version-rs
@@ -6489,7 +6489,7 @@ Apache License 2.0
   * unicode-segmentation 1.13.3 — https://github.com/unicode-rs/unicode-segmentation
   * unicode-truncate 2.0.1 — https://github.com/Aetf/unicode-truncate
   * unicode-width 0.2.2 — https://github.com/unicode-rs/unicode-width
-  * url 2.5.8 — https://github.com/servo/rust-url
+  * url 2.5.9 — https://github.com/servo/rust-url
   * uuid 1.26.1 — https://github.com/uuid-rs/uuid
   * version_check 0.9.5 — https://github.com/SergioBenitez/version_check
   * wait-timeout 0.2.1 — https://github.com/alexcrichton/wait-timeout
@@ -8606,37 +8606,37 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * hew-analysis 0.11.1 — https://github.com/hew-lang/hew
-  * hew-cabi 0.11.1 — https://github.com/hew-lang/hew
-  * hew-calendar 0.11.1 — https://github.com/hew-lang/hew
-  * hew-capability-gen 0.11.1 — https://github.com/hew-lang/hew
-  * hew-cli 0.11.1 — https://github.com/hew-lang/hew
-  * hew-codec 0.11.1 — https://github.com/hew-lang/hew
-  * hew-codegen-rs 0.11.1 — https://github.com/hew-lang/hew
-  * hew-compile 0.11.1 — https://github.com/hew-lang/hew
-  * hew-debug-abi 0.11.1 — https://github.com/hew-lang/hew
-  * hew-expand 0.11.1 — https://github.com/hew-lang/hew
-  * hew-hir 0.11.1 — https://github.com/hew-lang/hew
-  * hew-lexer 0.11.1 — https://github.com/hew-lang/hew
-  * hew-lib 0.11.1
-  * hew-live 0.11.1 — https://github.com/hew-lang/hew
-  * hew-lsp 0.11.1 — https://github.com/hew-lang/hew
-  * hew-mir 0.11.1 — https://github.com/hew-lang/hew
-  * hew-observe 0.11.1 — https://github.com/hew-lang/hew
-  * hew-observe-protocol 0.11.1 — https://github.com/hew-lang/hew
-  * hew-parity-gen 0.11.1 — https://github.com/hew-lang/hew
-  * hew-parser 0.11.1 — https://github.com/hew-lang/hew
-  * hew-pkg 0.11.1 — https://github.com/hew-lang/hew
-  * hew-runtime 0.11.1 — https://github.com/hew-lang/hew
-  * hew-runtime-testkit 0.11.1 — https://github.com/hew-lang/hew
-  * hew-sir 0.11.1 — https://github.com/hew-lang/hew
-  * hew-std 0.11.1 — https://github.com/hew-lang/hew
-  * hew-symbolize 0.11.1 — https://github.com/hew-lang/hew
-  * hew-testutil 0.11.1
-  * hew-types 0.11.1 — https://github.com/hew-lang/hew
-  * hew-wasm 0.11.1 — https://github.com/hew-lang/hew
-  * hew-std-text-template 0.11.1 — https://github.com/hew-lang/hew
-  * xtask 0.11.1 — https://github.com/hew-lang/hew
+  * hew-analysis 0.11.2 — https://github.com/hew-lang/hew
+  * hew-cabi 0.11.2 — https://github.com/hew-lang/hew
+  * hew-calendar 0.11.2 — https://github.com/hew-lang/hew
+  * hew-capability-gen 0.11.2 — https://github.com/hew-lang/hew
+  * hew-cli 0.11.2 — https://github.com/hew-lang/hew
+  * hew-codec 0.11.2 — https://github.com/hew-lang/hew
+  * hew-codegen-rs 0.11.2 — https://github.com/hew-lang/hew
+  * hew-compile 0.11.2 — https://github.com/hew-lang/hew
+  * hew-debug-abi 0.11.2 — https://github.com/hew-lang/hew
+  * hew-expand 0.11.2 — https://github.com/hew-lang/hew
+  * hew-hir 0.11.2 — https://github.com/hew-lang/hew
+  * hew-lexer 0.11.2 — https://github.com/hew-lang/hew
+  * hew-lib 0.11.2
+  * hew-live 0.11.2 — https://github.com/hew-lang/hew
+  * hew-lsp 0.11.2 — https://github.com/hew-lang/hew
+  * hew-mir 0.11.2 — https://github.com/hew-lang/hew
+  * hew-observe 0.11.2 — https://github.com/hew-lang/hew
+  * hew-observe-protocol 0.11.2 — https://github.com/hew-lang/hew
+  * hew-parity-gen 0.11.2 — https://github.com/hew-lang/hew
+  * hew-parser 0.11.2 — https://github.com/hew-lang/hew
+  * hew-pkg 0.11.2 — https://github.com/hew-lang/hew
+  * hew-runtime 0.11.2 — https://github.com/hew-lang/hew
+  * hew-runtime-testkit 0.11.2 — https://github.com/hew-lang/hew
+  * hew-sir 0.11.2 — https://github.com/hew-lang/hew
+  * hew-std 0.11.2 — https://github.com/hew-lang/hew
+  * hew-symbolize 0.11.2 — https://github.com/hew-lang/hew
+  * hew-testutil 0.11.2
+  * hew-types 0.11.2 — https://github.com/hew-lang/hew
+  * hew-wasm 0.11.2 — https://github.com/hew-lang/hew
+  * hew-std-text-template 0.11.2 — https://github.com/hew-lang/hew
+  * xtask 0.11.2 — https://github.com/hew-lang/hew
   * allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
   * anes 0.1.6 — https://github.com/zrzka/anes-rs
   * anyhow 1.0.104 — https://github.com/dtolnay/anyhow

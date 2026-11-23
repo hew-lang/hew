@@ -420,8 +420,32 @@ mod tests {
     use super::*;
     use std::thread;
 
+    struct WheelTestGuard {
+        _simtime: std::sync::MutexGuard<'static, ()>,
+        _ticker: std::sync::MutexGuard<'static, ()>,
+        _runtime: crate::RuntimeTestGuard,
+    }
+
+    /// Serialize semaphore deadline tests against process-wide runtime cleanup,
+    /// periodic wheel shutdown, and simulated time toggles in canonical lock order.
+    fn wheel_test_guard() -> WheelTestGuard {
+        let runtime = crate::runtime_test_guard();
+        let ticker = crate::timer_periodic::TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let simtime = crate::deterministic::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        WheelTestGuard {
+            _simtime: simtime,
+            _ticker: ticker,
+            _runtime: runtime,
+        }
+    }
+
     #[test]
     fn cloned_handles_share_permits_and_survive_independent_close() {
+        let _guard = wheel_test_guard();
         let original = hew_semaphore_new(0);
         // SAFETY: each returned Box is a distinct owner; the operation keeps
         // its backing after the original handle closes.
@@ -447,6 +471,7 @@ mod tests {
 
     #[test]
     fn release_reserves_one_permit_and_abandonment_hands_it_on() {
+        let _guard = wheel_test_guard();
         let sem = hew_semaphore_new(0);
         let (first_ready, first_waker) = crate::wake::blocking::Readiness::new();
         let (second_ready, second_waker) = crate::wake::blocking::Readiness::new();
@@ -469,6 +494,7 @@ mod tests {
 
     #[test]
     fn cancellation_racing_release_preserves_exactly_one_permit() {
+        let _guard = wheel_test_guard();
         for _ in 0..64 {
             let sem = hew_semaphore_new(0);
             let (_, waker) = crate::wake::blocking::Readiness::new();
@@ -496,6 +522,7 @@ mod tests {
 
     #[test]
     fn timeout_and_release_have_one_winner() {
+        let _guard = wheel_test_guard();
         for timeout_first in [false, true] {
             let sem = hew_semaphore_new(0);
             let (ready, waker) = crate::wake::blocking::Readiness::new();
@@ -526,6 +553,7 @@ mod tests {
 
     #[test]
     fn pending_operation_retains_backing_and_detaches_its_timer() {
+        let _guard = wheel_test_guard();
         let sem = hew_semaphore_new(0);
         let (_, waker) = crate::wake::blocking::Readiness::new();
         // SAFETY: this test uniquely owns both handles; only the timer owns an
@@ -544,6 +572,7 @@ mod tests {
 
     #[test]
     fn unavailable_deadline_wheel_is_a_fault_and_releases_the_wait() {
+        let _guard = wheel_test_guard();
         let sem = hew_semaphore_new(0);
         let (ready, waker) = crate::wake::blocking::Readiness::new();
         // SAFETY: the test owns all handles. A null wheel deliberately exercises
@@ -659,6 +688,7 @@ mod tests {
 
     #[test]
     fn acquire_timeout_expires() {
+        let _guard = wheel_test_guard();
         let sem = hew_semaphore_new(0);
         // SAFETY: `sem` was just created above.
         unsafe {
@@ -670,6 +700,7 @@ mod tests {
 
     #[test]
     fn acquire_timeout_succeeds() {
+        let _guard = wheel_test_guard();
         let sem = hew_semaphore_new(1);
         // SAFETY: `sem` was just created above.
         unsafe {

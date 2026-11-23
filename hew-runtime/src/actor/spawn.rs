@@ -155,15 +155,23 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
     // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
     unsafe {
         if let Some(start) = config.native_state_release {
-            assert!(!config.rejected_state_release.is_null());
-            config
-                .rejected_state_release
-                .write(crate::release_walker::HewReleaseCursor::payload(
-                    config.state,
-                    config.state_size,
-                    start,
-                    true,
-                ));
+            if config.rejected_state_release.is_null() {
+                if !config.state.is_null() {
+                    if let Some(drop) = config.state_drop_fn {
+                        drop(config.state);
+                    }
+                }
+                crate::mem::buf_free(config.state);
+            } else {
+                config.rejected_state_release.write(
+                    crate::release_walker::HewReleaseCursor::payload(
+                        config.state,
+                        config.state_size,
+                        start,
+                        true,
+                    ),
+                );
+            }
         } else {
             if !config.state.is_null() {
                 if let Some(drop) = config.state_drop_fn {
@@ -176,6 +184,36 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
             crate::mem::buf_free(init_state);
         }
         free_spawn_mailbox(config.mailbox);
+    }
+}
+
+unsafe fn release_rejected_native_state(
+    state: *mut c_void,
+    size: usize,
+    state_drop: unsafe extern "C" fn(*mut c_void),
+    state_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
+    fault: *mut *mut crate::fault::HewFault,
+    fault_code: i32,
+) {
+    // SAFETY: caller transfers rejected state ownership and writable optional out-pointers.
+    unsafe {
+        if let Some(start) = state_release {
+            if !rejected_state_release.is_null() {
+                rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
+                    state, size, start, true,
+                ));
+            } else if !state.is_null() {
+                state_drop(state);
+                crate::mem::buf_free(state);
+            }
+        } else if !state.is_null() {
+            state_drop(state);
+            crate::mem::buf_free(state);
+        }
+        if !fault.is_null() {
+            *fault = crate::fault::hew_fault_new(fault_code);
+        }
     }
 }
 
@@ -449,15 +487,17 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
         unsafe {
-            if let Some(start) = state_release {
-                rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
-                    (*raw).state,
-                    (*raw).state_size,
-                    start,
-                    true,
-                ));
-                (*raw).state = ptr::null_mut();
-                (*raw).state_drop_consumed.store(true, Ordering::Release);
+            if !rejected_state_release.is_null() {
+                if let Some(start) = state_release {
+                    rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
+                        (*raw).state,
+                        (*raw).state_size,
+                        start,
+                        true,
+                    ));
+                    (*raw).state = ptr::null_mut();
+                    (*raw).state_drop_consumed.store(true, Ordering::Release);
+                }
             }
             free_actor_resources(raw);
         };
@@ -490,8 +530,15 @@ pub unsafe extern "C" fn hew_actor_spawn(
         return ptr::null_mut();
     }
 
-    // SAFETY: hew_mailbox_new returns a valid pointer.
+    // SAFETY: hew_mailbox_new returns a valid pointer or null on OOM.
     let mailbox = unsafe { mailbox::hew_mailbox_new() };
+    if mailbox.is_null() {
+        if !actor_state.is_null() {
+            // SAFETY: `actor_state` was allocated above by `deep_copy_state`.
+            unsafe { crate::mem::buf_free(actor_state) };
+        }
+        return ptr::null_mut();
+    }
     // SAFETY: mailbox pointer is valid.
     unsafe {
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
@@ -546,12 +593,19 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
         let policy = parse_overflow_policy(opts.overflow);
-        // SAFETY: Returns a valid pointer.
+        // SAFETY: Returns a valid pointer or null on OOM.
         unsafe { mailbox::hew_mailbox_new_with_policy(capacity, policy) }
     } else {
-        // SAFETY: Returns a valid pointer.
+        // SAFETY: Returns a valid pointer or null on OOM.
         unsafe { mailbox::hew_mailbox_new() }
     };
+    if mailbox.is_null() {
+        if !actor_state.is_null() {
+            // SAFETY: `actor_state` was allocated above by `deep_copy_state`.
+            unsafe { crate::mem::buf_free(actor_state) };
+        }
+        return ptr::null_mut();
+    }
     let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
     // SAFETY: mailbox pointer is valid.
     unsafe {
@@ -654,12 +708,19 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
         let policy = parse_overflow_policy(opts.overflow);
-        // SAFETY: Returns a valid pointer.
+        // SAFETY: Returns a valid pointer or null on OOM.
         unsafe { mailbox::hew_mailbox_new_with_policy(capacity, policy) }
     } else {
-        // SAFETY: Returns a valid pointer.
+        // SAFETY: Returns a valid pointer or null on OOM.
         unsafe { mailbox::hew_mailbox_new() }
     };
+    if mailbox.is_null() {
+        if !cloned_state.is_null() {
+            // SAFETY: matches this function's documented null-return ownership contract.
+            unsafe { crate::mem::buf_free(cloned_state) };
+        }
+        return ptr::null_mut();
+    }
     let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
     // SAFETY: mailbox pointer is valid.
     unsafe {
@@ -755,24 +816,38 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         // SAFETY: generated code supplies a writable optional cursor output.
         unsafe { rejected_state_release.write(ptr::null_mut()) };
     }
+    if construction.is_null() {
+        // SAFETY: construction is null; release caller-owned state and fail closed.
+        unsafe {
+            release_rejected_native_state(
+                state,
+                size,
+                state_drop,
+                state_release,
+                rejected_state_release,
+                fault,
+                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+            );
+        }
+        return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let Ok(_ingress) = crate::shutdown::admit_external_work() else {
         // SAFETY: publication was refused; the caller drains transferred state.
         unsafe {
-            if let Some(start) = state_release {
-                rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
-                    state, size, start, true,
-                ));
-            } else {
-                state_drop(state);
-                crate::mem::buf_free(state);
-            }
-            *fault =
-                crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+            release_rejected_native_state(
+                state,
+                size,
+                state_drop,
+                state_release,
+                rejected_state_release,
+                fault,
+                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED,
+            );
         }
         return crate::lifetime::local_handles::HewLocalPidId::INVALID;
     };
-    // SAFETY: constructors return an owned native mailbox.
+    // SAFETY: constructors return an owned native mailbox or null on OOM.
     let mailbox = unsafe {
         if capacity > 0 {
             mailbox::hew_mailbox_new_with_policy(
@@ -783,6 +858,21 @@ pub unsafe extern "C" fn hew_actor_construct_native(
             mailbox::hew_mailbox_new()
         }
     };
+    if mailbox.is_null() {
+        // SAFETY: mailbox allocation failed; release caller-owned state and fail closed.
+        unsafe {
+            release_rejected_native_state(
+                state,
+                size,
+                state_drop,
+                state_release,
+                rejected_state_release,
+                fault,
+                crate::internal::types::HewError::ErrOom as i32,
+            );
+        }
+        return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+    }
     // Configure coalescing before the actor is published: no sender can reach
     // this mailbox yet, so the key matcher is in place for the first send.
     if coalesce_match.is_some() {
@@ -842,38 +932,34 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         })
     };
     if actor.is_null() {
-        // SAFETY: the generated caller provides a writable empty fault slot.
-        unsafe {
-            *fault = crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
-        };
+        if !fault.is_null() {
+            // SAFETY: the caller provides a writable empty fault slot.
+            unsafe {
+                *fault =
+                    crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
+            };
+        }
         crate::lifetime::local_handles::HewLocalPidId::INVALID
     } else {
+        let raw_actor = actor;
         // SAFETY: construction owns its context and the new actor cannot dispatch.
         unsafe {
-            let actor = &*actor;
+            let actor = &*raw_actor;
             if let Some(owner) = actor
                 .native_completion
                 .as_ref()
                 .and_then(|completion| completion.cleanup.value_owner.as_ref())
             {
-                owner.bind_incarnation(std::ptr::from_ref(actor).cast_mut());
+                owner.bind_incarnation(raw_actor);
             }
             let construction = &mut *construction;
-            construction.execution_mut().actor_turn =
-                live_actors::ActorIncarnation::of(std::ptr::from_ref(actor).cast_mut());
-            *actor
-                .native_completion
-                .as_ref()
-                .expect("native completion")
-                .construction
-                .lock_or_recover() =
-                Some(crate::coro_state::RetainedCancellation::new(construction));
-            if mailbox::mailbox_is_closed(actor.mailbox.cast()) {
-                actor
-                    .native_completion
-                    .as_ref()
-                    .expect("native completion")
-                    .cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+            construction.execution_mut().actor_turn = live_actors::ActorIncarnation::of(raw_actor);
+            if let Some(completion) = actor.native_completion.as_ref() {
+                *completion.construction.lock_or_recover() =
+                    Some(crate::coro_state::RetainedCancellation::new(construction));
+                if mailbox::mailbox_is_closed(actor.mailbox.cast()) {
+                    completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+                }
             }
             crate::lifetime::local_handles::hew_actor_handle_retain(actor.local_pid_id)
         }
@@ -881,8 +967,6 @@ pub unsafe extern "C" fn hew_actor_construct_native(
 }
 
 /// Publish a successfully initialized actor and enable its queued messages.
-/// # Panics
-/// Panics if the supplied actor has no native completion owner.
 /// # Safety
 /// The construction invocation still uniquely owns the actor's initialized state.
 #[no_mangle]
@@ -893,13 +977,18 @@ pub unsafe extern "C" fn hew_actor_publish_native(
     construction: *mut crate::coro_state::HewCoroState,
     fault: *mut *mut crate::fault::HewFault,
 ) -> i32 {
+    if construction.is_null() {
+        return 1;
+    }
     let Some(id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return 1;
     };
     live_actors::with_actor_send_by_id(id, |raw| {
         // SAFETY: the guard pins the actor; its constructor is the sole state owner.
         let actor = unsafe { &*raw };
-        let completion = actor.native_completion.as_ref().expect("native completion");
+        let Some(completion) = actor.native_completion.as_ref() else {
+            return 1;
+        };
         let mut registration = completion.construction.lock_or_recover();
         // SAFETY: construction retains its context and the actor retains its mailbox.
         let cancelled = unsafe {
@@ -907,26 +996,33 @@ pub unsafe extern "C" fn hew_actor_publish_native(
                 || mailbox::mailbox_is_closed(actor.mailbox.cast())
         };
         if cancelled {
-            // SAFETY: the caller supplies an empty fault output.
-            unsafe {
-                *fault = crate::fault::hew_fault_new(
-                    crate::coro_state::hew_coro_state_cancel_code(construction),
-                );
+            if !fault.is_null() {
+                // SAFETY: the caller supplies an empty fault output.
+                unsafe {
+                    *fault = crate::fault::hew_fault_new(
+                        crate::coro_state::hew_coro_state_cancel_code(construction),
+                    );
+                }
             }
             return 1;
         }
         let handlers = if periodic_count == 0 {
             &[]
+        } else if periodic.is_null() {
+            return 1;
         } else {
             // SAFETY: generated code provides this static descriptor slice.
             unsafe { std::slice::from_raw_parts(periodic, periodic_count) }
         };
         // SAFETY: the actor is pinned and undispatchable until publication.
         if !unsafe { crate::timer_periodic::start_actor_periodic(raw, handlers) } {
-            // SAFETY: the caller provides an empty fault output.
-            unsafe {
-                *fault =
-                    crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
+            if !fault.is_null() {
+                // SAFETY: the caller provides an empty fault output.
+                unsafe {
+                    *fault = crate::fault::hew_fault_new(
+                        crate::internal::types::HewError::ErrOom as i32,
+                    );
+                }
             }
             return 1;
         }
@@ -957,8 +1053,6 @@ pub unsafe extern "C" fn hew_actor_publish_native(
 }
 
 /// Return failed construction to the actor's ordinary terminal cleanup owner.
-/// # Panics
-/// Panics if the supplied actor has no native completion owner.
 /// # Safety
 /// Init/start have finished and no frame still borrows the actor's state.
 #[no_mangle]
@@ -966,13 +1060,16 @@ pub unsafe extern "C" fn hew_actor_abort_construction(
     token: crate::lifetime::local_handles::HewLocalPidId,
     construction: *mut crate::coro_state::HewCoroState,
 ) {
+    cabi_guard!(construction.is_null());
     let Some(id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return;
     };
     live_actors::with_actor_send_by_id(id, |raw| {
         // SAFETY: the guard retains the exclusively constructed actor.
         let actor = unsafe { &*raw };
-        let completion = actor.native_completion.as_ref().expect("native completion");
+        let Some(completion) = actor.native_completion.as_ref() else {
+            return;
+        };
         completion.construction.lock_or_recover().take();
         completion.construction_budget.lock_or_recover().take();
         completion.cleanup.set_stop_release(None);
@@ -1331,8 +1428,15 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         return ptr::null_mut();
     }
 
-    // SAFETY: Returns a valid pointer.
+    // SAFETY: Returns a valid pointer or null on OOM.
     let mailbox = unsafe { mailbox::hew_mailbox_new_bounded(capacity) };
+    if mailbox.is_null() {
+        if !actor_state.is_null() {
+            // SAFETY: `actor_state` was allocated above by `deep_copy_state`.
+            unsafe { crate::mem::buf_free(actor_state) };
+        }
+        return ptr::null_mut();
+    }
     // SAFETY: mailbox pointer is valid.
     unsafe {
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);

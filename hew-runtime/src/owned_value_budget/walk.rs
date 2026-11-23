@@ -310,6 +310,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static DESCENDANTS: AtomicUsize = AtomicUsize::new(0);
+    static WALK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     unsafe extern "C" fn tree(
         slot: *const c_void,
@@ -351,6 +352,9 @@ mod tests {
 
     #[test]
     fn graph_aliases_skip_descendants_until_last_owner_release() {
+        let _guard = WALK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let owner = ValueOwner::new(Some(24));
         let other = ValueOwner::new(Some(24));
         let nodes = [1_usize, 2];
@@ -391,6 +395,9 @@ mod tests {
 
     #[test]
     fn refused_descendant_rolls_back_parent_and_reservation() {
+        let _guard = WALK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let owner = ValueOwner::new(Some(16));
         let nodes = [3_usize, 4];
         let layout = layout();

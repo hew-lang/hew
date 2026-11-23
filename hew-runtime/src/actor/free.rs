@@ -685,8 +685,12 @@ pub(crate) unsafe fn free_actor_resources(actor: *mut HewActor) {
         crate::mem::buf_free(a.init_state);
     }
 
-    if !a.arena.is_null() {
-        let arena_ptr = a.arena;
+    // Snapshot remaining fields before mutating `*actor` so no `&HewActor`
+    // reference overlaps later field writes or `Box::from_raw(actor)`.
+    let arena_ptr = a.arena;
+    let mb = a.mailbox.cast::<HewMailbox>();
+
+    if !arena_ptr.is_null() {
         // Null the slot BEFORE freeing — defense-in-depth per LESSONS row
         // `raii-null-after-move`.  Any straggler reader that holds only
         // `actor` (not a cached copy) now fails closed at the C-ABI
@@ -703,7 +707,6 @@ pub(crate) unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     unregister_actor_state_lock(actor);
 
-    let mb = a.mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
         // Observation point for the teardown-ordering proof. This is the last
         // instruction before the actor's system queue is destroyed, so a test
@@ -1527,12 +1530,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
     let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
     let Ok(s) = cstr.to_str() else { return };
     let name = s.to_owned();
-    // Convert the void pointer to the dispatch function type for registration.
-    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
-    // back to the correct function pointer type. This is safe as long as the caller
-    // passed a valid dispatch function pointer.
-    let dispatch_fn: Option<HewDispatchFn> = unsafe { std::mem::transmute(dispatch) };
-    crate::profiler::actor_registry::register_dispatch_type(dispatch_fn, name);
+    crate::profiler::actor_registry::register_dispatch_type_addr(dispatch as usize, name);
 }
 
 /// No-op stub for non-profiler native builds.
@@ -1590,12 +1588,11 @@ pub unsafe extern "C" fn hew_register_handler_name(
     // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
     let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
     let Ok(s) = cstr.to_str() else { return };
-    // Convert the void pointer to the dispatch function type for registration.
-    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
-    // back to the correct function pointer type. This is safe as long as the caller
-    // passed a valid dispatch function pointer.
-    let dispatch_fn: Option<HewDispatchFn> = unsafe { std::mem::transmute(dispatch) };
-    crate::profiler::actor_registry::register_handler_name(dispatch_fn, msg_type, s.to_owned());
+    crate::profiler::actor_registry::register_handler_name_addr(
+        dispatch as usize,
+        msg_type,
+        s.to_owned(),
+    );
 }
 
 /// No-op stub for non-profiler native builds.
@@ -3608,6 +3605,7 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
 pub unsafe extern "C" fn hew_actor_self_token(
     state: *const crate::coro_state::HewCoroState,
 ) -> usize {
+    cabi_guard!(state.is_null(), 0);
     // SAFETY: the generated call retains its invocation throughout this read.
     let target = unsafe { &*state }.execution().actor_turn;
     crate::lifetime::live_actors::with_live_incarnation(target, |actor| {

@@ -254,6 +254,10 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
 ) -> *mut HewSupervisorConstruction {
     // SAFETY: The caller transfers config and lends readable descriptors and a retained waker; this operation owns the private parent.
     unsafe {
+        if waker.is_null() || (child_count != 0 && children.is_null()) {
+            super::pool::release_unadopted_config(config, config_drop);
+            return ptr::null_mut();
+        }
         // A zero-child supervisor may arrive from C as `(NULL, 0)`. Rust raw
         // slices still require a non-null aligned pointer at length zero, so
         // branch before constructing the borrowed slice.
@@ -370,6 +374,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
     op: *mut HewSupervisorConstruction,
     cancellation: c_int,
 ) -> c_int {
+    cabi_guard!(op.is_null(), 1);
     // SAFETY: The caller exclusively owns this live operation, its retained parent and boxed invocation through final rollback.
     unsafe {
         let op = &mut *op;
@@ -474,9 +479,6 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
 
 /// Transfer the final result or diagnostic exactly once.
 ///
-/// # Panics
-/// Panics if called before final completion or more than once.
-///
 /// # Safety
 /// `op` is final, untaken, and fault points to a writable empty slot.
 #[no_mangle]
@@ -484,10 +486,23 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_take(
     op: *mut HewSupervisorConstruction,
     fault: *mut *mut HewFault,
 ) -> HewLocalPidId {
+    if op.is_null() || fault.is_null() {
+        if !fault.is_null() {
+            // SAFETY: caller supplied a non-null out-slot.
+            unsafe { *fault = ptr::null_mut() };
+        }
+        return HewLocalPidId::INVALID;
+    }
     // SAFETY: The caller owns the final operation and lends its empty output fault slot for this one transfer.
     unsafe {
         let op = &mut *op;
-        assert!(op.final_state && !op.taken);
+        if !op.final_state || op.taken {
+            eprintln!(
+                "fatal: hew_supervisor_native_spawn_take called out of lifecycle order (final={}, taken={})",
+                op.final_state, op.taken
+            );
+            std::process::abort();
+        }
         op.taken = true;
         *fault = std::mem::replace(&mut op.fault, ptr::null_mut());
         op.result
@@ -496,17 +511,21 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_take(
 
 /// Release a final operation after result transfer.
 ///
-/// # Panics
-/// Panics if called before final completion and result transfer.
-///
 /// # Safety
 /// `op` is final, taken, and exclusively owned.
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_spawn_free(op: *mut HewSupervisorConstruction) {
+    cabi_guard!(op.is_null());
     // SAFETY: The caller transfers the final, taken operation exactly once.
     unsafe {
         let op = Box::from_raw(op);
-        assert!(op.final_state && op.taken);
+        if !op.final_state || !op.taken {
+            eprintln!(
+                "fatal: hew_supervisor_native_spawn_free called out of lifecycle order (final={}, taken={})",
+                op.final_state, op.taken
+            );
+            std::process::abort();
+        }
     }
 }
 
@@ -825,6 +844,7 @@ pub(crate) unsafe fn native_spawn_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn zero_child_supervisor_accepts_c_null_empty_array_without_ub() {
@@ -1240,6 +1260,67 @@ mod tests {
             assert!(!crate::shutdown::is_supervisor_registered_for_test(parent));
             assert_eq!(destroyed.load(Ordering::Acquire), 1);
             assert_eq!(dropped.load(Ordering::Acquire), 1);
+        }
+    }
+
+    #[test]
+    fn native_spawn_entry_points_fail_closed_on_null() {
+        static CONFIG_DROPS: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        unsafe extern "C" fn drop_test_config(_p: *mut c_void) {
+            CONFIG_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // SAFETY: config came from buf_try_alloc; null waker/children/op/fault are tested.
+        unsafe {
+            CONFIG_DROPS.store(0, Ordering::SeqCst);
+            let cfg = crate::mem::buf_try_alloc(8);
+            assert!(!cfg.is_null());
+            assert!(hew_supervisor_native_spawn_new(
+                STRATEGY_ONE_FOR_ONE,
+                1,
+                1,
+                cfg,
+                Some(drop_test_config),
+                ptr::null(),
+                0,
+                0,
+                ptr::null(),
+                ptr::null(),
+            )
+            .is_null());
+            assert_eq!(CONFIG_DROPS.load(Ordering::SeqCst), 1);
+
+            let (_ready, waker) = crate::wake::blocking::Readiness::new();
+            let cfg2 = crate::mem::buf_try_alloc(8);
+            assert!(!cfg2.is_null());
+            assert!(hew_supervisor_native_spawn_new(
+                STRATEGY_ONE_FOR_ONE,
+                1,
+                1,
+                cfg2,
+                Some(drop_test_config),
+                ptr::null(),
+                1,
+                0,
+                waker.descriptor(),
+                ptr::null(),
+            )
+            .is_null());
+            assert_eq!(CONFIG_DROPS.load(Ordering::SeqCst), 2);
+
+            assert_eq!(hew_supervisor_native_spawn_poll(ptr::null_mut(), 0), 1);
+            let mut fault = crate::fault::hew_fault_new(1);
+            assert_eq!(
+                hew_supervisor_native_spawn_take(ptr::null_mut(), &raw mut fault),
+                HewLocalPidId::INVALID
+            );
+            assert!(fault.is_null());
+            assert_eq!(
+                hew_supervisor_native_spawn_take(ptr::null_mut(), ptr::null_mut()),
+                HewLocalPidId::INVALID
+            );
+            hew_supervisor_native_spawn_free(ptr::null_mut());
         }
     }
 }

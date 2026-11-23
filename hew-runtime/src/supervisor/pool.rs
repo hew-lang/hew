@@ -559,11 +559,11 @@ pub(super) unsafe fn release_unadopted_config(
     config: *mut c_void,
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
 ) {
-    if let Some(drop_fn) = config_drop {
-        // SAFETY: the caller still owns the unadopted config and its fields.
-        unsafe { drop_fn(config) };
-    }
     if !config.is_null() {
+        if let Some(drop_fn) = config_drop {
+            // SAFETY: the caller still owns the unadopted config and its fields.
+            unsafe { drop_fn(config) };
+        }
         // SAFETY: generated construction allocated this buffer with buf_malloc.
         unsafe { crate::mem::buf_free(config) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
@@ -656,12 +656,14 @@ pub unsafe extern "C" fn hew_supervisor_native_pool_count(
             return roster.child_count as i64;
         }
     }
-    // SAFETY: the caller provides a writable, empty fault slot.
-    unsafe {
-        *fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
-            crate::internal::types::HEW_TRAP_USER_PANIC,
-            "supervisor pool is no longer available".into(),
-        )));
+    if !fault.is_null() {
+        // SAFETY: the caller provides a writable, empty fault slot.
+        unsafe {
+            *fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+                crate::internal::types::HEW_TRAP_USER_PANIC,
+                "supervisor pool is no longer available".into(),
+            )));
+        }
     }
     0
 }
@@ -2305,5 +2307,27 @@ mod tests {
 
         unsafe { hew_supervisor_stop(sup) };
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn release_unadopted_config_and_native_pool_count_handle_null() {
+        static DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        unsafe extern "C" fn drop_cfg(_p: *mut c_void) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // SAFETY: null config must not call drop_fn; null fault must not be written.
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            super::release_unadopted_config(ptr::null_mut(), Some(drop_cfg));
+            assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                super::hew_supervisor_native_pool_count(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    ptr::null_mut(),
+                ),
+                0
+            );
+        }
     }
 }

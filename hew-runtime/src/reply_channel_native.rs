@@ -191,6 +191,9 @@ pub unsafe extern "C" fn hew_reply_channel_new_native(
     reply_release: Option<HewValueReleaseStart>,
     layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewReplyChannel {
+    if waker.is_null() {
+        return ptr::null_mut();
+    }
     let channel = hew_reply_channel_new();
     // SAFETY: the new channel is exclusively owned and the descriptor is live.
     unsafe {
@@ -226,6 +229,9 @@ pub unsafe extern "C" fn hew_reply_channel_poll_native(
     expected_size: usize,
     output: *mut c_void,
 ) -> i32 {
+    if channel.is_null() || (expected_size != 0 && output.is_null()) {
+        return AskError::SendFailed as i32;
+    }
     // SAFETY: observing shares the same unique receiver and expected layout.
     let status = unsafe { hew_reply_channel_status_native(channel, expected_size) };
     if status != AskError::None as i32 {
@@ -261,6 +267,9 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
     channel: *mut HewReplyChannel,
     expected_size: usize,
 ) -> i32 {
+    if channel.is_null() {
+        return AskError::SendFailed as i32;
+    }
     // SAFETY: the caller owns the receiver reference. The ready acquire publishes
     // the sender's payload and classification before either is inspected.
     unsafe {
@@ -383,6 +392,11 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
 ) -> i32 {
     // SAFETY: this call owns the complete payload, including every failure leg.
     unsafe {
+        if channel.is_null() {
+            drop_payload(payload);
+            crate::mem::buf_free(payload);
+            return AskError::SendFailed as i32;
+        }
         let envelope = crate::mailbox::hew_msg_envelope_new(payload, size, Some(drop_payload));
         if envelope.is_null() {
             drop_payload(payload);
@@ -466,7 +480,7 @@ pub(crate) unsafe fn cancel_take_release(channel: *mut HewReplyChannel) -> *mut 
 /// # Safety
 /// The result slot remains live until the returned cursor is fully consumed.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_reply_native(
+pub unsafe extern "C-unwind" fn hew_actor_reply_native(
     value: *mut c_void,
     size: usize,
     drop_reply: Option<HewReplyDropFn>,
@@ -482,6 +496,9 @@ pub unsafe extern "C" fn hew_actor_reply_native(
             if !(*channel).cancelled.load(Ordering::Acquire) {
                 let copied = if size == 0 {
                     ptr::null_mut()
+                } else if value.is_null() {
+                    super::hew_reply_channel_mark_allocation_failed(channel);
+                    ptr::null_mut()
                 } else {
                     super::alloc_reply_buffer(size)
                 };
@@ -492,7 +509,7 @@ pub unsafe extern "C" fn hew_actor_reply_native(
                     (*channel).value = copied;
                     (*channel).value_size = size;
                     delivered = true;
-                } else {
+                } else if !value.is_null() {
                     super::hew_reply_channel_mark_allocation_failed(channel);
                 }
                 (*channel).ready.store(true, Ordering::Release);
@@ -520,11 +537,13 @@ pub unsafe extern "C" fn hew_actor_reply_native(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::TestExecutionContext;
     use crate::reply_channel::{
         hew_reply, hew_reply_channel_cancel, hew_reply_channel_publish_crash_fallback,
         hew_reply_channel_retire_orphaned_ask_sender_ref,
     };
     use crate::wake::blocking::Readiness;
+    use crate::HewExecutionContext;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
 
@@ -816,6 +835,77 @@ mod tests {
                 );
                 hew_reply_channel_free(channel);
             }
+        }
+    }
+
+    #[test]
+    fn native_reply_entry_points_fail_closed_on_null() {
+        static DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        unsafe extern "C" fn drop_payload(_p: *mut c_void) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // SAFETY: every entry point rejects null safely; allocated payload is freed on failure.
+        unsafe {
+            assert!(hew_reply_channel_new_native(ptr::null(), None, None, ptr::null()).is_null());
+            assert_eq!(
+                hew_reply_channel_status_native(ptr::null_mut(), 8),
+                AskError::SendFailed as i32
+            );
+            assert_eq!(
+                hew_reply_channel_poll_native(ptr::null_mut(), 8, ptr::null_mut()),
+                AskError::SendFailed as i32
+            );
+
+            // Null `output` with non-zero expected_size rejects before consuming ready payload.
+            let (_ready, waker) = Readiness::new();
+            let ch = hew_reply_channel_new_native(waker.descriptor(), None, None, ptr::null());
+            hew_reply_channel_retain(ch);
+            let mut v = 42_u64;
+            assert!(hew_reply(ch, (&raw mut v).cast(), size_of::<u64>()));
+            assert_eq!(
+                hew_reply_channel_poll_native(ch, size_of::<u64>(), ptr::null_mut()),
+                AskError::SendFailed as i32
+            );
+            // Payload must still be present and consumable afterward.
+            let mut out = 0_u64;
+            assert_eq!(
+                hew_reply_channel_poll_native(ch, size_of::<u64>(), (&raw mut out).cast()),
+                AskError::None as i32
+            );
+            assert_eq!(out, 42);
+            hew_reply_channel_free(ch);
+
+            // Null `channel` to hew_actor_ask_submit_native drops and frees payload.
+            DROPS.store(0, Ordering::SeqCst);
+            let buf = crate::mem::buf_try_alloc(8);
+            assert!(!buf.is_null());
+            assert_eq!(
+                hew_actor_ask_submit_native(
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                    1,
+                    buf,
+                    8,
+                    drop_payload,
+                    ptr::null_mut(),
+                ),
+                AskError::SendFailed as i32
+            );
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+
+            // hew_actor_reply_native with null payload and non-zero size fails safely without UB.
+            let ch2 = hew_reply_channel_new_native(waker.descriptor(), None, None, ptr::null());
+            hew_reply_channel_retain(ch2);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                reply_channel: ch2.cast(),
+                ..HewExecutionContext::default()
+            });
+            assert!(hew_actor_reply_native(ptr::null_mut(), 16, None, None).is_null());
+            assert_eq!(
+                hew_reply_channel_poll_native(ch2, 0, ptr::null_mut()),
+                AskError::SendFailed as i32
+            );
+            hew_reply_channel_free(ch2);
         }
     }
 }

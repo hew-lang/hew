@@ -2874,6 +2874,7 @@ mod tests {
 
     #[test]
     fn channel_write_read_roundtrip() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: all FFI calls use valid pointers from prior creation calls.
         unsafe {
             let pair = hew_stream_channel(8);
@@ -2895,6 +2896,7 @@ mod tests {
 
     #[test]
     fn channel_multiple_items_preserve_order() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: all FFI calls use valid pointers from prior creation calls.
         unsafe {
             let pair = hew_stream_channel(8);
@@ -3184,6 +3186,7 @@ mod tests {
 
     #[test]
     fn stream_next_view_reuses_buffer_across_calls() {
+        let _guard = crate::runtime_test_guard();
         // Two items written through a channel; one buffer reused for both reads.
         // SAFETY: channel stream + buffer are valid.
         unsafe {
@@ -3561,6 +3564,7 @@ mod tests {
 
     #[test]
     fn pipe_transfers_all_items_and_finishes_the_sink() {
+        let _guard = crate::runtime_test_guard();
         let data = b"piped content";
         // SAFETY: all FFI calls use valid pointers.
         unsafe {
@@ -3876,6 +3880,7 @@ mod tests {
 
     #[test]
     fn large_write_read_roundtrip_via_channel() {
+        let _guard = crate::runtime_test_guard();
         // 64 KiB of patterned data — verifies no off-by-one in length handling.
         let large: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
         // SAFETY: all FFI calls use valid pointers.
@@ -3935,6 +3940,7 @@ mod tests {
 
     #[test]
     fn channel_concurrent_producer_consumer() {
+        let _guard = crate::runtime_test_guard();
         // SAFETY: all FFI calls use valid pointers.
         unsafe {
             let pair = hew_stream_channel(2);

@@ -13,10 +13,6 @@
 //!
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 //! - [`sched_try_wake`] — wake a parked worker thread.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -393,6 +389,11 @@ impl Scheduler {
     /// Mirrors the placeholder discriminator in `init_real_scheduler_for_test`.
     pub(crate) fn is_worker_backed(&self) -> bool {
         !self.stealers.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_shutdown_for_test(&self) {
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 
@@ -1180,22 +1181,28 @@ pub(crate) use crate::mailbox::{MESSAGES_RECEIVED, MESSAGES_SENT};
 
 /// Push an owned queue entry onto the work-stealing queue and wake a worker.
 pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
-    let sched = get_scheduler().expect("scheduler not initialized");
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     sched_enqueue_owned_inner(sched, entry);
 }
 
 /// Publish ready work on the same worker pool as actor activations.
 pub(crate) fn enqueue_work(task: std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>) {
-    let sched = get_scheduler().expect("scheduler not initialized");
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     sched.task_queue.push(task);
     sched_try_wake();
 }
 
 pub(crate) fn sched_enqueue(actor: *mut HewActor) {
-    let sched = get_scheduler().expect("scheduler not initialized");
     if actor.is_null() {
         return;
     }
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
     // SAFETY: every production caller holds a live actor while transferring
     // that lifetime to the scheduler queue entry.
     let entry = unsafe { SchedulerQueueEntry::retain(actor) };

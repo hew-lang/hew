@@ -374,6 +374,7 @@ mod tests {
 
     #[test]
     fn simulated_time() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         hew_simtime_enable(1000);
         assert_eq!(hew_simtime_is_enabled(), 1);
@@ -475,6 +476,7 @@ mod tests {
 
     #[test]
     fn full_reset() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_set_seed(99);
         hew_simtime_enable(5000);

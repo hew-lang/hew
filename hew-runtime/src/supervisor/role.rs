@@ -658,6 +658,7 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
     role_kind: c_int,
     waker: *const crate::wake::HewWaker,
 ) -> *mut HewNativeRestartWait {
+    cabi_guard!(waker.is_null(), ptr::null_mut());
     // SAFETY: the caller keeps its wake descriptor live during retention.
     let waker = Arc::new(unsafe { crate::wake::OwnedWaker::retain(&*waker) });
     let mut root = owner;
@@ -701,6 +702,7 @@ pub unsafe extern "C" fn hew_actor_restart_wait_new(
     use crate::lifetime::local_handles::{
         current_actor_role_owner_slot, HewLocalPidId, SupervisorRoleKind,
     };
+    cabi_guard!(waker.is_null(), ptr::null_mut());
     let (owner, slot, kind) = current_actor_role_owner_slot(token).unwrap_or((
         HewLocalPidId::INVALID,
         0,
@@ -730,6 +732,7 @@ pub unsafe extern "C" fn hew_actor_restart_wait_new(
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
     wait: *const HewNativeRestartWait,
 ) -> c_int {
+    cabi_guard!(wait.is_null(), 1);
     // SAFETY: the caller owns the wait until it is freed.
     let wait = unsafe { &*wait };
     let Some(root_pin) = crate::lifetime::local_handles::pin_current_supervisor(wait.root) else {
@@ -820,6 +823,7 @@ fn restart_wait_owner_is_current(
 /// The caller transfers its unique wait owner.
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewNativeRestartWait) {
+    cabi_guard!(wait.is_null());
     // SAFETY: the caller relinquishes the unique owner.
     drop(unsafe { Box::from_raw(wait) });
 }
@@ -868,6 +872,32 @@ pub unsafe fn test_wait_for_restart(
         }
     }
     usize::try_from(*count).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_restart_wait_entry_points_fail_closed_on_null() {
+        // SAFETY: guarded C-ABI entry points accept null safely.
+        unsafe {
+            assert!(hew_supervisor_native_restart_wait_new(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                0,
+                0,
+                ptr::null(),
+            )
+            .is_null());
+            assert!(hew_actor_restart_wait_new(
+                crate::lifetime::local_handles::HewLocalPidId::INVALID,
+                ptr::null(),
+            )
+            .is_null());
+            assert_eq!(hew_supervisor_native_restart_wait_poll(ptr::null()), 1);
+            hew_supervisor_native_restart_wait_free(ptr::null_mut());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1534,10 +1534,12 @@ pub fn lower_program(
                 );
                 continue;
             };
-            let mut source = source.clone();
-            source.name = Ident::new(&canonical_name); // TRANSITION(P1): deleted by A1 commit 2
-            let Some(decl) = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)
-            else {
+            let Some(decl) = ctx.lower_type_decl_with_identity(
+                source,
+                &canonical_name,
+                span.clone(),
+                declaration,
+            ) else {
                 continue;
             };
             ctx.type_classes

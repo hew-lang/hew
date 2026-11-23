@@ -1873,3 +1873,41 @@ fn callable_tuple_chains_remain_depth_bounded() {
         "deep tuple+element chain should widen to AnyMember: {tuple_candidates:#?}"
     );
 }
+
+#[test]
+fn deep_widened_callable_field_does_not_forge_send_across_fork() {
+    use std::fmt::Write as _;
+
+    let depth = 34;
+    let mut source = String::from(
+        "type Boxed { f: fn() -> i64; }\n\
+         type Nest<T> { val: T; }\n\
+         type Root<T> { deep: T; good: fn() -> i64; }\n\
+         fn good() -> i64 { 1 }\n\
+         fn test_deep(consume b0: fn() -> i64) {\n",
+    );
+    for level in 1..=depth {
+        writeln!(source, "    let b{level} = Nest {{ val: b{} }};", level - 1).unwrap();
+    }
+    let val_chain = ".val".repeat(depth);
+    writeln!(
+        source,
+        "    let c = Root {{ deep: b{depth}, good: good }};\n\
+             let b = Boxed {{ f: c.deep{val_chain} }};\n\
+             let task = fork {{ (b.f)() }};\n\
+             let _ = await task;\n\
+         }}\n\
+         fn main() {{}}\n"
+    )
+    .unwrap();
+    let output = check_source(&source);
+    assert!(
+        !output.errors.is_empty()
+            && output
+                .errors
+                .iter()
+                .all(|error| error.kind == TypeErrorKind::InvalidSend),
+        "expected only InvalidSend rejection for deep widened opaque callable: {:#?}",
+        output.errors
+    );
+}

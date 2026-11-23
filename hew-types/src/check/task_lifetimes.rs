@@ -1415,9 +1415,16 @@ impl Checker {
             }
             CallableCandidate::AnyMember(receiver) => {
                 environments.incomplete += 1;
-                environments
-                    .origins
-                    .read(receiver, &[Projection::Descendants], actuals)
+                let mut origins = vec![ValueOrigin {
+                    candidate: candidate.clone(),
+                    actuals,
+                }];
+                origins.extend(environments.origins.read(
+                    receiver,
+                    &[Projection::Descendants],
+                    actuals,
+                ));
+                origins
             }
             CallableCandidate::Element { receiver, index } => {
                 let mut path = projections.to_vec();
@@ -1557,6 +1564,10 @@ impl Checker {
                 let owner = match callee.candidate {
                     CallableCandidate::Declaration(id) => EffectBody::Declaration(id),
                     CallableCandidate::Closure(site) => EffectBody::Closure(site),
+                    CallableCandidate::AnyMember(_) => {
+                        environments.incomplete += 1;
+                        return vec![callee];
+                    }
                     _ => return Vec::new(),
                 };
                 let outputs = if receiver_output {

@@ -2894,7 +2894,11 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
         );
         ctx.canonical_std_source_type_identities
             .insert(name.to_string());
-        let opaque = ResolvedTy::named_opaque_path(&ctx.defs, name, vec![]);
+        let opaque = ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(builtin),
+            args: vec![],
+            is_opaque: true,
+        };
         assert_eq!(ctx.restore_type_declaration_facts(opaque.clone()), opaque);
     }
 }

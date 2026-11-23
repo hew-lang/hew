@@ -1232,18 +1232,6 @@ impl ResolvedTy {
         }
     }
 
-    /// An `#[opaque]` named type spelled by a declaration path.
-    ///
-    /// TRANSITION(A1): see [`Self::named_path`].
-    #[must_use]
-    pub fn named_opaque_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
-        ResolvedTy::Named {
-            head: Self::path_head(defs, path),
-            args,
-            is_opaque: true,
-        }
-    }
-
     /// A declared nominal minted in this thread's fixture table.
     #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]

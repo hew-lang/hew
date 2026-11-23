@@ -379,24 +379,20 @@ impl LintCtx<'_> {
 /// it.
 #[must_use]
 pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
-    let lines: Vec<&str> = source.lines().collect();
-    if lines.is_empty() {
+    let mut lines = lines_up_to(source, span_start);
+    let Some(construct_line) = lines.next() else {
         return false;
-    }
-    let construct_line = line_index_at(source, span_start).min(lines.len() - 1);
-
-    if comment_allows(lines[construct_line], id) {
+    };
+    if comment_allows(construct_line, id) {
         return true;
     }
-    let mut idx = construct_line;
-    while idx > 0 {
-        idx -= 1;
-        let trimmed = lines[idx].trim_start();
+    for line in lines {
+        let trimmed = line.trim_start();
         if trimmed.is_empty() {
             continue;
         }
         if trimmed.starts_with("//") {
-            if comment_allows(lines[idx], id) {
+            if comment_allows(line, id) {
                 return true;
             }
             continue;
@@ -406,15 +402,21 @@ pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool
     false
 }
 
-/// 0-based index of the line containing byte offset `offset` (clamped to the
-/// source length), counting `\n` terminators so it aligns with [`str::lines`].
-fn line_index_at(source: &str, offset: usize) -> usize {
+/// The lines of `source` from the one containing byte offset `offset`
+/// (clamped to the source) back to the first, split as [`str::lines`] splits
+/// them. The walk is lazy, so a query costs the lines it reads rather than the
+/// whole file.
+fn lines_up_to(source: &str, offset: usize) -> impl Iterator<Item = &str> {
     let clamped = offset.min(source.len());
-    source
-        .bytes()
-        .take(clamped)
-        .filter(|&byte| byte == b'\n')
-        .count()
+    // Searched by byte so an offset inside a character stays valid.
+    let end = source.as_bytes()[clamped..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(source.len(), |at| clamped + at);
+    // Past a final newline there is no further line: `str::lines` ends at it.
+    let head = source[..end].strip_suffix('\n').unwrap_or(&source[..end]);
+    head.rsplit('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
 }
 
 /// Whether `line`'s comment carries a `// hew:allow(...)` directive naming `id`
@@ -859,6 +861,43 @@ fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             for (_, value) in fields {
                 walk_expr(&value.0, &value.1, visitor);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{directive_suppresses, LintId};
+
+    const ID: LintId = LintId::NeedlessRangeLoop;
+
+    #[test]
+    fn a_directive_applies_on_its_line_and_through_comments_and_blanks_above() {
+        let source = "fn f() {\n    // hew:allow(needless_range_loop)\n\n    // note\n    for i in 0..n {}\n    g() // hew:allow(all)\r\n}\n";
+        let loop_at = source.find("for").unwrap();
+        let call_at = source.find("g()").unwrap();
+        assert!(directive_suppresses(source, loop_at, ID));
+        assert!(directive_suppresses(source, call_at, ID));
+        // Code between the directive and the construct ends the search.
+        assert!(!directive_suppresses(
+            source,
+            source.rfind('}').unwrap(),
+            ID
+        ));
+        assert!(!directive_suppresses(source, 0, ID));
+        // An offset past a final newline belongs to the last line.
+        let trailing = "x // hew:allow(all)\n";
+        assert!(directive_suppresses(trailing, trailing.len(), ID));
+        assert!(!directive_suppresses("", 0, ID));
+    }
+
+    #[test]
+    fn a_directive_query_reads_only_the_lines_it_needs() {
+        // One query per construct over a long file must not rescan the
+        // whole source each time.
+        let source = "let x = 1;\n".repeat(200_000);
+        for at in (0..source.len()).step_by(11) {
+            assert!(!directive_suppresses(&source, at, ID));
         }
     }
 }

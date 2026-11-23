@@ -523,7 +523,6 @@ impl RefsVisitor<'_> {
                     self.push_pattern_matches(p, s);
                 }
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),

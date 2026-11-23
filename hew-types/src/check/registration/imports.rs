@@ -298,7 +298,7 @@ impl Checker {
         decl: &ImportDecl,
         importer: Option<&str>,
     ) {
-        let module_name = decl.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+        let module_name = decl.path.to_string();
         let owner = match module_name.as_str() {
             "std.failure" => "std.failure",
             "std.link_monitor" => "std.link_monitor",
@@ -568,7 +568,7 @@ impl Checker {
                 |path| format!("file:{path}"),
             )
         } else {
-            decl.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+            decl.path.to_string()
         };
         let mut seen = HashSet::new();
         let mut valid = true;
@@ -735,7 +735,7 @@ impl Checker {
                 }
             }
         }
-        let module_path = decl.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+        let module_path = decl.path.to_string();
 
         // Retain immutable loader metadata independently of the registry borrow
         // before registering mutable checker declarations and diagnostics.
@@ -1014,11 +1014,11 @@ impl Checker {
                     .to_string();
                 let full_dot_path = resolved_module_owner
                     .clone()
-                    .unwrap_or_else(|| decl.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                                                               // `resolved_items` can be supplied directly by a module
-                                                               // loader without a separately traversed graph node. Preserve
-                                                               // the same source-derived authority before publishing its
-                                                               // function metadata into the importer.
+                    .unwrap_or_else(|| decl.path.to_string());
+                // `resolved_items` can be supplied directly by a module
+                // loader without a separately traversed graph node. Preserve
+                // the same source-derived authority before publishing its
+                // function metadata into the importer.
                 self.record_canonical_std_module_source(
                     &full_dot_path,
                     &decl.resolved_source_paths,

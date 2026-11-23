@@ -424,7 +424,6 @@ impl Checker {
             Pattern::Tuple(patterns) if info.ctor == Ctor::Product => {
                 Self::positional_row(patterns, info)
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -438,7 +437,6 @@ impl Checker {
                     Vec::new()
                 }
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),

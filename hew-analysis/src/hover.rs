@@ -818,7 +818,6 @@ fn find_pattern_binding_type(
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name.name.as_str() == word).then(|| source_ty.clone()),
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -833,7 +832,6 @@ fn find_pattern_binding_type(
                     })
             })
         }
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),

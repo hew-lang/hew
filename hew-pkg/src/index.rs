@@ -383,16 +383,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_json_line() {
-        let entry = sample_entry("alice.router", "1.0.0");
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.name, "alice.router");
-        assert_eq!(parsed.vers, "1.0.0");
-        assert!(!parsed.yanked.is_yanked());
-    }
-
-    #[test]
     fn parse_yanked_entry() {
         let json = r#"{"name":"evil.pkg","vers":"1.0.0","deps":[],"features":{},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z","yanked":true,"yanked_reason":"CVE-2026-1234"}"#;
         let entry: IndexEntry = serde_json::from_str(json).unwrap();
@@ -487,53 +477,36 @@ mod tests {
     }
 
     #[test]
-    fn entry_with_deps() {
-        let mut entry = sample_entry("alice.router", "1.0.0");
-        entry.deps.push(IndexDep {
-            name: "std.net.http".to_string(),
-            req: "^2.0".to_string(),
-            features: vec![],
-            optional: false,
-            default_features: true,
-            registry: None,
-        });
+    fn deprecation_deps_and_features_wire_contract() {
+        let full_dep: DeprecationInfo = serde_json::from_str(
+            r#"{"deprecated":true,"message":"Use alice.router instead","successor":"alice.router"}"#,
+        )
+        .unwrap();
+        assert!(full_dep.deprecated);
+        assert_eq!(
+            full_dep.message.as_deref(),
+            Some("Use alice.router instead")
+        );
+        assert_eq!(full_dep.successor.as_deref(), Some("alice.router"));
 
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.deps.len(), 1);
-        assert_eq!(parsed.deps[0].name, "std.net.http");
-        assert_eq!(parsed.deps[0].req, "^2.0");
+        let min_dep: DeprecationInfo = serde_json::from_str(r#"{"deprecated":true}"#).unwrap();
+        assert!(min_dep.deprecated);
+        assert_eq!(min_dep.message, None);
+        assert_eq!(min_dep.successor, None);
+        let serialized_min = serde_json::to_string(&min_dep).unwrap();
+        assert!(!serialized_min.contains("message"));
+        assert!(!serialized_min.contains("successor"));
+
+        let raw_entry = r#"{"name":"alice.router","vers":"1.0.0","deps":[{"name":"std.net.http","req":"^2.0"},{"name":"std.tls","req":"^1.0","features":["rustls"],"optional":true,"default_features":false}],"features":{"default":["json"],"json":[],"tls":["std.crypto"]},"cksum":"sha256:x","sig":"ed25519:y","key_fp":"SHA256:z"}"#;
+        let parsed: IndexEntry = serde_json::from_str(raw_entry).unwrap();
+        assert_eq!(parsed.deps.len(), 2);
         assert!(parsed.deps[0].default_features);
-    }
-
-    #[test]
-    fn entry_with_features() {
-        let mut entry = sample_entry("pkg", "1.0.0");
-        entry
-            .features
-            .insert("default".to_string(), vec!["json".to_string()]);
-        entry.features.insert("json".to_string(), vec![]);
-        entry
-            .features
-            .insert("tls".to_string(), vec!["std.crypto".to_string()]);
-
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: IndexEntry = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.deps[0].optional);
+        assert!(!parsed.deps[1].default_features);
+        assert!(parsed.deps[1].optional);
+        assert_eq!(parsed.deps[1].features, vec!["rustls"]);
         assert_eq!(parsed.features["default"], vec!["json"]);
         assert!(parsed.features["json"].is_empty());
         assert_eq!(parsed.features["tls"], vec!["std.crypto"]);
-    }
-
-    #[test]
-    fn deprecation_info_serialization() {
-        let info = DeprecationInfo {
-            deprecated: true,
-            message: Some("Use alice.router instead".to_string()),
-            successor: Some("alice.router".to_string()),
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        let parsed: DeprecationInfo = serde_json::from_str(&json).unwrap();
-        assert!(parsed.deprecated);
-        assert_eq!(parsed.successor.as_deref(), Some("alice.router"));
     }
 }

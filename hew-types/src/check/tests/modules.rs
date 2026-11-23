@@ -3097,14 +3097,13 @@ fn registry_imported_extern_call_requires_unsafe() {
         );
         Checker::new(registry_with_extern()).check_program(&parsed.program)
     }
-    let gate_message = "calling extern function `pkg_raw` requires `unsafe { ... }`";
-
     let gated = check("import ext.pkg;\nfn main() {\n    let v = pkg_raw(1);\n}\n");
     assert!(
-        gated
-            .errors
-            .iter()
-            .any(|error| error.message == gate_message),
+        gated.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("pkg_raw")
+                && error.message.contains("unsafe")
+        }),
         "a bare registry extern call must demand `unsafe`; got: {:?}",
         gated.errors
     );

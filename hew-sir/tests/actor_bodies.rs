@@ -625,3 +625,56 @@ fn nested_stop_deadlines_preserve_declared_spawn_identities() {
         "{errors:#?}"
     );
 }
+
+#[test]
+fn completion_receivers_borrow_stable_places_and_snapshot_effectful_arguments() {
+    for (argument, expected) in [
+        ("7", hew_sir::OwnKind::Guaranteed),
+        ("{ target = second; 7 }", hew_sir::OwnKind::Owned),
+    ] {
+        let semantic = lower_source(&format!(
+            "actor Counter {{ let base: i64; receive fn add(n: i64) -> i64 {{ base + n }} }}
+             fn main() {{
+                 let first = spawn Counter {{ base: 1 }};
+                 let second = spawn Counter {{ base: 100 }};
+                 var target = first;
+                 let result = target.add({argument});
+             }}"
+        ));
+        assert!(verify_module(&semantic).is_empty());
+        let (function, target) = semantic
+            .functions
+            .iter()
+            .find_map(|function| {
+                function.blocks.iter().find_map(|block| {
+                    if let SemTerminator::Suspend {
+                        kind: hew_sir::SuspendKind::Ask { .. },
+                        inputs,
+                        ..
+                    } = &block.terminator
+                    {
+                        Some((function, inputs[0].operand.value))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .expect("completion call");
+        let owner = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .flat_map(|operation| &operation.results)
+            .map(|value| (value.id, value.own))
+            .chain(
+                function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.args)
+                    .map(|value| (value.value, value.own)),
+            )
+            .find(|(value, _)| *value == target)
+            .expect("target definition");
+        assert_eq!(owner.1, expected, "argument: {argument}");
+    }
+}

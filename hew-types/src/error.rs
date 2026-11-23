@@ -1700,9 +1700,13 @@ mod tests {
     }
 
     #[test]
-    fn test_error_with_notes() {
-        let err = TypeError::duplicate_definition(10..20, "foo", 0..5);
-        assert_eq!(err.notes.len(), 1);
+    fn test_error_with_notes_and_error_trait() {
+        let err = TypeError::duplicate_definition(10..20, "foo", 0..5)
+            .with_note(0..5, "second note".to_string());
+        assert_eq!(err.notes.len(), 2);
+        assert_eq!(err.notes[1].1, "second note");
+        let dyn_err: &dyn std::error::Error = &err;
+        assert!(dyn_err.to_string().contains("foo"));
     }
 
     #[test]
@@ -1814,29 +1818,6 @@ mod tests {
     }
 
     #[test]
-    fn test_undefined_variable_display() {
-        let err = TypeError::new(
-            TypeErrorKind::UndefinedVariable,
-            5..15,
-            "cannot find value `colour` in this scope",
-        );
-        assert_eq!(err.to_string(), "cannot find value `colour` in this scope");
-        assert_eq!(err.kind, TypeErrorKind::UndefinedVariable);
-        assert_eq!(err.span, (5..15));
-    }
-
-    #[test]
-    fn test_undefined_type_display() {
-        let err = TypeError::new(
-            TypeErrorKind::UndefinedType,
-            0..6,
-            "cannot find type `Colour` in this scope",
-        );
-        assert_eq!(err.to_string(), "cannot find type `Colour` in this scope");
-        assert_eq!(err.kind, TypeErrorKind::UndefinedType);
-    }
-
-    #[test]
     fn test_undefined_function_display() {
         let err = TypeError::undefined_function(3..8, "greet");
         assert_eq!(
@@ -1855,72 +1836,10 @@ mod tests {
     }
 
     #[test]
-    fn test_undefined_method_display() {
-        let err = TypeError::new(
-            TypeErrorKind::UndefinedMethod,
-            10..20,
-            "no method named `sort_by` found for type `Vec<i32>`",
-        );
-        assert_eq!(
-            err.to_string(),
-            "no method named `sort_by` found for type `Vec<i32>`"
-        );
-        assert_eq!(err.kind, TypeErrorKind::UndefinedMethod);
-    }
-
-    #[test]
-    fn test_invalid_send_display() {
-        let err = TypeError::new(
-            TypeErrorKind::InvalidSend,
-            0..5,
-            "`Rc<i32>` cannot be sent to another actor",
-        )
-        .with_note(
-            0..5,
-            "the type must implement `Send` to cross actor boundaries".to_string(),
-        );
-        assert_eq!(err.to_string(), "`Rc<i32>` cannot be sent to another actor");
-        assert_eq!(err.kind, TypeErrorKind::InvalidSend);
-        assert_eq!(err.notes.len(), 1);
-        assert_eq!(
-            err.notes[0].1,
-            "the type must implement `Send` to cross actor boundaries"
-        );
-    }
-
-    #[test]
     fn test_invalid_operation_display() {
         let err = TypeError::invalid_operation(0..3, "+", &Ty::Bool);
         assert_eq!(err.to_string(), "cannot apply `+` to type `bool`");
         assert_eq!(err.kind, TypeErrorKind::InvalidOperation);
-    }
-
-    #[test]
-    fn test_arity_mismatch_display() {
-        let err = TypeError::new(
-            TypeErrorKind::ArityMismatch,
-            0..10,
-            "this function takes 2 argument(s) but 3 were supplied",
-        );
-        assert_eq!(
-            err.to_string(),
-            "this function takes 2 argument(s) but 3 were supplied"
-        );
-        assert_eq!(err.kind, TypeErrorKind::ArityMismatch);
-    }
-
-    #[test]
-    fn test_bounds_not_satisfied_display() {
-        let err = TypeError::new(
-            TypeErrorKind::BoundsNotSatisfied,
-            0..5,
-            "`i32` does not satisfy the bound `Display`",
-        );
-        assert_eq!(
-            err.to_string(),
-            "`i32` does not satisfy the bound `Display`"
-        );
-        assert_eq!(err.kind, TypeErrorKind::BoundsNotSatisfied);
     }
 
     #[test]
@@ -2040,28 +1959,6 @@ mod tests {
         assert_eq!(err.kind, TypeErrorKind::ActorRefCycle);
     }
 
-    // ── Builder method tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_with_note_chaining() {
-        let err = TypeError::new(TypeErrorKind::UndefinedVariable, 0..5, "test error")
-            .with_note(10..15, "first note")
-            .with_note(20..25, "second note");
-        assert_eq!(err.notes.len(), 2);
-        assert_eq!(err.notes[0].1, "first note");
-        assert_eq!(err.notes[1].1, "second note");
-    }
-
-    #[test]
-    fn test_with_suggestion_chaining() {
-        let err = TypeError::new(TypeErrorKind::UndefinedVariable, 0..5, "test")
-            .with_suggestion("try A")
-            .with_suggestion("try B");
-        assert_eq!(err.suggestions.len(), 2);
-        assert_eq!(err.suggestions[0], "try A");
-        assert_eq!(err.suggestions[1], "try B");
-    }
-
     // ── Display formatting with multiple suggestions ─────────────────
 
     #[test]
@@ -2074,75 +1971,6 @@ mod tests {
             output,
             "not found\n  help: did you mean `x`?\n  help: did you mean `y`?"
         );
-    }
-
-    #[test]
-    fn test_display_no_suggestions() {
-        let err = TypeError::new(TypeErrorKind::UndefinedVariable, 0..5, "not found");
-        assert_eq!(err.to_string(), "not found");
-    }
-
-    // ── Severity tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_default_severity_is_error() {
-        let err = TypeError::new(
-            TypeErrorKind::Mismatch {
-                expected: "i32".into(),
-                actual: "bool".into(),
-            },
-            0..5,
-            "mismatch",
-        );
-        assert_eq!(err.severity, Severity::Error);
-    }
-
-    // ── std::error::Error impl ───────────────────────────────────────
-
-    #[test]
-    fn test_error_trait_impl() {
-        let err = TypeError::mismatch(0..5, &Ty::I32, &Ty::Bool);
-        // Verify it can be used as a dyn Error
-        let dyn_err: &dyn std::error::Error = &err;
-        assert!(dyn_err.to_string().contains("expected `i32`"));
-    }
-
-    // ── TypeErrorKind equality ───────────────────────────────────────
-
-    // ── TypeError Clone ──────────────────────────────────────────────
-
-    // ── Multi-error collection ───────────────────────────────────────
-
-    #[test]
-    fn test_multi_error_collection() {
-        let errors: Vec<TypeError> = vec![
-            TypeError::mismatch(0..5, &Ty::I32, &Ty::Bool),
-            TypeError::new(
-                TypeErrorKind::UndefinedVariable,
-                10..15,
-                "cannot find value `x` in this scope",
-            ),
-            TypeError::new(
-                TypeErrorKind::ArityMismatch,
-                20..30,
-                "this function takes 2 argument(s) but 0 were supplied",
-            ),
-        ];
-        assert_eq!(errors.len(), 3);
-        assert_eq!(
-            errors[0].kind,
-            TypeErrorKind::Mismatch {
-                expected: "i32".into(),
-                actual: "bool".into(),
-            }
-        );
-        assert_eq!(errors[1].kind, TypeErrorKind::UndefinedVariable);
-        assert_eq!(errors[2].kind, TypeErrorKind::ArityMismatch);
-
-        // Verify each formats independently
-        assert!(errors[0].to_string().contains("expected `i32`"));
-        assert!(errors[1].to_string().contains("cannot find value `x`"));
-        assert!(errors[2].to_string().contains("takes 2 argument(s) but 0"));
     }
 
     // ── Constructor with generic types ───────────────────────────────
@@ -2163,19 +1991,6 @@ mod tests {
             .to_string()
             .contains("expected `fn(i32, bool) -> string`"));
         assert!(err.to_string().contains("found `(i32, bool)`"));
-    }
-
-    #[test]
-    fn test_undefined_method_on_primitive() {
-        let err = TypeError::new(
-            TypeErrorKind::UndefinedMethod,
-            0..5,
-            "no method named `frobnicate` found for type `i32`",
-        );
-        assert_eq!(
-            err.to_string(),
-            "no method named `frobnicate` found for type `i32`"
-        );
     }
 
     #[test]

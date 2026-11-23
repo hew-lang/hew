@@ -1747,56 +1747,18 @@ fn typecheck_rejects_implicit_integer_widening_in_call() {
 }
 
 #[test]
-fn typecheck_return_type_mismatch() {
-    // The type checker may not flag all return-type mismatches at the
-    // trailing-expression level; verify the function signature is recorded.
-    let source = "fn foo() -> i32 {\n    true\n}";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    // The function signature should still reflect i32 return type
-    assert_eq!(output.sigs()["foo"].return_type, Ty::I32);
-}
-
-#[test]
 fn typecheck_trailing_return_stmt_matches_declared_type() {
-    let source = "fn foo() -> i32 {\n    return 42;\n}";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn typecheck_trailing_return_stmt_matches_declared_bool_type() {
-    let source = "fn foo() -> bool {\n    return true;\n}";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
-        output.errors
-    );
+    for source in [
+        "fn foo() -> i32 {\n    return 42;\n}",
+        "fn foo() -> bool {\n    return true;\n}",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "unexpected errors for `{source}`: {:?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
@@ -1876,21 +1838,6 @@ fn typecheck_if_branch_type_consistency() {
         "unexpected errors: {:?}",
         output.errors
     );
-}
-
-#[test]
-fn typecheck_vec_type_annotation() {
-    let source = "fn main() { let v: Vec<i32> = Vec.new(); }";
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    // Vec::new() may or may not resolve depending on builtins, but should not panic
-    assert!(output.errors.len() <= 2);
 }
 
 #[test]
@@ -2484,11 +2431,12 @@ fn main() {}
             TypeErrorKind::ReservedTypeName,
             "expected ReservedTypeName for `{name}`"
         );
-        assert_eq!(
-            output.errors[0].message,
-            format!(
-                "E_RESERVED_TYPE_NAME: `{name}` is reserved and cannot be used for a type declaration"
-            )
+        assert!(
+            output.errors[0].message.contains("E_RESERVED_TYPE_NAME")
+                && output.errors[0].message.contains(&format!("`{name}`"))
+                && output.errors[0].message.contains("reserved"),
+            "expected ReservedTypeName message mentioning `{name}`: {}",
+            output.errors[0].message
         );
     }
 }

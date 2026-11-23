@@ -221,16 +221,4 @@ mod tests {
             hew_cabi::string::string_release(s);
         }
     }
-
-    #[test]
-    fn write_empty_string() {
-        // SAFETY: null is the canonical managed empty string.
-        unsafe { hew_io_write(std::ptr::null()) };
-    }
-
-    #[test]
-    fn write_err_empty_string() {
-        // SAFETY: null is the canonical managed empty string.
-        unsafe { hew_io_write_err(std::ptr::null()) };
-    }
 }

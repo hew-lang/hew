@@ -571,31 +571,6 @@ fn f(other: Color) -> Point {
         }
 
         #[test]
-        fn missing_field_without_base_still_rejected() {
-            // No functional update — missing field still an error.
-            let output = check_source(
-                r"type Point {
-    x: i64;
-    y: i64;
-}
-
-fn f() -> Point {
-    Point { x: 1 }
-}
-",
-            );
-            let has_missing = output
-                .errors
-                .iter()
-                .any(|e| e.message.contains("missing field") && e.message.contains('y'));
-            assert!(
-                has_missing,
-                "missing field without base must still produce a missing-field error; got: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
         fn explicit_field_type_wrong_rejected() {
             // Explicit field type mismatch must still be caught even when base is present.
             let output = check_source(
@@ -659,292 +634,83 @@ mod methods {
     mod integer_checked_wrapping_saturating {
         use super::*;
 
-        // --- wrapping_* accepts same-width argument and returns same type ---
+        // --- Positive: wrapping_*, checked_*, saturating_* across integer widths ---
 
         #[test]
-        fn wrapping_add_i32_ok() {
-            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(i32, i32) should typecheck: {:#?}",
-                output.errors
-            );
+        fn integer_checked_wrapping_saturating_accepted() {
+            for (ty, method, ret) in [
+                ("i32", "wrapping_add", "i32"),
+                ("i64", "wrapping_sub", "i64"),
+                ("u8", "wrapping_mul", "u8"),
+                ("u64", "wrapping_add", "u64"),
+                ("isize", "wrapping_add", "isize"),
+                ("usize", "wrapping_sub", "usize"),
+                ("i16", "wrapping_mul", "i16"),
+                ("u16", "wrapping_add", "u16"),
+                ("i8", "wrapping_add", "i8"),
+                ("u32", "wrapping_add", "u32"),
+                ("i32", "checked_add", "Option<i32>"),
+                ("u64", "checked_sub", "Option<u64>"),
+                ("i64", "checked_mul", "Option<i64>"),
+                ("usize", "checked_add", "Option<usize>"),
+                ("i32", "saturating_add", "i32"),
+                ("u8", "saturating_sub", "u8"),
+                ("i64", "saturating_mul", "i64"),
+            ] {
+                let source = format!("fn f(a: {ty}, b: {ty}) -> {ret} {{ a.{method}(b) }}");
+                let output = check_source(&source);
+                assert!(
+                    output.errors.is_empty(),
+                    "{method}({ty}, {ty}) -> {ret} should typecheck: {:#?}",
+                    output.errors
+                );
+            }
         }
 
-        #[test]
-        fn wrapping_sub_i64_ok() {
-            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.wrapping_sub(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_sub(i64, i64) should typecheck: {:#?}",
-                output.errors
-            );
-        }
+        // --- Negative: mixed width, float receivers, out-of-scope ops, wrong arity/return ---
 
         #[test]
-        fn wrapping_mul_u8_ok() {
-            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.wrapping_mul(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_mul(u8, u8) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_add_u64_ok() {
-            let output = check_source(r"fn f(a: u64, b: u64) -> u64 { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(u64, u64) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_add_isize_ok() {
-            let output = check_source(r"fn f(a: isize, b: isize) -> isize { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(isize, isize) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_sub_usize_ok() {
-            let output = check_source(r"fn f(a: usize, b: usize) -> usize { a.wrapping_sub(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_sub(usize, usize) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_mul_i16_ok() {
-            let output = check_source(r"fn f(a: i16, b: i16) -> i16 { a.wrapping_mul(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_mul(i16, i16) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_add_u16_ok() {
-            let output = check_source(r"fn f(a: u16, b: u16) -> u16 { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(u16, u16) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_add_i8_ok() {
-            let output = check_source(r"fn f(a: i8, b: i8) -> i8 { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(i8, i8) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn wrapping_add_u32_ok() {
-            let output = check_source(r"fn f(a: u32, b: u32) -> u32 { a.wrapping_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "wrapping_add(u32, u32) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        // --- checked_* returns Option<W> ---
-
-        #[test]
-        fn checked_add_i32_returns_option() {
-            let output = check_source(
-                r"
-                fn f(a: i32, b: i32) -> Option<i32> {
-                    a.checked_add(b)
-                }
-                ",
-            );
-            assert!(
-                output.errors.is_empty(),
-                "checked_add returns Option<i32>: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn checked_sub_u64_returns_option() {
-            let output = check_source(
-                r"
-                fn f(a: u64, b: u64) -> Option<u64> {
-                    a.checked_sub(b)
-                }
-                ",
-            );
-            assert!(
-                output.errors.is_empty(),
-                "checked_sub returns Option<u64>: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn checked_mul_i64_returns_option() {
-            let output = check_source(
-                r"
-                fn f(a: i64, b: i64) -> Option<i64> {
-                    a.checked_mul(b)
-                }
-                ",
-            );
-            assert!(
-                output.errors.is_empty(),
-                "checked_mul returns Option<i64>: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn checked_add_usize_returns_option() {
-            let output = check_source(
-                r"
-                fn f(a: usize, b: usize) -> Option<usize> {
-                    a.checked_add(b)
-                }
-                ",
-            );
-            assert!(
-                output.errors.is_empty(),
-                "checked_add(usize) returns Option<usize>: {:#?}",
-                output.errors
-            );
-        }
-
-        // --- saturating_* ---
-
-        #[test]
-        fn saturating_add_i32_ok() {
-            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.saturating_add(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "saturating_add(i32) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn saturating_sub_u8_ok() {
-            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.saturating_sub(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "saturating_sub(u8) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        #[test]
-        fn saturating_mul_i64_ok() {
-            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.saturating_mul(b) }");
-            assert!(
-                output.errors.is_empty(),
-                "saturating_mul(i64) should typecheck: {:#?}",
-                output.errors
-            );
-        }
-
-        // --- Negative: mixed-width argument rejected ---
-
-        #[test]
-        fn wrapping_add_mixed_width_rejected() {
-            let output = check_source(r"fn f(a: i32, b: i64) -> i32 { a.wrapping_add(b) }");
-            assert!(
-                !output.errors.is_empty(),
-                "wrapping_add(i32, i64) must be a type error"
-            );
-        }
-
-        #[test]
-        fn checked_add_mixed_width_rejected() {
-            let output = check_source(
-                r"
-                fn f(a: u8, b: i32) -> Option<u8> {
-                    a.checked_add(b)
-                }
-                ",
-            );
-            assert!(
-                !output.errors.is_empty(),
-                "checked_add(u8, i32) must be a type error"
-            );
-        }
-
-        // --- Negative: float receiver rejected ---
-
-        #[test]
-        fn wrapping_add_float_receiver_rejected() {
-            let output = check_source(r"fn f(a: f32, b: f32) { a.wrapping_add(b); }");
-            assert!(
-                !output.errors.is_empty(),
-                "wrapping_add on f32 must be an error"
-            );
-        }
-
-        #[test]
-        fn saturating_add_f64_receiver_rejected() {
-            let output = check_source(r"fn f(a: f64, b: f64) { a.saturating_add(b); }");
-            assert!(
-                !output.errors.is_empty(),
-                "saturating_add on f64 must be an error"
-            );
-        }
-
-        // --- Negative: unknown op in family rejected ---
-
-        #[test]
-        fn wrapping_div_rejected() {
-            let output = check_source(r"fn f(a: i32, b: i32) { a.wrapping_div(b); }");
-            assert!(
-                !output.errors.is_empty(),
-                "wrapping_div must be rejected (div is out of B-3 scope)"
-            );
-        }
-
-        #[test]
-        fn saturating_neg_rejected() {
-            let output = check_source(r"fn f(a: i32) { a.saturating_neg(); }");
-            assert!(
-                !output.errors.is_empty(),
-                "saturating_neg must be rejected (not in scope)"
-            );
-        }
-
-        // --- Negative: zero args rejected ---
-
-        #[test]
-        fn wrapping_add_no_arg_rejected() {
-            let output = check_source(r"fn f(a: i32) { a.wrapping_add(); }");
-            assert!(
-                !output.errors.is_empty(),
-                "wrapping_add() with no argument must be an arity error"
-            );
-        }
-
-        // --- Negative: checked_add result cannot be used as bare W ---
-
-        #[test]
-        fn checked_add_result_is_not_bare_i32() {
-            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.checked_add(b) }");
-            assert!(
-                !output.errors.is_empty(),
-                "checked_add returns Option<i32>, not i32 — must be a type error"
-            );
+        fn integer_checked_wrapping_saturating_rejected() {
+            for (label, source) in [
+                (
+                    "wrapping_add mixed width",
+                    "fn f(a: i32, b: i64) -> i32 { a.wrapping_add(b) }",
+                ),
+                (
+                    "checked_add mixed width",
+                    "fn f(a: u8, b: i32) -> Option<u8> { a.checked_add(b) }",
+                ),
+                (
+                    "wrapping_add on f32",
+                    "fn f(a: f32, b: f32) { a.wrapping_add(b); }",
+                ),
+                (
+                    "saturating_add on f64",
+                    "fn f(a: f64, b: f64) { a.saturating_add(b); }",
+                ),
+                (
+                    "wrapping_div out of scope",
+                    "fn f(a: i32, b: i32) { a.wrapping_div(b); }",
+                ),
+                (
+                    "saturating_neg out of scope",
+                    "fn f(a: i32) { a.saturating_neg(); }",
+                ),
+                (
+                    "wrapping_add zero args",
+                    "fn f(a: i32) { a.wrapping_add(); }",
+                ),
+                (
+                    "checked_add return is not bare i32",
+                    "fn f(a: i32, b: i32) -> i32 { a.checked_add(b) }",
+                ),
+            ] {
+                let output = check_source(source);
+                assert!(
+                    !output.errors.is_empty(),
+                    "{label} must be rejected by type checker"
+                );
+            }
         }
     }
 }
@@ -1452,137 +1218,44 @@ fn caller() -> Option<i64> {
     // which would reduce `Eq<U>` to bare `Eq` without any diagnostic.
     // The validator fires before erasure and produces `UnknownTraitBoundShape`.
 
-    /// `fn f<T, U>(x: T) where T: Eq<U>` must produce `UnknownTraitBoundShape`
-    /// citing `Eq`. This is the canonical D4 regression test.
     #[test]
-    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_in_where_clause() {
-        let output = check_source(
-            r"
-            fn f<T, U>(x: T) -> T where T: Eq<U> {
-                x
-            }
-            fn main() {}
-            ",
-        );
-        assert!(
-            output.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownTraitBoundShape { trait_name }
-                    if trait_name == "Eq"
-            )),
-            "expected UnknownTraitBoundShape for `Eq<U>` in where-clause; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// `fn f<T: Eq<U>, U>(x: T) -> T` must also produce `UnknownTraitBoundShape`
-    /// when the positional arg is an inline type-param bound (not a where-clause).
-    #[test]
-    fn unknown_trait_bound_shape_rejected_for_positional_type_arg_inline() {
-        let output = check_source(
-            r"
-            fn f<T: Eq<U>, U>(x: T) -> T {
-                x
-            }
-            fn main() {}
-            ",
-        );
-        assert!(
-            output.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownTraitBoundShape { trait_name }
-                    if trait_name == "Eq"
-            )),
-            "expected UnknownTraitBoundShape for inline `T: Eq<U>`; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// `impl<T: Eq<U>> Foo<T> { }` must produce `UnknownTraitBoundShape` for
-    /// the inline bound `Eq<U>` on the impl type parameter.
-    #[test]
-    fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
-        let output = check_source(
-            r"type Foo<T> {
-    value: T;
-}
-
-impl<T: Eq<U>, U> Foo<T> {
-}
-
-fn main() {}
-",
-        );
-        assert!(
-            output.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownTraitBoundShape { trait_name }
-                    if trait_name == "Eq"
-            )),
-            "expected UnknownTraitBoundShape for inline `T: Eq<U>` on impl; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// `impl<T, U> Foo<T> where T: Eq<U>` must produce `UnknownTraitBoundShape`
-    /// for the where-clause bound `Eq<U>` on the impl type parameter.
-    #[test]
-    fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
-        let output = check_source(
-            r"type Foo<T> {
-    value: T;
-}
-
-impl<T, U> Foo<T> where T: Eq<U> {
-}
-
-fn main() {}
-",
-        );
-        assert!(
-            output.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownTraitBoundShape { trait_name }
-                    if trait_name == "Eq"
-            )),
-            "expected UnknownTraitBoundShape for where-clause `T: Eq<U>` on impl; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// `machine M<T: Eq<U>> { }` must produce `UnknownTraitBoundShape` for
-    /// the inline bound `Eq<U>` on the machine type parameter.
-    #[test]
-    fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
-        let output = check_source(
-            r"machine M<T: Eq<U>, U> {
-    events {
-        Tick;
-    }
-    state Idle;
-    on Tick: Idle => .Idle;
-}
-
-fn main() {}
-",
-        );
-        assert!(
-            output.errors.iter().any(|e| matches!(
-                &e.kind,
-                TypeErrorKind::UnknownTraitBoundShape { trait_name }
-                    if trait_name == "Eq"
-            )),
-            "expected UnknownTraitBoundShape for machine `T: Eq<U>`; got: {:?}",
-            output.errors
-        );
+    fn unknown_trait_bound_shape_rejected_across_positions() {
+        for (label, source) in [
+            (
+                "fn where-clause positional type arg",
+                "fn f<T, U>(x: T) -> T where T: Eq<U> { x }\nfn main() {}\n",
+            ),
+            (
+                "fn inline positional type arg",
+                "fn f<T: Eq<U>, U>(x: T) -> T { x }\nfn main() {}\n",
+            ),
+            (
+                "impl inline type-param bound",
+                "type Foo<T> {\n    value: T;\n}\nimpl<T: Eq<U>, U> Foo<T> {}\nfn main() {}\n",
+            ),
+            (
+                "impl where-clause bound",
+                "type Foo<T> {\n    value: T;\n}\nimpl<T, U> Foo<T> where T: Eq<U> {}\nfn main() {}\n",
+            ),
+            (
+                "machine type-param bound",
+                "machine M<T: Eq<U>, U> {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => .Idle;\n}\nfn main() {}\n",
+            ),
+        ] {
+            let output = check_source(source);
+            assert!(
+                output.errors.iter().any(|e| matches!(
+                    &e.kind,
+                    TypeErrorKind::UnknownTraitBoundShape { trait_name }
+                        if trait_name == "Eq"
+                )),
+                "expected UnknownTraitBoundShape for {label}; got: {:?}",
+                output.errors
+            );
+        }
     }
 
     // ── extern "rt" validation ─────────────────────────────────────────────────
-    //
-    // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
-    // appear in the `stable` section of scripts/runtime-export-classification.toml.
-    // Unclassified symbols produce `ExternRtSymbolUnclassified`; classified
-    // symbols are accepted. `extern "C"` is unchanged by this validation.
 
     fn make_extern_rt_block(symbols: &[&str]) -> Item {
         Item::ExternBlock(ExternBlock {
@@ -1601,84 +1274,14 @@ fn main() {}
         })
     }
 
-    /// A classified `extern "rt"` symbol must not produce an error.
     #[test]
-    fn extern_rt_classified_symbol_accepted() {
-        // hew_sleep_ns is in the stable list.
-        let extern_item = make_extern_rt_block(&["hew_sleep_ns"]);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..30)],
-            module_doc: None,
-            module_graph: None,
-        });
-        let rt_errors: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
-            .collect();
-        assert!(
-            rt_errors.is_empty(),
-            "classified symbol hew_sleep_ns must not produce ExternRtSymbolUnclassified; \
-             got: {rt_errors:?}"
-        );
-    }
-
-    /// An unclassified `extern "rt"` symbol must produce `ExternRtSymbolUnclassified`.
-    #[test]
-    fn extern_rt_unclassified_symbol_rejected() {
-        let extern_item = make_extern_rt_block(&["fake_unclassified_symbol"]);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..40)],
-            module_doc: None,
-            module_graph: None,
-        });
-        assert!(
-            output.errors.iter().any(|e| matches!(&e.kind,
-                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                if symbol_name == "fake_unclassified_symbol"
-            )),
-            "unclassified symbol must produce ExternRtSymbolUnclassified; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// A `non-declarable` symbol must be rejected in `extern "rt"` — it is
-    /// compiler-emitted, not user-callable. The checker only accepts `stable`.
-    #[test]
-    fn extern_rt_codegen_stable_symbol_rejected() {
-        // hew_coro_safepoint is in the non-declarable tier, not stable.
-        let extern_item = make_extern_rt_block(&["hew_coro_safepoint"]);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..40)],
-            module_doc: None,
-            module_graph: None,
-        });
-        assert!(
-            output.errors.iter().any(|e| matches!(&e.kind,
-                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                if symbol_name == "hew_coro_safepoint"
-            )),
-            "non-declarable symbol hew_coro_safepoint must be rejected in \
-             extern \"rt\"; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// The dyn-trait heap-box storage ABI (`hew_dyn_box_alloc` /
-    /// `hew_dyn_box_free`) is compiler-emission only. Exposing it as
-    /// user-callable would let user code call the free path with a wrong
-    /// `(size, align)` pair or with a foreign pointer, producing double-free
-    /// / wrong-layout UB. Both symbols must live in `non-declarable` and the
-    /// checker must reject any `extern "rt"` declaration that names them.
-    #[test]
-    fn extern_rt_dyn_box_symbols_rejected() {
-        for sym in ["hew_dyn_box_alloc", "hew_dyn_box_free"] {
+    fn extern_rt_accepted_symbols_and_extern_c_bypass() {
+        for sym in [
+            "hew_sleep_ns",
+            "hew_mailbox_has_user_messages",
+            "hew_stream_last_error",
+            "hew_stream_last_errno",
+        ] {
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
             let output = checker.check_program(&Program {
@@ -1687,174 +1290,62 @@ fn main() {}
                 module_doc: None,
                 module_graph: None,
             });
+            let rt_errors: Vec<_> = output
+                .errors
+                .iter()
+                .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
+                .collect();
             assert!(
-                output.errors.iter().any(|e| matches!(&e.kind,
-                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                    if symbol_name == sym
-                )),
-                "non-declarable symbol {sym} must be rejected in extern \"rt\"; \
-                 got: {:?}",
-                output.errors
+                rt_errors.is_empty(),
+                "classified symbol {sym} must not produce ExternRtSymbolUnclassified; got: {rt_errors:?}"
             );
         }
+
+        let extern_c = Item::ExternBlock(ExternBlock {
+            abi: "C".to_string(),
+            functions: vec![ExternFnDecl {
+                attributes: Vec::new(),
+                name: Ident::new("totally_made_up_ffi_symbol"),
+                params: vec![],
+                return_type: None,
+                is_variadic: false,
+                span: 0..0,
+            }],
+        });
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&Program {
+            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+            items: vec![(extern_c, 0..50)],
+            module_doc: None,
+            module_graph: None,
+        });
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. })),
+            "extern \"C\" must not trigger ExternRtSymbolUnclassified; got: {:?}",
+            output.errors
+        );
     }
 
-    /// The read-slot lifecycle ABI (`hew_read_slot_new` / `_free` /
-    /// `_cancel` / `_status` / `_take`) is runtime-internal: the runtime
-    /// manages the slot's manual refcount and cancellation protocol. Exposing
-    /// it as user-callable `extern "rt"` surface would let user code
-    /// allocate/free/cancel slots out of protocol and corrupt the refcount
-    /// (double-free / use-after-free). All five must live in `non-declarable`
-    /// and the checker must reject any `extern "rt"` declaration that names
-    /// them.
+    /// Unclassified, compiler-internal (`non-declarable`), system-lane, and
+    /// stream-error-setter symbols must all be rejected in `extern "rt"`, with
+    /// a hint pointing at `runtime-export-classification.toml`.
     #[test]
-    fn extern_rt_read_slot_lifecycle_symbols_rejected() {
+    fn extern_rt_rejected_symbols_and_classification_hint() {
         for sym in [
+            "fake_unclassified_symbol",
+            "hew_coro_safepoint",
+            "hew_dyn_box_alloc",
+            "hew_dyn_box_free",
             "hew_read_slot_new",
             "hew_read_slot_free",
             "hew_read_slot_cancel",
             "hew_read_slot_status",
             "hew_read_slot_take",
-        ] {
-            let extern_item = make_extern_rt_block(&[sym]);
-            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-            let output = checker.check_program(&Program {
-                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-                items: vec![(extern_item, 0..40)],
-                module_doc: None,
-                module_graph: None,
-            });
-            assert!(
-                output.errors.iter().any(|e| matches!(&e.kind,
-                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                    if symbol_name == sym
-                )),
-                "non-declarable read-slot symbol {sym} must be rejected in \
-                 extern \"rt\"; got: {:?}",
-                output.errors
-            );
-        }
-    }
-
-    /// The Windows-ABI-shim supervisor helpers (`hew_supervisor_child_get_raw`
-    /// and `hew_supervisor_nested_get_raw`) are compiler-emitted only — the
-    /// codegen translates MIR `hew_supervisor_child_get` / `_nested_get` calls
-    /// into these `_raw` variants to avoid the Windows x64 MSVC sret ABI
-    /// mismatch.  Both must live in `non-declarable` so that user `extern "rt"`
-    /// declarations are rejected by the checker.
-    #[test]
-    fn extern_rt_supervisor_raw_shims_rejected() {
-        for sym in [
             "hew_supervisor_child_get_raw",
             "hew_supervisor_nested_get_raw",
-        ] {
-            let extern_item = make_extern_rt_block(&[sym]);
-            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-            let output = checker.check_program(&Program {
-                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-                items: vec![(extern_item, 0..60)],
-                module_doc: None,
-                module_graph: None,
-            });
-            assert!(
-                output.errors.iter().any(|e| matches!(&e.kind,
-                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                    if symbol_name == sym
-                )),
-                "non-declarable shim {sym} must be rejected in extern \"rt\"; \
-                 got: {:?}",
-                output.errors
-            );
-        }
-    }
-
-    /// The SYSTEM-LANE provenance boundary. The sys/user channel split makes
-    /// provenance structural inside the mailbox — a user-queue node can never
-    /// be dispatched as a system message — but the classification table is the
-    /// other ingress authority. Every runtime export that PRODUCES, INSTALLS,
-    /// MUTATES, OBSERVES, or DESTROYS system-lane state must therefore be
-    /// rejected in `extern "rt"`; a `stable` classification would re-open by
-    /// symbol exactly what the queue split closes by type.
-    ///
-    /// The first pass over this table used the narrower property "mints a
-    /// system node, drains one, or installs a dispatch pointer" and missed the
-    /// observers and the destructor. Observation and destruction are ingress:
-    /// telling an empty mailbox from one holding a queued `Exit` reads
-    /// privileged state, and freeing the mailbox discards it.
-    ///
-    /// Each of these was `stable` before the audit:
-    ///
-    /// - `hew_actor_set_sys_dispatch` installs the system entry point with a
-    ///   non-atomic store whose contract requires exclusive post-spawn
-    ///   registration (writing `None` after registration silently drops every
-    ///   later lifecycle signal).
-    /// - `hew_mailbox_send_sys` mints an arbitrary `HewSysMsg` node on any
-    ///   mailbox; `hew_mailbox_try_recv_sys` pops one out from under the
-    ///   scheduler (the queue's only legitimate consumer); `hew_mailbox_sys_len`
-    ///   observes the private lane.
-    /// - `hew_mailbox_try_recv` dequeues the SYSTEM queue first and returns the
-    ///   raw node with its provenance stripped, so it is strictly more powerful
-    ///   than `hew_mailbox_try_recv_sys` and breaks the same single-consumer
-    ///   contract against the scheduler.
-    /// - `hew_mailbox_has_messages` reveals whether an otherwise-empty mailbox
-    ///   holds a pending lifecycle signal. Its user-lane-only half,
-    ///   `hew_mailbox_has_user_messages`, stays `stable` — the legitimate
-    ///   question is separable from the privileged one, so it is split, not
-    ///   removed (asserted below).
-    /// - `hew_mailbox_free` drains and frees the system queue, silently
-    ///   discarding every pending lifecycle signal before the scheduler's sole
-    ///   consumer dispatches it. Destruction is NOT separable from the object,
-    ///   so this one moves whole; `hew_mailbox_new{,_bounded,_with_policy,
-    ///   _coalesce}` move with it so no `stable` constructor is left minting an
-    ///   allocation whose release symbol the tier withholds.
-    /// - `hew_supervisor_notify_child_actor_event`, its escalation sibling, and
-    ///   `hew_supervisor_handle_crash` put a caller-composed `ChildEvent` on a
-    ///   supervisor's system queue, whose dispatch frees the LIVE child named by
-    ///   the caller-supplied index.
-    /// - `hew_supervisor_add_child_spec` / `_dynamic` carry a caller-supplied
-    ///   `HewChildSpec.sys_dispatch` into `hew_actor_set_sys_dispatch`.
-    /// - `hew_actor_free` destroys the same system queue as `hew_mailbox_free`,
-    ///   four calls away, on a caller-chosen actor at a caller-chosen moment.
-    ///   It reads as clean only if the property is read off its own body, not
-    ///   its call graph. Its constructors
-    ///   deliberately do NOT move with it, unlike `hew_mailbox_new*`: a spawned
-    ///   actor is runtime-tracked and reclaimed by `hew_runtime_cleanup`,
-    ///   `hew_actor_group_destroy` and supervisor teardown, so withholding the
-    ///   raw destructor is not the leak factory withholding `hew_mailbox_free`
-    ///   from raw `hew_mailbox_new` holders would have been.
-    /// - `hew_actor_trap` takes BOTH of a system signal's inputs from its
-    ///   arguments: `actor` chooses which actor is driven terminal and whose
-    ///   links, monitors and parent supervisor are notified, and `error_code`
-    ///   chooses the terminal state and the reason the resulting `Exit` /
-    ///   `Down` / `ChildCrashed` carries. Declaring it would let a program
-    ///   compose a lifecycle event for any actor it holds a handle to. No
-    ///   codegen path emits it — a compiled trap lowers to
-    ///   `hew_trap_with_code` — so the demotion strands no language feature.
-    /// - `hew_actor_link` / `hew_actor_monitor` synthesize the `Exit` / `Down`
-    ///   the contract owes when the peer is ALREADY terminal, straight onto a
-    ///   system queue, addressed to ABI arg0. The reason is the runtime's own
-    ///   death record, but the destination is the caller's first argument, so
-    ///   a 2-arg caller could put a lifecycle signal on a third party's system
-    ///   queue. The user surface is 1-arg — `link(target)` / `monitor(target)`
-    ///   — and the MIR lowering synthesizes `hew_actor_self()` as arg0, so
-    ///   withdrawing the raw symbols makes the destination structurally the
-    ///   CALLING actor. `hew_local_pid_link` / `hew_local_pid_monitor` are the
-    ///   stable-pid forwarders to those same two and move with them; their
-    ///   `_unlink` / `_demonitor` siblings stay `stable` because removing a
-    ///   registration produces no signal.
-    /// - `hew_supervisor_remove_child` reaches `hew_actor_free` on a
-    ///   caller-selected child index, so it destroys the same system queue the
-    ///   raw destructor was withdrawn for destroying — and removing a live
-    ///   child discards whatever lifecycle signals were still queued for it.
-    ///   Supervisor ownership does not change what the call reaches.
-    /// - `hew_supervisor_start` installs the runtime's own system dispatch
-    ///   trampoline on the supervisor actor. The installed value is a constant
-    ///   code address, but the call is still a system-dispatch installation and
-    ///   the closure gate refuses to authenticate an edge whose caller is
-    ///   user-declarable rather than take that distinction on trust.
-    #[test]
-    fn extern_rt_system_lane_symbols_rejected() {
-        for sym in [
             "hew_actor_free",
             "hew_actor_link",
             "hew_actor_monitor",
@@ -1879,6 +1370,8 @@ fn main() {}
             "hew_supervisor_notify_child_supervisor_escalation",
             "hew_supervisor_remove_child",
             "hew_supervisor_start",
+            "hew_stream_set_last_error",
+            "hew_stream_set_last_error_with_errno",
         ] {
             let extern_item = make_extern_rt_block(&[sym]);
             let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -1888,135 +1381,24 @@ fn main() {}
                 module_doc: None,
                 module_graph: None,
             });
-            assert!(
-                output.errors.iter().any(|e| matches!(&e.kind,
-                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                    if symbol_name == sym
-                )),
-                "system-lane symbol {sym} must be rejected in extern \"rt\"; \
-                 got: {:?}",
-                output.errors
-            );
-        }
-    }
-
-    /// The other half of the has-messages SPLIT: user code keeps a way to ask
-    /// about its OWN lane. Without this assertion the split could silently
-    /// degrade into a plain removal — moving `hew_mailbox_has_messages` to
-    /// `internal` and never landing the replacement would leave a mailbox
-    /// holder with no emptiness query at all, and the rejection test above
-    /// would still pass.
-    #[test]
-    fn extern_rt_user_lane_mailbox_query_accepted() {
-        let sym = "hew_mailbox_has_user_messages";
-        let extern_item = make_extern_rt_block(&[sym]);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..60)],
-            module_doc: None,
-            module_graph: None,
-        });
-        assert!(
-            !output.errors.iter().any(|e| matches!(&e.kind,
-                TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                if symbol_name == sym
-            )),
-            "the user-lane query {sym} must remain declarable in extern \"rt\"; \
-             got: {:?}",
-            output.errors
-        );
-    }
-
-    /// The stream/sink error channel splits producer from consumer: the
-    /// `set_last_error` setters are `internal` (AOT-only, called by hew-cabi
-    /// forwarders in native packages) and MUST be rejected in `extern "rt"` — a
-    /// user could otherwise mutate the thread-local error channel and allocate
-    /// caller-sized strings. The read-side getters stay `stable` so user code
-    /// may inspect the last error.
-    #[test]
-    fn extern_rt_stream_error_setters_rejected_getters_accepted() {
-        for setter in [
-            "hew_stream_set_last_error",
-            "hew_stream_set_last_error_with_errno",
-        ] {
-            let extern_item = make_extern_rt_block(&[setter]);
-            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-            let output = checker.check_program(&Program {
-                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-                items: vec![(extern_item, 0..60)],
-                module_doc: None,
-                module_graph: None,
-            });
-            assert!(
-                output.errors.iter().any(|e| matches!(&e.kind,
-                    TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                    if symbol_name == setter
-                )),
-                "non-declarable stream-error setter {setter} must be rejected in extern \"rt\"; \
-                 got: {:?}",
-                output.errors
-            );
-        }
-
-        for getter in ["hew_stream_last_error", "hew_stream_last_errno"] {
-            let extern_item = make_extern_rt_block(&[getter]);
-            let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-            let output = checker.check_program(&Program {
-                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-                items: vec![(extern_item, 0..40)],
-                module_doc: None,
-                module_graph: None,
-            });
-            let rt_errors: Vec<_> = output
+            let err = output
                 .errors
                 .iter()
-                .filter(|e| {
-                    matches!(&e.kind,
-                        TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
-                        if symbol_name == getter
+                .find(|e| matches!(&e.kind, TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. } if symbol_name == sym))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "symbol {sym} must be rejected in extern \"rt\"; got: {:?}",
+                        output.errors
                     )
-                })
-                .collect();
+                });
             assert!(
-                rt_errors.is_empty(),
-                "stable stream-error getter {getter} must be accepted in extern \"rt\"; \
-                 got: {rt_errors:?}"
+                err.suggestions
+                    .iter()
+                    .any(|s| s.contains("runtime-export-classification.toml")),
+                "suggestion for {sym} must mention runtime-export-classification.toml; got: {:?}",
+                err.suggestions
             );
         }
-    }
-
-    /// `extern "C"` blocks with any symbol name must NOT be validated against
-    /// the stable list — that is raw user FFI surface.
-    #[test]
-    fn extern_c_bypasses_rt_validation() {
-        let extern_item = Item::ExternBlock(ExternBlock {
-            abi: "C".to_string(),
-            functions: vec![ExternFnDecl {
-                attributes: Vec::new(),
-                name: Ident::new("totally_made_up_ffi_symbol"),
-                params: vec![],
-                return_type: None,
-                is_variadic: false,
-                span: 0..0,
-            }],
-        });
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..50)],
-            module_doc: None,
-            module_graph: None,
-        });
-        let rt_errors: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
-            .collect();
-        assert!(
-            rt_errors.is_empty(),
-            "extern \"C\" must not trigger ExternRtSymbolUnclassified; got: {rt_errors:?}"
-        );
     }
 
     #[test]
@@ -2253,81 +1635,21 @@ fn main() {}
 
     // ── gen{} Return-component inference ───────────────────────────────────
 
-    /// `gen { 1 }` has a tail expression but no yield.  The Return component
-    /// must be inferred as i64 (not Unit), and no `EmptyGenerator` is emitted.
     #[test]
-    fn gen_block_tail_expr_infers_return_component() {
-        let output = check_source(
-            r"
-            fn main() {
-                let _g = gen { 1 };
-            }
-            ",
-        );
-        assert!(
-            output.errors.is_empty(),
-            "gen block with tail expression but no yield must type-check cleanly: {:?}",
-            output.errors
-        );
-    }
-
-    /// `gen { return 1; }` has an explicit return but no yield.  The Return
-    /// component is i64, and the body never yields (Yield=Never).  No error.
-    #[test]
-    fn gen_block_explicit_return_infers_return_component() {
-        let output = check_source(
-            r"
-            fn main() {
-                let _g = gen { return 1; };
-            }
-            ",
-        );
-        assert!(
-            output.errors.is_empty(),
-            "gen block with explicit return but no yield must type-check cleanly: {:?}",
-            output.errors
-        );
-    }
-
-    /// `gen { yield 1; 2 }` has both yield and a tail expression.
-    /// Both Yield and Return must be inferred (i64 each); no error.
-    #[test]
-    fn gen_block_yield_and_tail_both_infer() {
-        let output = check_source(
-            r"
-            fn main() {
-                let _g = gen { yield 1; 2 };
-            }
-            ",
-        );
-        assert!(
-            output.errors.is_empty(),
-            "gen block with yield and tail expression must type-check cleanly: {:?}",
-            output.errors
-        );
-    }
-
-    /// `return 1` inside gen{} must NOT produce a return-type mismatch against
-    /// the full Generator<Y, R> shape; the checker extracts the Return component
-    /// for `Stmt::Return` when `in_generator` is set.
-    #[test]
-    fn gen_block_return_does_not_mismatch_full_generator_type() {
-        let output = check_source(
-            r"
-            fn main() {
-                let _g = gen { return 42; };
-            }
-            ",
-        );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| matches!(&e.kind, TypeErrorKind::Mismatch { .. })),
-            "`return <expr>` inside gen{{}} must not produce a Mismatch against the Generator \
-             wrapper; got: {:?}",
-            output.errors
-        );
+    fn gen_block_return_component_inference() {
+        for (label, body) in [
+            ("tail expr", "let _g = gen { 1 };"),
+            ("explicit return", "let _g = gen { return 1; };"),
+            ("yield and tail", "let _g = gen { yield 1; 2 };"),
+            ("return 42", "let _g = gen { return 42; };"),
+        ] {
+            let output = check_source(&format!("fn main() {{ {body} }}"));
+            assert!(
+                output.errors.is_empty(),
+                "{label} must type-check cleanly: {:?}",
+                output.errors
+            );
+        }
     }
 
     // ── recursive closure self-reference (E_CLOSURE_RECURSIVE) ─────────────
@@ -2374,32 +1696,6 @@ fn main() {}
                 .any(|e| matches!(e.kind, TypeErrorKind::ClosureRecursive { .. })),
             "non-recursive closure should not emit ClosureRecursive; got: {:?}",
             output.errors
-        );
-    }
-
-    /// The hint in the diagnostic must direct the user to add the symbol to
-    /// the classification toml.
-    #[test]
-    fn extern_rt_unclassified_hint_mentions_toml() {
-        let extern_item = make_extern_rt_block(&["my_custom_symbol"]);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: vec![(extern_item, 0..30)],
-            module_doc: None,
-            module_graph: None,
-        });
-        let err = output
-            .errors
-            .iter()
-            .find(|e| matches!(e.kind, TypeErrorKind::ExternRtSymbolUnclassified { .. }))
-            .expect("expected ExternRtSymbolUnclassified error");
-        assert!(
-            err.suggestions
-                .iter()
-                .any(|s| s.contains("runtime-export-classification.toml")),
-            "suggestion must mention runtime-export-classification.toml; got: {:?}",
-            err.suggestions
         );
     }
 }

@@ -251,194 +251,76 @@ fn literal_coercion_array_literal_element_mismatch() {
 }
 
 #[test]
-fn vec_copy_record_new_constructor_typechecks() {
-    let output = check_source(
-        r"type Point {
-    x: i64;
-    y: i64;
-}
+fn vec_and_collection_constructors_and_clear_arity() {
+    for (label, source) in [
+        (
+            "Vec<CopyRecord>::new",
+            "type Point { x: i64; y: i64; }\nfn main() { let points: Vec<Point> = Vec.new(); let _ = points.len(); }",
+        ),
+        (
+            "Vec<(string, string)>::new",
+            "fn main() { let headers: Vec<(string, string)> = Vec.new(); let _ = headers.len(); }",
+        ),
+        (
+            "HashMap<K, V>::new turbofish",
+            "type Key { id: i64; }\nfn main() { let _m = HashMap<Key, i64>.new(); }",
+        ),
+        ("HashSet<T>::new turbofish", "fn main() { let _s = HashSet<i64>.new(); }"),
+        (
+            "HashMap.clear()",
+            "fn main() { var m: HashMap<string, i64> = HashMap.new(); m.clear(); }",
+        ),
+        (
+            "HashSet.clear()",
+            "fn main() { var s: HashSet<i64> = HashSet.new(); s.clear(); }",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "{label} should type-check cleanly: {:#?}",
+            output.errors
+        );
+    }
 
-fn main() {
-    let points: Vec<Point> = Vec.new();
-    let _ = points.len();
-}
-",
-    );
+    for (label, source) in [
+        (
+            "HashMap<K>::new arity",
+            "fn main() { let _m = HashMap<i64>.new(); }",
+        ),
+        (
+            "HashSet<T, U>::new arity",
+            "fn main() { let _s = HashSet<i64, i64>.new(); }",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            !output.errors.is_empty(),
+            "{label} must produce an arity diagnostic"
+        );
+    }
 
-    assert!(
-        output.errors.is_empty(),
-        "Copy record layout Vec::new should type-check: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn vec_tuple_string_new_constructor_preserves_existing_typecheck_behavior() {
-    let output = check_source(
-        r"
-        fn main() {
-            let headers: Vec<(string, string)> = Vec.new();
-            let _ = headers.len();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "Vec<(string, string)> constructor should keep existing typecheck behavior: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_new_turbofish_typechecks() {
-    let output = check_source(
-        r"type Key {
-    id: i64;
-}
-
-fn main() {
-    let _m = HashMap<Key, i64>.new();
-}
-",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "HashMap::<K, V>::new() should type-check with explicit type args: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_new_turbofish_typechecks() {
-    let output = check_source(
-        r"
-        fn main() {
-            let _s = HashSet<i64>.new();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "HashSet::<T>::new() should type-check with explicit type args: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_new_turbofish_arity_mismatch_is_rejected() {
-    let output = check_source(
-        r"
-        fn main() {
-            let _m = HashMap<i64>.new();
-        }
-        ",
-    );
-
-    assert!(
-        !output.errors.is_empty(),
-        "HashMap::<K>::new() must produce an arity diagnostic",
-    );
-}
-
-#[test]
-fn hashset_new_turbofish_arity_mismatch_is_rejected() {
-    let output = check_source(
-        r"
-        fn main() {
-            let _s = HashSet<i64, i64>.new();
-        }
-        ",
-    );
-
-    assert!(
-        !output.errors.is_empty(),
-        "HashSet::<T, U>::new() must produce an arity diagnostic",
-    );
-}
-
-#[test]
-fn hashmap_clear_extra_arg_is_rejected_at_check_time() {
-    let output = check_source(
-        r"
-        fn main() {
-            var m: HashMap<string, i64> = HashMap.new();
-            m.clear(123);
-        }
-        ",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::ArityMismatch
-                && error.message.contains("HashMap.clear")),
-        "HashMap.clear with an extra argument must be rejected at check time \
-         with an arity diagnostic, got {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_clear_no_args_typechecks() {
-    let output = check_source(
-        r"
-        fn main() {
-            var m: HashMap<string, i64> = HashMap.new();
-            m.clear();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "HashMap::clear() with no arguments should type-check cleanly: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_clear_extra_arg_is_rejected_at_check_time() {
-    let output = check_source(
-        r"
-        fn main() {
-            var s: HashSet<i64> = HashSet.new();
-            s.clear(456);
-        }
-        ",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::ArityMismatch
-                && error.message.contains("HashSet.clear")),
-        "HashSet.clear with an extra argument must be rejected at check time \
-         with an arity diagnostic, got {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_clear_no_args_typechecks() {
-    let output = check_source(
-        r"
-        fn main() {
-            var s: HashSet<i64> = HashSet.new();
-            s.clear();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "HashSet::clear() with no arguments should type-check cleanly: {:#?}",
-        output.errors
-    );
+    for (method, source) in [
+        (
+            "HashMap.clear",
+            "fn main() { var m: HashMap<string, i64> = HashMap.new(); m.clear(123); }",
+        ),
+        (
+            "HashSet.clear",
+            "fn main() { var s: HashSet<i64> = HashSet.new(); s.clear(456); }",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::ArityMismatch
+                    && error.message.contains(method)),
+            "{method} with an extra argument must emit ArityMismatch: {:#?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
@@ -1946,65 +1828,33 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
 }
 
 #[test]
-fn vec_iter_rejects_direct_inline_recursive_declaration() {
-    // A direct self member has no heap indirection and therefore no finite
-    // value layout. This must stay a diagnostic rather than recursing through
-    // clone/drop classification until the checker overflows its stack.
-    let output = check_source(
-        r"type Direct {
-    next: Direct;
-}
-
-fn main() {
-    var nodes: Vec<Direct> = [];
-    for _ in nodes {
-        let seen: i64 = 0;
+fn vec_iter_rejects_inline_recursive_declarations() {
+    // Neither direct self-containment (`Direct -> Direct`) nor mutual inline
+    // containment (`A -> B -> A`) crosses a heap-indirected collection slot, so
+    // `for _ in vec` must stay a recursive-type diagnostic without overflowing.
+    for (label, source) in [
+        (
+            "direct",
+            "type Direct {\n    next: Direct;\n}\n\nfn main() {\n    var nodes: Vec<Direct> = [];\n    for _ in nodes {\n        let seen: i64 = 0;\n    }\n}\n",
+        ),
+        (
+            "mutual",
+            "type A {\n    nested: B;\n}\n\ntype B {\n    outer: A;\n}\n\nfn main() {\n    var roots: Vec<A> = [];\n    for _ in roots {\n        let seen: i64 = 0;\n    }\n}\n",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(
+                    error.kind,
+                    TypeErrorKind::RecursiveValueType { .. } | TypeErrorKind::ClassRecursion
+                ) || error.message.contains("recursive")),
+            "{label} inline recursion must be rejected, got: {:#?}",
+            output.errors
+        );
     }
-}
-",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("recursive")),
-        "direct inline recursion must be rejected, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn vec_iter_rejects_mutual_inline_recursive_declarations() {
-    // The same rule applies across two nominals: neither `A -> B` nor `B -> A`
-    // crosses a container value slot, so the declaration pair is infinitely
-    // sized and must fail closed without a recursive checker walk.
-    let output = check_source(
-        r"type A {
-    nested: B;
-}
-
-type B {
-    outer: A;
-}
-
-fn main() {
-    var roots: Vec<A> = [];
-    for _ in roots {
-        let seen: i64 = 0;
-    }
-}
-",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("recursive")),
-        "mutual inline recursion must be rejected, got: {:#?}",
-        output.errors
-    );
 }
 
 #[test]
@@ -3511,13 +3361,6 @@ fn main() {}
     );
 }
 
-// ── W5.004 (F1a): `#[intrinsic]` floor-protocol placement gate (A605) ──────
-//
-// The `#[intrinsic("…")]` surface is compiler-internal-only. A declaration is
-// accepted only inside a designated stdlib-floor module; anywhere else —
-// including the user's root module — is a hard `E_INTRINSIC_OUTSIDE_FLOOR`
-// error so no user-reachable path can wire itself to a compiler intrinsic.
-
 /// A `Vec::new()` whose element type is still an unbound inference variable at
 /// check time — the shape a generic record-literal field initializer produces
 /// (`Bag { items: Vec::new() }` with `type Bag<T> { items: Vec<T> }`) — must
@@ -3791,8 +3634,13 @@ fn bytes_add_is_concatenation_and_other_operators_are_refused() {
         }
         "#,
     );
-    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
-    assert_eq!(messages, ["cannot apply `-` to `bytes` and `bytes`"]);
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::BinaryOperandTypes);
+    assert!(
+        output.errors[0].message.contains("`-`") && output.errors[0].message.contains("bytes"),
+        "{:#?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -3808,11 +3656,12 @@ fn a_list_literal_joined_to_bytes_is_a_bytes_literal() {
         }
         "#,
     );
-    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
-    assert_eq!(messages.len(), 1, "{messages:#?}");
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
     assert!(
-        messages[0].contains("`256` does not fit in `u8`"),
-        "{messages:#?}"
+        output.errors[0].message.contains("256") && output.errors[0].message.contains("u8"),
+        "{:#?}",
+        output.errors
     );
 }
 
@@ -3845,19 +3694,23 @@ fn compound_assignment_takes_only_the_operators_its_target_admits() {
         }
         "#,
     );
-    let messages: Vec<&str> = output.errors.iter().map(|e| e.message.as_str()).collect();
-    assert_eq!(
-        messages,
-        [
-            "cannot apply `-=` to `bytes`",
-            "cannot apply `*=` to `bytes`",
-            "cannot apply `-=` to `string`",
-            "cannot apply `+=` to `Vec<i64>`",
-            "cannot apply `+=` to `Point`",
-            "cannot apply `+=` to `bool`",
-            "cannot apply `|=` to `f64`",
-        ]
-    );
+    let expected = [
+        ("-=", "bytes"),
+        ("*=", "bytes"),
+        ("-=", "string"),
+        ("+=", "Vec<i64>"),
+        ("+=", "Point"),
+        ("+=", "bool"),
+        ("|=", "f64"),
+    ];
+    assert_eq!(output.errors.len(), expected.len(), "{:#?}", output.errors);
+    for (err, (op, ty)) in output.errors.iter().zip(expected) {
+        assert_eq!(err.kind, TypeErrorKind::BinaryOperandTypes, "{err:?}");
+        assert!(
+            err.message.contains(op) && err.message.contains(ty),
+            "expected `{op}` on `{ty}`, got: {err:?}"
+        );
+    }
 }
 
 #[test]

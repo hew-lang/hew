@@ -5066,14 +5066,41 @@ mod tests {
         // SAFETY: test owns the mailbox exclusively; null data is a valid input.
         unsafe {
             let mb = hew_mailbox_new();
-            let rc = hew_mailbox_send(mb, 0, ptr::null_mut(), 0);
+            let rc = hew_mailbox_send(mb, 7, ptr::null_mut(), 0);
             assert_eq!(rc, 0);
 
             let node = hew_mailbox_try_recv(mb);
             assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 7);
             assert!((*node).data.is_null());
             assert_eq!((*node).data_size, 0);
             hew_msg_node_free(node);
+
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn send_sys_refuses_unknown_kind_and_records_last_error() {
+        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        unsafe {
+            crate::hew_clear_error();
+            let mb = hew_mailbox_new();
+            hew_mailbox_send_sys(mb, 99, ptr::null_mut(), 0);
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+            assert_eq!(hew_mailbox_has_messages(mb), 0);
+
+            let err_ptr = crate::hew_last_error();
+            assert!(
+                !err_ptr.is_null(),
+                "unknown sys_msg kind must set last_error"
+            );
+            let err_msg = std::ffi::CStr::from_ptr(err_ptr).to_string_lossy();
+            assert!(
+                err_msg.contains("unknown kind 99"),
+                "unexpected last_error: {err_msg}"
+            );
+            crate::hew_clear_error();
 
             hew_mailbox_free(mb);
         }

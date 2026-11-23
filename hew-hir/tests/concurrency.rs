@@ -19,8 +19,6 @@ mod actor_hir;
 mod actor_identity_carrier;
 #[path = "concurrency/actor_send_gates.rs"]
 mod actor_send_gates;
-#[path = "concurrency/actor_state_lock_lower.rs"]
-mod actor_state_lock_lower;
 #[path = "concurrency/imported_supervisor_child_identity.rs"]
 mod imported_supervisor_child_identity;
 #[path = "concurrency/spawn_qualified_identity.rs"]

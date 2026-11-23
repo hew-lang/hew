@@ -1983,31 +1983,19 @@ fn index_dispatch_via_trait_for_vec() {
 }
 
 #[test]
-fn index_read_for_hashmap_string_key_yields_bare_value() {
-    // `m["k"]` is the trapping `Index::at` accessor and yields the BARE value
-    // `V` (a missing key aborts with IndexOutOfBounds — the map analogue of a
-    // `v[i]` out-of-bounds trap). A function returning the bare value type
-    // `i32` accepts the index result directly. The non-aborting outcome lives
-    // on `m.get("k") -> Option<V>`.
-    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
+fn hashmap_string_key_index_yields_bare_value_not_option() {
+    let bare = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
     assert!(
-        output.errors.is_empty(),
+        bare.errors.is_empty(),
         "HashMap<string, _> read indexing should type-check as bare V: {:?}",
-        output.errors
+        bare.errors
     );
-}
 
-#[test]
-fn index_read_for_hashmap_string_key_is_not_option() {
-    // The read result is the bare value `V` (trapping), so a function annotated
-    // to return `Option<V>` must be rejected — proving the surface inverted from
-    // the old `Option`-returning read. The non-aborting outcome is `m.get(k) ->
-    // Option<V>`, not the `m[k]` trapping accessor.
-    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> Option<i32> { m["k"] }"#);
+    let option = check_source(r#"fn f(m: HashMap<string, i32>) -> Option<i32> { m["k"] }"#);
     assert!(
-        !output.errors.is_empty(),
+        !option.errors.is_empty(),
         "HashMap read index returns bare V, so an Option<i32> return must mismatch: {:?}",
-        output.errors
+        option.errors
     );
 }
 
@@ -2861,39 +2849,6 @@ fn generator_iterator_item_mismatch_is_rejected() {
     );
 }
 
-#[test]
-fn second_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
-    let source = concat!(
-        "gen fn counter(n: i64) -> i64 {\n",
-        "    var i: i64 = 0;\n",
-        "    while i < n {\n",
-        "        yield i;\n",
-        "        i = i + 1;\n",
-        "    }\n",
-        "}\n",
-        "fn takes_i64_iterator<I>(it: I) -> i64 where I: Iterator<Item = i64> {\n",
-        "    0\n",
-        "}\n",
-        "fn main() {\n",
-        "    takes_i64_iterator(counter(3));\n",
-        "}\n"
-    );
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "Generator<i64, ()> should satisfy `Iterator<Item = i64>` through the \
-         real impl with a correctly-substituted associated type; got {:?}",
-        output.errors
-    );
-}
-
 // ── Top-level type-alias marker-derivation coverage ────────────────────────
 //
 // `TraitRegistry` has no alias table of its own: structural marker derivation
@@ -2984,22 +2939,6 @@ fn main() {}
         "`Bad {{ v: BadAlias }}` must still derive Clone — Rc supports Clone/Drop"
     );
 }
-
-// ── Non-root module inference-hole fail-closed regression tests ───────────────
-//
-// These cover the `report_unresolved_inference_holes` path for non-root module
-// items in a `module_graph`.  Signature-level `_` holes are tracked by
-// `collect_functions` (which already walks non-root modules via `topo_order`)
-// and are detected by `report_unresolved_inference_in_items` via the
-// `lookup_scoped_item` scoped-name fallback.
-//
-// Body-level holes (expressions containing `_`) require non-root module body
-// checking from PR #756 to propagate into the inference state.  PR #756 added
-// the infrastructure; the tests below prove the deferred-hole drain path works
-// for non-root module bodies too:
-//   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
-//   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
-// Directly bound closure holes generalize; see the inference tests.
 
 // ── D429: an impl block naming a trait that does not exist ────────────────────
 

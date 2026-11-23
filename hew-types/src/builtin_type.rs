@@ -965,9 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_type_clone_and_serde_round_trip() {
-        let cloned = BuiltinType::Option;
-        assert_eq!(cloned, BuiltinType::Option);
+    fn builtin_type_serde_round_trip() {
         let json = serde_json::to_string(&BuiltinType::Option).unwrap();
         assert_eq!(
             serde_json::from_str::<BuiltinType>(&json).unwrap(),

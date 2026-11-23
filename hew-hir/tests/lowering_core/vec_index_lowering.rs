@@ -46,78 +46,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn vec_index_lowers_to_hir_index_variant() {
-    // A function returning `xs[i]` must produce `HirExprKind::Index` in the
-    // body's tail expression — not `HirExprKind::Unsupported`.
-    let output = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
-    // HIR lowering emits no errors for a well-typed index expression.
-    // (Checker errors — e.g. wrong index type — would surface as type errors
-    //  in hew-types, not HIR diagnostics.)
-    let func = output
-        .module
-        .items
-        .iter()
-        .find_map(|item| {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "f" {
-                    return Some(f);
-                }
-            }
-            None
-        })
-        .expect("function `f` must be in the HIR module");
-
-    // The tail expression of the body is `xs[i]`.
-    let tail = func
-        .body
-        .tail
-        .as_ref()
-        .expect("body must have a tail expression");
-    assert!(
-        matches!(tail.kind, HirExprKind::Index { .. }),
-        "xs[i] must lower to HirExprKind::Index; got {:?}",
-        tail.kind
-    );
-}
-
-#[test]
-fn vec_index_not_unsupported() {
-    // Regression guard: `xs[i]` must NOT produce HirExprKind::Unsupported.
-    // Prior to C-2 the `Expr::Index` arm fell through to the `_` arm in
-    // `lower_expr`, which emits Unsupported with a "slice-2" label.
-    let output = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
-    let func = output
-        .module
-        .items
-        .iter()
-        .find_map(|item| {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "f" {
-                    return Some(f);
-                }
-            }
-            None
-        })
-        .expect("function `f` must be in the HIR module");
-
-    let tail = func
-        .body
-        .tail
-        .as_ref()
-        .expect("body must have a tail expression");
-    assert!(
-        !matches!(tail.kind, HirExprKind::Unsupported(_)),
-        "xs[i] must not produce Unsupported; the `Expr::Index` arm must be wired. \
-         Got: {:?}",
-        tail.kind
-    );
-}
-
-#[test]
-fn vec_index_element_type_is_elem_not_vec() {
-    // The HIR Index node's type must be the element type (i64), not the
-    // container type (Vec<i64>). LESSONS: checker-authority (P0) —
-    // the element type comes from `expr_types` at the index expression's span.
+fn vec_index_lowers_to_typed_hir_index_node() {
     let output = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
     let func = output
         .module
@@ -144,49 +73,11 @@ fn vec_index_element_type_is_elem_not_vec() {
         "xs[i] where xs: Vec<i64> must have element type i64; got {:?}",
         tail.ty
     );
-}
-
-#[test]
-fn vec_index_verify_passes() {
-    // HIR verification must not flag the Index node.
-    let output = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
-    let verify = verify_hir(&output.module);
-    assert!(
-        verify.is_empty(),
-        "HIR verification must pass for a well-typed xs[i]; got: {verify:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Inner sub-expressions are also lowered (not skipped)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn vec_index_container_and_index_subexprs_are_wired() {
-    // The `container` and `index` sub-expressions inside the Index node must
-    // be lowered (both as BindingRef nodes), not as Unsupported stubs.
-    let output = lower("fn f(xs: Vec<i64>, i: i64) -> i64 { xs[i] }");
-    let func = output
-        .module
-        .items
-        .iter()
-        .find_map(|item| {
-            if let hew_hir::HirItem::Function(f) = item {
-                if f.name == "f" {
-                    return Some(f);
-                }
-            }
-            None
-        })
-        .expect("function `f` must be in the HIR module");
-
-    let tail = func
-        .body
-        .tail
-        .as_ref()
-        .expect("body must have a tail expression");
     let HirExprKind::Index { container, index } = &tail.kind else {
-        panic!("expected HirExprKind::Index; got {:?}", tail.kind);
+        panic!(
+            "xs[i] must lower to HirExprKind::Index; got {:?}",
+            tail.kind
+        );
     };
     assert!(
         matches!(container.kind, HirExprKind::BindingRef { .. }),
@@ -197,6 +88,12 @@ fn vec_index_container_and_index_subexprs_are_wired() {
         matches!(index.kind, HirExprKind::BindingRef { .. }),
         "index must be a BindingRef (i); got {:?}",
         index.kind
+    );
+
+    let verify = verify_hir(&output.module);
+    assert!(
+        verify.is_empty(),
+        "HIR verification must pass for a well-typed xs[i]; got: {verify:?}"
     );
 }
 

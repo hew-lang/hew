@@ -299,29 +299,6 @@ fn typecheck_generator_yield_uses_element_type() {
 }
 
 #[test]
-fn typecheck_second_generator_yield_uses_element_type() {
-    let source = concat!(
-        "gen fn count_up() -> i64 {\n",
-        "    yield 1;\n",
-        "    yield 2;\n",
-        "}\n"
-    );
-    let result = hew_parser::parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&result.program);
-    assert!(
-        output.errors.is_empty(),
-        "unexpected errors: {:?}",
-        output.errors
-    );
-}
-
-#[test]
 fn typecheck_generator_yield_mismatch_reports_element_type() {
     let source = "gen fn bad() -> i64 { yield \"oops\"; }";
     let result = hew_parser::parse(source);

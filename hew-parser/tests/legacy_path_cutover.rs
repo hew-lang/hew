@@ -20,10 +20,24 @@ fn legacy_turbofish_fixture_has_its_structured_cutover_diagnostic() {
 
 #[test]
 fn legacy_glob_fixture_has_its_structured_cutover_diagnostic() {
-    assert_cutover_diagnostic(
-        include_str!("fixtures/reject/legacy_glob_import.hew"),
+    let source = include_str!("fixtures/reject/legacy_glob_import.hew");
+    let diagnostic = assert_cutover_diagnostic(
+        source,
         &ParseDiagnosticKind::ImportGlobRemoved,
         "E_IMPORT_GLOB_REMOVED",
+    );
+    assert!(
+        diagnostic.message.contains("import std.io.{ Name };"),
+        "expected glob-before-separator rewrite in message: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("import std.io.{ Name };")),
+        "expected glob-before-separator rewrite in hint: {:?}",
+        diagnostic.hint
     );
 }
 
@@ -31,7 +45,7 @@ fn assert_cutover_diagnostic(
     source: &str,
     expected_kind: &ParseDiagnosticKind,
     expected_code: &str,
-) {
+) -> hew_parser::ParseError {
     let parsed = hew_parser::parse(source);
     let diagnostic = parsed
         .errors
@@ -42,4 +56,5 @@ fn assert_cutover_diagnostic(
     assert_eq!(diagnostic.kind.as_kind_str(), expected_code);
     assert!(diagnostic.span.start < diagnostic.span.end);
     assert!(diagnostic.span.end <= source.len());
+    diagnostic.clone()
 }

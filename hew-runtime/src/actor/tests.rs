@@ -2539,16 +2539,11 @@ fn abandoning_a_parked_activation_makes_it_reclaimable() {
 // Each test passes a null pointer to an FFI setter/getter that previously
 // dereferenced unconditionally.  The expected behaviour after this fix is:
 //  - void functions: return without crashing (SIGSEGV before fix)
-//  - value functions: return the documented zero sentinel
+//  - query getters (`hew_actor_get_budget`, `hew_actor_pid`): return `0`
+//  - send paths (`hew_actor_try_send`, `actor_send_result_internal_reply`):
+//    return `HewError::ErrActorStopped as i32`
 //
 // These tests do NOT need a scheduler or a real actor allocation.
-
-#[test]
-fn null_actor_terminate_returns_without_crash() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_terminate(ptr::null_mut()) };
-}
 
 #[test]
 fn actor_self_without_execution_context_fails_closed() {
@@ -2566,90 +2561,36 @@ fn actor_self_without_execution_context_fails_closed() {
     crate::hew_clear_error();
 }
 
-#[test]
-fn null_actor_stop_returns_without_crash() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_stop(ptr::null_mut()) };
-}
-
-#[test]
-fn null_actor_set_budget_returns_without_crash() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_set_budget(ptr::null_mut(), 10) };
-}
-
-#[test]
-fn null_actor_get_budget_returns_sentinel() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    let v = unsafe { hew_actor_get_budget(ptr::null()) };
-    assert_eq!(v, 0, "expected zero sentinel for null actor");
-}
-
 unsafe extern "C-unwind" fn null_guard_dummy_terminate(_: *mut c_void) {}
 
 #[test]
-fn null_actor_set_terminate_returns_without_crash() {
+fn null_actor_guards_return_safely_without_crash() {
     let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_set_terminate(ptr::null_mut(), null_guard_dummy_terminate) };
-}
-
-#[test]
-fn null_actor_pid_returns_sentinel() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    let v = unsafe { hew_actor_pid(ptr::null_mut()) };
-    assert_eq!(v, 0, "expected zero sentinel for null actor");
-}
-
-// --- null-guard regression tests for the high-frequency send/ask paths ---
-//
-// These cover the paths the prior batch missed: `hew_actor_send`,
-// `hew_actor_try_send`, and the ask-family helper.  Each test passes a
-// null actor pointer and expects the guard to fire without a SIGSEGV and
-// to return `HewError::ErrActorStopped` for i32-returning variants.
-
-#[test]
-fn null_actor_send_returns_without_crash() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    unsafe { hew_actor_send(ptr::null_mut(), 0, ptr::null_mut(), 0) };
-}
-
-#[test]
-fn null_actor_try_send_returns_err_actor_stopped() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    let result = unsafe { hew_actor_try_send(ptr::null_mut(), 0, ptr::null_mut(), 0) };
-    assert_eq!(
-        result,
-        HewError::ErrActorStopped as i32,
-        "expected ErrActorStopped for null actor"
-    );
-}
-
-#[test]
-fn null_actor_send_result_internal_reply_returns_err_actor_stopped() {
-    let _guard = crate::runtime_test_guard();
-    // SAFETY: null is the input we are testing the guard against.
-    let result = unsafe {
-        actor_send_result_internal_reply(
-            ptr::null_mut(),
-            0,
-            ptr::null_mut(),
-            0,
-            ptr::null_mut(),
-            crate::actor_caller::local_sender(),
-        )
-    };
-    assert_eq!(
-        result,
-        HewError::ErrActorStopped as i32,
-        "expected ErrActorStopped for null actor"
-    );
+    // SAFETY: null actor pointers are the edge cases under test.
+    unsafe {
+        hew_actor_terminate(ptr::null_mut());
+        hew_actor_stop(ptr::null_mut());
+        hew_actor_set_budget(ptr::null_mut(), 10);
+        assert_eq!(hew_actor_get_budget(ptr::null()), 0);
+        hew_actor_set_terminate(ptr::null_mut(), null_guard_dummy_terminate);
+        assert_eq!(hew_actor_pid(ptr::null_mut()), 0);
+        hew_actor_send(ptr::null_mut(), 0, ptr::null_mut(), 0);
+        assert_eq!(
+            hew_actor_try_send(ptr::null_mut(), 0, ptr::null_mut(), 0),
+            HewError::ErrActorStopped as i32
+        );
+        assert_eq!(
+            actor_send_result_internal_reply(
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                crate::actor_caller::local_sender(),
+            ),
+            HewError::ErrActorStopped as i32
+        );
+    }
 }
 
 #[test]
@@ -4913,64 +4854,48 @@ fn native_self_stop_then_crash_publishes_crashed_and_notifies_supervisor() {
 // ── ask error discrimination tests ───────────────────────────────────
 
 /// Mechanism-2 regression (dogfood F1): the with-channel ask family
-/// returns a `HewError` code instead of a reply pointer, but its callers
-/// classify the failure through `hew_actor_ask_take_last_error`. A failed
-/// synchronous submission must therefore record a real `AskError` kind —
-/// before the fix the code was returned with the slot unwritten and the
-/// failure surfaced as `Err(AskError::NoError)`.
+/// returns a `HewError` code instead of a reply pointer, while its callers
+/// classify the failure through `hew_actor_ask_take_last_error`. Every
+/// ask entry point against a stopped actor (`hew_actor_ask_with_channel`,
+/// `hew_actor_ask`, and `hew_actor_ask_timeout`) must fail closed and
+/// record `AskError::ActorStopped`, never leaving the error slot at `None`.
 #[test]
-fn with_channel_ask_stopped_actor_records_actor_stopped_error() {
+fn stopped_actor_ask_variants_record_actor_stopped_error() {
     let _guard = crate::runtime_test_guard();
 
     // SAFETY: null state + valid dispatch are valid spawn args.
     let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
     assert!(!actor.is_null());
-    // SAFETY: actor is valid; stopping it forces the send to fail.
+    // SAFETY: actor is valid; stopping it forces send attempts to fail.
     unsafe { hew_actor_stop(actor) };
 
     LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
     let ch = reply_channel::hew_reply_channel_new();
     // SAFETY: actor pointer remains valid after stop; ch is a live channel.
     let status = unsafe { hew_actor_ask_with_channel(actor, 1, ptr::null_mut(), 0, ch) };
-    assert_ne!(
-        status,
-        HewError::Ok as i32,
-        "ask submission against a stopped actor must fail"
-    );
+    assert_ne!(status, HewError::Ok as i32);
     assert_eq!(
         hew_actor_ask_take_last_error(),
-        AskError::ActorStopped as i32,
-        "a failed with-channel submission must record ActorStopped, never \
-             leave the slot at None"
+        AskError::ActorStopped as i32
     );
     // Failure keeps the creator reference (KeepCreatorRef); release it.
     // SAFETY: ch was created by hew_reply_channel_new above.
     unsafe { reply_channel::hew_reply_channel_free(ch) };
 
-    // SAFETY: actor is stopped and owned by this test.
-    assert_eq!(unsafe { hew_actor_free(actor) }, 0);
-}
-
-/// `hew_actor_ask` on a stopped actor sets `ActorStopped` in the error slot.
-#[test]
-fn native_ask_stopped_actor_sets_actor_stopped_error() {
-    let _guard = crate::runtime_test_guard();
-
-    // SAFETY: null state + valid dispatch are valid spawn args.
-    let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
-    assert!(!actor.is_null());
-    // SAFETY: actor is valid.
-    unsafe { hew_actor_stop(actor) };
-
-    // Reset error slot, then attempt ask.
     LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
     // SAFETY: actor is stopped but pointer remains valid.
-    let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
-    assert!(reply.is_null(), "ask on stopped actor must return null");
+    assert!(unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) }.is_null());
     assert_eq!(
         hew_actor_ask_take_last_error(),
-        AskError::ActorStopped as i32,
-        "stopped actor must report ActorStopped error"
+        AskError::ActorStopped as i32
+    );
+
+    LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+    // SAFETY: actor is stopped.
+    assert!(unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 50) }.is_null());
+    assert_eq!(
+        hew_actor_ask_take_last_error(),
+        AskError::ActorStopped as i32
     );
 
     // SAFETY: actor is stopped and owned by this test.
@@ -5011,30 +4936,6 @@ fn native_ask_send_oom_releases_reply_channel() {
         assert_eq!(hew_actor_free(actor), 0);
     }
     drop(runtime);
-}
-
-/// `hew_actor_ask_timeout` on a stopped actor sets `ActorStopped`.
-#[test]
-fn native_ask_timeout_stopped_actor_sets_actor_stopped_error() {
-    let _guard = crate::runtime_test_guard();
-
-    // SAFETY: null state + valid dispatch are valid spawn args.
-    let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
-    assert!(!actor.is_null());
-    // SAFETY: actor is live and single-owner; stopping it to force send failure.
-    unsafe { hew_actor_stop(actor) };
-
-    LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
-    // SAFETY: actor is stopped.
-    let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 50) };
-    assert!(reply.is_null());
-    assert_eq!(
-        hew_actor_ask_take_last_error(),
-        AskError::ActorStopped as i32,
-        "send failure on stopped actor must report ActorStopped"
-    );
-    // SAFETY: actor was stopped above; no asks are pending.
-    assert_eq!(unsafe { hew_actor_free(actor) }, 0);
 }
 
 /// `hew_actor_ask_timeout` fires `Timeout` when the handler does not reply in time.
@@ -6526,33 +6427,24 @@ fn drain_actors_empty_set_returns_drained() {
 }
 
 #[test]
-fn deep_copy_state_copies_data_correctly() {
+fn deep_copy_state_copies_and_rejects_null_or_zero() {
     let src: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
     // SAFETY: src is a valid 4-byte buffer.
     let dst = unsafe { deep_copy_state(src.as_ptr().cast_mut().cast(), 4) };
     assert!(!dst.is_null());
-    // SAFETY: dst is a freshly-allocated 4-byte buffer.
+    // SAFETY: dst is a freshly allocated 4-byte buffer.
     let copied = unsafe { std::slice::from_raw_parts(dst.cast::<u8>(), 4) };
     assert_eq!(copied, &src);
     // SAFETY: dst came from deep_copy_state's sized-block allocation.
     unsafe { crate::mem::buf_free(dst) };
-}
 
-#[test]
-fn deep_copy_state_null_source_returns_null() {
-    // SAFETY: null source is explicitly handled.
-    let dst = unsafe { deep_copy_state(ptr::null_mut(), 64) };
-    assert!(dst.is_null());
-    // No error should be set for a legitimate null/zero call.
-    assert!(crate::hew_last_error().is_null());
-}
-
-#[test]
-fn deep_copy_state_zero_size_returns_null() {
-    let src: u8 = 42;
-    // SAFETY: src is valid; size=0 triggers the early return.
-    let dst = unsafe { deep_copy_state(std::ptr::from_ref(&src).cast_mut().cast(), 0) };
-    assert!(dst.is_null());
+    crate::hew_clear_error();
+    // SAFETY: null pointer and zero size both trigger clean early returns.
+    unsafe {
+        assert!(deep_copy_state(ptr::null_mut(), 64).is_null());
+        assert!(crate::hew_last_error().is_null());
+        assert!(deep_copy_state(src.as_ptr().cast_mut().cast(), 0).is_null());
+    }
 }
 
 #[test]

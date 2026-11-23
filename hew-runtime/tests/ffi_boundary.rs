@@ -31,9 +31,7 @@ use hew_runtime::iter::{
     hew_iter_free, hew_iter_next, hew_iter_reset, hew_iter_value_i32, hew_iter_vec,
 };
 use hew_runtime::mailbox::{
-    hew_mailbox_free, hew_mailbox_has_messages, hew_mailbox_new, hew_mailbox_new_bounded,
-    hew_mailbox_send, hew_mailbox_send_sys, hew_mailbox_try_recv, hew_mailbox_try_recv_sys,
-    hew_msg_node_free,
+    hew_mailbox_free, hew_mailbox_new, hew_mailbox_send, hew_mailbox_try_recv, hew_msg_node_free,
 };
 use hew_runtime::string::{
     hew_bool_to_string, hew_char_to_string, hew_float_to_string, hew_int_to_string,
@@ -555,165 +553,6 @@ fn string_replace() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn mailbox_send_recv_roundtrip() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        assert!(!mb.is_null());
-        assert_eq!(hew_mailbox_has_messages(mb), 0);
-
-        // Send an i32 message.
-        let val: i32 = 42;
-        let rc = hew_mailbox_send(mb, 1, (&raw const val).cast_mut().cast(), size_of::<i32>());
-        assert_eq!(rc, 0);
-        assert_eq!(hew_mailbox_has_messages(mb), 1);
-
-        // Receive it.
-        let node = hew_mailbox_try_recv(mb);
-        assert!(!node.is_null());
-        assert_eq!((*node).msg_type, 1);
-        assert_eq!((*node).data_size, size_of::<i32>());
-        assert_eq!(*((*node).data.cast::<i32>()), 42);
-        hew_msg_node_free(node);
-
-        // Queue is empty.
-        assert_eq!(hew_mailbox_has_messages(mb), 0);
-        assert!(hew_mailbox_try_recv(mb).is_null());
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_bounded_rejects_when_full() {
-    unsafe {
-        let mb = hew_mailbox_new_bounded(2);
-        let val: i32 = 1;
-        let p = (&raw const val).cast_mut().cast();
-
-        assert_eq!(hew_mailbox_send(mb, 0, p, size_of::<i32>()), 0);
-        assert_eq!(hew_mailbox_send(mb, 0, p, size_of::<i32>()), 0);
-        // Third message should be rejected (ErrMailboxFull = -1).
-        assert_eq!(hew_mailbox_send(mb, 0, p, size_of::<i32>()), -1);
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_sys_has_priority() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let user_val: i32 = 10;
-        let sys_val: i32 = 99;
-
-        // Send user message first, then system message.
-        hew_mailbox_send(
-            mb,
-            1,
-            (&raw const user_val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
-        hew_mailbox_send_sys(
-            mb,
-            2,
-            (&raw const sys_val).cast_mut().cast(),
-            size_of::<i32>(),
-        );
-
-        // System message should come out first.
-        let n1 = hew_mailbox_try_recv(mb);
-        assert_eq!((*n1).msg_type, 2);
-        hew_msg_node_free(n1);
-
-        let n2 = hew_mailbox_try_recv(mb);
-        assert_eq!((*n2).msg_type, 1);
-        hew_msg_node_free(n2);
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_sys_bypasses_capacity() {
-    unsafe {
-        let mb = hew_mailbox_new_bounded(1);
-        let val: i32 = 1;
-        let p = (&raw const val).cast_mut().cast();
-
-        // Fill user queue.
-        assert_eq!(hew_mailbox_send(mb, 0, p, size_of::<i32>()), 0);
-        assert_eq!(hew_mailbox_send(mb, 0, p, size_of::<i32>()), -1);
-
-        // System message always succeeds.
-        hew_mailbox_send_sys(mb, 99, p, size_of::<i32>());
-        assert_eq!(hew_mailbox_has_messages(mb), 1);
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_try_recv_sys_only() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let val: i32 = 5;
-        let p = (&raw const val).cast_mut().cast();
-
-        hew_mailbox_send(mb, 1, p, size_of::<i32>());
-        hew_mailbox_send_sys(mb, 2, p, size_of::<i32>());
-
-        // try_recv_sys should only return system messages.
-        let node = hew_mailbox_try_recv_sys(mb);
-        assert!(!node.is_null());
-        assert_eq!((*node).msg_type, 2);
-        hew_msg_node_free(node);
-
-        // No more system messages.
-        assert!(hew_mailbox_try_recv_sys(mb).is_null());
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_null_data_message() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let rc = hew_mailbox_send(mb, 7, ptr::null_mut(), 0);
-        assert_eq!(rc, 0);
-
-        let node = hew_mailbox_try_recv(mb);
-        assert!(!node.is_null());
-        assert!((*node).data.is_null());
-        assert_eq!((*node).data_size, 0);
-        assert_eq!((*node).msg_type, 7);
-        hew_msg_node_free(node);
-
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
-fn mailbox_deep_copy_isolation() {
-    unsafe {
-        let mb = hew_mailbox_new();
-        let mut val: i32 = 100;
-        hew_mailbox_send(mb, 0, (&raw mut val).cast(), size_of::<i32>());
-
-        // Mutate original after send.
-        val = 999;
-
-        let node = hew_mailbox_try_recv(mb);
-        // Message should contain the original value.
-        assert_eq!(*((*node).data.cast::<i32>()), 100);
-        hew_msg_node_free(node);
-
-        let _ = val; // suppress unused-value warning
-        hew_mailbox_free(mb);
-    }
-}
-
-#[test]
 fn mailbox_free_null_is_noop() {
     unsafe {
         hew_mailbox_free(ptr::null_mut());
@@ -1056,326 +895,259 @@ mod vec_extended {
     use super::*;
 
     #[test]
-    fn sort_i32_ascending() {
+    fn vec_sort_contracts() {
         unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 5);
-            hew_vec_push_i32(v, 1);
-            hew_vec_push_i32(v, 3);
-            hew_vec_push_i32(v, 2);
-            hew_vec_push_i32(v, 4);
-            hew_vec_sort_i32(v);
-            for i in 0..5 {
-                assert_eq!(hew_vec_get_i32(v, i), (i as i32) + 1);
+            let v32 = hew_vec_new();
+            hew_vec_sort_i32(v32); // empty — no crash
+            hew_vec_push_i32(v32, 42);
+            hew_vec_sort_i32(v32); // single element
+            assert_eq!(hew_vec_get_i32(v32, 0), 42);
+            hew_vec_free(v32);
+
+            let v32m = hew_vec_new();
+            for x in [5, 1, 3, 2, 4] {
+                hew_vec_push_i32(v32m, x);
             }
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn sort_i32_empty_and_single() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_sort_i32(v); // empty — no crash
-            hew_vec_push_i32(v, 42);
-            hew_vec_sort_i32(v); // single element
-            assert_eq!(hew_vec_get_i32(v, 0), 42);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn sort_i32_null_is_noop() {
-        unsafe {
+            hew_vec_sort_i32(v32m);
+            for i in 0..5 {
+                assert_eq!(hew_vec_get_i32(v32m, i), (i as i32) + 1);
+            }
+            hew_vec_free(v32m);
             hew_vec_sort_i32(ptr::null_mut());
+
+            let v64 = hew_vec_new_i64();
+            for x in [100, -50, 0] {
+                hew_vec_push_i64(v64, x);
+            }
+            hew_vec_sort_i64(v64);
+            assert_eq!(hew_vec_get_i64(v64, 0), -50);
+            assert_eq!(hew_vec_get_i64(v64, 1), 0);
+            assert_eq!(hew_vec_get_i64(v64, 2), 100);
+            hew_vec_free(v64);
+
+            let doubles = hew_vec_new_f64();
+            for x in [3.14, 1.0, 2.718] {
+                hew_vec_push_f64(doubles, x);
+            }
+            hew_vec_sort_f64(doubles);
+            assert!((hew_vec_get_f64(doubles, 0) - 1.0).abs() < f64::EPSILON);
+            assert!((hew_vec_get_f64(doubles, 1) - 2.718).abs() < f64::EPSILON);
+            assert!((hew_vec_get_f64(doubles, 2) - 3.14).abs() < f64::EPSILON);
+            hew_vec_free(doubles);
         }
     }
 
     #[test]
-    fn sort_i64_ascending() {
+    fn vec_clone_contracts() {
         unsafe {
-            let v = hew_vec_new_i64();
-            hew_vec_push_i64(v, 100);
-            hew_vec_push_i64(v, -50);
-            hew_vec_push_i64(v, 0);
-            hew_vec_sort_i64(v);
-            assert_eq!(hew_vec_get_i64(v, 0), -50);
-            assert_eq!(hew_vec_get_i64(v, 1), 0);
-            assert_eq!(hew_vec_get_i64(v, 2), 100);
-            hew_vec_free(v);
-        }
-    }
+            assert!(hew_vec_clone(ptr::null()).is_null());
 
-    #[test]
-    fn sort_f64_ascending() {
-        unsafe {
-            let v = hew_vec_new_f64();
-            hew_vec_push_f64(v, 3.14);
-            hew_vec_push_f64(v, 1.0);
-            hew_vec_push_f64(v, 2.718);
-            hew_vec_sort_f64(v);
-            assert!((hew_vec_get_f64(v, 0) - 1.0).abs() < f64::EPSILON);
-            assert!((hew_vec_get_f64(v, 1) - 2.718).abs() < f64::EPSILON);
-            assert!((hew_vec_get_f64(v, 2) - 3.14).abs() < f64::EPSILON);
-            hew_vec_free(v);
-        }
-    }
+            let empty = hew_vec_new();
+            let cloned_empty = hew_vec_clone(empty);
+            assert_eq!(hew_vec_len(cloned_empty), 0);
+            hew_vec_free(empty);
+            hew_vec_free(cloned_empty);
 
-    #[test]
-    fn clone_i32_vec() {
-        unsafe {
             let v = hew_vec_new();
-            hew_vec_push_i32(v, 10);
-            hew_vec_push_i32(v, 20);
-            hew_vec_push_i32(v, 30);
+            for x in [10, 20, 30] {
+                hew_vec_push_i32(v, x);
+            }
             let c = hew_vec_clone(v);
             assert_eq!(hew_vec_len(c), 3);
-            assert_eq!(hew_vec_get_i32(c, 0), 10);
-            assert_eq!(hew_vec_get_i32(c, 1), 20);
-            assert_eq!(hew_vec_get_i32(c, 2), 30);
-            // Mutating original does not affect clone.
+            assert_eq!(
+                [
+                    hew_vec_get_i32(c, 0),
+                    hew_vec_get_i32(c, 1),
+                    hew_vec_get_i32(c, 2)
+                ],
+                [10, 20, 30]
+            );
             hew_vec_set_i32(v, 0, 99);
             assert_eq!(hew_vec_get_i32(c, 0), 10);
             hew_vec_free(v);
             hew_vec_free(c);
-        }
-    }
 
-    #[test]
-    fn clone_str_vec_deep_copies() {
-        unsafe {
-            let v = hew_vec_new_str();
+            let vs = hew_vec_new_str();
             let hello = cstr("hello");
             let world = cstr("world");
-            hew_vec_push_str(v, hello.as_ptr());
-            hew_vec_push_str(v, world.as_ptr());
-            let c = hew_vec_clone(v);
-            assert_eq!(hew_vec_len(c), 2);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 1)), "world");
-            // Freeing original should not invalidate clone.
-            hew_vec_free(v);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
-            hew_vec_free(c);
+            hew_vec_push_str(vs, hello.as_ptr());
+            hew_vec_push_str(vs, world.as_ptr());
+            let cs = hew_vec_clone(vs);
+            assert_eq!(hew_vec_len(cs), 2);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(cs, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(cs, 1)), "world");
+            // Freeing original must not invalidate clone.
+            hew_vec_free(vs);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(cs, 0)), "hello");
+            hew_vec_free(cs);
         }
     }
 
     #[test]
-    fn clone_empty_vec() {
-        unsafe {
-            let v = hew_vec_new();
-            let c = hew_vec_clone(v);
-            assert_eq!(hew_vec_len(c), 0);
-            hew_vec_free(v);
-            hew_vec_free(c);
-        }
-    }
-
-    #[test]
-    fn clone_null_returns_null() {
-        unsafe {
-            let c = hew_vec_clone(ptr::null());
-            assert!(c.is_null());
-        }
-    }
-
-    #[test]
-    fn contains_i32_found_and_missing() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 10);
-            hew_vec_push_i32(v, 20);
-            hew_vec_push_i32(v, 30);
-            assert_eq!(hew_vec_contains_i32(v, 20), 1);
-            assert_eq!(hew_vec_contains_i32(v, 99), 0);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn contains_i32_empty_vec() {
-        unsafe {
-            let v = hew_vec_new();
-            assert_eq!(hew_vec_contains_i32(v, 0), 0);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn contains_i32_null_is_zero() {
+    fn vec_contains_contracts() {
         unsafe {
             assert_eq!(hew_vec_contains_i32(ptr::null(), 0), 0);
-        }
-    }
 
-    #[test]
-    fn contains_i64_found_and_missing() {
-        unsafe {
-            let v = hew_vec_new_i64();
-            hew_vec_push_i64(v, i64::MAX);
-            hew_vec_push_i64(v, i64::MIN);
-            assert_eq!(hew_vec_contains_i64(v, i64::MAX), 1);
-            assert_eq!(hew_vec_contains_i64(v, 0), 0);
-            hew_vec_free(v);
-        }
-    }
+            let empty = hew_vec_new();
+            assert_eq!(hew_vec_contains_i32(empty, 0), 0);
+            hew_vec_free(empty);
 
-    #[test]
-    fn contains_f64_found_and_missing() {
-        unsafe {
-            let v = hew_vec_new_f64();
-            hew_vec_push_f64(v, 3.14);
-            hew_vec_push_f64(v, 2.718);
-            assert_eq!(hew_vec_contains_f64(v, 3.14), 1);
-            assert_eq!(hew_vec_contains_f64(v, 1.0), 0);
-            hew_vec_free(v);
-        }
-    }
+            let v32 = hew_vec_new();
+            for x in [10, 20, 30] {
+                hew_vec_push_i32(v32, x);
+            }
+            assert_eq!(hew_vec_contains_i32(v32, 20), 1);
+            assert_eq!(hew_vec_contains_i32(v32, 99), 0);
+            hew_vec_free(v32);
 
-    #[test]
-    fn contains_str_found_and_missing() {
-        unsafe {
-            let v = hew_vec_new_str();
+            let v64 = hew_vec_new_i64();
+            hew_vec_push_i64(v64, i64::MAX);
+            hew_vec_push_i64(v64, i64::MIN);
+            assert_eq!(hew_vec_contains_i64(v64, i64::MAX), 1);
+            assert_eq!(hew_vec_contains_i64(v64, 0), 0);
+            hew_vec_free(v64);
+
+            let doubles = hew_vec_new_f64();
+            hew_vec_push_f64(doubles, 3.14);
+            hew_vec_push_f64(doubles, 2.718);
+            assert_eq!(hew_vec_contains_f64(doubles, 3.14), 1);
+            assert_eq!(hew_vec_contains_f64(doubles, 1.0), 0);
+            hew_vec_free(doubles);
+
+            let vs = hew_vec_new_str();
             let a = cstr("alpha");
             let b = cstr("beta");
             let c = cstr("gamma");
-            hew_vec_push_str(v, a.as_ptr());
-            hew_vec_push_str(v, b.as_ptr());
-            assert_eq!(hew_vec_contains_str(v, a.as_ptr()), 1);
-            assert_eq!(hew_vec_contains_str(v, c.as_ptr()), 0);
-            assert_eq!(hew_vec_contains_str(v, ptr::null()), 0);
-            hew_vec_free(v);
+            hew_vec_push_str(vs, a.as_ptr());
+            hew_vec_push_str(vs, b.as_ptr());
+            assert_eq!(hew_vec_contains_str(vs, a.as_ptr()), 1);
+            assert_eq!(hew_vec_contains_str(vs, c.as_ptr()), 0);
+            assert_eq!(hew_vec_contains_str(vs, ptr::null()), 0);
+            hew_vec_free(vs);
         }
     }
 
     #[test]
-    fn swap_elements() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 10);
-            hew_vec_push_i32(v, 20);
-            hew_vec_push_i32(v, 30);
-            hew_vec_swap(v, 0, 2);
-            assert_eq!(hew_vec_get_i32(v, 0), 30);
-            assert_eq!(hew_vec_get_i32(v, 2), 10);
-            assert_eq!(hew_vec_get_i32(v, 1), 20);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn swap_same_index_is_noop() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 42);
-            hew_vec_swap(v, 0, 0);
-            assert_eq!(hew_vec_get_i32(v, 0), 42);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn swap_null_is_noop() {
+    fn vec_swap_contracts() {
         unsafe {
             hew_vec_swap(ptr::null_mut(), 0, 1);
-        }
-    }
 
-    #[test]
-    fn truncate_shrinks_vec() {
-        unsafe {
-            let v = hew_vec_new();
-            for i in 0..5 {
-                hew_vec_push_i32(v, i);
+            let v1 = hew_vec_new();
+            for x in [10, 20, 30] {
+                hew_vec_push_i32(v1, x);
             }
-            hew_vec_truncate(v, 3);
-            assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(hew_vec_get_i32(v, 0), 0);
-            assert_eq!(hew_vec_get_i32(v, 2), 2);
-            hew_vec_free(v);
+            hew_vec_swap(v1, 0, 2);
+            assert_eq!(
+                [
+                    hew_vec_get_i32(v1, 0),
+                    hew_vec_get_i32(v1, 1),
+                    hew_vec_get_i32(v1, 2)
+                ],
+                [30, 20, 10]
+            );
+            hew_vec_free(v1);
+
+            let v2 = hew_vec_new();
+            for x in [10, 20, 30] {
+                hew_vec_push_i32(v2, x);
+            }
+            hew_vec_swap(v2, 1, 1);
+            assert_eq!(
+                [
+                    hew_vec_get_i32(v2, 0),
+                    hew_vec_get_i32(v2, 1),
+                    hew_vec_get_i32(v2, 2)
+                ],
+                [10, 20, 30]
+            );
+            hew_vec_free(v2);
         }
     }
 
     #[test]
-    fn truncate_to_zero() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 1);
-            hew_vec_truncate(v, 0);
-            assert_eq!(hew_vec_len(v), 0);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn truncate_larger_is_noop() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 1);
-            hew_vec_push_i32(v, 2);
-            hew_vec_truncate(v, 10);
-            assert_eq!(hew_vec_len(v), 2);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn truncate_null_is_noop() {
+    fn vec_truncate_contracts() {
         unsafe {
             hew_vec_truncate(ptr::null_mut(), 0);
+
+            let v_noop = hew_vec_new();
+            for i in 0..3 {
+                hew_vec_push_i32(v_noop, i);
+            }
+            hew_vec_truncate(v_noop, 10);
+            assert_eq!(hew_vec_len(v_noop), 3);
+            assert_eq!(
+                [
+                    hew_vec_get_i32(v_noop, 0),
+                    hew_vec_get_i32(v_noop, 1),
+                    hew_vec_get_i32(v_noop, 2),
+                ],
+                [0, 1, 2]
+            );
+            hew_vec_free(v_noop);
+
+            let v_shrink = hew_vec_new();
+            for i in 0..5 {
+                hew_vec_push_i32(v_shrink, i);
+            }
+            hew_vec_truncate(v_shrink, 3);
+            assert_eq!(hew_vec_len(v_shrink), 3);
+            assert_eq!(
+                [
+                    hew_vec_get_i32(v_shrink, 0),
+                    hew_vec_get_i32(v_shrink, 1),
+                    hew_vec_get_i32(v_shrink, 2),
+                ],
+                [0, 1, 2]
+            );
+            hew_vec_free(v_shrink);
+
+            let v_zero = hew_vec_new();
+            for i in 0..3 {
+                hew_vec_push_i32(v_zero, i);
+            }
+            hew_vec_truncate(v_zero, 0);
+            assert_eq!(hew_vec_len(v_zero), 0);
+            hew_vec_free(v_zero);
+
+            let vs = hew_vec_new_str();
+            for s in ["aaa", "bbb", "ccc"] {
+                let cs = cstr(s);
+                hew_vec_push_str(vs, cs.as_ptr());
+            }
+            hew_vec_truncate(vs, 1);
+            assert_eq!(hew_vec_len(vs), 1);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(vs, 0)), "aaa");
+            hew_vec_free(vs);
         }
     }
 
     #[test]
-    fn truncate_str_frees_elements() {
-        unsafe {
-            let v = hew_vec_new_str();
-            let a = cstr("aaa");
-            let b = cstr("bbb");
-            let c = cstr("ccc");
-            hew_vec_push_str(v, a.as_ptr());
-            hew_vec_push_str(v, b.as_ptr());
-            hew_vec_push_str(v, c.as_ptr());
-            hew_vec_truncate(v, 1);
-            assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "aaa");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn reverse_i32() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 1);
-            hew_vec_push_i32(v, 2);
-            hew_vec_push_i32(v, 3);
-            hew_vec_push_i32(v, 4);
-            hew_vec_reverse_i32(v);
-            assert_eq!(hew_vec_get_i32(v, 0), 4);
-            assert_eq!(hew_vec_get_i32(v, 1), 3);
-            assert_eq!(hew_vec_get_i32(v, 2), 2);
-            assert_eq!(hew_vec_get_i32(v, 3), 1);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn reverse_i32_single_and_empty() {
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_reverse_i32(v); // empty
-            hew_vec_push_i32(v, 42);
-            hew_vec_reverse_i32(v); // single
-            assert_eq!(hew_vec_get_i32(v, 0), 42);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn reverse_i32_null_is_noop() {
+    fn vec_reverse_contracts() {
         unsafe {
             hew_vec_reverse_i32(ptr::null_mut());
+
+            let single = hew_vec_new();
+            hew_vec_reverse_i32(single);
+            hew_vec_push_i32(single, 42);
+            hew_vec_reverse_i32(single);
+            assert_eq!(hew_vec_get_i32(single, 0), 42);
+            hew_vec_free(single);
+
+            let v = hew_vec_new();
+            for x in [1, 2, 3, 4] {
+                hew_vec_push_i32(v, x);
+            }
+            hew_vec_reverse_i32(v);
+            assert_eq!(
+                [
+                    hew_vec_get_i32(v, 0),
+                    hew_vec_get_i32(v, 1),
+                    hew_vec_get_i32(v, 2),
+                    hew_vec_get_i32(v, 3),
+                ],
+                [4, 3, 2, 1]
+            );
+            hew_vec_free(v);
         }
     }
 }
@@ -1388,211 +1160,107 @@ mod string_extended {
     use super::*;
 
     #[test]
-    fn split_basic() {
+    fn string_split_cases() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("a,b,c", ",", &["a", "b", "c"]),
+            ("hello", ",", &["hello"]),
+            ("a::b::c", "::", &["a", "b", "c"]),
+            ("a,b,", ",", &["a", "b", ""]),
+            ("hello", "", &["h", "e", "l", "l", "o"]),
+        ];
         unsafe {
-            let s = cstr("a,b,c");
-            let d = cstr(",");
-            let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn split_no_delimiter_found() {
-        unsafe {
-            let s = cstr("hello");
-            let d = cstr(",");
-            let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn split_multi_char_delimiter() {
-        unsafe {
-            let s = cstr("a::b::c");
-            let d = cstr("::");
-            let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn split_trailing_delimiter() {
-        unsafe {
-            let s = cstr("a,b,");
-            let d = cstr(",");
-            let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn split_null_input() {
-        unsafe {
-            let d = cstr(",");
-            let v = hew_string_split(ptr::null(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "");
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn split_null_delimiter() {
-        unsafe {
-            let s = cstr("hello");
-            let v = hew_string_split(s.as_ptr(), ptr::null());
-            assert_eq!(hew_vec_len(v), 5);
-            for (index, expected) in ["h", "e", "l", "l", "o"].iter().enumerate() {
+            for &(input, delim, expected) in cases {
+                let s = cstr(input);
+                let d = cstr(delim);
+                let v = hew_string_split(s.as_ptr(), d.as_ptr());
                 assert_eq!(
-                    read_str_and_drop(hew_vec_get_str(v, index as i64)),
-                    *expected
+                    hew_vec_len(v),
+                    expected.len() as i64,
+                    "{input:?} / {delim:?}"
+                );
+                for (idx, exp) in expected.iter().enumerate() {
+                    assert_eq!(read_str_and_drop(hew_vec_get_str(v, idx as i64)), *exp);
+                }
+                hew_vec_free(v);
+            }
+
+            let d = cstr(",");
+            let v_null_in = hew_string_split(ptr::null(), d.as_ptr());
+            assert_eq!(hew_vec_len(v_null_in), 1);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v_null_in, 0)), "");
+            hew_vec_free(v_null_in);
+
+            let s = cstr("hello");
+            let v_null_delim = hew_string_split(s.as_ptr(), ptr::null());
+            assert_eq!(hew_vec_len(v_null_delim), 5);
+            for (idx, exp) in ["h", "e", "l", "l", "o"].iter().enumerate() {
+                assert_eq!(
+                    read_str_and_drop(hew_vec_get_str(v_null_delim, idx as i64)),
+                    *exp
                 );
             }
-            hew_vec_free(v);
+            hew_vec_free(v_null_delim);
         }
     }
 
     #[test]
-    fn split_empty_delimiter() {
-        // split(s, "") yields one element per Unicode codepoint.
-        // "hello" is 5 ASCII codepoints → ["h", "e", "l", "l", "o"].
+    fn string_case_conversion_cases() {
         unsafe {
-            let s = cstr("hello");
-            let d = cstr("");
-            let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 5);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "h");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "e");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "l");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 3)), "l");
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 4)), "o");
-            hew_vec_free(v);
+            let s_lower = cstr("Hello WORLD 123");
+            let lower = hew_string_to_lowercase(s_lower.as_ptr());
+            assert_eq!(read_cstr(lower), "hello world 123");
+            free_hew_string(lower);
+
+            let lower_null = hew_string_to_lowercase(ptr::null());
+            assert_eq!(read_cstr(lower_null), "");
+            free_hew_string(lower_null);
+
+            let s_upper = cstr("Hello world 123");
+            let upper = hew_string_to_uppercase(s_upper.as_ptr());
+            assert_eq!(read_cstr(upper), "HELLO WORLD 123");
+            free_hew_string(upper);
+
+            let upper_null = hew_string_to_uppercase(ptr::null());
+            assert_eq!(read_cstr(upper_null), "");
+            free_hew_string(upper_null);
         }
     }
 
     #[test]
-    fn to_lowercase() {
-        unsafe {
-            let s = cstr("Hello WORLD 123");
-            let r = hew_string_to_lowercase(s.as_ptr());
-            assert_eq!(read_cstr(r), "hello world 123");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn to_lowercase_null() {
-        unsafe {
-            let r = hew_string_to_lowercase(ptr::null());
-            assert_eq!(read_cstr(r), "");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn to_uppercase() {
-        unsafe {
-            let s = cstr("Hello world 123");
-            let r = hew_string_to_uppercase(s.as_ptr());
-            assert_eq!(read_cstr(r), "HELLO WORLD 123");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn to_uppercase_null() {
-        unsafe {
-            let r = hew_string_to_uppercase(ptr::null());
-            assert_eq!(read_cstr(r), "");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn char_at_valid() {
+    fn string_char_lookup_and_conversion() {
         unsafe {
             let s = cstr("abc");
             assert_eq!(hew_string_get(s.as_ptr(), 0), i32::from(b'a'));
             assert_eq!(hew_string_get(s.as_ptr(), 1), i32::from(b'b'));
             assert_eq!(hew_string_get(s.as_ptr(), 2), i32::from(b'c'));
-        }
-    }
 
-    #[test]
-    fn char_at_oob() {
-        unsafe {
-            let s = cstr("ab");
-            assert_eq!(hew_string_get(s.as_ptr(), 2), -1);
-            assert_eq!(hew_string_get(s.as_ptr(), -1), -1);
+            let ab = cstr("ab");
+            assert_eq!(hew_string_get(ab.as_ptr(), 2), -1);
+            assert_eq!(hew_string_get(ab.as_ptr(), -1), -1);
             assert_eq!(hew_string_get(ptr::null(), 0), -1);
+
+            let ch = hew_char_to_string(i32::from(b'Z'));
+            assert_eq!(read_cstr(ch), "Z");
+            free_hew_string(ch);
         }
     }
 
     #[test]
-    fn char_to_string() {
+    fn string_repeat_cases() {
         unsafe {
-            let r = hew_char_to_string(i32::from(b'Z'));
-            assert_eq!(read_cstr(r), "Z");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn repeat_string() {
-        unsafe {
-            let s = cstr("ab");
-            let r = hew_string_repeat(s.as_ptr(), 3);
-            assert_eq!(read_cstr(r), "ababab");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn repeat_zero_and_negative() {
-        unsafe {
-            let s = cstr("x");
-            let r0 = hew_string_repeat(s.as_ptr(), 0);
-            assert_eq!(read_cstr(r0), "");
-            free_hew_string(r0);
-
-            let rn = hew_string_repeat(s.as_ptr(), -1);
-            assert_eq!(read_cstr(rn), "");
-            free_hew_string(rn);
-        }
-    }
-
-    #[test]
-    fn repeat_null() {
-        unsafe {
-            let r = hew_string_repeat(ptr::null(), 5);
-            assert_eq!(read_cstr(r), "");
-            free_hew_string(r);
-        }
-    }
-
-    #[test]
-    fn repeat_one() {
-        unsafe {
-            let s = cstr("hello");
-            let r = hew_string_repeat(s.as_ptr(), 1);
-            assert_eq!(read_cstr(r), "hello");
-            free_hew_string(r);
+            for (input, count, expected) in [
+                (Some("ab"), 3, "ababab"),
+                (Some("x"), 0, ""),
+                (Some("x"), -1, ""),
+                (None, 5, ""),
+                (Some("hello"), 1, "hello"),
+            ] {
+                let s = input.map(cstr);
+                let ptr = s.as_ref().map_or(ptr::null(), ManagedString::as_ptr);
+                let r = hew_string_repeat(ptr, count);
+                assert_eq!(read_cstr(r), expected, "{input:?} * {count}");
+                free_hew_string(r);
+            }
         }
     }
 }
@@ -1785,143 +1453,88 @@ mod generic_vec_tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    fn contains_thunk_null_eq_fn_fails_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::helper_contains_thunk_null_eq_fn_fails_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "helper_contains_thunk_null_eq_fn_fails_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "null equality thunk must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("PANIC: Vec layout contains equality thunk is null"),
-            "null equality thunk must report the fail-closed diagnostic"
-        );
+    fn vec_fail_closed_aborts_on_invalid_contracts() {
+        let cases = [
+            (
+                "contains_thunk_null_eq_fn",
+                "PANIC: Vec layout contains equality thunk is null",
+            ),
+            (
+                "contains_thunk_layout_managed",
+                "HewTypeLayout LayoutManaged requires HewValueLayout thunks",
+            ),
+            (
+                "contains_thunk_elem_kind_mismatch",
+                "PANIC: Vec layout-aware operation is not implemented",
+            ),
+            (
+                "layout_managed_push",
+                "HewTypeLayout LayoutManaged requires HewValueLayout thunks",
+            ),
+            (
+                "get_ptr_stride_mismatch",
+                "hew_vec_get_ptr called on a vec with elem_size != sizeof(pointer)",
+            ),
+        ];
+        for (case, expected_stderr) in cases {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "generic_vec_tests::helper_vec_fail_closed_death"])
+                .env("RUST_TEST_THREADS", "1")
+                .env("HEW_DEATH_TEST", case)
+                .output()
+                .unwrap();
+            assert!(!status.status.success(), "{case} must terminate abnormally");
+            let stderr = String::from_utf8_lossy(&status.stderr);
+            assert!(
+                stderr.contains(expected_stderr),
+                "{case} must report `{expected_stderr}`; stderr was: {stderr}"
+            );
+        }
     }
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    fn helper_contains_thunk_null_eq_fn_fails_closed() {
-        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
-            v != "helper_contains_thunk_null_eq_fn_fails_closed"
-        }) {
+    fn helper_vec_fail_closed_death() {
+        let Ok(case) = std::env::var("HEW_DEATH_TEST") else {
             return;
-        }
-        let layout = HewTypeLayout {
+        };
+        let plain_layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
         };
-
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let needle = Point { x: 1, y: 2, z: 3 };
-            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), None);
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn contains_thunk_layout_managed_fails_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::helper_contains_thunk_layout_managed_fails_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "helper_contains_thunk_layout_managed_fails_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "layout-managed contains must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
-            "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn helper_contains_thunk_layout_managed_fails_closed() {
-        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
-            v != "helper_contains_thunk_layout_managed_fails_closed"
-        }) {
-            return;
-        }
-        let layout = HewTypeLayout {
+        let managed_layout = HewTypeLayout {
             size: core::mem::size_of::<Point>(),
             align: core::mem::align_of::<Point>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         };
-
+        let needle = Point { x: 1, y: 2, z: 3 };
         unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let needle = Point { x: 1, y: 2, z: 3 };
-            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn contains_thunk_elem_kind_mismatch_fails_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::helper_contains_thunk_elem_kind_mismatch_fails_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "helper_contains_thunk_elem_kind_mismatch_fails_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "element-kind mismatch must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("PANIC: Vec layout-aware operation is not implemented"),
-            "element-kind mismatch must report the staged fail-closed diagnostic"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn helper_contains_thunk_elem_kind_mismatch_fails_closed() {
-        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
-            v != "helper_contains_thunk_elem_kind_mismatch_fails_closed"
-        }) {
-            return;
-        }
-        let layout = HewTypeLayout {
-            size: core::mem::size_of::<Point>(),
-            align: core::mem::align_of::<Point>(),
-            ownership_kind: HewTypeOwnershipKind::Plain,
-        };
-
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            (*v).elem_kind = ElemKind::String;
-            let needle = Point { x: 1, y: 2, z: 3 };
-            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+            match case.as_str() {
+                "contains_thunk_null_eq_fn" => {
+                    let v = hew_vec_new_with_layout(&raw const plain_layout);
+                    let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), None);
+                }
+                "contains_thunk_layout_managed" => {
+                    let v = hew_vec_new_with_layout(&raw const managed_layout);
+                    let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+                }
+                "contains_thunk_elem_kind_mismatch" => {
+                    let v = hew_vec_new_with_layout(&raw const plain_layout);
+                    (*v).elem_kind = ElemKind::String;
+                    let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+                }
+                "layout_managed_push" => {
+                    let v = hew_vec_new_with_layout(&raw const managed_layout);
+                    hew_vec_push_layout(v, (&raw const needle).cast(), &raw const managed_layout);
+                }
+                "get_ptr_stride_mismatch" => {
+                    let v = hew_vec_new_with_layout(&raw const plain_layout);
+                    hew_vec_push_layout(v, (&raw const needle).cast(), &raw const plain_layout);
+                    let _ = hew_vec_get_ptr(v, 0);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1950,53 +1563,6 @@ mod generic_vec_tests {
             let got = core::slice::from_raw_parts(raw.cast::<u8>(), layout.size);
             assert_eq!(got, expected);
             hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn layout_managed_push_remains_fail_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::helper_layout_managed_push_remains_fail_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "helper_layout_managed_push_remains_fail_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "layout-managed push must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
-            "thunk-less LayoutManaged construction must report the hard-cutover diagnostic"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn helper_layout_managed_push_remains_fail_closed() {
-        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
-            v != "helper_layout_managed_push_remains_fail_closed"
-        }) {
-            return;
-        }
-        let layout = HewTypeLayout {
-            size: core::mem::size_of::<Point>(),
-            align: core::mem::align_of::<Point>(),
-            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        };
-
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let point = Point { x: 1, y: 2, z: 3 };
-            hew_vec_push_layout(v, (&raw const point).cast(), &raw const layout);
         }
     }
 
@@ -2032,66 +1598,6 @@ mod generic_vec_tests {
             let empty = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(empty, 0);
             hew_vec_free(v);
-        }
-    }
-
-    // ── hew_vec_get_ptr stride-mismatch fail-closed guard ──────────────
-    //
-    // `hew_vec_get_ptr` assumes 8-byte pointer-sized elements. Calling it
-    // on a layout vec (elem_size = 24 for Point{x,y,z}) must abort rather
-    // than return silently-wrong data.  The guard is tested via the
-    // subprocess death-test pattern so the libc::abort() does not terminate
-    // the test runner process.
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn get_ptr_stride_mismatch_fails_closed() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "generic_vec_tests::helper_get_ptr_stride_mismatch_fails_closed",
-            ])
-            .env("RUST_TEST_THREADS", "1")
-            .env(
-                "HEW_DEATH_TEST",
-                "helper_get_ptr_stride_mismatch_fails_closed",
-            )
-            .output()
-            .unwrap();
-        assert!(
-            !status.status.success(),
-            "hew_vec_get_ptr on a wide-element vec must terminate abnormally"
-        );
-        assert!(
-            String::from_utf8_lossy(&status.stderr)
-                .contains("hew_vec_get_ptr called on a vec with elem_size != sizeof(pointer)"),
-            "hew_vec_get_ptr stride mismatch must report the fail-closed diagnostic; \
-             stderr was: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn helper_get_ptr_stride_mismatch_fails_closed() {
-        if std::env::var("HEW_DEATH_TEST")
-            .map_or(true, |v| v != "helper_get_ptr_stride_mismatch_fails_closed")
-        {
-            return;
-        }
-        // Point is 24 bytes (three i64 fields) — wider than a pointer (8 bytes).
-        // A layout vec for Point has elem_size=24; hew_vec_get_ptr must abort.
-        let layout = HewTypeLayout {
-            size: core::mem::size_of::<Point>(),
-            align: core::mem::align_of::<Point>(),
-            ownership_kind: HewTypeOwnershipKind::Plain,
-        };
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let p = Point { x: 1, y: 2, z: 3 };
-            hew_vec_push_layout(v, (&raw const p).cast(), &raw const layout);
-            // This call must abort — elem_size=24 != sizeof(*mut c_void)=8.
-            let _ = hew_vec_get_ptr(v, 0);
         }
     }
 }
@@ -2168,145 +1674,68 @@ mod utf8_string_tests {
     // --- hew_string_length ---
 
     #[test]
-    fn char_count_ascii() {
-        let s = cstr("hello");
-        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 5);
+    fn utf8_char_count_and_byte_length() {
+        let cases = [
+            ("hello", 5, 5),
+            ("héllo", 5, 6),
+            ("日本語", 3, 9),
+            ("🦀", 1, 4),
+            ("", 0, 0),
+        ];
+        unsafe {
+            for (text, chars, bytes) in cases {
+                let s = cstr(text);
+                assert_eq!(hew_string_length(s.as_ptr()), chars, "{text:?}");
+                assert_eq!(hew_string_byte_length(s.as_ptr()), bytes, "{text:?}");
+            }
+            assert_eq!(hew_string_length(ptr::null()), 0);
+            assert_eq!(hew_string_byte_length(ptr::null()), 0);
+        }
     }
 
     #[test]
-    fn char_count_multibyte() {
-        // "héllo" — é is 2 bytes, so 5 codepoints, 6 bytes
-        let s = cstr("héllo");
-        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 5);
-        assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 6);
+    fn utf8_is_ascii_cases() {
+        unsafe {
+            for (text, expected) in [
+                ("hello world 123!", 1),
+                ("héllo", 0),
+                ("日本語", 0),
+                ("hello 🦀", 0),
+                ("", 1),
+            ] {
+                let s = cstr(text);
+                assert_eq!(hew_string_is_ascii(s.as_ptr()), expected, "{text:?}");
+            }
+            assert_eq!(hew_string_is_ascii(ptr::null()), 1);
+        }
     }
 
     #[test]
-    fn char_count_cjk() {
-        // "日本語" — 3 codepoints, 9 bytes
-        let s = cstr("日本語");
-        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 3);
-        assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 9);
+    fn utf8_char_at_cases() {
+        unsafe {
+            let ascii = cstr("hello");
+            assert_eq!(hew_string_get(ascii.as_ptr(), 0), 'h' as i32);
+            assert_eq!(hew_string_get(ascii.as_ptr(), 4), 'o' as i32);
+
+            let multi = cstr("héllo");
+            assert_eq!(hew_string_get(multi.as_ptr(), 0), 'h' as i32);
+            assert_eq!(hew_string_get(multi.as_ptr(), 1), 'é' as i32);
+            assert_eq!(hew_string_get(multi.as_ptr(), 2), 'l' as i32);
+
+            let cjk = cstr("日本語");
+            assert_eq!(hew_string_get(cjk.as_ptr(), 0), '日' as i32);
+            assert_eq!(hew_string_get(cjk.as_ptr(), 1), '本' as i32);
+            assert_eq!(hew_string_get(cjk.as_ptr(), 2), '語' as i32);
+
+            let emoji = cstr("🦀");
+            assert_eq!(hew_string_get(emoji.as_ptr(), 0), '🦀' as i32);
+
+            let hi = cstr("hi");
+            assert_eq!(hew_string_get(hi.as_ptr(), 2), -1);
+            assert_eq!(hew_string_get(hi.as_ptr(), -1), -1);
+            assert_eq!(hew_string_get(ptr::null(), 0), -1);
+        }
     }
-
-    #[test]
-    fn char_count_emoji() {
-        // "🦀" — 1 codepoint, 4 bytes
-        let s = cstr("🦀");
-        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 1);
-        assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 4);
-    }
-
-    #[test]
-    fn char_count_empty() {
-        let s = cstr("");
-        assert_eq!(unsafe { hew_string_length(s.as_ptr()) }, 0);
-    }
-
-    #[test]
-    fn char_count_null() {
-        assert_eq!(unsafe { hew_string_length(ptr::null()) }, 0);
-    }
-
-    // --- hew_string_byte_length ---
-
-    #[test]
-    fn byte_length_ascii() {
-        let s = cstr("hello");
-        assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, 5);
-        // Should match hew_string_length
-        assert_eq!(unsafe { hew_string_byte_length(s.as_ptr()) }, unsafe {
-            hew_string_length(s.as_ptr())
-        });
-    }
-
-    #[test]
-    fn byte_length_null() {
-        assert_eq!(unsafe { hew_string_byte_length(ptr::null()) }, 0);
-    }
-
-    // --- hew_string_is_ascii ---
-
-    #[test]
-    fn is_ascii_true() {
-        let s = cstr("hello world 123!");
-        assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 1);
-    }
-
-    #[test]
-    fn is_ascii_false_accented() {
-        let s = cstr("héllo");
-        assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
-    }
-
-    #[test]
-    fn is_ascii_false_cjk() {
-        let s = cstr("日本語");
-        assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
-    }
-
-    #[test]
-    fn is_ascii_false_emoji() {
-        let s = cstr("hello 🦀");
-        assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 0);
-    }
-
-    #[test]
-    fn is_ascii_null() {
-        assert_eq!(unsafe { hew_string_is_ascii(ptr::null()) }, 1);
-    }
-
-    #[test]
-    fn is_ascii_empty() {
-        let s = cstr("");
-        assert_eq!(unsafe { hew_string_is_ascii(s.as_ptr()) }, 1);
-    }
-
-    // --- hew_string_get ---
-
-    #[test]
-    fn char_at_utf8_ascii() {
-        let s = cstr("hello");
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, 'h' as i32);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 4) }, 'o' as i32);
-    }
-
-    #[test]
-    fn char_at_utf8_multibyte() {
-        // "héllo" — codepoint index 1 is 'é'
-        let s = cstr("héllo");
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, 'h' as i32);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 1) }, 'é' as i32);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, 'l' as i32);
-    }
-
-    #[test]
-    fn char_at_utf8_cjk() {
-        let s = cstr("日本語");
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, '日' as i32);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 1) }, '本' as i32);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, '語' as i32);
-    }
-
-    #[test]
-    fn char_at_utf8_emoji() {
-        let s = cstr("🦀");
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 0) }, '🦀' as i32);
-    }
-
-    #[test]
-    fn char_at_utf8_out_of_bounds() {
-        let s = cstr("hi");
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), 2) }, -1);
-        assert_eq!(unsafe { hew_string_get(s.as_ptr(), -1) }, -1);
-    }
-
-    #[test]
-    fn char_at_utf8_null() {
-        assert_eq!(unsafe { hew_string_get(ptr::null(), 0) }, -1);
-    }
-
-    // --- hew_string_to_bytes ---
 
     /// Read the active region of a `BytesTriple` as a byte slice for assertions.
     ///
@@ -2322,33 +1751,22 @@ mod utf8_string_tests {
     }
 
     #[test]
-    fn to_bytes_ascii() {
-        let s = cstr("hi");
-        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!t.ptr.is_null());
-        assert_eq!(t.len, 2);
-        assert_eq!(unsafe { triple_slice(&t) }, b"hi");
-        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
-    }
+    fn utf8_to_bytes_cases() {
+        unsafe {
+            for (text, expected) in [("hi", b"hi".as_slice()), ("é", &[0xC3, 0xA9])] {
+                let s = cstr(text);
+                let t = hew_string_to_bytes(s.as_ptr());
+                assert!(!t.ptr.is_null());
+                assert_eq!(t.len, u32::try_from(expected.len()).unwrap());
+                assert_eq!(triple_slice(&t), expected);
+                hew_runtime::bytes::hew_bytes_drop(t.ptr);
+            }
 
-    #[test]
-    fn to_bytes_multibyte() {
-        // "é" is 2 bytes: 0xC3 0xA9
-        let s = cstr("é");
-        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!t.ptr.is_null());
-        assert_eq!(t.len, 2);
-        assert_eq!(unsafe { triple_slice(&t) }, &[0xC3, 0xA9]);
-        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
-    }
-
-    #[test]
-    fn to_bytes_null() {
-        // Null input yields an empty triple (null ptr, len 0); drop is a no-op.
-        let t = unsafe { hew_string_to_bytes(ptr::null()) };
-        assert!(t.ptr.is_null());
-        assert_eq!(t.len, 0);
-        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
+            let t_null = hew_string_to_bytes(ptr::null());
+            assert!(t_null.ptr.is_null());
+            assert_eq!(t_null.len, 0);
+            hew_runtime::bytes::hew_bytes_drop(t_null.ptr);
+        }
     }
 }
 
@@ -3672,6 +3090,15 @@ mod circuit_breaker_tests {
 
     #[test]
     fn circuit_breaker_configuration_and_state() {
+        assert_eq!(
+            (
+                HEW_CIRCUIT_BREAKER_CLOSED,
+                HEW_CIRCUIT_BREAKER_OPEN,
+                HEW_CIRCUIT_BREAKER_HALF_OPEN,
+            ),
+            (0, 1, 2),
+            "circuit breaker C ABI constants must stay stable"
+        );
         ensure_scheduler();
 
         unsafe {
@@ -3724,14 +3151,6 @@ mod circuit_breaker_tests {
 
             hew_supervisor_stop(sup);
         }
-    }
-
-    #[test]
-    fn circuit_breaker_constants_accessible() {
-        // Verify the constants are accessible from C
-        assert_eq!(HEW_CIRCUIT_BREAKER_CLOSED, 0);
-        assert_eq!(HEW_CIRCUIT_BREAKER_OPEN, 1);
-        assert_eq!(HEW_CIRCUIT_BREAKER_HALF_OPEN, 2);
     }
 }
 

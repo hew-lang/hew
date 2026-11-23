@@ -2968,37 +2968,16 @@ mod tests {
     }
 
     #[test]
-    fn activate_skips_stopped_actor() {
-        let actor = stub_actor();
-        actor
-            .actor_state
-            .store(HewActorState::Stopped as i32, Ordering::Release);
-        let ptr: *mut HewActor = (&raw const actor).cast_mut();
+    fn activate_skips_non_sleeping_actors() {
+        for state in [HewActorState::Stopped, HewActorState::Idle] {
+            let actor = stub_actor();
+            actor.actor_state.store(state as i32, Ordering::Release);
+            let ptr: *mut HewActor = (&raw const actor).cast_mut();
 
-        activate_actor(ptr);
+            activate_actor(ptr);
 
-        // State should remain STOPPED.
-        assert_eq!(
-            actor.actor_state.load(Ordering::Acquire),
-            HewActorState::Stopped as i32
-        );
-    }
-
-    #[test]
-    fn activate_skips_idle_actor() {
-        let actor = stub_actor();
-        actor
-            .actor_state
-            .store(HewActorState::Idle as i32, Ordering::Release);
-        let ptr: *mut HewActor = (&raw const actor).cast_mut();
-
-        activate_actor(ptr);
-
-        // CAS should fail — state stays IDLE.
-        assert_eq!(
-            actor.actor_state.load(Ordering::Acquire),
-            HewActorState::Idle as i32
-        );
+            assert_eq!(actor.actor_state.load(Ordering::Acquire), state as i32);
+        }
     }
 
     /// `enqueue_resume` on a `Suspended` actor CASes it to `Runnable` and
@@ -5265,16 +5244,6 @@ mod tests {
     }
 
     #[test]
-    fn hew_sched_init_returns_zero_on_success() {
-        let _g = SCHED_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // hew_sched_init is idempotent — second call is a no-op returning 0.
-        let result = hew_sched_init();
-        assert_eq!(result, 0);
-    }
-
-    #[test]
     fn metrics_reset_preserves_an_active_worker_gauge() {
         let _guard = SchedTestLock::acquire();
         let prior = crate::activation::ACTIVE_ACTIVATIONS.swap(1, Ordering::AcqRel);
@@ -5763,6 +5732,11 @@ mod tests {
 
         let (_gate, entered, release) = WorkerShutdownGateGuard::install(0);
         assert_eq!(hew_sched_init(), 0, "real scheduler init");
+        assert_eq!(
+            hew_sched_init(),
+            0,
+            "second scheduler init on an already-initialized runtime must stay idempotent"
+        );
         let rt_ptr = runtime::default_runtime_ptr(Ordering::Acquire);
         assert!(!rt_ptr.is_null(), "real scheduler must install a runtime");
         let probe = runtime::install_drop_probe_for_test(rt_ptr);

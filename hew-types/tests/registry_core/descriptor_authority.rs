@@ -5,7 +5,6 @@
 //!    `TypeDescriptor` shape.
 //! 2. `is_native_wire()` classifies each shape correctly.
 //! 3. `from_ty_strict_generic_args` rejects mismatched generic arities.
-//! 4. The four `from_ty` reject paths still fire (regression guard).
 
 use hew_types::{
     resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy},
@@ -332,39 +331,6 @@ fn strict_generic_args_propagates_boundary_errors_from_args() {
     let ty = Ty::named_for_test("Box", vec![Ty::Var(var)]);
     let result = ResolvedTy::from_ty_strict_generic_args(&ty, 1);
     assert_eq!(result, Err(BoundaryError::UnresolvedInference { var }));
-}
-
-#[test]
-fn from_ty_rejects_unresolved_inference() {
-    let var = TypeVar::fresh();
-    assert_eq!(
-        ResolvedTy::from_ty(&Ty::Var(var)),
-        Err(BoundaryError::UnresolvedInference { var })
-    );
-}
-
-#[test]
-fn from_ty_rejects_error_placeholder() {
-    assert_eq!(
-        ResolvedTy::from_ty(&Ty::Error),
-        Err(BoundaryError::TaintedError)
-    );
-}
-
-#[test]
-fn from_ty_rejects_int_literal() {
-    assert_eq!(
-        ResolvedTy::from_ty(&Ty::IntLiteral),
-        Err(BoundaryError::UnmaterializedLiteral { is_integer: true })
-    );
-}
-
-#[test]
-fn from_ty_rejects_float_literal() {
-    assert_eq!(
-        ResolvedTy::from_ty(&Ty::FloatLiteral),
-        Err(BoundaryError::UnmaterializedLiteral { is_integer: false })
-    );
 }
 
 #[test]

@@ -782,4 +782,17 @@ fn main() -> i64 {
             .contains("implementation declaration whose HIR body was not registered"),
         "fail-closed diagnostic must explain the missing registered implementation body: {diagnostic:?}"
     );
+    let errors = output
+        .into_result()
+        .expect_err("CallableUnsupportedInMir must fail LowerOutput::into_result()");
+    assert!(
+        errors.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CallableUnsupportedInMir { name }
+                    if name == "shapes.Foo::<impl inherent for shapes.Foo>::bar"
+            )
+        }),
+        "fatal error set must retain CallableUnsupportedInMir: {errors:#?}"
+    );
 }

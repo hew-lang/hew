@@ -456,6 +456,20 @@ fn unresolved_callable_callee_emits_indirect_call_unsupported() {
         )),
         "expected IndirectCallUnsupported for unresolved callable callee, got: {diagnostics:?}"
     );
+    let errors = hew_hir::LowerOutput {
+        module: lower_source("fn main() {}").module,
+        diagnostics,
+    }
+    .into_result()
+    .expect_err("IndirectCallUnsupported must fail LowerOutput::into_result()");
+    assert!(
+        errors.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::IndirectCallUnsupported { callee, .. }
+                if callee.contains("ghost_fn")
+        )),
+        "expected IndirectCallUnsupported in into_result() error set, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -513,29 +527,6 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
     assert!(
         !has_call_shape_diagnostic(&diagnostics),
         "closure-binding call must not trip the call-shape gates: {diagnostics:?}"
-    );
-}
-
-#[test]
-fn item_callee_not_in_callable_set_makes_into_result_fail() {
-    // End-to-end: emit the synthetic diagnostic via the gate, push it into
-    // a `LowerOutput`-equivalent, and verify the fatal-set wiring kicks in.
-    // We exercise this through the public dispatcher by running the gate
-    // and checking the diagnostic kind is in the fatal set documented on
-    // `LowerOutput::into_result`.
-    let main = synth_fn_with_tail("main", 0, synth_call_with_item_callee("phantom_callee", 42));
-    let diagnostics = run_call_shape_gates_for_test(&[main]);
-
-    let fatal = diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::CallableUnsupportedInMir { .. }
-                | HirDiagnosticKind::IndirectCallUnsupported { .. }
-        )
-    });
-    assert!(
-        fatal,
-        "expected fatal call-shape diagnostic: {diagnostics:?}"
     );
 }
 

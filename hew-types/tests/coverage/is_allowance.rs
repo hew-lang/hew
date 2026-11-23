@@ -158,26 +158,6 @@ fn bytes_is_bytes_rejected() {
 // types above must not disturb any other operand's existing answer.
 // ---------------------------------------------------------------------------
 
-/// An actor handle stays admitted — the case `actor_ref_is_actor_ref_accepted`
-/// above already pins; this negative control names it explicitly alongside
-/// its three siblings below so the four are read together.
-#[test]
-fn negative_control_local_pid_still_accepted() {
-    assert_clean(
-        r"actor Worker {
-    let _id: i64;
-    receive fn ping() {}
-}
-
-fn main() {
-    let a = spawn Worker { _id: 1 };
-    let b = spawn Worker { _id: 2 };
-    let _eq: bool = a is b;
-}
-",
-    );
-}
-
 /// `Rc` is HEW-SPEC-2026 §3.4.3's counted-handle row, not yet wired into
 /// `is_identity_capable` (its identity word needs codegen support this PR
 /// does not add) — still refused as a value type, unchanged by this PR's

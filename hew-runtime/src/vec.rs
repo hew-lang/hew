@@ -3806,166 +3806,110 @@ mod tests {
     }
 
     #[test]
-    fn test_vec_push_get_i32() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
+    fn test_vec_push_get_and_set_typed() {
+        // SAFETY: FFI calls use valid vec pointers and header-aware C strings.
         unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 10);
-            hew_vec_push_i32(v, 20);
-            hew_vec_push_i32(v, 30);
-            assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(hew_vec_get_i32(v, 0), 10);
-            assert_eq!(hew_vec_get_i32(v, 1), 20);
-            assert_eq!(hew_vec_get_i32(v, 2), 30);
-            hew_vec_free(v);
-        }
-    }
+            let v32 = hew_vec_new();
+            hew_vec_push_i32(v32, 10);
+            hew_vec_push_i32(v32, 20);
+            hew_vec_push_i32(v32, 30);
+            assert_eq!(hew_vec_len(v32), 3);
+            assert_eq!(hew_vec_get_i32(v32, 0), 10);
+            assert_eq!(hew_vec_get_i32(v32, 1), 20);
+            assert_eq!(hew_vec_get_i32(v32, 2), 30);
+            hew_vec_free(v32);
 
-    #[test]
-    fn test_vec_push_get_i64() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_i64.
-        unsafe {
-            let v = hew_vec_new_i64();
-            hew_vec_push_i64(v, 100);
-            hew_vec_push_i64(v, 200);
-            assert_eq!(hew_vec_len(v), 2);
-            assert_eq!(hew_vec_get_i64(v, 0), 100);
-            assert_eq!(hew_vec_get_i64(v, 1), 200);
-            hew_vec_free(v);
-        }
-    }
+            let v32_set = hew_vec_new();
+            hew_vec_push_i32(v32_set, 10);
+            hew_vec_push_i32(v32_set, 20);
+            hew_vec_push_i32(v32_set, 30);
+            hew_vec_set_i32(v32_set, 0, 99);
+            assert_eq!(hew_vec_get_i32(v32_set, 0), 99);
+            assert_eq!(hew_vec_get_i32(v32_set, 1), 20);
+            assert_eq!(hew_vec_get_i32(v32_set, 2), 30);
+            hew_vec_free(v32_set);
 
-    #[test]
-    fn test_vec_push_get_f64() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_f64.
-        unsafe {
-            let v = hew_vec_new_f64();
-            hew_vec_push_f64(v, 1.5);
-            hew_vec_push_f64(v, 2.5);
-            assert_eq!(hew_vec_len(v), 2);
-            assert!((hew_vec_get_f64(v, 0) - 1.5).abs() < f64::EPSILON);
-            assert!((hew_vec_get_f64(v, 1) - 2.5).abs() < f64::EPSILON);
-            hew_vec_free(v);
-        }
-    }
+            let v64 = hew_vec_new_i64();
+            hew_vec_push_i64(v64, 100);
+            hew_vec_push_i64(v64, 200);
+            assert_eq!(hew_vec_len(v64), 2);
+            assert_eq!(hew_vec_get_i64(v64, 0), 100);
+            assert_eq!(hew_vec_get_i64(v64, 1), 200);
+            hew_vec_free(v64);
 
-    #[test]
-    fn test_vec_push_get_str() {
-        // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
-        unsafe {
-            let v = hew_vec_new_str();
+            let doubles = hew_vec_new_f64();
+            hew_vec_push_f64(doubles, 1.5);
+            hew_vec_push_f64(doubles, 2.5);
+            assert_eq!(hew_vec_len(doubles), 2);
+            assert!((hew_vec_get_f64(doubles, 0) - 1.5).abs() < f64::EPSILON);
+            assert!((hew_vec_get_f64(doubles, 1) - 2.5).abs() < f64::EPSILON);
+            hew_vec_free(doubles);
+
+            let vs = hew_vec_new_str();
             let s1 = hew_string("hello");
             let s2 = hew_string("world");
-            hew_vec_push_str(v, s1);
-            hew_vec_push_str(v, s2);
-            // The vec copied in its own elements; release the caller's buffers.
+            hew_vec_push_str(vs, s1);
+            hew_vec_push_str(vs, s2);
             release_string_element(s1);
             release_string_element(s2);
-            assert_eq!(hew_vec_len(v), 2);
-
-            let r1 = hew_vec_get_str(v, 0);
-            assert!(!r1.is_null());
-            assert_eq!(string_as_str(r1), "hello");
-            release_string_element(r1.cast_mut());
-
-            let r2 = hew_vec_get_str(v, 1);
-            assert!(!r2.is_null());
-            assert_eq!(string_as_str(r2), "world");
-            release_string_element(r2.cast_mut());
-            hew_vec_free(v);
+            assert_eq!(hew_vec_len(vs), 2);
+            for (idx, expected) in [(0, "hello"), (1, "world")] {
+                let r = hew_vec_get_str(vs, idx);
+                assert!(!r.is_null());
+                assert_eq!(string_as_str(r), expected);
+                release_string_element(r.cast_mut());
+            }
+            hew_vec_free(vs);
         }
     }
 
     #[test]
-    fn test_vec_set_i32() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
+    fn test_vec_pop_typed() {
+        // SAFETY: FFI calls use valid vec pointers and header-aware C strings.
         unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 1);
-            hew_vec_push_i32(v, 2);
-            hew_vec_set_i32(v, 0, 99);
-            assert_eq!(hew_vec_get_i32(v, 0), 99);
-            assert_eq!(hew_vec_get_i32(v, 1), 2);
-            hew_vec_free(v);
-        }
-    }
+            let v32 = hew_vec_new();
+            hew_vec_push_i32(v32, 10);
+            hew_vec_push_i32(v32, 20);
+            assert_eq!(hew_vec_pop_i32(v32), 20);
+            assert_eq!(hew_vec_len(v32), 1);
+            hew_vec_free(v32);
 
-    #[test]
-    fn test_vec_pop_i32() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
-        unsafe {
-            let v = hew_vec_new();
-            hew_vec_push_i32(v, 10);
-            hew_vec_push_i32(v, 20);
-            let popped = hew_vec_pop_i32(v);
-            assert_eq!(popped, 20);
-            assert_eq!(hew_vec_len(v), 1);
-            hew_vec_free(v);
-        }
-    }
+            let v64 = hew_vec_new_i64();
+            hew_vec_push_i64(v64, 100);
+            hew_vec_push_i64(v64, 200);
+            assert_eq!(hew_vec_pop_i64(v64), 200);
+            assert_eq!(hew_vec_len(v64), 1);
+            hew_vec_free(v64);
 
-    #[test]
-    fn test_vec_pop_i64() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_i64.
-        unsafe {
-            let v = hew_vec_new_i64();
-            hew_vec_push_i64(v, 100);
-            hew_vec_push_i64(v, 200);
-            let popped = hew_vec_pop_i64(v);
-            assert_eq!(popped, 200);
-            assert_eq!(hew_vec_len(v), 1);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn test_vec_pop_str() {
-        // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
-        unsafe {
-            let v = hew_vec_new_str();
+            let vs = hew_vec_new_str();
             let s1 = hew_string("hello");
             let s2 = hew_string("world");
-            hew_vec_push_str(v, s1);
-            hew_vec_push_str(v, s2);
+            hew_vec_push_str(vs, s1);
+            hew_vec_push_str(vs, s2);
             release_string_element(s1);
             release_string_element(s2);
-            let popped = hew_vec_pop_str(v);
+            let popped = hew_vec_pop_str(vs);
             assert!(!popped.is_null());
             assert_eq!(string_as_str(popped), "world");
-            assert_eq!(hew_vec_len(v), 1);
-            // `pop` transfers the vec's owner to the caller — release it.
+            assert_eq!(hew_vec_len(vs), 1);
             release_string_element(popped.cast_mut());
-            hew_vec_free(v);
-        }
-    }
+            hew_vec_free(vs);
 
-    #[test]
-    fn test_vec_pop_f64() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_f64.
-        unsafe {
-            let v = hew_vec_new_f64();
-            hew_vec_push_f64(v, 1.5);
-            hew_vec_push_f64(v, 2.5);
-            let popped = hew_vec_pop_f64(v);
-            assert!((popped - 2.5).abs() < f64::EPSILON);
-            assert_eq!(hew_vec_len(v), 1);
-            hew_vec_free(v);
-        }
-    }
+            let doubles = hew_vec_new_f64();
+            hew_vec_push_f64(doubles, 1.5);
+            hew_vec_push_f64(doubles, 2.5);
+            assert!((hew_vec_pop_f64(doubles) - 2.5).abs() < f64::EPSILON);
+            assert_eq!(hew_vec_len(doubles), 1);
+            hew_vec_free(doubles);
 
-    #[test]
-    fn test_vec_pop_ptr() {
-        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_ptr.
-        unsafe {
-            let v = hew_vec_new_ptr();
+            let vptr = hew_vec_new_ptr();
             let ptr1 = 0x1234usize as *mut core::ffi::c_void;
             let ptr2 = 0x5678usize as *mut core::ffi::c_void;
-            hew_vec_push_ptr(v, ptr1);
-            hew_vec_push_ptr(v, ptr2);
-            let popped = hew_vec_pop_ptr(v);
-            assert_eq!(popped, ptr2);
-            assert_eq!(hew_vec_len(v), 1);
-            hew_vec_free(v);
+            hew_vec_push_ptr(vptr, ptr1);
+            hew_vec_push_ptr(vptr, ptr2);
+            assert_eq!(hew_vec_pop_ptr(vptr), ptr2);
+            assert_eq!(hew_vec_len(vptr), 1);
+            hew_vec_free(vptr);
         }
     }
 
@@ -5056,23 +5000,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn vec_clone_layout_empty_returns_empty_vec() {
-        let layout = point_layout();
-        // SAFETY: layout is valid and outlives the returned vec.
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            let cloned = hew_vec_clone_layout(v, &raw const layout);
-            assert!(!cloned.is_null());
-            assert_eq!(hew_vec_len(cloned), 0);
-            assert_eq!((*cloned).elem_size, layout.size);
-            assert!(!(*cloned).layout.is_null());
-            hew_vec_free(cloned);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn vec_clone_layout_copies_elements_independently() {
+    fn vec_clone_layout_preserves_metadata_empty_and_independence() {
         #[repr(C)]
         struct Point {
             x: i64,
@@ -5081,6 +5009,15 @@ mod tests {
         let layout = point_layout();
         // SAFETY: layout is valid and outlives both vecs.
         unsafe {
+            let empty = hew_vec_new_with_layout(&raw const layout);
+            let cloned_empty = hew_vec_clone_layout(empty, &raw const layout);
+            assert!(!cloned_empty.is_null());
+            assert_eq!(hew_vec_len(cloned_empty), 0);
+            assert_eq!((*cloned_empty).elem_size, layout.size);
+            assert!(!(*cloned_empty).layout.is_null());
+            hew_vec_free(cloned_empty);
+            hew_vec_free(empty);
+
             let v = hew_vec_new_with_layout(&raw const layout);
             push_point(v, 10, 20, &layout);
             push_point(v, 30, 40, &layout);
@@ -5089,35 +5026,16 @@ mod tests {
             let cloned = hew_vec_clone_layout(v, &raw const layout);
             assert!(!cloned.is_null());
             assert_eq!(hew_vec_len(cloned), 3);
-
-            // Elements match the source.
+            assert_eq!((*cloned).elem_size, layout.size);
+            assert_eq!((*cloned).elem_kind, ElemKind::Plain);
+            assert!(!(*cloned).layout.is_null());
             assert_eq!(get_point(cloned, 0, &layout), (10, 20));
             assert_eq!(get_point(cloned, 1, &layout), (30, 40));
             assert_eq!(get_point(cloned, 2, &layout), (50, 60));
 
-            // Cloned data is independent: mutate source via set_layout.
             let new_p = Point { x: 99, y: 99 };
             hew_vec_set_layout(v, 0, (&raw const new_p).cast(), (&raw const layout).cast());
-            // Clone is unaffected.
             assert_eq!(get_point(cloned, 0, &layout), (10, 20));
-
-            hew_vec_free(cloned);
-            hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn vec_clone_layout_clone_has_correct_metadata() {
-        let layout = point_layout();
-        // SAFETY: layout is valid and outlives both vecs.
-        unsafe {
-            let v = hew_vec_new_with_layout(&raw const layout);
-            push_point(v, 1, 2, &layout);
-
-            let cloned = hew_vec_clone_layout(v, &raw const layout);
-            assert_eq!((*cloned).elem_size, layout.size);
-            assert_eq!((*cloned).elem_kind, ElemKind::Plain);
-            assert!(!(*cloned).layout.is_null());
 
             hew_vec_free(cloned);
             hew_vec_free(v);

@@ -691,7 +691,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-codec"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "ayaml",
  "base64 0.22.1",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "hew-expand",
  "hew-hir",
@@ -722,11 +722,11 @@ dependencies = [
 
 [[package]]
 name = "hew-debug-abi"
-version = "0.11.2"
+version = "0.11.3"
 
 [[package]]
 name = "hew-expand"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "logos",
  "serde",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "hew-debug-abi",
  "hew-parser",
@@ -762,14 +762,14 @@ dependencies = [
 
 [[package]]
 name = "hew-parity-gen"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "arbitrary",
 ]
 
 [[package]]
 name = "hew-parser"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "base64 0.22.1",
  "cargo-config2",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "hew-codec",
  "hew-hir",
@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "heck",
  "hew-codec",

@@ -8606,37 +8606,37 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * hew-analysis 0.11.2 — https://github.com/hew-lang/hew
-  * hew-cabi 0.11.2 — https://github.com/hew-lang/hew
-  * hew-calendar 0.11.2 — https://github.com/hew-lang/hew
-  * hew-capability-gen 0.11.2 — https://github.com/hew-lang/hew
-  * hew-cli 0.11.2 — https://github.com/hew-lang/hew
-  * hew-codec 0.11.2 — https://github.com/hew-lang/hew
-  * hew-codegen-rs 0.11.2 — https://github.com/hew-lang/hew
-  * hew-compile 0.11.2 — https://github.com/hew-lang/hew
-  * hew-debug-abi 0.11.2 — https://github.com/hew-lang/hew
-  * hew-expand 0.11.2 — https://github.com/hew-lang/hew
-  * hew-hir 0.11.2 — https://github.com/hew-lang/hew
-  * hew-lexer 0.11.2 — https://github.com/hew-lang/hew
-  * hew-lib 0.11.2
-  * hew-live 0.11.2 — https://github.com/hew-lang/hew
-  * hew-lsp 0.11.2 — https://github.com/hew-lang/hew
-  * hew-mir 0.11.2 — https://github.com/hew-lang/hew
-  * hew-observe 0.11.2 — https://github.com/hew-lang/hew
-  * hew-observe-protocol 0.11.2 — https://github.com/hew-lang/hew
-  * hew-parity-gen 0.11.2 — https://github.com/hew-lang/hew
-  * hew-parser 0.11.2 — https://github.com/hew-lang/hew
-  * hew-pkg 0.11.2 — https://github.com/hew-lang/hew
-  * hew-runtime 0.11.2 — https://github.com/hew-lang/hew
-  * hew-runtime-testkit 0.11.2 — https://github.com/hew-lang/hew
-  * hew-sir 0.11.2 — https://github.com/hew-lang/hew
-  * hew-std 0.11.2 — https://github.com/hew-lang/hew
-  * hew-symbolize 0.11.2 — https://github.com/hew-lang/hew
-  * hew-testutil 0.11.2
-  * hew-types 0.11.2 — https://github.com/hew-lang/hew
-  * hew-wasm 0.11.2 — https://github.com/hew-lang/hew
-  * hew-std-text-template 0.11.2 — https://github.com/hew-lang/hew
-  * xtask 0.11.2 — https://github.com/hew-lang/hew
+  * hew-analysis 0.11.3 — https://github.com/hew-lang/hew
+  * hew-cabi 0.11.3 — https://github.com/hew-lang/hew
+  * hew-calendar 0.11.3 — https://github.com/hew-lang/hew
+  * hew-capability-gen 0.11.3 — https://github.com/hew-lang/hew
+  * hew-cli 0.11.3 — https://github.com/hew-lang/hew
+  * hew-codec 0.11.3 — https://github.com/hew-lang/hew
+  * hew-codegen-rs 0.11.3 — https://github.com/hew-lang/hew
+  * hew-compile 0.11.3 — https://github.com/hew-lang/hew
+  * hew-debug-abi 0.11.3 — https://github.com/hew-lang/hew
+  * hew-expand 0.11.3 — https://github.com/hew-lang/hew
+  * hew-hir 0.11.3 — https://github.com/hew-lang/hew
+  * hew-lexer 0.11.3 — https://github.com/hew-lang/hew
+  * hew-lib 0.11.3
+  * hew-live 0.11.3 — https://github.com/hew-lang/hew
+  * hew-lsp 0.11.3 — https://github.com/hew-lang/hew
+  * hew-mir 0.11.3 — https://github.com/hew-lang/hew
+  * hew-observe 0.11.3 — https://github.com/hew-lang/hew
+  * hew-observe-protocol 0.11.3 — https://github.com/hew-lang/hew
+  * hew-parity-gen 0.11.3 — https://github.com/hew-lang/hew
+  * hew-parser 0.11.3 — https://github.com/hew-lang/hew
+  * hew-pkg 0.11.3 — https://github.com/hew-lang/hew
+  * hew-runtime 0.11.3 — https://github.com/hew-lang/hew
+  * hew-runtime-testkit 0.11.3 — https://github.com/hew-lang/hew
+  * hew-sir 0.11.3 — https://github.com/hew-lang/hew
+  * hew-std 0.11.3 — https://github.com/hew-lang/hew
+  * hew-symbolize 0.11.3 — https://github.com/hew-lang/hew
+  * hew-testutil 0.11.3
+  * hew-types 0.11.3 — https://github.com/hew-lang/hew
+  * hew-wasm 0.11.3 — https://github.com/hew-lang/hew
+  * hew-std-text-template 0.11.3 — https://github.com/hew-lang/hew
+  * xtask 0.11.3 — https://github.com/hew-lang/hew
   * allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
   * anes 0.1.6 — https://github.com/zrzka/anes-rs
   * anyhow 1.0.104 — https://github.com/dtolnay/anyhow

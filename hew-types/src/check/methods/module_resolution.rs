@@ -495,14 +495,6 @@ impl Checker {
         Some(self.defs.path(owner.declaration()).to_string())
     }
 
-    pub(in crate::check) fn canonical_supervisor_child_type(
-        &mut self,
-        path: &hew_parser::ast::Path,
-    ) -> String {
-        self.resolve_supervisor_child_type(path)
-            .unwrap_or_else(|| path.to_string())
-    }
-
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
     /// the type being exported by the module.  Returns `None` if the module
     /// alias is unknown, the type is not exported, or the variant does not

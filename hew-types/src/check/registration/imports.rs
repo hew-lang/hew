@@ -1451,11 +1451,18 @@ impl Checker {
                         format!("{owner}.{}", sd.name)
                     };
                     let saved_importer_module = self.current_module.take();
+                    let saved_importer_file = self.current_module_idx;
                     if !owner.is_empty() {
                         self.current_module = Some(owner.to_string());
                     }
+                    self.current_module_idx = self
+                        .current_item_source
+                        .as_ref()
+                        .and_then(|source| self.file_span_indices.path_index(source))
+                        .unwrap_or(saved_importer_file);
                     self.register_supervisor_decl_as(sd, identity.as_str());
                     self.current_module = saved_importer_module;
+                    self.current_module_idx = saved_importer_file;
                     self.publish_file_import_type_name(owner, sd.name.name.as_str());
                 }
                 Item::Impl(id) => {

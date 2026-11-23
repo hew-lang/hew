@@ -2085,13 +2085,21 @@ pub(crate) fn init_real_scheduler_for_test() {
 /// its workers neither outlive the test nor leave a runtime installed for the
 /// next test in the same process.
 #[cfg(test)]
-pub(crate) struct RealSchedulerForTest;
+pub(crate) struct RealSchedulerForTest {
+    // Dropped after `Drop::drop` finishes `hew_sched_shutdown()` and
+    // `hew_runtime_cleanup()`, keeping teardown under the re-entrant lock even
+    // if a caller did not construct `runtime_test_guard()` first.
+    _sched_lock: SchedTestLock,
+}
 
 #[cfg(test)]
 impl RealSchedulerForTest {
     pub(crate) fn install() -> Self {
+        let sched_lock = SchedTestLock::acquire();
         init_real_scheduler_for_test();
-        Self
+        Self {
+            _sched_lock: sched_lock,
+        }
     }
 }
 
@@ -6289,16 +6297,40 @@ mod tests {
     /// the first run.
     #[test]
     fn a_popped_actor_awaiting_activation_is_not_idle() {
-        let _rt = crate::runtime_test_guard();
-        let _scheduler = RealSchedulerForTest::install();
+        struct MailboxGuard(*mut mailbox::HewMailbox);
+        impl Drop for MailboxGuard {
+            fn drop(&mut self) {
+                // SAFETY: owned exclusively after `_scheduler` joins workers in Drop.
+                unsafe { mailbox::hew_mailbox_free(self.0) };
+            }
+        }
 
-        // SAFETY: fresh mailbox, owned through the end of the test.
+        struct ReleaseOnDrop(Option<std::sync::Arc<std::sync::Barrier>>);
+        impl ReleaseOnDrop {
+            fn release(&mut self) {
+                if let Some(barrier) = self.0.take() {
+                    barrier.wait();
+                }
+            }
+        }
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                self.release();
+            }
+        }
+
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: fresh mailbox, owned through the end of the test and freed
+        // after `_scheduler` shuts down and joins workers.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
+        let _mailbox_guard = MailboxGuard(mailbox);
         // SAFETY: `mailbox` is live and the empty payload has no ownership.
         let sent = unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) };
         assert_eq!(sent, 0);
 
+        // Declared before `_scheduler` so worker teardown finishes before `actor`
+        // and its mailbox leave scope, even during a panic unwind.
         let mut actor = stub_actor();
         actor.id = 0x5EED_0001;
         actor.dispatch = Some(noop_dispatch);
@@ -6309,6 +6341,8 @@ mod tests {
         actor.budget.store(1, Ordering::Release);
         let actor_ptr: *mut HewActor = (&raw mut actor).cast();
 
+        let _scheduler = RealSchedulerForTest::install();
+
         let (hook, entered, release) =
             SchedulerQueueHandoffHookGuard::install_activate_pre_claim(actor.id);
 
@@ -6318,6 +6352,7 @@ mod tests {
         // The worker is now inside `activate_queued_actor`, past the pop and
         // before the claim: the actor is on no queue and in no activation.
         entered.wait();
+        let mut release_guard = ReleaseOnDrop(Some(release));
         assert!(
             activation_handoff_in_flight(),
             "a worker holding a popped actor must be counted in flight"
@@ -6329,7 +6364,7 @@ mod tests {
              over a queued crash"
         );
 
-        release.wait();
+        release_guard.release();
         drop(hook);
 
         // The counterfactual: once the activation completes, the same probe
@@ -6345,9 +6380,6 @@ mod tests {
             idle,
             "the scheduler must return to idle once the activation completes"
         );
-
-        // SAFETY: the worker has finished with the test-owned mailbox.
-        unsafe { mailbox::hew_mailbox_free(mailbox) };
     }
 
     #[test]

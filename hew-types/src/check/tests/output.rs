@@ -1761,7 +1761,115 @@ fn callable_field_projection_depth_is_bounded_on_deep_chains() {
         "projection depth past the cap should fall back to unknown provenance: {candidates:#?}"
     );
     assert!(
-        candidates.known.is_empty(),
-        "truncated deep projection should not retain an unbounded candidate chain: {candidates:#?}"
+        matches!(
+            candidates.known.as_slice(),
+            [CallableCandidate::AnyMember(root)]
+                if matches!(root.as_ref(), CallableCandidate::Formal(_))
+        ),
+        "truncated deep projection should widen to a bounded AnyMember root: {candidates:#?}"
+    );
+}
+
+#[test]
+fn scoped_task_escape_past_projection_depth_cap_is_still_rejected() {
+    use std::fmt::Write as _;
+
+    let depth = 36;
+    let mut direct_source = String::from(
+        "type Boxed<T> { val: T; }\n\
+         fn leak() -> fn[once,suspends]() -> i64 {\n\
+             scope {\n\
+                 let b0 = fork { 42 };\n",
+    );
+    for level in 1..=depth {
+        writeln!(
+            direct_source,
+            "        let b{level} = Boxed {{ val: b{} }};",
+            level - 1
+        )
+        .unwrap();
+    }
+    let val_chain = ".val".repeat(depth);
+    writeln!(
+        direct_source,
+        "        let leaked = b{depth}{val_chain};\n\
+                 move || {{ await leaked }}\n\
+             }}\n\
+         }}\n\
+         fn main() {{ let _ = leak(); }}\n"
+    )
+    .unwrap();
+    let direct_output = check_source(&direct_source);
+    assert!(
+        !direct_output.errors.is_empty()
+            && direct_output.errors.iter().all(|error| error
+                .message
+                .contains("a task handle cannot outlive its scope")),
+        "expected only task escape rejection past projection cap: {:#?}",
+        direct_output.errors
+    );
+
+    let field_chain = ".kids[0]".repeat(40);
+    let closure_source = format!(
+        "type FnChain {{ kids: Vec<FnChain>; cb: fn[once,suspends]() -> i64; }}\n\
+         fn leak_closure() -> fn[once,suspends]() -> i64 {{\n\
+             scope {{\n\
+                 let t = fork {{ 42 }};\n\
+                 let c = FnChain {{ kids: Vec.new(), cb: move || {{ await t }} }};\n\
+                 c{field_chain}.cb\n\
+             }}\n\
+         }}\n\
+         fn main() {{ let _ = leak_closure(); }}\n"
+    );
+    let closure_output = check_source(&closure_source);
+    assert!(
+        !closure_output.errors.is_empty()
+            && closure_output.errors.iter().all(|error| error
+                .message
+                .contains("a task handle cannot outlive its scope")),
+        "expected only closure-captured task escape rejection past projection cap: {:#?}",
+        closure_output.errors
+    );
+}
+
+#[test]
+fn callable_tuple_chains_remain_depth_bounded() {
+    use std::fmt::Write as _;
+
+    let depth = 40;
+    let mut tuple_source = String::from(
+        "fn twice(x: i64) -> i64 { x * 2 }\n\
+         fn run(consume e0: fn(i64) -> i64) -> i64 {\n",
+    );
+    for step in 1..=depth {
+        writeln!(
+            tuple_source,
+            "    let t{step} = (e{}, 0);\n    let (e{step}, _) = t{step};",
+            step - 1
+        )
+        .unwrap();
+    }
+    writeln!(
+        tuple_source,
+        "    e{depth}(1)\n}}\nfn main() {{ println(run(twice)); }}\n"
+    )
+    .unwrap();
+    let tuple_output = check_source(&tuple_source);
+    assert!(tuple_output.errors.is_empty(), "{:#?}", tuple_output.errors);
+    let call_start = tuple_source.rfind(&format!("e{depth}(1)")).unwrap();
+    let tuple_candidates = tuple_output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx == 0 && key.start <= call_start && call_start < key.end)
+        .map(|(_, candidates)| candidates)
+        .expect("indirect call provenance for deep tuple chain");
+    assert!(tuple_candidates.may_be_unknown, "{tuple_candidates:#?}");
+    assert!(
+        matches!(
+            tuple_candidates.known.as_slice(),
+            [CallableCandidate::AnyMember(root)]
+                if matches!(root.as_ref(), CallableCandidate::Formal(_))
+        ),
+        "deep tuple+element chain should widen to AnyMember: {tuple_candidates:#?}"
     );
 }

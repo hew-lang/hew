@@ -409,14 +409,22 @@ pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool
 fn lines_up_to(source: &str, offset: usize) -> impl Iterator<Item = &str> {
     let clamped = offset.min(source.len());
     // Searched by byte so an offset inside a character stays valid.
-    let end = source.as_bytes()[clamped..]
+    // Only an offset past a trailing `\n` at EOF clamps back to the last line;
+    // when `position` finds `\n`, `clamped + at` already excludes this line's `\n`.
+    let head = match source.as_bytes()[clamped..]
         .iter()
         .position(|&byte| byte == b'\n')
-        .map_or(source.len(), |at| clamped + at);
-    // Past a final newline there is no further line: `str::lines` ends at it.
-    let head = source[..end].strip_suffix('\n').unwrap_or(&source[..end]);
-    head.rsplit('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+    {
+        Some(at) => &source[..clamped + at],
+        None => source.strip_suffix('\n').unwrap_or(source),
+    };
+    (!source.is_empty())
+        .then(|| {
+            head.rsplit('\n')
+                .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        })
+        .into_iter()
+        .flatten()
 }
 
 /// Whether `line`'s comment carries a `// hew:allow(...)` directive naming `id`
@@ -889,6 +897,25 @@ mod tests {
         let trailing = "x // hew:allow(all)\n";
         assert!(directive_suppresses(trailing, trailing.len(), ID));
         assert!(!directive_suppresses("", 0, ID));
+        // An empty line after a trailing code directive must not inherit it.
+        let blank_lf = "let x = 1; // hew:allow(all)\n\nlet y = 2;\n";
+        assert!(!directive_suppresses(
+            blank_lf,
+            "let x = 1; // hew:allow(all)\n".len(),
+            ID
+        ));
+        let blank_crlf = "let x = 1; // hew:allow(all)\r\n\r\nlet y = 2;\r\n";
+        assert!(!directive_suppresses(
+            blank_crlf,
+            "let x = 1; // hew:allow(all)\r\n".len(),
+            ID
+        ));
+        let double_trailing = "let x = 1; // hew:allow(all)\n\n";
+        assert!(!directive_suppresses(
+            double_trailing,
+            double_trailing.len(),
+            ID
+        ));
     }
 
     #[test]

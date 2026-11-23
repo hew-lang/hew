@@ -91,10 +91,7 @@ impl Checker {
     ) -> IndirectCallCandidates {
         let site = SpanKey::in_module(span, self.current_module_idx);
         if self.dyn_trait_coercions.contains_key(&site) {
-            IndirectCallCandidates::single(CallableCandidate::Erasure {
-                site,
-                value: Box::new(candidates),
-            })
+            candidates.erased(site)
         } else {
             candidates
         }
@@ -298,11 +295,11 @@ impl Checker {
         &self,
         values: impl Iterator<Item = &'a Spanned<Expr>>,
     ) -> IndirectCallCandidates {
-        IndirectCallCandidates::single(CallableCandidate::Sequence(
+        IndirectCallCandidates::sequence(
             values
                 .map(|value| self.callable_candidates_for_expr(&value.0, &value.1))
                 .collect(),
-        ))
+        )
     }
 
     pub(super) fn callable_candidates_for_block(

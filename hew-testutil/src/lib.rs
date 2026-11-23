@@ -603,6 +603,9 @@ fn taskkill_tree(child: &mut Child, label: &str) -> Result<bool, String> {
     let pid = child.id();
     match Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
     {
         Ok(status) if status.success() => Ok(true),
@@ -2471,10 +2474,29 @@ mod windows_tests {
 
     fn pid_alive(pid: u32) -> bool {
         let output = Command::new("tasklist")
-            .args(["/NH", "/FI", &format!("PID eq {pid}")])
+            .args(["/FO", "CSV", "/NH", "/FI", &format!("PID eq {pid}")])
             .output()
             .expect("run tasklist");
-        String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+        assert!(
+            output.status.success(),
+            "tasklist failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).contains(&format!(",\"{pid}\","))
+    }
+
+    struct ChildTreeGuard {
+        child: Child,
+        disarmed: bool,
+    }
+
+    impl Drop for ChildTreeGuard {
+        fn drop(&mut self) {
+            if !self.disarmed {
+                let _ = terminate_process_group(&mut self.child, "cleanup");
+            }
+        }
     }
 
     /// Re-entry point for the spawned test binary: acts as the direct child,
@@ -2498,12 +2520,15 @@ mod windows_tests {
     fn terminate_process_group_kills_grandchild_tree() {
         let scratch = tempfile::tempdir().expect("scratch dir");
         let pid_file = scratch.path().join("grandchild.pid");
-        let mut child = Command::new(std::env::current_exe().expect("current exe"))
-            .args(["--exact", "windows_tests::tree_child_helper", "--nocapture"])
-            .env(ROLE_ENV, "child")
-            .env(PID_FILE_ENV, &pid_file)
-            .spawn()
-            .expect("spawn child");
+        let mut child_guard = ChildTreeGuard {
+            child: Command::new(std::env::current_exe().expect("current exe"))
+                .args(["--exact", "windows_tests::tree_child_helper", "--nocapture"])
+                .env(ROLE_ENV, "child")
+                .env(PID_FILE_ENV, &pid_file)
+                .spawn()
+                .expect("spawn child"),
+            disarmed: false,
+        };
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let grandchild_pid = loop {
@@ -2521,7 +2546,9 @@ mod windows_tests {
         };
         assert!(pid_alive(grandchild_pid), "grandchild should be running");
 
-        let tree_killed = terminate_process_group(&mut child, "tree test").expect("terminate tree");
+        let tree_killed =
+            terminate_process_group(&mut child_guard.child, "tree test").expect("terminate tree");
+        child_guard.disarmed = true;
         assert!(tree_killed, "taskkill /T should report the tree killed");
 
         let deadline = Instant::now() + Duration::from_secs(10);

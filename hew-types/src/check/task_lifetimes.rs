@@ -649,18 +649,7 @@ impl Checker {
             if selected.iter().any(|place| place.path.len() == 1) {
                 continue;
             }
-            let candidates = IndirectCallCandidates {
-                known: source
-                    .known
-                    .iter()
-                    .map(|receiver| CallableCandidate::Field {
-                        receiver: Box::new(receiver.clone()),
-                        owner,
-                        index: u32::try_from(index).expect("checked field index"),
-                    })
-                    .collect(),
-                may_be_unknown: source.may_be_unknown,
-            };
+            let candidates = source.project_member(Some(owner), index);
             let nested: Vec<_> = selected
                 .iter()
                 .map(|place| crate::env::MovedPlace {
@@ -676,7 +665,7 @@ impl Checker {
                 ));
             }
         }
-        IndirectCallCandidates::single(CallableCandidate::Sequence(retained))
+        IndirectCallCandidates::sequence(retained)
     }
 
     pub(super) fn record_task_actor_transfer(&mut self, expr: &Expr, span: &Span) {
@@ -1137,18 +1126,7 @@ impl Checker {
                     })
             }
             crate::Ty::Tuple(fields) => fields.iter().enumerate().all(|(index, ty)| {
-                let projected = IndirectCallCandidates {
-                    known: candidates
-                        .known
-                        .iter()
-                        .cloned()
-                        .map(|receiver| CallableCandidate::Element {
-                            receiver: Box::new(receiver),
-                            index,
-                        })
-                        .collect(),
-                    may_be_unknown: candidates.may_be_unknown,
-                };
+                let projected = candidates.project_member(None, index);
                 self.value_marker(
                     ty,
                     &projected,
@@ -1181,27 +1159,12 @@ impl Checker {
                     .iter()
                     .enumerate()
                     .all(|(index, name)| {
-                        let Ok(index) = u32::try_from(index) else {
-                            return false;
-                        };
                         let Some(ty) = definition.fields.get(name) else {
                             return false;
                         };
                         let ty =
                             Self::instantiate_type_def_member(ty, &definition.type_params, args);
-                        let projected = IndirectCallCandidates {
-                            known: candidates
-                                .known
-                                .iter()
-                                .cloned()
-                                .map(|receiver| CallableCandidate::Field {
-                                    receiver: Box::new(receiver),
-                                    owner,
-                                    index,
-                                })
-                                .collect(),
-                            may_be_unknown: candidates.may_be_unknown,
-                        };
+                        let projected = candidates.project_member(Some(owner), index);
                         self.value_marker(
                             &ty,
                             &projected,
@@ -1449,6 +1412,12 @@ impl Checker {
                     path.push(Projection::Field(*owner, *index));
                 }
                 environments.origins.read(receiver, &path, actuals)
+            }
+            CallableCandidate::AnyMember(receiver) => {
+                environments.incomplete += 1;
+                environments
+                    .origins
+                    .read(receiver, &[Projection::Descendants], actuals)
             }
             CallableCandidate::Element { receiver, index } => {
                 let mut path = projections.to_vec();

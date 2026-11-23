@@ -85,6 +85,8 @@ pub unsafe extern "C" fn hew_managed_visit_sink(
     slot: *const c_void,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(slot.is_null(), 0);
+    cabi_guard!(visitor.is_null(), hew_cabi::managed::UNDESCRIBED);
     // SAFETY: the endpoint pins the shared adapter until its semantic release expands it.
     unsafe {
         let sink = slot.cast::<*const HewSink>().read();
@@ -718,8 +720,14 @@ pub unsafe extern "C" fn hew_sink_from_encoder(
     encoder_layout: *const HewValueLayout,
     out_status: *mut i32,
 ) -> *mut HewSink {
+    cabi_guard!(out_status.is_null(), std::ptr::null_mut());
     // SAFETY: the compiler provides writable status and live concrete descriptors.
     unsafe { out_status.write(0) };
+    if sink.is_null() || encoder.is_null() || sink_layout.is_null() || encoder_layout.is_null() {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return std::ptr::null_mut();
+    }
     // SAFETY: the checked layout describes the source value retained by this write.
     let width = unsafe {
         crate::owned_value_budget::visit::slot_bytes(&*sink_layout).and_then(|sink| {
@@ -790,8 +798,17 @@ pub unsafe extern "C" fn hew_sink_clone_checked(
     layout: *const HewValueLayout,
     out_status: *mut i32,
 ) -> *mut HewSink {
+    cabi_guard!(out_status.is_null(), std::ptr::null_mut());
     // SAFETY: the caller provides a writable status output for this constructor.
     unsafe { out_status.write(0) };
+    if sink.is_null() {
+        return std::ptr::null_mut();
+    }
+    if layout.is_null() {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return std::ptr::null_mut();
+    }
     let acquired = match crate::owned_value_budget::current_owner()
         .map(|owner| {
             // SAFETY: the immutable source loan pins the descriptor-selected graph.
@@ -822,6 +839,7 @@ pub unsafe extern "C" fn hew_sink_clone(
     sink: *mut HewSink,
     layout: *const HewValueLayout,
 ) -> *mut HewSink {
+    cabi_guard!(sink.is_null() || layout.is_null(), std::ptr::null_mut());
     // SAFETY: the source read loan pins this endpoint through atomic owner retention.
     let (owner, closed) = unsafe { retain(sink, layout, true) };
     endpoint(owner, closed)

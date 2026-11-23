@@ -5,10 +5,6 @@
 //!
 //! Type definitions (`ElemKind`, `HewVec`) are re-exported from `hew-cabi`.
 //! This module provides the actual implementations of all `hew_vec_*` functions.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 // Buffers preserve the element's alignment after their reference count.
 #![expect(
     clippy::cast_ptr_alignment,
@@ -107,6 +103,10 @@ pub unsafe extern "C" fn hew_vec_push_managed(
     moved: u32,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> i32 {
+    cabi_guard!(
+        v.is_null() || data.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the caller retains the invocation and both typed inputs.
     let Some(owner) =
         (unsafe { crate::owned_value_budget::materialize::invocation_owner(invocation) })
@@ -327,6 +327,7 @@ unsafe fn ensure_cap_with_source(
 /// `v` must be a live, exclusively borrowed vector from the runtime constructors.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_make_unique(v: *mut HewVec) {
+    cabi_guard!(v.is_null());
     // SAFETY: the caller exclusively owns this header; other headers may read
     // the shared buffer concurrently but cannot write it without detaching.
     unsafe {
@@ -551,6 +552,10 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
+    let Ok(elem_size) = usize::try_from(elem_size) else {
+        // SAFETY: negative element sizes cannot represent a valid buffer layout.
+        unsafe { abort_vector() };
+    };
     // SAFETY: allocating a zeroed struct via the sized-block allocator is safe.
     unsafe {
         let v: *mut HewVec = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
@@ -561,7 +566,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
         (*v).len = 0;
         (*v).front = 0;
         (*v).cap = 0;
-        (*v).elem_size = elem_size as usize;
+        (*v).elem_size = elem_size;
         (*v).elem_kind = ElemKind::Plain;
         (*v).layout = ptr::null();
         v
@@ -908,6 +913,7 @@ macro_rules! vec_push_primitive {
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
         pub unsafe extern "C" fn $name(v: *mut HewVec, val: $ty) {
+            cabi_guard!(v.is_null());
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let len = (*v).len;
@@ -940,6 +946,7 @@ vec_push_primitive!(hew_vec_push_i64, i64);
 /// managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const HewString) {
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let len = (*v).len;
@@ -967,6 +974,7 @@ vec_push_primitive!(hew_vec_push_f32, f32);
 /// `v` must be a valid pointer-element Vec.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if (*v).elem_size != core::mem::size_of::<*mut c_void>() {
@@ -995,6 +1003,7 @@ macro_rules! vec_get_primitive {
         /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
+            cabi_guard!(v.is_null(), <$ty>::default());
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
                 let index = require_index(index, (*v).len, "Vec.get()");
@@ -1023,6 +1032,7 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString {
+    cabi_guard!(v.is_null(), ptr::null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = require_index(index, (*v).len, "Vec.get()");
@@ -1066,6 +1076,7 @@ unsafe fn abort_ptr_stride_mismatch(elem_size: usize) -> ! {
 /// opaque handles.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void {
+    cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let expected = core::mem::size_of::<*mut c_void>();
@@ -1622,6 +1633,7 @@ vec_pop_primitive!(hew_vec_pop_ptr, *mut c_void, ptr::null_mut());
 /// `v` must be a valid `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
+    cabi_guard!(v.is_null(), 0);
     #[expect(
         clippy::cast_possible_wrap,
         reason = "vec length won't exceed i64::MAX"
@@ -1639,6 +1651,7 @@ pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
 /// `v` must be a valid `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
+    cabi_guard!(v.is_null(), true);
     // SAFETY: caller guarantees `v` is valid.
     unsafe { (*v).len == 0 }
 }
@@ -2465,15 +2478,22 @@ pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val:
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
+        let expected = core::mem::size_of::<*mut c_void>();
+        if (*v).elem_size != expected {
+            abort_ptr_stride_mismatch((*v).elem_size);
+        }
         let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
+        let slot = (*v).data.cast::<*mut c_void>().add(index);
+        let mut old_val = slot.read();
+        // Install the replacement before dropping the old element so any unwind
+        // or re-entrant read observes a live slot value rather than a dropped one.
+        slot.write(val);
         if !(*v).layout.is_null() {
             if let Some(drop_fn) = (*(*v).layout).drop_fn {
-                let slot = (*v).data.add(index * (*v).elem_size);
-                drop_fn(slot.cast::<c_void>());
+                drop_fn((&raw mut old_val).cast::<c_void>());
             }
         }
-        (*v).data.cast::<*mut c_void>().add(index).write(val);
     }
 }
 
@@ -2623,6 +2643,7 @@ pub unsafe extern "C" fn hew_vec_new_generic(elem_size: i64, elem_kind: i64) -> 
 /// `elem_size` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core::ffi::c_void) {
+    cabi_guard!(v.is_null() || data.is_null());
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2678,6 +2699,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_generic(
     v: *const HewVec,
     index: i64,
 ) -> *const core::ffi::c_void {
+    cabi_guard!(v.is_null(), ptr::null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2721,6 +2743,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_generic(
     index: i64,
     data: *const core::ffi::c_void,
 ) {
+    cabi_guard!(v.is_null() || data.is_null());
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2767,6 +2790,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_layout(
 /// `elem_size` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi::c_void) -> i32 {
+    cabi_guard!(v.is_null() || out.is_null(), 0);
     // SAFETY: caller guarantees `v` and `out` are valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -3320,6 +3344,21 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move_release(
     unsafe { set_owned_release(v, index, data, false) }
 }
 
+struct OwnedScratchGuard {
+    ptr: *mut u8,
+    size: usize,
+    align: usize,
+}
+
+impl Drop for OwnedScratchGuard {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // SAFETY: allocated with hew_alloc(size, align) for this scratch slot.
+            unsafe { crate::mem::hew_dealloc(self.ptr, self.size as u64, self.align as u64) };
+        }
+    }
+}
+
 unsafe fn set_owned_release(
     v: *mut HewVec,
     index: i64,
@@ -3344,6 +3383,11 @@ unsafe fn set_owned_release(
         }
         let scratch_size = layout.size.max(1);
         let scratch = crate::mem::hew_alloc(scratch_size as u64, layout.align as u64);
+        let _scratch_guard = OwnedScratchGuard {
+            ptr: scratch,
+            size: scratch_size,
+            align: layout.align,
+        };
         ptr::copy_nonoverlapping(data.cast::<u8>(), scratch, layout.size);
         if copy {
             let status = owned_clone_fn(&layout).map_or(0, |clone| clone(data, scratch.cast()));
@@ -3354,7 +3398,6 @@ unsafe fn set_owned_release(
         }
         let displaced = HewReleaseCursor::detached(slot.cast(), layout);
         ptr::copy_nonoverlapping(scratch, slot, layout.size);
-        crate::mem::hew_dealloc(scratch, scratch_size as u64, layout.align as u64);
         displaced
     }
 }
@@ -3634,6 +3677,10 @@ pub unsafe extern "C" fn hew_vec_contains_checked(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
+    cabi_guard!(
+        v.is_null() || val.is_null() || present_out.is_null() || fault_out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the caller provides a live vector and readable element storage.
     unsafe {
         let layout = owned_descriptor(v);
@@ -6171,6 +6218,103 @@ mod vec_owned_tests {
                 payload: core::ptr::null_mut(),
             };
             hew_vec_push_owned(v, (&raw const s0).cast());
+        }
+    }
+
+    #[test]
+    fn wave3_null_guards_and_set_ptr_installs_before_drop() {
+        use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+        static OBSERVED_DURING_DROP: AtomicI64 = AtomicI64::new(0);
+        static LIVE_VEC: std::sync::atomic::AtomicPtr<HewVec> =
+            std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+        unsafe extern "C-unwind" fn drop_ptr_checks_live_slot(slot: *mut c_void) {
+            // SAFETY: slot holds an owned *mut i64 box removed from LIVE_VEC before drop.
+            unsafe {
+                let old_ptr = slot.cast::<*mut i64>().read();
+                let _ = Box::from_raw(old_ptr);
+                let vec_ptr = LIVE_VEC.load(Ordering::SeqCst);
+                if !vec_ptr.is_null() {
+                    let live_replacement = hew_vec_get_ptr(vec_ptr, 0).cast::<i64>();
+                    OBSERVED_DURING_DROP.store(*live_replacement, Ordering::SeqCst);
+                }
+            }
+        }
+
+        // SAFETY: exercises C ABI null guards and hew_vec_set_ptr replacement-before-drop order.
+        unsafe {
+            hew_vec_make_unique(core::ptr::null_mut());
+            hew_vec_push_i32(core::ptr::null_mut(), 7);
+            hew_vec_push_str(core::ptr::null_mut(), core::ptr::null());
+            hew_vec_push_ptr(core::ptr::null_mut(), core::ptr::null_mut());
+            assert_eq!(hew_vec_get_i32(core::ptr::null_mut(), 0), 0);
+            assert!(hew_vec_get_str(core::ptr::null_mut(), 0).is_null());
+            assert!(hew_vec_get_ptr(core::ptr::null_mut(), 0).is_null());
+            assert_eq!(hew_vec_len(core::ptr::null_mut()), 0);
+            assert!(hew_vec_is_empty(core::ptr::null_mut()));
+            hew_vec_push_generic(core::ptr::null_mut(), core::ptr::null());
+            assert!(hew_vec_get_generic(core::ptr::null(), 0).is_null());
+            hew_vec_set_generic(core::ptr::null_mut(), 0, core::ptr::null());
+            assert_eq!(
+                hew_vec_pop_generic(core::ptr::null_mut(), core::ptr::null_mut()),
+                0
+            );
+            assert_ne!(
+                hew_vec_push_managed(
+                    core::ptr::null_mut(),
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null()
+                ),
+                0
+            );
+            assert_ne!(
+                hew_vec_make_unique_managed(core::ptr::null_mut(), core::ptr::null()),
+                0
+            );
+            assert_ne!(
+                hew_vec_append_managed(core::ptr::null_mut(), core::ptr::null(), core::ptr::null()),
+                0
+            );
+            let mut status = 0_i32;
+            let mut dummy_out = 0_u64;
+            assert!(!hew_vec_get_clone_managed(
+                core::ptr::null(),
+                0,
+                (&raw mut dummy_out).cast(),
+                core::ptr::null(),
+                &raw mut status
+            ));
+            assert!(!hew_vec_get_clone_managed(
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                core::ptr::null_mut()
+            ));
+
+            let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
+                release_start: None,
+                size: core::mem::size_of::<*mut i64>(),
+                align: core::mem::align_of::<*mut i64>(),
+                ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+                clone_fn: None,
+                drop_fn: Some(drop_ptr_checks_live_slot),
+            };
+            let v = hew_vec_new_with_elem_layout(&raw const layout);
+            let first = Box::into_raw(Box::new(111_i64));
+            let second = Box::into_raw(Box::new(222_i64));
+            hew_vec_push_ptr(v, first.cast());
+            LIVE_VEC.store(v, Ordering::SeqCst);
+            OBSERVED_DURING_DROP.store(0, Ordering::SeqCst);
+            hew_vec_set_ptr(v, 0, second.cast());
+            assert_eq!(OBSERVED_DURING_DROP.load(Ordering::SeqCst), 222);
+            LIVE_VEC.store(core::ptr::null_mut(), Ordering::SeqCst);
+            hew_vec_free(v);
+            let _ = AtomicUsize::new(0);
         }
     }
 }

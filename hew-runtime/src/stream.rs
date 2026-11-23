@@ -40,10 +40,6 @@
 //!
 //! A channel's Sink and Stream may live in different actors / threads. All
 //! other stream types are single-owner and may not be shared across threads.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use hew_cabi::string::{
     string_as_bytes, string_as_str, string_from_utf8, string_release, HewString,
@@ -660,12 +656,14 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     layout: *const hew_cabi::vec::HewValueLayout,
     sink_out: *mut *mut HewSink,
 ) -> *mut HewStream {
+    cabi_guard!(sink_out.is_null(), ptr::null_mut());
+    // SAFETY: the caller supplies its uninitialized sink result slot.
+    unsafe { *sink_out = ptr::null_mut() };
+    cabi_guard!(layout.is_null(), ptr::null_mut());
     // SAFETY: the compiler lends the exact concrete element descriptor.
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    // SAFETY: the caller supplies its uninitialized sink result slot.
-    unsafe { *sink_out = ptr::null_mut() };
     let Ok(cap) = usize::try_from(capacity.max(1)) else {
         set_last_error(format!(
             "hew_stream_channel: capacity {capacity} exceeds platform maximum"
@@ -2455,7 +2453,11 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
     layout: *const crate::vec::HewValueLayout,
     fault_out: *mut *mut crate::fault::HewFault,
 ) -> i32 {
-    cabi_guard!(stream.is_null() || out.is_null(), 0);
+    if !fault_out.is_null() {
+        // SAFETY: caller provides writable fault_out when non-null.
+        unsafe { *fault_out = ptr::null_mut() };
+    }
+    cabi_guard!(stream.is_null() || out.is_null() || fault_out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
     // A received item moves to the receiver, so a move-only element (an
     // accepted connection) needs only its destructor.
@@ -2464,7 +2466,6 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
     };
     // SAFETY: stream is valid and exclusively borrowed per caller contract.
     let item = unsafe {
-        *fault_out = ptr::null_mut();
         if (*stream).exhausted() {
             return 0;
         }
@@ -2660,6 +2661,8 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
     slot: *const c_void,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
+    cabi_guard!(slot.is_null(), 0);
+    cabi_guard!(visitor.is_null(), hew_cabi::managed::UNDESCRIBED);
     // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
     let stream = unsafe { *slot.cast::<*mut HewStream>() };
     // SAFETY: the enclosing descriptor retains this optional live handle.
@@ -4565,5 +4568,149 @@ mod tests {
             2,
             "consumed element dropped by the consumer; queued element by teardown"
         );
+    }
+
+    #[test]
+    fn wave3_stream_and_sender_null_guards() {
+        // SAFETY: exercises null rejection across stream/sink/generator C ABI boundaries.
+        unsafe {
+            assert!(hew_stream_pipe_native(4, ptr::null(), ptr::null_mut()).is_null());
+            let mut sink = std::ptr::NonNull::dangling().as_ptr();
+            assert!(hew_stream_pipe_native(4, ptr::null(), &raw mut sink).is_null());
+            assert!(sink.is_null());
+
+            let mut dummy_out = 0_u64;
+            let mut fault = std::ptr::NonNull::dangling().as_ptr();
+            assert_eq!(
+                hew_stream_try_next_layout(
+                    ptr::null_mut(),
+                    (&raw mut dummy_out).cast(),
+                    ptr::null(),
+                    &raw mut fault
+                ),
+                0
+            );
+            assert!(fault.is_null());
+            assert_eq!(
+                hew_stream_try_next_layout(
+                    ptr::null_mut(),
+                    (&raw mut dummy_out).cast(),
+                    ptr::null(),
+                    ptr::null_mut()
+                ),
+                0
+            );
+
+            assert_eq!(hew_managed_visit_stream(ptr::null(), ptr::null()), 0);
+            assert_eq!(
+                crate::stream::sender::hew_managed_visit_sink(ptr::null(), ptr::null()),
+                0
+            );
+
+            let mut status = 0_i32;
+            assert!(crate::stream::generator::hew_stream_from_generator(
+                ptr::null_mut(),
+                ptr::null(),
+                &raw mut status
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            status = 0;
+            assert!(crate::stream::sender::hew_sink_from_encoder(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut status
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            assert!(crate::stream::sender::hew_sink_clone(ptr::null_mut(), ptr::null()).is_null());
+            status = 99;
+            assert!(crate::stream::sender::hew_sink_clone_checked(
+                ptr::null_mut(),
+                ptr::null(),
+                &raw mut status
+            )
+            .is_null());
+            assert_eq!(status, 0);
+        }
+    }
+
+    #[test]
+    fn wave3_stream_native_null_guards() {
+        // SAFETY: exercises null rejection across stream/native C ABI boundaries.
+        unsafe {
+            assert_eq!(
+                crate::stream::native::hew_managed_visit_stream_operation(ptr::null(), ptr::null()),
+                0
+            );
+            assert_eq!(
+                crate::stream::native::hew_stream_read_ready_native(
+                    ptr::null_mut(),
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut()
+                ),
+                2
+            );
+            assert!(crate::stream::native::hew_stream_read_start_native(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut()
+            )
+            .is_null());
+            let mut status = 0_i32;
+            assert!(crate::stream::native::hew_stream_write_start_native(
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                false,
+                ptr::null(),
+                &raw mut status
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+            assert_eq!(
+                crate::stream::native::hew_stream_read_poll_native(ptr::null_mut()),
+                2
+            );
+            assert!(
+                crate::stream::native::hew_stream_operation_fault_native(ptr::null_mut()).is_null()
+            );
+            assert_eq!(
+                crate::stream::native::hew_stream_read_take_native(
+                    ptr::null_mut(),
+                    ptr::null_mut()
+                ),
+                2
+            );
+            assert_eq!(
+                crate::stream::native::hew_stream_write_poll_native(ptr::null_mut()),
+                2
+            );
+            assert_eq!(
+                crate::stream::native::hew_stream_write_committed_native(ptr::null_mut()),
+                0
+            );
+            crate::stream::native::hew_stream_cancel_native(ptr::null_mut());
+            assert_eq!(
+                crate::stream::native::hew_stream_cleanup_status_native(
+                    ptr::null_mut(),
+                    ptr::null()
+                ),
+                1
+            );
+            crate::stream::native::hew_stream_operation_free_native(ptr::null_mut());
+            assert!(
+                crate::stream::native::hew_stream_operation_release_begin(ptr::null_mut())
+                    .is_null()
+            );
+        }
     }
 }

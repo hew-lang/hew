@@ -8,10 +8,6 @@
 //! The returned pointer from `hew_rc_new` points to the **data region**
 //! (immediately after the header). Strong-reference functions accept data
 //! pointers; weak-reference functions accept header pointers.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::util::MutexExt;
 use hew_cabi::value::{HewValueDropThunk, HewValueLayout};
@@ -211,10 +207,14 @@ impl RcSurvivors {
             // SAFETY: no ordinary turn or scoped child can access this wave.
             let inner = unsafe { &mut *header };
             assert!(inner.strong.get() != 0 && !inner.dying);
-            // SAFETY: construction retains the immutable descriptor label through this wave.
-            let type_name = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }
-                .to_string_lossy()
-                .into_owned();
+            let type_name = if inner.type_name.is_null() {
+                "<unknown>".to_owned()
+            } else {
+                // SAFETY: construction retains the immutable descriptor label through this wave.
+                unsafe { std::ffi::CStr::from_ptr(inner.type_name) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
             *self.by_type.entry(type_name).or_default() += 1;
             inner.dying = true;
             inner.strong.set(0);
@@ -649,9 +649,13 @@ pub unsafe extern "C" fn hew_rc_new(
     type_name: *const c_char,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> *mut u8 {
+    cabi_guard!(layout.is_null(), ptr::null_mut());
     // SAFETY: codegen supplies an immutable exact payload descriptor.
     let value_layout = unsafe { *layout };
     let size = value_layout.size;
+    if size > 0 && data.is_null() {
+        return ptr::null_mut();
+    }
     let align = value_layout.align;
     let data_align = normalise_align(align);
     let Some((layout, data_offset)) = alloc_layout(size, data_align) else {
@@ -738,9 +742,14 @@ pub unsafe extern "C" fn hew_rc_new_managed(
     use crate::owned_value_budget::materialize::{
         invocation_owner, HewManagedInput, MaterializationPermit,
     };
+    cabi_guard!(out_status.is_null(), ptr::null_mut());
     // SAFETY: the compiler provides exact immutable descriptors and writable status.
     unsafe {
         out_status.write(0);
+        if layout.is_null() || result_layout.is_null() || ((*layout).size > 0 && data.is_null()) {
+            out_status.write(hew_cabi::managed::UNDESCRIBED);
+            return ptr::null_mut();
+        }
         let permit = if let Some(owner) = invocation_owner(invocation) {
             let width = match crate::owned_value_budget::visit::slot_bytes(&*layout) {
                 Ok(width) => width,
@@ -908,6 +917,10 @@ pub unsafe extern "C" fn hew_rc_release_begin(
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
     let mut pending = Vec::new();
     let owner = crate::owned_value_budget::current_owner();
+    if !value.is_null() && layout.is_null() {
+        eprintln!("hew_rc_release_begin: null layout for live Rc");
+        std::process::abort();
+    }
     if !value.is_null() && owner.is_some() {
         // SAFETY: this semantic handle keeps its account and exact header alive.
         unsafe {
@@ -916,10 +929,12 @@ pub unsafe extern "C" fn hew_rc_release_begin(
     }
     // SAFETY: the caller transfers one strong owner and its payload descriptor.
     if let Some((header, stored)) = unsafe { release_strong(value) } {
-        // SAFETY: the retained header stores the construction descriptor.
-        assert_eq!((stored.size, stored.align), unsafe {
-            ((*layout).size, (*layout).align)
-        });
+        // SAFETY: `layout` was verified non-null above for any live `value`.
+        let caller_layout = unsafe { &*layout };
+        if (stored.size, stored.align) != (caller_layout.size, caller_layout.align) {
+            eprintln!("hew_rc_release_begin: payload layout mismatch");
+            std::process::abort();
+        }
         pending.push(ReleaseItem::Storage {
             owner: header.cast(),
             free: release_pin,
@@ -1072,9 +1087,14 @@ pub unsafe extern "C-unwind" fn hew_rc_set_release_checked(
     out_status: *mut i32,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::owned_value_budget::materialize::{HewManagedInput, MaterializationPermit};
+    cabi_guard!(out_status.is_null(), ptr::null_mut());
     // SAFETY: checked source execution retains the exact initialized payload slots.
     unsafe {
         out_status.write(0);
+        if value.is_null() || replacement.is_null() || layout.is_null() {
+            out_status.write(hew_cabi::managed::UNDESCRIBED);
+            return ptr::null_mut();
+        }
         let owner = (*header_from_data(value)).value_owner.clone();
         let permit = if let Some(owner) = owner.clone() {
             match MaterializationPermit::prepare(
@@ -1293,16 +1313,18 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
 
     // Same rationale as the strong-count assert in hew_rc_drop: a zero weak
     // count before decrement is a double-free and must abort in release.
-    assert!(
-        inner.weak.get() > 0,
-        "Weak<Rc> double-free: weak refcount is already 0"
-    );
+    if inner.weak.get() == 0 {
+        eprintln!("Weak<Rc> double-free: weak refcount is already 0");
+        std::process::abort();
+    }
     inner.weak.set(inner.weak.get() - 1);
 
     if inner.weak.get() == 0 && inner.strong.get() == 0 {
         // SAFETY: data_size was validated at construction time.
-        let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
-            .expect("layout was valid at construction");
+        let Some((layout, _)) = alloc_layout(inner.data_size, inner.data_align) else {
+            eprintln!("hew_weak_drop_rc: layout invalid at drop");
+            std::process::abort();
+        };
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
         if inner.census {
             crate::observe::record_rc_free(inner.type_name);
@@ -1331,7 +1353,7 @@ mod tests {
         data: *const u8,
         size: usize,
         align: usize,
-        drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
+        drop_fn: Option<HewValueDropThunk>,
     ) -> *mut u8 {
         let layout = HewValueLayout {
             code_owner: core::ptr::null(),
@@ -1340,13 +1362,7 @@ mod tests {
             align,
             ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
             clone_fn: None,
-            // SAFETY: a non-unwinding C callback also satisfies C-unwind.
-            drop_fn: unsafe {
-                std::mem::transmute::<
-                    Option<unsafe extern "C" fn(*mut u8)>,
-                    Option<HewValueDropThunk>,
-                >(drop_fn)
-            },
+            drop_fn,
             release_start: None,
         };
         // SAFETY: the test supplies matching payload storage and callback.
@@ -1392,7 +1408,7 @@ mod tests {
         use std::sync::atomic::{AtomicI32, Ordering};
         static DROP_COUNT: AtomicI32 = AtomicI32::new(0);
 
-        unsafe extern "C" fn drop_counter(_data: *mut u8) {
+        unsafe extern "C-unwind" fn drop_counter(_data: *mut c_void) {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -1427,7 +1443,8 @@ mod tests {
         use std::sync::atomic::{AtomicI32, Ordering};
         static OBSERVED: AtomicI32 = AtomicI32::new(0);
 
-        unsafe extern "C" fn drop_reads_self(data: *mut u8) {
+        unsafe extern "C-unwind" fn drop_reads_self(data: *mut c_void) {
+            let data = data.cast::<u8>();
             // SAFETY: `data` is this Rc's data region; it is still valid while
             // the destructor runs (dealloc happens strictly after drop_fn).
             let v = unsafe { data.cast::<i32>().read() };
@@ -1549,7 +1566,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
-        unsafe extern "C" fn count_drop(_data: *mut u8) {
+        unsafe extern "C-unwind" fn count_drop(_data: *mut c_void) {
             DROPS.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -1588,7 +1605,7 @@ mod tests {
         static RC: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
         static DROP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-        unsafe extern "C" fn recursive_drop(data: *mut u8) {
+        unsafe extern "C-unwind" fn recursive_drop(data: *mut c_void) {
             // SAFETY: the callback receives an initialized Payload slot.
             let value = unsafe { (*data.cast::<Payload>()).value };
             DROP_SEQUENCE
@@ -1638,7 +1655,7 @@ mod tests {
         static RC: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
         static OBSERVED: AtomicUsize = AtomicUsize::new(0);
 
-        unsafe extern "C" fn drop_payload(data: *mut u8) {
+        unsafe extern "C-unwind" fn drop_payload(data: *mut c_void) {
             // SAFETY: callback receives an initialized Payload.
             let payload = unsafe { &*data.cast::<Payload>() };
             if !payload.weak.is_null() {
@@ -1696,7 +1713,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static DROPS: AtomicUsize = AtomicUsize::new(0);
 
-        unsafe extern "C" fn count_drop(_data: *mut u8) {
+        unsafe extern "C-unwind" fn count_drop(_data: *mut c_void) {
             DROPS.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -1759,6 +1776,54 @@ mod tests {
         assert_eq!(normalise_align(8), 8);
         assert_eq!(normalise_align(3), 4);
         assert_eq!(normalise_align(48), 64);
+    }
+
+    #[test]
+    fn wave3_null_guards_fail_closed() {
+        // SAFETY: verifies null handling across Rc constructors and managed boundaries.
+        unsafe {
+            assert!(hew_rc_new(ptr::null(), ptr::null(), ptr::null(), ptr::null()).is_null());
+
+            let nonzero_layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
+                size: size_of::<i32>(),
+                align: align_of::<i32>(),
+                ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+                clone_fn: None,
+                drop_fn: None,
+                release_start: None,
+            };
+            assert!(hew_rc_new(
+                ptr::null(),
+                &raw const nonzero_layout,
+                ptr::null(),
+                ptr::null()
+            )
+            .is_null());
+
+            let mut status = 0_i32;
+            assert!(hew_rc_new_managed(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                &raw const nonzero_layout,
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            status = 0;
+            assert!(hew_rc_set_release_checked(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &raw const nonzero_layout,
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+        }
     }
 }
 

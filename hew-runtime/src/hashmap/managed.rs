@@ -47,6 +47,7 @@ pub(crate) unsafe fn result<T>(
     plan: impl FnOnce() -> Result<(u64, Vec<HewManagedInput>), i32>,
     build: impl FnOnce() -> *mut T,
 ) -> *mut T {
+    cabi_guard!(status.is_null(), ptr::null_mut());
     // SAFETY: the generated caller retains all descriptors and outputs.
     unsafe {
         status.write(0);
@@ -94,6 +95,9 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout_checked(
             layout,
             status,
             || {
+                if key.is_null() || value.is_null() {
+                    return Err(UNDESCRIBED);
+                }
                 let bytes = slot_bytes(&(*key).value)?
                     .checked_add(slot_bytes(&*value)?)
                     .and_then(|width| width.checked_mul(LAYOUT_INIT_CAP as u64))
@@ -119,7 +123,13 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout_checked(
         result(
             layout,
             status,
-            || Ok((0, vec![copied(layout, (&raw const map).cast())])),
+            || {
+                if map.is_null() {
+                    Ok((0, Vec::new()))
+                } else {
+                    Ok((0, vec![copied(layout, (&raw const map).cast())]))
+                }
+            },
             || hew_hashmap_clone_layout(map),
         )
     }
@@ -221,7 +231,12 @@ pub unsafe extern "C" fn hew_hashmap_entries_layout_checked(
         result(
             layout,
             status,
-            || projection_plan(map, &*pair, true, true),
+            || {
+                let Some(pair) = pair.as_ref() else {
+                    return Err(UNDESCRIBED);
+                };
+                projection_plan(map, pair, true, true)
+            },
             || hew_hashmap_entries_layout(map, pair, value_offset),
         )
     }
@@ -398,5 +413,76 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[test]
+    fn wave3_null_layout_and_probe_guards() {
+        // SAFETY: verifies fail-closed null handling across managed map constructors and probes.
+        with_value_owner(&Some(ValueOwner::new(Some(1024))), || unsafe {
+            let mut status = 0_i32;
+            let layout = handle(&MAP);
+            assert!(hew_hashmap_new_with_layout_checked(
+                ptr::null(),
+                &raw const hew_layout_val_i64,
+                &raw const layout,
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            status = 0;
+            assert!(hew_hashmap_entries_layout_checked(
+                ptr::null(),
+                ptr::null(),
+                0,
+                &raw const layout,
+                &raw mut status,
+            )
+            .is_null());
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+
+            status = 99;
+            assert!(hew_hashmap_clone_layout_checked(
+                ptr::null(),
+                &raw const layout,
+                &raw mut status
+            )
+            .is_null());
+            assert_eq!(status, 0);
+
+            assert!(hew_hashmap_probe_begin(ptr::null_mut(), ptr::null(), 0).is_null());
+            assert_eq!(
+                hew_hashmap_probe_step(ptr::null_mut()),
+                hew_cabi::map::HewMapProbeStatus::Ready as i32
+            );
+            assert!(hew_hashmap_probe_left(ptr::null()).is_null());
+            assert!(hew_hashmap_probe_right(ptr::null()).is_null());
+            hew_hashmap_probe_submit_hash(ptr::null_mut(), 0);
+            hew_hashmap_probe_submit_eq(ptr::null_mut(), false);
+            assert!(!hew_hashmap_probe_contains(ptr::null_mut()));
+            assert!(!hew_hashmap_probe_get_clone(
+                ptr::null_mut(),
+                ptr::null_mut()
+            ));
+            assert!(!hew_hashmap_probe_get_borrow(
+                ptr::null_mut(),
+                ptr::null_mut()
+            ));
+            assert!(!hew_hashmap_probe_remove_take(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut()
+            ));
+            status = 0;
+            assert!(!hew_hashmap_probe_get_clone_checked(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &raw mut status
+            ));
+            assert_eq!(status, hew_cabi::managed::UNDESCRIBED);
+            assert_eq!(hew_hashmap_len_layout(ptr::null()), 0);
+            hew_hashmap_clear_layout(ptr::null_mut());
+            assert!(hew_hashmap_clear_release(ptr::null_mut()).is_null());
+        });
     }
 }

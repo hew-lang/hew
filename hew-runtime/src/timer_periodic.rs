@@ -567,6 +567,7 @@ mod tests {
 
     #[test]
     fn late_fire_skips_missed_slots_at_anchored_cadence() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -617,6 +618,7 @@ mod tests {
 
     #[test]
     fn cursor_stall_drops_missed_intervals_without_losing_phase() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -675,6 +677,7 @@ mod tests {
 
     #[test]
     fn fractional_periodic_cadence_survives_a_late_tick() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -761,6 +764,7 @@ mod tests {
 
     #[test]
     fn cancel_all_timers_marks_contexts_cancelled() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1012,6 +1016,7 @@ mod tests {
 
     #[test]
     fn cancel_all_timers_no_timers_does_not_panic() {
+        let _runtime = crate::runtime_test_guard();
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1183,6 +1188,7 @@ mod tests {
                     1 => 20_000_000_000u64..60_000_000_000,
                 ], any::<bool>()), 1..24),
             ) {
+                let _runtime = crate::runtime_test_guard();
                 let _guard = TICKER_TEST_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut actor = create_test_actor(50_450);
                 actor.actor_state.store(HewActorState::Stopped as i32, Ordering::SeqCst);

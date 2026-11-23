@@ -200,8 +200,14 @@ pub unsafe extern "C" fn hew_stream_from_generator(
     layout: *const HewValueLayout,
     out_status: *mut i32,
 ) -> *mut HewStream {
+    cabi_guard!(out_status.is_null(), ptr::null_mut());
     // SAFETY: the compiler supplies writable status and a retained concrete descriptor.
     unsafe { out_status.write(0) };
+    if generator.is_null() || layout.is_null() {
+        // SAFETY: out_status verified non-null above.
+        unsafe { out_status.write(hew_cabi::managed::UNDESCRIBED) };
+        return ptr::null_mut();
+    }
     // SAFETY: the generator descriptor lives throughout this construction.
     let width = match unsafe { crate::owned_value_budget::visit::slot_bytes(&*layout) } {
         Ok(width) => width,

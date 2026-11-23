@@ -6,10 +6,6 @@
 //! are released through [`hew_string_drop`], and [`hew_string_clone`] retains
 //! the same allocation; unique owners may grow in place. Foreign C strings cross only explicitly
 //! named adapter boundaries; they are never accepted as managed handles.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_usize, runtime_bounds_trap};
@@ -44,20 +40,20 @@ pub unsafe extern "C" fn hew_string_literal_new(
     len: u32,
     out: *mut *mut HewString,
 ) {
+    cabi_guard!(out.is_null());
+    let len = if data.is_null() { 0 } else { len };
     // SAFETY: compiler literals are valid UTF-8 and readable for `len` bytes.
     let value = unsafe { string_alloc_utf8_unchecked(data, len as usize) };
     // SAFETY: the caller supplies unique output storage, not an existing owner.
     unsafe { out.write(value) };
 }
 
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "callers preserve the builder allocation for the complete formatting traversal"
-)]
 pub(crate) unsafe fn structural_builder_append(builder: *mut c_void, bytes: &[u8]) {
     if builder.is_null() {
+        // SAFETY: `libc::abort()` terminates cleanly without unwinding across FFI.
         unsafe { libc::abort() };
     }
+    // SAFETY: non-null `builder` was created by `hew_string_builder_new` and is uniquely borrowed.
     let builder = unsafe { &mut *builder.cast::<HewStringBuilder>() };
     builder.bytes.extend_from_slice(bytes);
 }
@@ -75,10 +71,6 @@ pub extern "C" fn hew_string_builder_new() -> *mut c_void {
 /// `builder` must be live and `data` must contain `len` readable UTF-8 bytes,
 /// or be null when `len` is zero.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "compiler literals are valid UTF-8 and readable for their length"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_literal(
     builder: *mut c_void,
     data: *const u8,
@@ -87,8 +79,10 @@ pub unsafe extern "C" fn hew_string_builder_append_literal(
     let bytes = if data.is_null() || len == 0 {
         &[][..]
     } else {
+        // SAFETY: compiler literals are valid UTF-8 and readable for `len` bytes.
         unsafe { std::slice::from_raw_parts(data, len as usize) }
     };
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, bytes) };
 }
 
@@ -98,16 +92,13 @@ pub unsafe extern "C" fn hew_string_builder_append_literal(
 ///
 /// `builder` must be live and `value` must be a managed string handle.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the function validates null and borrows both inputs for the call"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_string(
     builder: *mut c_void,
     value: *const HewString,
 ) {
     // SAFETY: the caller supplies a live managed value; null is canonical empty.
     let bytes = unsafe { string_as_bytes(value) };
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, bytes) };
 }
 
@@ -117,13 +108,10 @@ pub unsafe extern "C" fn hew_string_builder_append_string(
 ///
 /// `builder` must be a live structural string builder.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the builder pointer is valid by the FFI contract"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_i64(builder: *mut c_void, value: i64) {
     let mut text = String::new();
     let _ = write!(text, "{value}");
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, text.as_bytes()) };
 }
 
@@ -133,13 +121,10 @@ pub unsafe extern "C" fn hew_string_builder_append_i64(builder: *mut c_void, val
 ///
 /// `builder` must be a live structural string builder.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the builder pointer is valid by the FFI contract"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_u64(builder: *mut c_void, value: u64) {
     let mut text = String::new();
     let _ = write!(text, "{value}");
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, text.as_bytes()) };
 }
 
@@ -149,13 +134,10 @@ pub unsafe extern "C" fn hew_string_builder_append_u64(builder: *mut c_void, val
 ///
 /// `builder` must be a live structural string builder.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the builder pointer is valid by the FFI contract"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_f64(builder: *mut c_void, value: f64) {
     let mut text = String::new();
     let _ = write!(text, "{value}");
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, text.as_bytes()) };
 }
 
@@ -165,11 +147,8 @@ pub unsafe extern "C" fn hew_string_builder_append_f64(builder: *mut c_void, val
 ///
 /// `builder` must be a live structural string builder.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the builder pointer is valid by the FFI contract"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_bool(builder: *mut c_void, value: u8) {
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe {
         structural_builder_append(builder, if value == 0 { b"false" } else { b"true" });
     }
@@ -181,13 +160,10 @@ pub unsafe extern "C" fn hew_string_builder_append_bool(builder: *mut c_void, va
 ///
 /// `builder` must be a live structural string builder.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the builder pointer is valid by the FFI contract"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_char(builder: *mut c_void, value: u32) {
     let ch = char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER);
     let mut bytes = [0u8; 4];
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, ch.encode_utf8(&mut bytes).as_bytes()) };
 }
 
@@ -197,10 +173,6 @@ pub unsafe extern "C" fn hew_string_builder_append_char(builder: *mut c_void, va
 ///
 /// `builder` must be live and `type_name` must be null or NUL-terminated.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the function borrows the validated builder and optional C string"
-)]
 pub unsafe extern "C" fn hew_string_builder_append_identity(
     builder: *mut c_void,
     type_name: *const c_char,
@@ -209,12 +181,14 @@ pub unsafe extern "C" fn hew_string_builder_append_identity(
     let name = if type_name.is_null() {
         "<opaque>"
     } else {
+        // SAFETY: `type_name` is non-null and NUL-terminated per the FFI contract.
         unsafe { CStr::from_ptr(type_name) }
             .to_str()
             .unwrap_or("<opaque>")
     };
     let mut text = String::new();
     let _ = write!(text, "<{name}@{identity:p}>");
+    // SAFETY: `builder` is live per the FFI contract.
     unsafe { structural_builder_append(builder, text.as_bytes()) };
 }
 
@@ -225,16 +199,15 @@ pub unsafe extern "C" fn hew_string_builder_append_identity(
 /// `builder` must be a live pointer returned by [`hew_string_builder_new`] and
 /// must not be used again after this call.
 #[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "this boundary consumes the unique builder allocation and initializes the returned managed string"
-)]
 pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut HewString {
     if builder.is_null() {
+        // SAFETY: `libc::abort()` terminates cleanly without unwinding across FFI.
         unsafe { libc::abort() };
     }
+    // SAFETY: `builder` was allocated by `hew_string_builder_new` and is uniquely owned here.
     let builder = unsafe { Box::from_raw(builder.cast::<HewStringBuilder>()) };
     let Ok(text) = std::str::from_utf8(&builder.bytes) else {
+        // SAFETY: structural builder accumulates valid UTF-8; abort fail-closed on corruption.
         unsafe { libc::abort() };
     };
     string_from_str(text)
@@ -802,6 +775,7 @@ pub unsafe extern "C" fn hew_string_append_checked(
     suffix: *const HewString,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     // SAFETY: the caller lends both handles throughout the checked boundary.
     unsafe {
         out_status.write(0);
@@ -830,6 +804,7 @@ pub unsafe extern "C" fn hew_string_push_checked(
     scalar: u32,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     let scalar = char::from_u32(scalar).unwrap_or_else(|| std::process::abort());
     let mut bytes = [0u8; 4];
     // SAFETY: the caller transfers the receiver and lends the status.
@@ -843,6 +818,7 @@ unsafe fn append_text_checked(
     text: &str,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     // SAFETY: the original receiver stays initialized until reservation commits.
     unsafe {
         out_status.write(0);
@@ -870,6 +846,7 @@ pub unsafe extern "C" fn hew_string_append_i64_checked(
     number: i64,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     let mut buf = [0u8; 20];
     // SAFETY: the caller transfers the receiver and lends the status.
     unsafe { append_text_checked(value, render_decimal(&mut buf, number), out_status) }
@@ -884,6 +861,7 @@ pub unsafe extern "C" fn hew_string_append_u64_checked(
     number: u64,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     let mut buf = [0u8; 20];
     // SAFETY: the caller transfers the receiver and lends the status.
     unsafe { append_text_checked(value, render_decimal(&mut buf, number), out_status) }
@@ -898,6 +876,7 @@ pub unsafe extern "C" fn hew_string_append_f64_checked(
     number: f64,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     let mut buf = [0u8; 64];
     // SAFETY: the caller transfers the receiver and lends the status.
     unsafe { append_text_checked(value, render_f64(number, &mut buf), out_status) }
@@ -912,6 +891,7 @@ pub unsafe extern "C" fn hew_string_append_bool_checked(
     flag: u8,
     out_status: *mut i32,
 ) -> *mut HewString {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
     let text = if flag == 0 { "false" } else { "true" };
     // SAFETY: the caller transfers the receiver and lends the status.
     unsafe { append_text_checked(value, text, out_status) }
@@ -928,7 +908,8 @@ pub unsafe extern "C" fn hew_string_append_literal_checked(
     len: u32,
     out_status: *mut i32,
 ) -> *mut HewString {
-    let text = if len == 0 {
+    cabi_guard!(out_status.is_null(), core::ptr::null_mut());
+    let text = if len == 0 || data.is_null() {
         ""
     } else {
         // SAFETY: compiler literals are valid UTF-8 and readable for their length.
@@ -1122,6 +1103,7 @@ pub unsafe extern "C" fn hew_string_to_bytes_owned(
     value: *const HewString,
     out: *mut crate::bytes::BytesTriple,
 ) {
+    cabi_guard!(out.is_null());
     // SAFETY: the caller supplies a valid borrowed string and unique output
     // storage. The conversion transfers its sole result owner into that storage.
     unsafe { out.write(hew_string_to_bytes(value)) };
@@ -2243,36 +2225,60 @@ mod tests {
     // exited non-zero.
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_index_oob_aborts() {
         run_aborting_subprocess("string_index_oob_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_index_negative_aborts() {
         run_aborting_subprocess("string_index_negative_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_index_null_aborts() {
         run_aborting_subprocess("string_index_null_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_slice_oob_aborts() {
         run_aborting_subprocess("string_slice_oob_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_slice_inverted_aborts() {
         run_aborting_subprocess("string_slice_inverted_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     #[test]
     fn string_slice_negative_aborts() {
         run_aborting_subprocess("string_slice_negative_aborts");
@@ -2451,6 +2457,10 @@ mod tests {
     /// exactly, over every scalar value, not for a hand-maintained subset of
     /// ranges. The pinned Unicode 18 tables are the authority.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "exhaustive 1.1M Unicode scalar sweep exceeds Miri time budget"
+    )]
     fn unicode_is_punct_matches_every_p_category_scalar() {
         use finl_unicode::categories::{CharacterCategories, MinorCategory};
 
@@ -2610,5 +2620,57 @@ mod tests {
         assert!(!s.is_null());
         // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "\u{FFFD}");
+    }
+
+    #[test]
+    fn wave3_null_guards_for_literals_and_checked_ops() {
+        // SAFETY: verifies null handling across string literal and checked entry points.
+        unsafe {
+            let mut literal_out: *mut HewString = std::ptr::NonNull::dangling().as_ptr();
+            hew_string_literal_new(std::ptr::null(), 5, &raw mut literal_out);
+            assert_eq!(read_and_free(literal_out), "");
+            hew_string_literal_new(std::ptr::null(), 0, std::ptr::null_mut());
+
+            assert!(hew_string_append_checked(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null_mut()
+            )
+            .is_null());
+            assert!(hew_string_push_checked(
+                std::ptr::null_mut(),
+                u32::from(b'a'),
+                std::ptr::null_mut()
+            )
+            .is_null());
+            assert!(
+                hew_string_append_i64_checked(std::ptr::null_mut(), 42, std::ptr::null_mut())
+                    .is_null()
+            );
+            assert!(
+                hew_string_append_u64_checked(std::ptr::null_mut(), 42, std::ptr::null_mut())
+                    .is_null()
+            );
+            assert!(
+                hew_string_append_f64_checked(std::ptr::null_mut(), 1.5, std::ptr::null_mut())
+                    .is_null()
+            );
+            assert!(
+                hew_string_append_bool_checked(std::ptr::null_mut(), 1, std::ptr::null_mut())
+                    .is_null()
+            );
+
+            let mut status = 99_i32;
+            let s = hew_string_append_literal_checked(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                7,
+                &raw mut status,
+            );
+            assert_eq!(status, 0);
+            assert_eq!(read_and_free(s), "");
+
+            hew_string_to_bytes_owned(std::ptr::null(), std::ptr::null_mut());
+        }
     }
 }

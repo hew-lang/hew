@@ -4,13 +4,13 @@
 
 use super::{
     abort_layout_clone, alloc_layout_entries, clone_layout_blob, dealloc_layout_entries, key_eq,
-    key_hash, require_clone, slot_key, slot_state, slot_val, validate_op_inputs, HewLayoutHashMap,
-    EMPTY, LOAD_PCTG, OCCUPIED, TOMBSTONE,
+    key_hash, require_clone, slot_key, slot_state, slot_val, HewLayoutHashMap, EMPTY, LOAD_PCTG,
+    OCCUPIED, TOMBSTONE,
 };
 use crate::owned_value_budget::{BackingChange, ManagedStorage};
 use crate::release_walker::{hew_release_sync, HewReleaseCursor};
 use core::{ffi::c_void, ptr};
-use hew_cabi::map::HewMapProbeStatus;
+use hew_cabi::map::{HewMapProbeStatus, HewValueLayout};
 
 #[derive(Debug, Clone, Copy)]
 enum Phase {
@@ -179,8 +179,14 @@ pub unsafe extern "C" fn hew_hashmap_probe_begin(
     key: *const c_void,
     inserting: i32,
 ) -> *mut HewLayoutMapProbe {
-    // SAFETY: forwarded input contract; the gate validates pointers/descriptors.
-    unsafe { validate_op_inputs(map, key, None) };
+    if map.is_null() {
+        crate::set_last_error("hew_hashmap_probe_begin: map is null");
+        return ptr::null_mut();
+    }
+    if key.is_null() {
+        crate::set_last_error("hew_hashmap_probe_begin: key is null");
+        return ptr::null_mut();
+    }
     // SAFETY: the gate established a live map. Copy geometry before allocating.
     let (old_entries, old_cap, len, stride, alignment) = unsafe {
         (
@@ -191,7 +197,10 @@ pub unsafe extern "C" fn hew_hashmap_probe_begin(
             (*map).key_layout.value.align.max((*map).val_layout.align),
         )
     };
-    let cap = insertion_capacity(old_cap, len, inserting != 0).expect("map capacity overflow");
+    let Some(cap) = insertion_capacity(old_cap, len, inserting != 0) else {
+        crate::set_last_error("hew_hashmap_probe_begin: map capacity overflow");
+        std::process::abort();
+    };
     let staged = cap != old_cap;
     let entries = if staged {
         // SAFETY: the map constructor validated this allocation geometry.
@@ -225,6 +234,7 @@ pub unsafe extern "C" fn hew_hashmap_probe_begin(
 /// `probe` is live and uniquely driven; its borrowed operands remain live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_step(probe: *mut HewLayoutMapProbe) -> i32 {
+    cabi_guard!(probe.is_null(), HewMapProbeStatus::Ready as i32);
     // SAFETY: forwarded unique probe contract.
     unsafe { (*probe).advance() as i32 }
 }
@@ -237,6 +247,7 @@ pub unsafe extern "C" fn hew_hashmap_probe_step(probe: *mut HewLayoutMapProbe) -
 /// matching result is submitted or the probe is freed after callback drain.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_left(probe: *const HewLayoutMapProbe) -> *const c_void {
+    cabi_guard!(probe.is_null(), ptr::null());
     // SAFETY: the probe and the selected map slot are borrowed and live.
     unsafe {
         let probe = &*probe;
@@ -247,7 +258,10 @@ pub unsafe extern "C" fn hew_hashmap_probe_left(probe: *const HewLayoutMapProbe)
             } => slot_key(map.entries, index, map.stride, map.key_offset).cast(),
             Phase::Hash { old_slot: None } => probe.key,
             Phase::Equal => slot_key(probe.entries, probe.index, map.stride, map.key_offset).cast(),
-            _ => panic!("map probe has no callback operand"),
+            _ => {
+                crate::set_last_error("map probe has no callback operand");
+                std::process::abort();
+            }
         }
     }
 }
@@ -256,6 +270,7 @@ pub unsafe extern "C" fn hew_hashmap_probe_left(probe: *const HewLayoutMapProbe)
 /// The last step requested Eq and the probe's key loan is still live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_right(probe: *const HewLayoutMapProbe) -> *const c_void {
+    cabi_guard!(probe.is_null(), ptr::null());
     // SAFETY: caller retains the query through this borrowed access.
     unsafe { (*probe).key }
 }
@@ -265,6 +280,7 @@ pub unsafe extern "C" fn hew_hashmap_probe_right(probe: *const HewLayoutMapProbe
 /// completed and no longer accesses its borrowed operands.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_submit_hash(probe: *mut HewLayoutMapProbe, hash: u64) {
+    cabi_guard!(probe.is_null());
     // SAFETY: forwarded exclusive probe and completed callback contract.
     unsafe { (*probe).accept_hash(hash) };
 }
@@ -277,13 +293,14 @@ pub unsafe extern "C" fn hew_hashmap_probe_submit_hash(probe: *mut HewLayoutMapP
 /// has completed and released its operand loans.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_submit_eq(probe: *mut HewLayoutMapProbe, equal: bool) {
+    cabi_guard!(probe.is_null());
     // SAFETY: caller uniquely drives this live probe.
     unsafe {
         let probe = &mut *probe;
-        assert!(
-            matches!(probe.phase, Phase::Equal),
-            "map probe did not request equality"
-        );
+        if !matches!(probe.phase, Phase::Equal) {
+            crate::set_last_error("map probe did not request equality");
+            std::process::abort();
+        }
         if equal {
             probe.found = true;
             probe.phase = Phase::Ready;
@@ -309,10 +326,10 @@ pub unsafe extern "C" fn hew_hashmap_probe_free(probe: *mut HewLayoutMapProbe) {
 unsafe fn ready(probe: *mut HewLayoutMapProbe) -> HewLayoutMapProbe {
     // SAFETY: a commit transfers the unique live probe allocation.
     let probe = unsafe { *Box::from_raw(probe) };
-    assert!(
-        matches!(probe.phase, Phase::Ready),
-        "map probe is not ready to commit"
-    );
+    if !matches!(probe.phase, Phase::Ready) {
+        crate::set_last_error("map probe is not ready to commit");
+        std::process::abort();
+    }
     probe
 }
 
@@ -354,6 +371,7 @@ impl HewLayoutMapProbe {
 /// owner is acquired, and no user callback is invoked.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_contains(probe: *mut HewLayoutMapProbe) -> bool {
+    cabi_guard!(probe.is_null(), false);
     // SAFETY: forwarded ready probe ownership.
     unsafe { ready(probe).found }
 }
@@ -366,10 +384,19 @@ pub unsafe extern "C" fn hew_hashmap_probe_get_clone(
     probe: *mut HewLayoutMapProbe,
     out: *mut c_void,
 ) -> bool {
+    cabi_guard!(probe.is_null(), false);
     // SAFETY: the caller transfers the ready probe and its live borrowed map.
     unsafe {
         let probe = ready(probe);
         if probe.found {
+            if out.is_null()
+                && ((*probe.map).val_layout.size > 0 || (*probe.map).val_layout.clone_fn.is_some())
+            {
+                crate::set_last_error(
+                    "hew_hashmap_probe_get_clone: out must hold the cloned value",
+                );
+                return false;
+            }
             clone_layout_blob(
                 (*probe.map).val_layout,
                 probe.value(),
@@ -389,10 +416,15 @@ pub unsafe extern "C" fn hew_hashmap_probe_get_borrow(
     probe: *mut HewLayoutMapProbe,
     out: *mut c_void,
 ) -> bool {
+    cabi_guard!(probe.is_null(), false);
     // SAFETY: output borrows the same live value and acquires no owner.
     unsafe {
         let probe = ready(probe);
         if probe.found && (*probe.map).val_layout.size > 0 {
+            if out.is_null() {
+                crate::set_last_error("hew_hashmap_probe_get_borrow: out is null");
+                return false;
+            }
             ptr::copy_nonoverlapping(probe.value(), out.cast(), (*probe.map).val_layout.size);
         }
         probe.found
@@ -408,8 +440,18 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_remove_take(
     out: *mut c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
+    // SAFETY: release_out is writable; clear it before checking remaining preconditions.
+    unsafe { *release_out = ptr::null_mut() };
     // SAFETY: forwarded ready probe, live receiver and disjoint output contract.
-    unsafe { remove(&ready(probe), Some(out), release_out) }
+    unsafe {
+        let probe = ready(probe);
+        if probe.found && (*probe.map).val_layout.size > 0 && out.is_null() {
+            crate::set_last_error("hew_hashmap_probe_remove_take: out is null");
+            return false;
+        }
+        remove(&probe, Some(out), release_out)
+    }
 }
 
 unsafe fn remove(
@@ -506,6 +548,37 @@ unsafe fn insert(
     unsafe { insert_prepared(probe, value, mode, release_out, None, None, None) }
 }
 
+struct InsertScratch {
+    ptr: *mut u8,
+    stride: usize,
+    alignment: usize,
+    key_offset: usize,
+    val_offset: usize,
+    key_layout: HewValueLayout,
+    value_layout: HewValueLayout,
+    key_live: bool,
+    val_live: bool,
+}
+
+impl Drop for InsertScratch {
+    fn drop(&mut self) {
+        if self.val_live {
+            if let Some(drop_fn) = self.value_layout.drop_fn {
+                // SAFETY: val_live is set only after the scratch value slot is initialized.
+                unsafe { drop_fn(self.ptr.add(self.val_offset).cast()) };
+            }
+        }
+        if self.key_live {
+            if let Some(drop_fn) = self.key_layout.drop_fn {
+                // SAFETY: key_live is set only after the scratch key slot is initialized.
+                unsafe { drop_fn(self.ptr.add(self.key_offset).cast()) };
+            }
+        }
+        // SAFETY: ptr was allocated with alloc_layout_entries(1, stride, alignment).
+        unsafe { dealloc_layout_entries(self.ptr, 1, self.stride, self.alignment) };
+    }
+}
+
 unsafe fn insert_prepared(
     mut probe: HewLayoutMapProbe,
     value: *const c_void,
@@ -533,6 +606,17 @@ unsafe fn insert_prepared(
     // old map's own slots, which cease to exist when storage is committed.
     // SAFETY: map construction verified the allocation and field geometry.
     let scratch = unsafe { alloc_layout_entries(1, stride, alignment) };
+    let mut guard = InsertScratch {
+        ptr: scratch,
+        stride,
+        alignment,
+        key_offset,
+        val_offset,
+        key_layout,
+        value_layout,
+        key_live: false,
+        val_live: false,
+    };
     // SAFETY: scratch contains one aligned map slot; the input contracts name
     // matching initialized key/value blobs. Raw transfers still borrow the
     // caller's owner until all slot updates commit below.
@@ -542,13 +626,15 @@ unsafe fn insert_prepared(
         if matches!(mode, InsertMode::Clone | InsertMode::TakeValue) {
             require_clone(&key_layout, "map insert key");
             clone_layout_blob(key_layout, probe.key.cast(), key, "map insert key");
+            guard.key_live = true;
         } else if key_layout.size > 0 {
             ptr::copy_nonoverlapping(probe.key.cast::<u8>(), key, key_layout.size);
         }
         if mode == InsertMode::Clone {
             require_clone(&value_layout, "map insert value");
             clone_layout_blob(value_layout, value.cast(), val, "map insert value");
-        } else if value_layout.size > 0 {
+            guard.val_live = true;
+        } else if value_layout.size > 0 && !value.is_null() {
             ptr::copy_nonoverlapping(value.cast::<u8>(), val, value_layout.size);
         }
         adopt_input(key_permit, &key_layout, key.cast());
@@ -568,16 +654,19 @@ unsafe fn insert_prepared(
             ));
         } else {
             ptr::copy_nonoverlapping(key, destination_key, key_layout.size);
+            guard.key_live = false;
             *slot_state(map.entries, probe.index, stride) = OCCUPIED;
             map.len += 1;
         }
         if value_layout.size > 0 {
             ptr::copy_nonoverlapping(val, destination_value, value_layout.size);
         }
+        guard.val_live = false;
         if probe.found && mode != InsertMode::RawTransfer {
             displaced.push(HewReleaseCursor::detached(key.cast(), key_layout));
+            guard.key_live = false;
         }
-        dealloc_layout_entries(scratch, 1, stride, alignment);
+        drop(guard);
         *release_out = HewReleaseCursor::join(displaced);
     }
     !probe.found
@@ -663,10 +752,21 @@ pub unsafe extern "C" fn hew_hashmap_probe_get_clone_checked(
     out: *mut c_void,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: the caller supplies writable status; clear before inspecting remaining args.
+    unsafe { status.write(0) };
+    if probe.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
     // SAFETY: the source map retains this descriptor and found slot.
     unsafe {
-        status.write(0);
         let layout = (*(*probe).map).val_layout;
+        if (*probe).found && (layout.size > 0 || layout.clone_fn.is_some()) && out.is_null() {
+            status.write(hew_cabi::managed::UNDESCRIBED);
+            return false;
+        }
         let permit = if (*probe).found {
             match input_permit(&raw const layout, (*probe).value().cast(), true) {
                 Ok(permit) => permit,
@@ -696,6 +796,14 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone_checked(
     release_out: *mut *mut HewReleaseCursor,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: status is writable; guard remaining required pointers before forwarding.
+    unsafe { status.write(0) };
+    if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
     // SAFETY: forwarded ready probe, matching input and checked output contracts.
     unsafe { insert_checked(probe, value, InsertMode::Clone, release_out, status) }
 }
@@ -710,6 +818,14 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take_checked(
     release_out: *mut *mut HewReleaseCursor,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: status is writable; guard remaining required pointers before forwarding.
+    unsafe { status.write(0) };
+    if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
     // SAFETY: forwarded ready probe, matching input and checked output contracts.
     unsafe { insert_checked(probe, value, InsertMode::TakeValue, release_out, status) }
 }
@@ -723,6 +839,14 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone_checked(
     release_out: *mut *mut HewReleaseCursor,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: status is writable; guard remaining required pointers before forwarding.
+    unsafe { status.write(0) };
+    if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
     // SAFETY: the set's value descriptor is the canonical plain zero-width slot.
     unsafe { insert_checked(probe, ptr::null(), InsertMode::Clone, release_out, status) }
 }
@@ -736,6 +860,14 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take_checked(
     release_out: *mut *mut HewReleaseCursor,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: status is writable; guard remaining required pointers before forwarding.
+    unsafe { status.write(0) };
+    if probe.is_null() || release_out.is_null() {
+        // SAFETY: status verified non-null above.
+        unsafe { status.write(hew_cabi::managed::UNDESCRIBED) };
+        return false;
+    }
     // SAFETY: the set's value descriptor is the canonical plain zero-width slot.
     unsafe {
         insert_checked(
@@ -757,6 +889,7 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone(
     value: *const c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
     // SAFETY: forwarded live insertion operands and ready probe ownership.
     unsafe { insert(ready(probe), value, InsertMode::Clone, release_out) }
 }
@@ -770,6 +903,7 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take(
     value: *const c_void,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
     // SAFETY: forwarded key loan, value transfer and ready probe ownership.
     unsafe { insert(ready(probe), value, InsertMode::TakeValue, release_out) }
 }
@@ -782,6 +916,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
     // SAFETY: a set probe's value descriptor is the plain zero-sized marker.
     unsafe { insert(ready(probe), ptr::null(), InsertMode::Clone, release_out) }
 }
@@ -794,6 +929,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
     // SAFETY: the caller transfers the query owner; a set's value is plain ZST.
     unsafe {
         insert(
@@ -813,6 +949,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_remove(
     probe: *mut HewLayoutMapProbe,
     release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
+    cabi_guard!(probe.is_null() || release_out.is_null(), false);
     // SAFETY: the set probe borrows its wrapped map, whose value is plain ZST.
     unsafe { remove(&ready(probe), None, release_out) }
 }
@@ -833,18 +970,20 @@ pub(super) unsafe fn drive(
             match (*probe).advance() {
                 HewMapProbeStatus::Ready => return Ok(probe),
                 HewMapProbeStatus::NeedHash => {
-                    let hash = (*map)
-                        .key_layout
-                        .hash_fn
-                        .expect("synchronous map operation requires a hash callback");
+                    let Some(hash) = (*map).key_layout.hash_fn else {
+                        crate::set_last_error("synchronous map operation requires a hash callback");
+                        std::process::abort();
+                    };
                     key_hash(hash, hew_hashmap_probe_left(probe), fault)
                         .map(|value| hew_hashmap_probe_submit_hash(probe, value))
                 }
                 HewMapProbeStatus::NeedEq => {
-                    let equal = (*map)
-                        .key_layout
-                        .eq_fn
-                        .expect("synchronous map operation requires an equality callback");
+                    let Some(equal) = (*map).key_layout.eq_fn else {
+                        crate::set_last_error(
+                            "synchronous map operation requires an equality callback",
+                        );
+                        std::process::abort();
+                    };
                     key_eq(
                         equal,
                         hew_hashmap_probe_left(probe),

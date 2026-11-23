@@ -78,6 +78,7 @@ pub unsafe extern "C" fn hew_vec_make_unique_managed(
     vector: *mut HewVec,
     invocation: *const HewCoroState,
 ) -> i32 {
+    cabi_guard!(vector.is_null(), hew_cabi::managed::UNDESCRIBED);
     // SAFETY: source ownership is unchanged until exact preflight succeeds.
     unsafe {
         let Some(owner) = invocation_owner(invocation) else {
@@ -100,7 +101,7 @@ pub unsafe extern "C" fn hew_vec_make_unique_managed(
 /// # Safety
 /// The checked index is in bounds; source and output cursor are live and typed.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_set_managed(
+pub unsafe extern "C-unwind" fn hew_vec_set_managed(
     vector: *mut HewVec,
     index: i64,
     data: *const c_void,
@@ -108,9 +109,15 @@ pub unsafe extern "C" fn hew_vec_set_managed(
     invocation: *const HewCoroState,
     cleanup: *mut *mut HewReleaseCursor,
 ) -> i32 {
+    cabi_guard!(cleanup.is_null(), hew_cabi::managed::UNDESCRIBED);
+    // SAFETY: caller retains cleanup writable; clear it before checking inputs.
+    unsafe { cleanup.write(ptr::null_mut()) };
+    cabi_guard!(
+        vector.is_null() || data.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the caller retains the original inputs until success.
     unsafe {
-        cleanup.write(ptr::null_mut());
         let Some(element_index) = checked_index(index, (*vector).len) else {
             abort_oob("Vec.set()", index as usize, (*vector).len);
         };
@@ -163,6 +170,10 @@ pub unsafe extern "C" fn hew_vec_append_managed(
     source: *const HewVec,
     invocation: *const HewCoroState,
 ) -> i32 {
+    cabi_guard!(
+        destination.is_null() || source.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: every source element remains borrowed until all plans succeed.
     unsafe {
         let Some(owner) = invocation_owner(invocation) else {
@@ -223,9 +234,12 @@ pub unsafe extern "C" fn hew_vec_get_clone_managed(
     invocation: *const HewCoroState,
     status: *mut i32,
 ) -> bool {
+    cabi_guard!(status.is_null(), false);
+    // SAFETY: status is writable; clear it before inspecting remaining pointers.
+    unsafe { status.write(0) };
+    cabi_guard!(vector.is_null() || output.is_null(), false);
     // SAFETY: no output is initialized until source bounds and quota succeed.
     unsafe {
-        status.write(0);
         let Some(index_in_vec) = checked_index(index, (*vector).len) else {
             return false;
         };

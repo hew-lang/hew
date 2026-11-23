@@ -19,10 +19,6 @@
 //! underlying allocation (slicing is O(1)). Mutations (`push`, `append`) use
 //! copy-on-write: if the refcount is > 1 the active region is copied to a fresh
 //! buffer before mutating.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
 use crate::trap_code::{fmt_decimal_i64, fmt_decimal_u64, runtime_bounds_trap};
@@ -309,11 +305,15 @@ pub unsafe extern "C" fn hew_bytes_clear_managed(value: &mut BytesTriple) {
 /// # Safety
 /// `old` owns a live triple and `out` is distinct uninitialized storage.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_push_checked(
+pub unsafe extern "C-unwind" fn hew_bytes_push_checked(
     old: *mut BytesTriple,
     byte: u8,
     out: *mut BytesTriple,
 ) -> i32 {
+    cabi_guard!(
+        old.is_null() || out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: the original owner remains initialized throughout reservation.
     unsafe {
         let permit = match prepare_mutation(&*old, ManagedMutation::Push) {
@@ -332,11 +332,15 @@ pub unsafe extern "C" fn hew_bytes_push_checked(
 /// # Safety
 /// Inputs are live, `old` owns its reference, and `out` is distinct storage.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_append_checked(
+pub unsafe extern "C-unwind" fn hew_bytes_append_checked(
     old: *mut BytesTriple,
     source: *const BytesTriple,
     out: *mut BytesTriple,
 ) -> i32 {
+    cabi_guard!(
+        old.is_null() || source.is_null() || out.is_null(),
+        hew_cabi::managed::UNDESCRIBED
+    );
     // SAFETY: both headers remain initialized until reservation succeeds.
     unsafe {
         let permit = match prepare_mutation(
@@ -361,20 +365,21 @@ pub unsafe extern "C" fn hew_bytes_append_checked(
 /// # Safety
 /// The receiver and status pointer are live and uniquely writable.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_pop_checked(value: &mut BytesTriple, status: *mut i32) -> i64 {
+pub unsafe extern "C-unwind" fn hew_bytes_pop_checked(v: &mut BytesTriple, st: *mut i32) -> i64 {
+    cabi_guard!(st.is_null(), -1);
     // SAFETY: the caller retains the initialized source until success.
     unsafe {
-        status.write(0);
-        let permit = match prepare_mutation(value, ManagedMutation::Detach) {
+        st.write(0);
+        let permit = match prepare_mutation(v, ManagedMutation::Detach) {
             Ok(permit) => permit,
             Err(failure) => {
-                status.write(failure);
+                st.write(failure);
                 return -1;
             }
         };
-        let result = hew_bytes_pop(value);
+        let result = hew_bytes_pop(v);
         if let Some(permit) = permit {
-            permit.commit(value.ptr as usize);
+            permit.commit(v.ptr as usize);
         }
         result
     }
@@ -384,7 +389,7 @@ pub unsafe extern "C" fn hew_bytes_pop_checked(value: &mut BytesTriple, status: 
 /// # Safety
 /// The receiver contains `index`; its owner remains initialized on refusal.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_set_checked(
+pub unsafe extern "C-unwind" fn hew_bytes_set_checked(
     value: &mut BytesTriple,
     index: i64,
     byte: u8,
@@ -532,7 +537,7 @@ pub unsafe extern "C" fn hew_bytes_drop(data_ptr: *mut u8) {
 /// `triple` must point to a valid `BytesTriple`. `triple.ptr` may be null (empty
 /// bytes), in which case a new buffer is allocated.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
+pub unsafe extern "C-unwind" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
     if triple.ptr.is_null() {
         // Allocate a fresh buffer.
         // SAFETY: MIN_CAPACITY > 0.
@@ -554,7 +559,10 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
         triple.offset = 0;
     }
 
-    let end = triple.offset + triple.len;
+    let Some(end) = triple.offset.checked_add(triple.len) else {
+        // SAFETY: a wrapped active-region end would address invalid memory.
+        unsafe { bytes_offset_overflow_trap("bytes.push()") };
+    };
     // SAFETY: ptr is valid per ensure_unique.
     let cap = unsafe { capacity(ptr) };
 
@@ -601,11 +609,12 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
 /// storage. Both pointers must remain valid throughout the call. The old
 /// header is cleared and its owner is transferred to `out` on return.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_push_owned(
+pub unsafe extern "C-unwind" fn hew_bytes_push_owned(
     old: *mut BytesTriple,
     byte: u8,
     out: *mut BytesTriple,
 ) {
+    cabi_guard!(old.is_null() || out.is_null());
     // SAFETY: old is initialized and uniquely writable by the caller's contract.
     let mut value = unsafe {
         old.replace(BytesTriple {
@@ -632,11 +641,12 @@ pub unsafe extern "C" fn hew_bytes_push_owned(
 /// `out` must point to distinct, aligned, uniquely writable uninitialized
 /// storage. All header pointers must remain valid throughout the call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_append_owned(
+pub unsafe extern "C-unwind" fn hew_bytes_append_owned(
     old: *mut BytesTriple,
     source: *const BytesTriple,
     out: *mut BytesTriple,
 ) {
+    cabi_guard!(old.is_null() || source.is_null() || out.is_null());
     // SAFETY: source is initialized; copy its header before clearing old,
     // because source may be the receiver itself.
     let source = unsafe { source.read() };
@@ -693,7 +703,10 @@ pub unsafe extern "C-unwind" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
         triple.offset = 0;
     }
 
-    let last_index = triple.offset + triple.len - 1;
+    let Some(last_index) = triple.offset.checked_add(triple.len - 1) else {
+        // SAFETY: a wrapped active-region index would address invalid memory.
+        unsafe { bytes_offset_overflow_trap("bytes.pop()") };
+    };
     // SAFETY: last_index < offset + len <= capacity per caller contract.
     let byte = unsafe { *ptr.add(last_index as usize) };
     triple.len -= 1;
@@ -831,13 +844,13 @@ pub unsafe extern "C" fn hew_bytes_clear(triple: &mut BytesTriple) {
 /// - `dst` must point to a valid `BytesTriple` (ptr may be null for empty).
 /// - If `src_len > 0`, `src_ptr + src_offset` must be valid for `src_len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_append(
+pub unsafe extern "C-unwind" fn hew_bytes_append(
     dst: &mut BytesTriple,
     src_ptr: *const u8,
     src_offset: u32,
     src_len: u32,
 ) {
-    if src_len == 0 {
+    if src_len == 0 || src_ptr.is_null() {
         return;
     }
 
@@ -940,11 +953,12 @@ pub(crate) unsafe fn active<'a>(triple: &BytesTriple) -> &'a [u8] {
 /// `a` and `b` must point to valid `BytesTriple`s (they may alias). `out`
 /// must point to distinct, aligned, writable uninitialized storage.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_concat_owned(
+pub unsafe extern "C-unwind" fn hew_bytes_concat_owned(
     a: *const BytesTriple,
     b: *const BytesTriple,
     out: *mut BytesTriple,
 ) {
+    cabi_guard!(a.is_null() || b.is_null() || out.is_null());
     // SAFETY: both inputs are valid borrowed triples per the contract.
     let (a, b) = unsafe { (active(&*a), active(&*b)) };
     let Some(total) = a
@@ -990,6 +1004,7 @@ pub unsafe extern "C" fn hew_bytes_starts_with(
     triple: *const BytesTriple,
     prefix: *const BytesTriple,
 ) -> bool {
+    cabi_guard!(triple.is_null() || prefix.is_null(), false);
     // SAFETY: both are valid borrowed triples per the contract.
     unsafe { active(&*triple).starts_with(active(&*prefix)) }
 }
@@ -1004,6 +1019,7 @@ pub unsafe extern "C" fn hew_bytes_ends_with(
     triple: *const BytesTriple,
     suffix: *const BytesTriple,
 ) -> bool {
+    cabi_guard!(triple.is_null() || suffix.is_null(), false);
     // SAFETY: both are valid borrowed triples per the contract.
     unsafe { active(&*triple).ends_with(active(&*suffix)) }
 }
@@ -1054,6 +1070,8 @@ pub extern "C" fn hew_bytes_literal_capacity(len: u32) -> u64 {
 /// `BytesTriple`. Release the resulting owner's pointer with [`hew_bytes_drop`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_literal_new(data: *const u8, len: u32, out: *mut BytesTriple) {
+    cabi_guard!(out.is_null());
+    let len = if data.is_null() { 0 } else { len };
     // SAFETY: the compiler supplies a valid input range and unique output storage.
     unsafe { out.write(hew_bytes_from_static(data, len)) };
 }
@@ -1079,6 +1097,9 @@ pub unsafe extern "C" fn hew_bytes_eq(
     }
     if a_len == 0 {
         return true;
+    }
+    if a_ptr.is_null() || b_ptr.is_null() {
+        return false;
     }
     // SAFETY: a_ptr + a_off is valid for a_len bytes per caller contract.
     let a_slice = unsafe { std::slice::from_raw_parts(a_ptr.add(a_off as usize), a_len as usize) };
@@ -1460,6 +1481,10 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice(
             len: 0,
         };
     }
+    if ptr.is_null() {
+        // SAFETY: a non-empty slice requires a non-null backing buffer.
+        unsafe { bytes_slice_oob_trap(start, end, len) };
+    }
     // Non-empty slice shares the underlying allocation.
     // Compute the new offset FIRST so a checked-add failure aborts
     // BEFORE the refcount bump (no leak on the overflow path; release
@@ -1503,6 +1528,7 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
     end: i64,
     out: *mut BytesTriple,
 ) {
+    cabi_guard!(src.is_null() || out.is_null());
     // SAFETY: the caller guarantees both pointers address valid triples.
     unsafe {
         let source = &*src;
@@ -2783,5 +2809,50 @@ mod tests {
         }
         // Unreachable on the abort-paths.
         unreachable!("abort case {case} should have terminated the process");
+    }
+
+    #[test]
+    fn wave3_null_guards_fail_closed_safely() {
+        // SAFETY: tests verify fail-closed null handling on all guarded C ABI entry points.
+        unsafe {
+            let mut out = BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            hew_bytes_literal_new(std::ptr::null(), 5, &raw mut out);
+            assert!(out.ptr.is_null());
+            assert_eq!(out.len, 0);
+            hew_bytes_literal_new(std::ptr::null(), 0, std::ptr::null_mut());
+
+            assert!(!hew_bytes_eq(std::ptr::null(), 0, 3, b"abc".as_ptr(), 0, 3));
+            assert!(!hew_bytes_eq(b"abc".as_ptr(), 0, 3, std::ptr::null(), 0, 3));
+            assert!(hew_bytes_eq(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0));
+
+            let mut dst = BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            hew_bytes_append(&mut dst, std::ptr::null(), 0, 4);
+            assert!(dst.ptr.is_null());
+
+            assert_ne!(
+                hew_bytes_push_checked(std::ptr::null_mut(), 1, &raw mut out),
+                0
+            );
+            assert_ne!(
+                hew_bytes_append_checked(std::ptr::null_mut(), &raw const out, &raw mut out),
+                0
+            );
+            assert_eq!(hew_bytes_pop_checked(&mut dst, std::ptr::null_mut()), -1);
+
+            hew_bytes_push_owned(std::ptr::null_mut(), 1, std::ptr::null_mut());
+            hew_bytes_append_owned(std::ptr::null_mut(), &raw const dst, std::ptr::null_mut());
+            hew_bytes_concat_owned(std::ptr::null(), &raw const dst, std::ptr::null_mut());
+            assert!(!hew_bytes_starts_with(std::ptr::null(), &raw const dst));
+            assert!(!hew_bytes_ends_with(std::ptr::null(), &raw const dst));
+            hew_bytes_slice_owned(std::ptr::null(), 0, 1, std::ptr::null_mut());
+        }
     }
 }

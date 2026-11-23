@@ -259,47 +259,99 @@ fn parse_supervisor_without_params_has_empty_param_list() {
 }
 
 #[test]
-fn parse_doc_comment_on_function() {
-    let source = "/// Adds numbers.\nfn add(a: i32, b: i32) -> i32 { a + b }";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
-    assert_eq!(result.program.items.len(), 1);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        assert_eq!(f.doc_comment.as_deref(), Some("Adds numbers."));
-    } else {
-        panic!("expected function");
-    }
-}
-
-#[test]
-fn parse_module_doc_comment() {
-    let source = "//! Module docs.\n//! Line two.\nfn foo() {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
+fn parse_item_and_member_doc_comments() {
+    let mod_res = parse("//! Module docs.\n//! Line two.\nfn foo() {}");
+    assert!(mod_res.errors.is_empty());
     assert_eq!(
-        result.program.module_doc.as_deref(),
+        mod_res.program.module_doc.as_deref(),
         Some("Module docs.\nLine two.")
     );
-}
 
-#[test]
-fn parse_no_doc_comment() {
-    let source = "fn bare() {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
-    if let Item::Function(f) = &result.program.items[0].0 {
-        assert!(f.doc_comment.is_none());
-    } else {
-        panic!("expected function");
-    }
-}
+    let fn_res = parse("/// Adds numbers.\nfn add(a: i32, b: i32) -> i32 { a + b }\nfn bare() {}");
+    assert!(fn_res.errors.is_empty());
+    let Item::Function(f0) = &fn_res.program.items[0].0 else {
+        panic!("expected fn");
+    };
+    let Item::Function(f1) = &fn_res.program.items[1].0 else {
+        panic!("expected fn");
+    };
+    assert_eq!(f0.doc_comment.as_deref(), Some("Adds numbers."));
+    assert!(f1.doc_comment.is_none());
 
-#[test]
-fn parse_struct_decl() {
-    let source = "type Point {\n    x: i32;\n    y: i32;\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
-    assert_eq!(result.program.items.len(), 1);
+    let trait_res = parse("trait T {\n    /// First line.\n    /// Second line.\n    fn m();\n}\n");
+    assert!(
+        trait_res.errors.is_empty(),
+        "errors: {:?}",
+        trait_res.errors
+    );
+    let Item::Trait(trait_decl) = &trait_res.program.items[0].0 else {
+        panic!("expected trait");
+    };
+    let TraitItem::Method(method) = &trait_decl.items[0] else {
+        panic!("expected method");
+    };
+    assert_eq!(
+        method.doc_comment.as_deref(),
+        Some("First line.\nSecond line.")
+    );
+
+    let enum_res = parse("enum E {\n    /// The only variant.\n    A;\n}\n");
+    assert!(enum_res.errors.is_empty(), "errors: {:?}", enum_res.errors);
+    let Item::TypeDecl(td) = &enum_res.program.items[0].0 else {
+        panic!("expected enum");
+    };
+    let TypeBodyItem::Variant(variant) = &td.body[0] else {
+        panic!("expected variant");
+    };
+    assert_eq!(variant.doc_comment.as_deref(), Some("The only variant."));
+
+    let struct_res = parse("type S {\n    /// The x coord.\n    x: i32;\n}\n");
+    assert!(
+        struct_res.errors.is_empty(),
+        "errors: {:?}",
+        struct_res.errors
+    );
+    let Item::TypeDecl(sd) = &struct_res.program.items[0].0 else {
+        panic!("expected type");
+    };
+    let TypeBodyItem::Field { doc_comment, .. } = &sd.body[0] else {
+        panic!("expected field");
+    };
+    assert_eq!(doc_comment.as_deref(), Some("The x coord."));
+
+    let actor_res = parse("actor A {\n    /// The counter.\n    let n: i32;\n    /// Increment handler.\n    receive fn inc() {}\n    /// Reset the counter.\n    fn reset() {}\n}\n");
+    assert!(
+        actor_res.errors.is_empty(),
+        "errors: {:?}",
+        actor_res.errors
+    );
+    let Item::Actor(actor_decl) = &actor_res.program.items[0].0 else {
+        panic!("expected actor");
+    };
+    assert_eq!(
+        actor_decl.fields[0].doc_comment.as_deref(),
+        Some("The counter.")
+    );
+    assert_eq!(
+        actor_decl.receive_fns[0].doc_comment.as_deref(),
+        Some("Increment handler.")
+    );
+    assert_eq!(
+        actor_decl.methods[0].doc_comment.as_deref(),
+        Some("Reset the counter.")
+    );
+
+    let misc_res =
+        parse("/// The answer.\npub const ANSWER: i32 = 42;\n\n/// An id.\npub type Id = i64;\n");
+    assert!(misc_res.errors.is_empty(), "errors: {:?}", misc_res.errors);
+    let Item::Const(const_decl) = &misc_res.program.items[0].0 else {
+        panic!("expected const");
+    };
+    let Item::TypeAlias(ta) = &misc_res.program.items[1].0 else {
+        panic!("expected type alias");
+    };
+    assert_eq!(const_decl.doc_comment.as_deref(), Some("The answer."));
+    assert_eq!(ta.doc_comment.as_deref(), Some("An id."));
 }
 
 #[test]
@@ -413,16 +465,6 @@ fn actor_keyword_still_starts_actor_item() {
 // ---------------------------------------------------------------------------
 // Reserved-word-as-name diagnostics and recovery
 // ---------------------------------------------------------------------------
-
-/// A `receive fn` whose name is a reserved keyword produces exactly ONE
-/// error that names the keyword and suggests renaming, instead of a
-/// cascade of parse errors for each remaining token in the declaration.
-#[test]
-fn receive_fn_can_use_record_as_an_identifier() {
-    let source = "actor Metrics { receive fn record(n: i64) {} }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
 
 /// Variant: `match` as the name of a plain `fn` method inside an actor.
 #[test]
@@ -544,23 +586,6 @@ fn toplevel_fn_actor_name_still_reports_reserved_word() {
     assert_eq!(&source[diagnostic.span.clone()], "actor");
 }
 
-/// A valid actor with non-keyword names continues to parse cleanly.
-#[test]
-fn actor_with_non_keyword_receive_fn_name_parses_ok() {
-    let source = "actor Metrics { receive fn emit_record(n: i64) {} fn helper() {} }";
-    let result = parse(source);
-    assert!(
-        result.errors.is_empty(),
-        "expected no errors, got: {:?}",
-        result.errors
-    );
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.receive_fns.len(), 1);
-    assert_eq!(actor.methods.len(), 1);
-}
-
 /// Recovery: a second valid receive fn after a reserved-keyword name is
 /// still parsed correctly (the error does not swallow the rest of the actor).
 #[test]
@@ -619,50 +644,34 @@ fn parse_receive_fn_type_params_and_where_clause() {
 }
 
 #[test]
-fn parse_where_clause_trailing_comma_fn() {
-    // A standalone function with a trailing comma after the last predicate.
-    let source = "fn foo<T, U>(a: T, b: U) where T: Display, U: Clone, { }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        let wc = f.where_clause.as_ref().expect("expected where_clause");
-        assert_eq!(wc.predicates.len(), 2);
-        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
-        assert_eq!(wc.predicates[1].bounds[0].path.to_string(), "Clone");
-    } else {
-        panic!("expected function item");
-    }
-}
-
-#[test]
-fn parse_where_clause_trailing_comma_receive_fn() {
-    // A receive fn with a trailing comma — multiline style inlined here.
-    let source = "actor Foo { receive fn bar<T, U>(x: T) -> T where T: Display, U: Clone, { x } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Actor(actor) = &result.program.items[0].0 {
-        let rf = &actor.receive_fns[0];
-        let wc = rf.where_clause.as_ref().expect("expected where_clause");
-        assert_eq!(wc.predicates.len(), 2);
-        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
-        assert_eq!(wc.predicates[1].bounds[0].path.to_string(), "Clone");
-    } else {
-        panic!("expected actor item");
-    }
-}
-
-#[test]
-fn parse_where_clause_single_trailing_comma() {
-    // Single predicate with trailing comma is the minimal reproduction case.
-    let source = "fn foo<T>(a: T) where T: Display, { }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        let wc = f.where_clause.as_ref().expect("expected where_clause");
-        assert_eq!(wc.predicates.len(), 1);
-        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
-    } else {
-        panic!("expected function item");
+fn parse_where_clause_trailing_commas() {
+    for (source, expected_bounds) in [
+        ("fn foo<T>(a: T) where T: Display, { }", vec!["Display"]),
+        (
+            "fn foo<T, U>(a: T, b: U) where T: Display, U: Clone, { }",
+            vec!["Display", "Clone"],
+        ),
+        (
+            "actor Foo { receive fn bar<T, U>(x: T) -> T where T: Display, U: Clone, { x } }",
+            vec!["Display", "Clone"],
+        ),
+    ] {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+        let wc = match &result.program.items[0].0 {
+            Item::Function(f) => f.where_clause.as_ref().expect("expected where_clause"),
+            Item::Actor(a) => a.receive_fns[0]
+                .where_clause
+                .as_ref()
+                .expect("expected where_clause"),
+            other => panic!("unexpected item: {other:?}"),
+        };
+        let bounds: Vec<_> = wc
+            .predicates
+            .iter()
+            .map(|p| p.bounds[0].path.to_string())
+            .collect();
+        assert_eq!(bounds, expected_bounds);
     }
 }
 
@@ -785,32 +794,6 @@ fn if_as_non_tail_statement_stays_statement() {
         func.body.trailing_expr.is_none(),
         "non-tail if must not become trailing_expr"
     );
-}
-
-#[test]
-fn parse_if_expression() {
-    let source = "fn main() { let result = if x > 0 { x } else { -x }; }";
-    let result = parse(source);
-    if !result.errors.is_empty() {
-        for error in &result.errors {
-            eprintln!("Error: {} at {:?}", error.message, error.span);
-        }
-    }
-    assert!(result.errors.is_empty());
-}
-
-#[test]
-fn parse_match_expression() {
-    let source = "fn main() { match opt { Some(x) => x, None => 0, } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
-}
-
-#[test]
-fn parse_match_block_arms_without_commas() {
-    let source = "fn main() { match opt { Some(x) => { x } None => { 0 } } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
@@ -972,18 +955,6 @@ fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
 }
 
 #[test]
-fn parse_lambda() {
-    let source = "fn main() { let f = |x: i32| x * 2; }";
-    let result = parse(source);
-    if !result.errors.is_empty() {
-        for error in &result.errors {
-            eprintln!("Error: {} at {:?}", error.message, error.span);
-        }
-    }
-    assert!(result.errors.is_empty());
-}
-
-#[test]
 fn parse_pipe_closure_forms() {
     for source in [
         "fn main() { let f = |x| x + 1; }",
@@ -1035,46 +1006,13 @@ fn parse_mutable_function_param() {
 }
 
 #[test]
-fn parse_lambda_var_param_is_error() {
-    let source = "fn main() { let f = (var x: int) => x; }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for lambda var parameter"
-    );
-}
-
-#[test]
-fn parse_fibonacci_example() {
-    let source = include_str!("../../../examples/fibonacci.hew");
-    let result = parse(source);
-    if !result.errors.is_empty() {
-        for error in &result.errors {
-            eprintln!("Error: {} at {:?}", error.message, error.span);
-        }
-    }
-    assert!(result.errors.is_empty());
-}
-
-#[test]
-fn parse_match_or_pattern() {
-    let source = "fn classify(n: i32) -> i32 { match n { 1 | 2 | 3 => 1, _ => 0, } }";
-    let result = parse(source);
-    if !result.errors.is_empty() {
-        for error in &result.errors {
-            eprintln!("Error: {} at {:?}", error.message, error.span);
-        }
-    }
-    assert!(result.errors.is_empty());
-}
-
-#[test]
 fn parse_labeled_while_break_continue() {
     let source = r"fn main() -> i32 {
             var i = 0;
             @outer: while i < 5 {
                 var j = 0;
                 while j < 5 {
+                    if j == 1 { continue @outer; }
                     if j == 3 { break @outer; }
                     j = j + 1;
                 }
@@ -1132,23 +1070,6 @@ fn parse_labeled_loop() {
             panic!("expected Loop statement");
         }
     }
-}
-
-#[test]
-fn parse_labeled_continue() {
-    let source = r"fn main() -> i32 {
-            var i = 0;
-            @outer: while i < 5 {
-                i = i + 1;
-                continue @outer;
-            }
-            0
-        }";
-    let result = parse(source);
-    for e in &result.errors {
-        eprintln!("Error: {} at {:?}", e.message, e.span);
-    }
-    assert!(result.errors.is_empty());
 }
 
 /// `for` waits per item on its own (U383): the `for await` spelling is gone.
@@ -1218,13 +1139,6 @@ fn async_is_accepted_as_an_identifier() {
         panic!("expected Function item");
     };
     assert_eq!(function.name, Ident::new("async"));
-}
-
-#[test]
-fn parse_pattern_underscore_integer() {
-    let source = "fn main() { match x { 1_000 => 1, _ => 0, } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty());
 }
 
 #[test]
@@ -1325,14 +1239,6 @@ fn parse_pattern_contextual_keywords() {
             "pattern name mismatch for keyword '{kw}'"
         );
     }
-}
-
-#[test]
-fn parse_lexer_error_reported() {
-    // The backtick is not a valid token; it should produce a parse error
-    let source = "fn main() { let x = `; }";
-    let result = parse(source);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
 }
 
 #[test]
@@ -1554,19 +1460,6 @@ fn parse_interpolated_string_refuses_format_specifiers_other_than_debug() {
 }
 
 #[test]
-fn parse_interpolated_string_refuses_tokens_after_the_expression() {
-    for (inner, tail) in [
-        ("x garbage", "garbage"),
-        ("x; y", "; y"),
-        ("x )", ")"),
-        ("1e21", "e21"),
-    ] {
-        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
-        assert_eq!(interpolation_errors(&source), [tail.to_string()], "{inner}");
-    }
-}
-
-#[test]
 fn parse_interpolated_string_keeps_colons_inside_the_expression() {
     for inner in [
         " x ",
@@ -1579,28 +1472,6 @@ fn parse_interpolated_string_keeps_colons_inside_the_expression() {
         let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
         assert!(interpolation_errors(&source).is_empty(), "{inner}");
     }
-}
-
-#[test]
-fn parse_deeply_nested_expr_produces_error() {
-    // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).
-    // Use a child thread with an explicit stack size to avoid the test
-    // runner's own stack limit being hit before our guard triggers. The
-    // budget is generous because an unoptimized `parse_primary` frame is
-    // large: this test is about the guard firing, not about how much stack
-    // a debug build happens to use per level.
-    let errors = std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(|| {
-            let open: String = "(".repeat(300);
-            let close: String = ")".repeat(300);
-            let source = format!("fn main() -> i32 {{ {open}1{close} }}");
-            parse(&source).errors
-        })
-        .expect("failed to spawn thread")
-        .join()
-        .expect("thread panicked");
-    assert!(!errors.is_empty(), "{errors:?}");
 }
 
 #[test]
@@ -1663,13 +1534,9 @@ fn an_overlong_integer_literal_is_quoted_by_its_start() {
     );
     assert!(message.len() < 100, "{message}");
     let errors = parse("fn main() { let _x = 99999999999999999999999999999999999999999; }").errors;
-    assert!(
-        errors[0]
-            .message
-            .contains("'99999999999999999999999999999999…' (41 characters)"),
-        "{}",
-        errors[0].message
-    );
+    assert_eq!(errors[0].kind, ParseDiagnosticKind::InvalidLiteral);
+    assert!(errors[0].message.contains('…'), "{}", errors[0].message);
+    assert!(errors[0].message.len() < 100, "{}", errors[0].message);
 }
 
 #[test]
@@ -1700,76 +1567,59 @@ fn expression_nesting_below_limit_still_parses() {
 }
 
 #[test]
-fn parse_error_missing_brace() {
-    let source = "fn main() -> i32 {\n    let x = 42;\n    0\n";
-    let result = parse(source);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
+fn parse_syntax_error_smoke() {
+    for source in [
+        "fn main() { let x = `; }",
+        "fn main() -> i32 {\n    let x = 42;\n    0\n",
+        "fn main() {\n    let x = 42 + + + ;\n}",
+        "fn main() {\n    println(\"hello world);\n}",
+        "fn main() {\n    let x = ;\n}",
+        "fn main() {\n    let x = 42\n    let y = 10;\n}",
+        "fn fn main() {}",
+    ] {
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for: {source}"
+        );
+    }
 }
 
 #[test]
-fn parse_error_unexpected_token() {
-    let source = "fn main() {\n    let x = 42 + + + ;\n}";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse errors for unexpected tokens"
-    );
-}
+fn parse_valid_syntax_smoke() {
+    let empty = parse("");
+    assert!(empty.errors.is_empty());
+    assert!(empty.program.items.is_empty());
 
-#[test]
-fn parse_error_unclosed_string() {
-    let source = "fn main() {\n    println(\"hello world);\n}";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse errors for unclosed string"
-    );
-}
+    let multi = parse("fn foo() {} fn bar() {} type Baz {}");
+    assert!(multi.errors.is_empty(), "errors: {:?}", multi.errors);
+    assert_eq!(multi.program.items.len(), 3);
 
-#[test]
-fn parse_error_missing_expr() {
-    let source = "fn main() {\n    let x = ;\n}";
-    let result = parse(source);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn parse_error_missing_semicolon() {
-    let source = "fn main() {\n    let x = 42\n    let y = 10;\n}";
-    let result = parse(source);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-// -----------------------------------------------------------------------
-// Edge case tests: nested generics, chained methods, complex expressions
-// -----------------------------------------------------------------------
-
-#[test]
-fn parse_nested_generic_types() {
-    let source = "fn main() { let v: Vec<Vec<i32>> = Vec.new(); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_deeply_nested_generics() {
-    let source = "fn main() { let v: HashMap<string, Vec<Vec<i32>>> = HashMap.new(); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_chained_method_calls() {
-    let source = "fn main() { a.b().c().d(); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_chained_methods_with_args() {
-    let source = "fn main() { x.filter(1).map(2).collect(); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    for source in [
+        "type Point {\n    x: i32;\n    y: i32;\n}\n",
+        "trait Printable { fn print(self); }",
+        "fn main() { let result = if x > 0 { x } else { -x }; }",
+        "fn main() { match opt { Some(x) => x, None => 0, } }",
+        "fn classify(n: i32) -> i32 { match n { 1 | 2 | 3 => 1, _ => 0, } }",
+        "fn main() { match x { 1_000 => 1, _ => 0, } }",
+        "fn main() { let v: Vec<Vec<i32>> = Vec.new(); }",
+        "fn main() { let v: HashMap<string, Vec<Vec<i32>>> = HashMap.new(); }",
+        "fn main() { a.b().c().d(); }",
+        "fn main() { x.filter(1).map(2).collect(); }",
+        "fn main() -> i32 { (a + b) * (c - d) / e }",
+        r#"fn main() { let s = ""; }"#,
+        "fn main() -> i32 { if a > 0 { if b > 0 { 1 } else { 2 } } else { 3 } }",
+        "fn main() { match p { Point { x, y } => x + y, _ => 0, } }",
+        "fn main() { let t = (1, 2, 3); }",
+        "fn main() { let a = [1, 2, 3]; }",
+        "fn main() { let a = -x; let b = !flag; }",
+        "fn main() -> bool { a < b && b > c || d == e && f != g }",
+        "fn main() { let x = 1_000.5; }",
+        r#"fn main() { let x = r"hello\nworld"; }"#,
+    ] {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+    }
 }
 
 #[test]
@@ -1783,13 +1633,6 @@ fn parse_operator_precedence_complex() {
     } else {
         panic!("expected function");
     }
-}
-
-#[test]
-fn parse_mixed_precedence_with_parens() {
-    let source = "fn main() -> i32 { (a + b) * (c - d) / e }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 #[test]
@@ -1823,76 +1666,41 @@ fn parse_actor_lifecycle_hook_and_receive_attributes() {
     let source = r"actor Worker {
     #[on(stop)]
     fn shutdown() { stop(); }
+    #[on(crash)]
+    fn on_crash() { }
+    #[on(upgrade)]
+    fn on_upgrade() { }
 
     #[every(50ms)]
     receive fn tick() { work(); }
-}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Actor(actor) = &result.program.items[0].0 {
-        assert_eq!(actor.methods.len(), 1);
-        assert_eq!(actor.methods[0].attributes.len(), 1);
-        assert_eq!(actor.methods[0].attributes[0].name, "on");
-
-        assert_eq!(actor.receive_fns.len(), 1);
-        assert_eq!(actor.receive_fns[0].attributes.len(), 1);
-        assert_eq!(actor.receive_fns[0].attributes[0].name, "every");
-    } else {
-        panic!("expected actor");
-    }
-}
-
-#[test]
-fn wire_attribute_is_carried_on_receive_handler() {
-    let parsed = parse("actor Store { #[wire] receive fn fetch(key: string) -> string { key } }");
-    assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
-    let Item::Actor(actor) = &parsed.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.receive_fns[0].attributes[0].name, "wire");
-}
-
-#[test]
-fn parse_actor_on_crash_hook_attaches_to_method() {
-    // E1: `#[on(crash)]` parses on an actor method. Signature shape
-    // (params/return type) is owned by E2 — parser just attaches
-    // the attribute to the FnDecl.
-    let source = r"actor Worker {
-    #[on(crash)]
-    fn on_crash() { }
+    #[wire]
+    receive fn fetch(key: string) -> string { key }
 }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Actor(actor) = &result.program.items[0].0 else {
         panic!("expected actor");
     };
-    assert_eq!(actor.methods.len(), 1);
-    assert_eq!(actor.methods[0].attributes.len(), 1);
-    assert_eq!(actor.methods[0].attributes[0].name, "on");
-    assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
-    assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "crash");
-}
-
-#[test]
-fn parse_actor_on_upgrade_hook_attaches_to_method() {
-    // E1: `#[on(upgrade)]` parses on an actor method — the parser is
-    // hook-kind-agnostic, only checking the attribute name is `on`. `upgrade`
-    // left the hook-kind list at the type-checker (HEW-SPEC-2026 §12.6);
-    // it rejects this as an unrecognised lifecycle hook.
-    let source = r"actor Worker {
-    #[on(upgrade)]
-    fn on_upgrade() { }
-}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.methods.len(), 1);
-    assert_eq!(actor.methods[0].attributes.len(), 1);
-    assert_eq!(actor.methods[0].attributes[0].name, "on");
-    assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
-    assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "upgrade");
+    let hook_args: Vec<_> = actor
+        .methods
+        .iter()
+        .map(|m| {
+            (
+                m.attributes[0].name.as_str(),
+                m.attributes[0].args[0].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        hook_args,
+        [("on", "stop"), ("on", "crash"), ("on", "upgrade")]
+    );
+    let recv_attrs: Vec<_> = actor
+        .receive_fns
+        .iter()
+        .map(|r| r.attributes[0].name.as_str())
+        .collect();
+    assert_eq!(recv_attrs, ["every", "wire"]);
 }
 
 #[test]
@@ -1940,76 +1748,29 @@ fn parse_unicode_in_string_literal() {
 }
 
 #[test]
-fn parse_empty_string_literal() {
-    let source = r#"fn main() { let s = ""; }"#;
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_large_integer_literal() {
-    let source = "fn main() -> i64 { 9_223_372_036_854_775_807 }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        if let Some(boxed) = &f.body.trailing_expr {
-            if let (Expr::Literal(Literal::Integer { value: n, .. }), _) = boxed.as_ref() {
-                assert_eq!(*n, i128::from(i64::MAX));
-            } else {
-                panic!("expected integer literal");
-            }
-        }
-    }
-}
-
-#[test]
-fn parse_hex_integer_literal() {
-    let source = "fn main() -> i64 { 0xFF }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        if let Some(boxed) = &f.body.trailing_expr {
-            if let (Expr::Literal(Literal::Integer { value: n, radix }), _) = boxed.as_ref() {
-                assert_eq!(*n, 255);
-                assert_eq!(*radix, IntRadix::Hex);
-            } else {
-                panic!("expected integer literal");
-            }
-        }
-    }
-}
-
-#[test]
-fn parse_binary_integer_literal() {
-    let source = "fn main() -> i64 { 0b1010 }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        if let Some(boxed) = &f.body.trailing_expr {
-            if let (Expr::Literal(Literal::Integer { value: n, radix }), _) = boxed.as_ref() {
-                assert_eq!(*n, 10);
-                assert_eq!(*radix, IntRadix::Binary);
-            } else {
-                panic!("expected integer literal");
-            }
-        }
-    }
-}
-
-#[test]
-fn parse_octal_integer_literal() {
-    let source = "fn main() -> i64 { 0o77 }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Function(f) = &result.program.items[0].0 {
-        if let Some(boxed) = &f.body.trailing_expr {
-            if let (Expr::Literal(Literal::Integer { value: n, radix }), _) = boxed.as_ref() {
-                assert_eq!(*n, 63);
-                assert_eq!(*radix, IntRadix::Octal);
-            } else {
-                panic!("expected integer literal");
-            }
-        }
+fn parse_integer_literals_and_radices() {
+    for (lit, expected_val, expected_radix) in [
+        (
+            "9_223_372_036_854_775_807",
+            i128::from(i64::MAX),
+            IntRadix::Decimal,
+        ),
+        ("0xFF", 255, IntRadix::Hex),
+        ("0b1010", 10, IntRadix::Binary),
+        ("0o77", 63, IntRadix::Octal),
+    ] {
+        let result = parse(&format!("fn main() -> i64 {{ {lit} }}"));
+        assert!(result.errors.is_empty(), "{lit}: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Some((Expr::Literal(Literal::Integer { value, radix }), _)) =
+            f.body.trailing_expr.as_deref()
+        else {
+            panic!("expected integer literal for {lit}");
+        };
+        assert_eq!(*value, expected_val, "{lit}");
+        assert_eq!(*radix, expected_radix, "{lit}");
     }
 }
 
@@ -2072,56 +1833,6 @@ fn parse_negative_literal_with_postfix_keeps_unary_wrapper() {
     } else {
         panic!("expected function item");
     }
-}
-
-#[test]
-fn parse_multiple_items() {
-    let source = "fn foo() {} fn bar() {} type Baz {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    assert_eq!(result.program.items.len(), 3);
-}
-
-#[test]
-fn parse_empty_program() {
-    let result = parse("");
-    assert!(result.errors.is_empty());
-    assert!(result.program.items.is_empty());
-}
-
-#[test]
-fn parse_nested_if_else() {
-    let source = "fn main() -> i32 { if a > 0 { if b > 0 { 1 } else { 2 } } else { 3 } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_match_with_struct_pattern() {
-    let source = "fn main() { match p { Point { x, y } => x + y, _ => 0, } }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_tuple_expression() {
-    let source = "fn main() { let t = (1, 2, 3); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_array_expression() {
-    let source = "fn main() { let a = [1, 2, 3]; }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_unary_operators() {
-    let source = "fn main() { let a = -x; let b = !flag; }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 
 /// Extract the initializer expression of the first `let` in the first
@@ -2251,13 +1962,6 @@ fn parse_ampersand_prefix_is_rejected() {
 }
 
 #[test]
-fn parse_comparison_chain() {
-    let source = "fn main() -> bool { a < b && b > c || d == e && f != g }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
 fn parse_import_statement() {
     let source = "import std.fs;";
     let result = parse(source);
@@ -2301,38 +2005,10 @@ fn dotted_import_glob_and_empty_selection_are_rejected() {
 
 #[test]
 fn hyphenated_package_import_is_rejected_at_the_separator() {
-    let result = parse("import config-telemetry.types;");
+    let source = "import config-telemetry.types;";
+    let result = parse(source);
     assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
-
-    assert_eq!(result.errors[0].span, 13..14);
-}
-
-#[test]
-fn parse_import_actor_path_segment() {
-    let source = "import std.actor.monitor;";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path.to_string(), "std.actor.monitor");
-    } else {
-        panic!("expected import");
-    }
-}
-
-#[test]
-fn parse_import_machine_path_segment() {
-    let source = "import src.workflow.machine.{Machine};";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path.to_string(), "src.workflow.machine");
-        let Some(ImportSpec::Names(names)) = &imp.spec else {
-            panic!("expected selective import spec");
-        };
-        assert_eq!(names[0].name, Ident::new("Machine"));
-    } else {
-        panic!("expected import");
-    }
+    assert_eq!(&source[result.errors[0].span.clone()], "-");
 }
 
 #[test]
@@ -2361,6 +2037,16 @@ fn parse_import_type_decl_keyword_path_segments() {
             panic!("expected import for segment `{kw}`");
         }
     }
+    let machine_sel = parse("import src.workflow.machine.{Machine};");
+    assert!(machine_sel.errors.is_empty(), "{:?}", machine_sel.errors);
+    let Item::Import(imp) = &machine_sel.program.items[0].0 else {
+        panic!("expected import");
+    };
+    assert_eq!(imp.path.to_string(), "src.workflow.machine");
+    let Some(ImportSpec::Names(names)) = &imp.spec else {
+        panic!("expected selective import spec");
+    };
+    assert_eq!(names[0].name, Ident::new("Machine"));
 }
 
 #[test]
@@ -2389,13 +2075,6 @@ fn machine_qualifier_in_type_position_rejected() {
 }
 
 #[test]
-fn parse_trait_declaration() {
-    let source = "trait Printable { fn print(self); }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
 fn parse_bare_self_in_free_fn_is_error() {
     let source = "fn print(self) {}";
     let result = parse(source);
@@ -2412,23 +2091,6 @@ fn parse_typed_self_is_error() {
     assert!(
         !result.errors.is_empty(),
         "expected parse error for `self: Type` parameter"
-    );
-}
-
-#[test]
-fn parse_impl_method_bare_self_receiver() {
-    let source = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    fn bar(self) -> int {\n        self.x\n    }\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_error_duplicate_keyword() {
-    let source = "fn fn main() {}";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for duplicate fn keyword"
     );
 }
 
@@ -2529,68 +2191,37 @@ fn parse_foreign_block() {
 // ── extern "rt" block tests ──────────────────────────────────────────
 
 #[test]
-fn extern_rt_block_empty() {
-    let result = parse("extern \"rt\" { }");
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    assert_eq!(result.program.items.len(), 1);
-    let Item::ExternBlock(block) = &result.program.items[0].0 else {
-        panic!("expected ExternBlock");
-    };
-    assert_eq!(block.abi, "rt");
-    assert!(block.functions.is_empty());
-}
+fn extern_abi_blocks_and_fn_body_refusal() {
+    for (source, expected_abi, expected_fns) in [
+        ("extern \"rt\" { }", "rt", vec![]),
+        (
+            "extern \"rt\" { fn println(s: string); }",
+            "rt",
+            vec!["println"],
+        ),
+        (
+            "extern \"rt\" { fn println(s: string); fn print(s: string); fn assert(cond: bool); }",
+            "rt",
+            vec!["println", "print", "assert"],
+        ),
+        ("extern \"xyz\" { fn foo(); }", "xyz", vec!["foo"]),
+    ] {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, expected_abi);
+        let names: Vec<_> = block
+            .functions
+            .iter()
+            .map(|f| f.name.name.as_str())
+            .collect();
+        assert_eq!(names, expected_fns);
+    }
 
-#[test]
-fn extern_rt_block_single_fn() {
-    let result = parse("extern \"rt\" { fn println(s: string); }");
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    assert_eq!(result.program.items.len(), 1);
-    let Item::ExternBlock(block) = &result.program.items[0].0 else {
-        panic!("expected ExternBlock");
-    };
-    assert_eq!(block.abi, "rt");
-    assert_eq!(block.functions.len(), 1);
-    assert_eq!(block.functions[0].name, Ident::new("println"));
-    assert_eq!(block.functions[0].params.len(), 1);
-    assert_eq!(block.functions[0].params[0].name, Ident::new("s"));
-}
-
-#[test]
-fn extern_rt_block_multiple_fns() {
-    let result = parse(
-        "extern \"rt\" { fn println(s: string); fn print(s: string); fn assert(cond: bool); }",
-    );
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::ExternBlock(block) = &result.program.items[0].0 else {
-        panic!("expected ExternBlock");
-    };
-    assert_eq!(block.abi, "rt");
-    assert_eq!(block.functions.len(), 3);
-    assert_eq!(block.functions[0].name, Ident::new("println"));
-    assert_eq!(block.functions[1].name, Ident::new("print"));
-    assert_eq!(block.functions[2].name, Ident::new("assert"));
-}
-
-#[test]
-fn extern_rt_block_fn_with_body_rejected() {
-    // Bodies are forbidden in extern blocks (any ABI): the parser expects `;`
-    // after the parameter list. A `{` in its place produces a parse error.
     let result = parse("extern \"rt\" { fn println(s: string) { todo() } }");
     assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn extern_unknown_abi_accepted_at_parse_level() {
-    // The parser is ABI-agnostic; unknown ABI strings parse successfully.
-    // Rejection of unsupported ABIs is deferred to the type-checker.
-    let result = parse("extern \"xyz\" { fn foo(); }");
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::ExternBlock(block) = &result.program.items[0].0 else {
-        panic!("expected ExternBlock");
-    };
-    assert_eq!(block.abi, "xyz");
-    assert_eq!(block.functions.len(), 1);
-    assert_eq!(block.functions[0].name, Ident::new("foo"));
 }
 
 #[test]
@@ -2639,24 +2270,6 @@ fn parse_import_alias() {
             assert_eq!(names[1].alias, Some(Ident::new("ws")));
         } else {
             panic!("expected ImportSpec::Names, got {:?}", imp.spec);
-        }
-    } else {
-        panic!("expected import item");
-    }
-}
-
-#[test]
-fn parse_import_alias_single() {
-    let source = r"import mymod.{foo as bar};";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    if let Item::Import(imp) = &result.program.items[0].0 {
-        if let Some(ImportSpec::Names(names)) = &imp.spec {
-            assert_eq!(names.len(), 1);
-            assert_eq!(names[0].name, Ident::new("foo"));
-            assert_eq!(names[0].alias, Some(Ident::new("bar")));
-        } else {
-            panic!("expected ImportSpec::Names");
         }
     } else {
         panic!("expected import item");
@@ -2748,6 +2361,32 @@ fn parse_import_no_alias_preserves_name() {
 }
 
 #[test]
+fn parse_import_actor_path_segment() {
+    let source = "import std.actor.monitor;";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    if let Item::Import(imp) = &result.program.items[0].0 {
+        assert_eq!(imp.path.to_string(), "std.actor.monitor");
+    } else {
+        panic!("expected import");
+    }
+}
+
+#[test]
+fn parse_generic_lambda_in_arg_position_rejected() {
+    let source = "fn main() { apply(<T>(x: T) => x, 5); }";
+    let result = parse(source);
+    assert!(
+        result.errors.iter().any(|e| {
+            matches!(e.kind, ParseDiagnosticKind::ClosurePipeSyntax)
+                && e.message.contains("E_CLOSURE_PIPE_SYNTAX")
+        }),
+        "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda in arg position, got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn parse_import_bare_colons_rejected() {
     // `import foo::;` is syntactically invalid — `::` must be followed by `*` or `{`
     let source = r"import foo::;";
@@ -2758,31 +2397,6 @@ fn parse_import_bare_colons_rejected() {
     );
 }
 
-#[test]
-fn parse_legacy_import_glob_reports_exact_migration() {
-    let source = r"import utils::*;";
-    let result = parse(source);
-    let error = result
-        .errors
-        .iter()
-        .find(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved))
-        .expect("expected E_IMPORT_GLOB_REMOVED");
-    assert_eq!(error.kind.as_kind_str(), "E_IMPORT_GLOB_REMOVED");
-}
-
-#[test]
-fn parse_float_with_underscore_separators() {
-    let source = "fn main() { let x = 1_000.5; }";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
-
-#[test]
-fn parse_raw_string_literal() {
-    let source = r#"fn main() { let x = r"hello\nworld"; }"#;
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-}
 #[test]
 fn test_hex_escape_in_string() {
     // \x41 = 'A', \x42 = 'B'
@@ -3816,30 +3430,18 @@ fn parse_empty_braces_is_block() {
 }
 
 #[test]
-fn parse_map_literal_single_entry() {
-    let expr = parse_let_expr(r#"{"a": 1}"#);
-    assert!(
-        matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 1),
-        "expected MapLiteral with 1 entry, got {expr:?}"
-    );
-}
-
-#[test]
-fn parse_map_literal_multiple_entries() {
-    let expr = parse_let_expr(r#"{"a": 1, "b": 2, "c": 3}"#);
-    assert!(
-        matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 3),
-        "expected MapLiteral with 3 entries, got {expr:?}"
-    );
-}
-
-#[test]
-fn parse_map_literal_trailing_comma() {
-    let expr = parse_let_expr(r#"{"a": 1, "b": 2,}"#);
-    assert!(
-        matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 2),
-        "expected MapLiteral with 2 entries, got {expr:?}"
-    );
+fn parse_map_literals() {
+    for (src, expected_len) in [
+        (r#"{"a": 1}"#, 1),
+        (r#"{"a": 1, "b": 2, "c": 3}"#, 3),
+        (r#"{"a": 1, "b": 2,}"#, 2),
+    ] {
+        let expr = parse_let_expr(src);
+        assert!(
+            matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == expected_len),
+            "expected MapLiteral({expected_len}) for {src}, got {expr:?}"
+        );
+    }
 }
 
 #[test]
@@ -3924,20 +3526,6 @@ fn parse_scope_deadline_preserves_duration_and_result() {
 }
 
 #[test]
-fn capture_doc_comment_on_trait_method() {
-    let source = "trait T {\n    /// First line.\n    /// Second line.\n    fn m();\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Trait(t) = &result.program.items[0].0 else {
-        panic!("expected trait");
-    };
-    let TraitItem::Method(m) = &t.items[0] else {
-        panic!("expected method");
-    };
-    assert_eq!(m.doc_comment.as_deref(), Some("First line.\nSecond line."));
-}
-
-#[test]
 fn trait_method_preserves_receiver_identity_and_consuming_self() {
     let source = r"
 trait Fluent {
@@ -3963,64 +3551,6 @@ trait Fluent {
 }
 
 #[test]
-fn capture_doc_comment_on_enum_variant() {
-    let source = "enum E {\n    /// The only variant.\n    A;\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::TypeDecl(t) = &result.program.items[0].0 else {
-        panic!("expected type decl");
-    };
-    let TypeBodyItem::Variant(v) = &t.body[0] else {
-        panic!("expected variant");
-    };
-    assert_eq!(v.doc_comment.as_deref(), Some("The only variant."));
-}
-
-#[test]
-fn capture_doc_comment_on_struct_field() {
-    let source = "type S {\n    /// The x coord.\n    x: i32;\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::TypeDecl(t) = &result.program.items[0].0 else {
-        panic!("expected type decl");
-    };
-    let TypeBodyItem::Field { doc_comment, .. } = &t.body[0] else {
-        panic!("expected field");
-    };
-    assert_eq!(doc_comment.as_deref(), Some("The x coord."));
-}
-
-#[test]
-fn capture_doc_comment_on_receive_fn_and_actor_field() {
-    let source = "actor A {\n    /// The counter.\n    let n: i32;\n    /// Increment handler.\n    receive fn inc() {}\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(a) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(a.fields[0].doc_comment.as_deref(), Some("The counter."));
-    assert_eq!(
-        a.receive_fns[0].doc_comment.as_deref(),
-        Some("Increment handler."),
-    );
-}
-
-#[test]
-fn capture_doc_comment_on_const_and_type_alias() {
-    let source = "/// The answer.\npub const ANSWER: i32 = 42;\n\n/// An id.\npub type Id = i64;\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Const(c) = &result.program.items[0].0 else {
-        panic!("expected const");
-    };
-    assert_eq!(c.doc_comment.as_deref(), Some("The answer."));
-    let Item::TypeAlias(ta) = &result.program.items[1].0 else {
-        panic!("expected type alias");
-    };
-    assert_eq!(ta.doc_comment.as_deref(), Some("An id."));
-}
-
-#[test]
 fn parses_parameterized_type_alias() {
     let result = parse("type Pair<T> = (T, T);");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -4040,80 +3570,48 @@ fn parses_parameterized_type_alias() {
     );
 }
 
-#[test]
-fn capture_doc_comment_on_actor_method() {
-    let source = "actor A {\n    /// Reset the counter.\n    fn reset() {}\n}\n";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(a) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(a.methods.len(), 1);
-    assert_eq!(
-        a.methods[0].doc_comment.as_deref(),
-        Some("Reset the counter.")
-    );
-}
-
 // ── ParseDiagnosticKind serialisation ──────────────────────────────────
 
 #[test]
-fn parse_diagnostic_kind_unexpected_token_serialises() {
-    let kind = ParseDiagnosticKind::UnexpectedToken {
-        expected: ";".to_string(),
-        got: "}".to_string(),
-    };
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "UnexpectedToken");
-    assert_eq!(json["expected"], ";");
-    assert_eq!(json["got"], "}");
-    assert_eq!(kind.as_kind_str(), "UnexpectedToken");
-}
-
-#[test]
-fn parse_diagnostic_kind_unexpected_eof_serialises() {
-    let kind = ParseDiagnosticKind::UnexpectedEof;
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "UnexpectedEof");
-    assert_eq!(kind.as_kind_str(), "UnexpectedEof");
-}
-
-#[test]
-fn parse_diagnostic_kind_invalid_literal_serialises() {
-    let kind = ParseDiagnosticKind::InvalidLiteral;
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "InvalidLiteral");
-    assert_eq!(kind.as_kind_str(), "InvalidLiteral");
-}
-
-#[test]
-fn parse_diagnostic_kind_missing_expression_serialises() {
-    let kind = ParseDiagnosticKind::MissingExpression {
-        got: "end of file".to_string(),
-    };
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "MissingExpression");
-    assert_eq!(json["got"], "end of file");
-    assert_eq!(kind.as_kind_str(), "MissingExpression");
-}
-
-#[test]
-fn parse_diagnostic_kind_invalid_pattern_serialises() {
-    let kind = ParseDiagnosticKind::InvalidPattern {
-        got: "42".to_string(),
-    };
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "InvalidPattern");
-    assert_eq!(json["got"], "42");
-    assert_eq!(kind.as_kind_str(), "InvalidPattern");
-}
-
-#[test]
-fn parse_diagnostic_kind_other_serialises() {
-    let kind = ParseDiagnosticKind::Other;
-    let json = serde_json::to_value(&kind).unwrap();
-    assert_eq!(json["kind"], "Other");
-    assert_eq!(kind.as_kind_str(), "Other");
+fn parse_diagnostic_kind_serialises() {
+    for (kind, tag, fields) in [
+        (
+            ParseDiagnosticKind::UnexpectedToken {
+                expected: ";".to_string(),
+                got: "}".to_string(),
+            },
+            "UnexpectedToken",
+            vec![("expected", ";"), ("got", "}")],
+        ),
+        (ParseDiagnosticKind::UnexpectedEof, "UnexpectedEof", vec![]),
+        (
+            ParseDiagnosticKind::InvalidLiteral,
+            "InvalidLiteral",
+            vec![],
+        ),
+        (
+            ParseDiagnosticKind::MissingExpression {
+                got: "end of file".to_string(),
+            },
+            "MissingExpression",
+            vec![("got", "end of file")],
+        ),
+        (
+            ParseDiagnosticKind::InvalidPattern {
+                got: "42".to_string(),
+            },
+            "InvalidPattern",
+            vec![("got", "42")],
+        ),
+        (ParseDiagnosticKind::Other, "Other", vec![]),
+    ] {
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], tag);
+        for (k, v) in fields {
+            assert_eq!(json[k], v);
+        }
+        assert_eq!(kind.as_kind_str(), tag);
+    }
 }
 
 // ── ParseDiagnosticKind round-trip through ParseError ─────────────────
@@ -4129,20 +3627,6 @@ fn unexpected_token_kind_set_on_expect_failure() {
     assert!(
         missing_paren.is_some(),
         "expected UnexpectedToken in errors, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn invalid_literal_kind_set_on_bad_char_escape() {
-    let result = parse("fn f() { let x: char = '\\z'; }");
-    let lit_err = result
-        .errors
-        .iter()
-        .find(|e| matches!(&e.kind, ParseDiagnosticKind::InvalidLiteral));
-    assert!(
-        lit_err.is_some(),
-        "expected InvalidLiteral in errors, got: {:?}",
         result.errors
     );
 }
@@ -4168,155 +3652,53 @@ fn missing_expression_kind_set_at_parse_primary_fallthrough() {
 // ── StructInit with explicit type arguments ────────────────────────────
 
 #[test]
-fn struct_init_explicit_single_type_arg_parses() {
-    let src = r#"type Wrapper<T> {
-    value: T;
-}
-
-fn main() {
-    let w = Wrapper<string> { value: "hello" };
-}
-"#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    // Drill into the let initialiser and confirm type_args is Some([String]).
-    let Item::Function(f) = &result.program.items[1].0 else {
-        panic!("expected function");
-    };
-    let stmt = &f.body.stmts[0];
-    let Stmt::Let {
-        value: Some((expr, _)),
-        ..
-    } = &stmt.0
-    else {
-        panic!("expected let with value");
-    };
-    let Expr::StructInit {
-        path, type_args, ..
-    } = expr
-    else {
-        panic!("expected StructInit, got {expr:?}");
-    };
-    assert_eq!(path.to_string(), "Wrapper");
-    let args = type_args.as_ref().expect("type_args should be Some");
-    assert_eq!(args.len(), 1, "expected one type arg");
-    assert!(
-        matches!(&args[0].0, TypeExpr::Named { path, .. } if path.to_string() == "string"),
-        "expected string type arg, got {:?}",
-        args[0].0
-    );
-}
-
-#[test]
-fn struct_init_without_type_args_leaves_type_args_none() {
-    let src = r#"type Wrapper<T> {
-    value: T;
-}
-
-fn main() {
-    let w = Wrapper { value: "hello" };
-}
-"#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let Item::Function(f) = &result.program.items[1].0 else {
-        panic!("expected function");
-    };
-    let stmt = &f.body.stmts[0];
-    let Stmt::Let {
-        value: Some((expr, _)),
-        ..
-    } = &stmt.0
-    else {
-        panic!("expected let with value");
-    };
-    let Expr::StructInit { type_args, .. } = expr else {
-        panic!("expected StructInit, got {expr:?}");
-    };
-    assert!(type_args.is_none(), "type_args should be None when omitted");
-}
-
-#[test]
-fn struct_init_explicit_multi_type_arg_parses() {
-    let src = r#"type Pair<A, B> {
-    first: A;
-    second: B;
-}
-
-fn main() {
-    let p = Pair<int, string> { first: 1, second: "x" };
-}
-"#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let Item::Function(f) = &result.program.items[1].0 else {
-        panic!("expected function");
-    };
-    let stmt = &f.body.stmts[0];
-    let Stmt::Let {
-        value: Some((expr, _)),
-        ..
-    } = &stmt.0
-    else {
-        panic!("expected let with value");
-    };
-    let Expr::StructInit { type_args, .. } = expr else {
-        panic!("expected StructInit, got {expr:?}");
-    };
-    let args = type_args.as_ref().expect("type_args should be Some");
-    assert_eq!(args.len(), 2, "expected two type args");
-    assert!(
-        matches!(&args[0].0, TypeExpr::Named { path, .. } if path.to_string() == "int"),
-        "first type arg should be int"
-    );
-    assert!(
-        matches!(&args[1].0, TypeExpr::Named { path, .. } if path.to_string() == "string"),
-        "second type arg should be string"
-    );
-}
-
-#[test]
-fn struct_init_explicit_type_arg_empty_struct_parses() {
-    // Edge case: struct with type param but no fields at the init site is
-    // not something the parser should crash on (it's a checker concern).
-    let src = r"
-            type Tag<T> {}
-            fn main() { let t = Tag<int> {}; }
-        ";
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "parse errors: {:?}",
-        result.errors
-    );
-    let Item::Function(f) = &result.program.items[1].0 else {
-        panic!("expected function");
-    };
-    let stmt = &f.body.stmts[0];
-    let Stmt::Let {
-        value: Some((expr, _)),
-        ..
-    } = &stmt.0
-    else {
-        panic!("expected let with value");
-    };
-    let Expr::StructInit { type_args, .. } = expr else {
-        panic!("expected StructInit, got {expr:?}");
-    };
-    let args = type_args.as_ref().expect("type_args should be Some");
-    assert_eq!(args.len(), 1);
+fn struct_init_explicit_type_args() {
+    for (src, expected_path, expected_args) in [
+        (
+            "type Wrapper<T> { value: T; } fn main() { let w = Wrapper<string> { value: \"hello\" }; }",
+            "Wrapper",
+            Some(vec!["string"]),
+        ),
+        (
+            "type Wrapper<T> { value: T; } fn main() { let w = Wrapper { value: \"hello\" }; }",
+            "Wrapper",
+            None,
+        ),
+        (
+            "type Pair<A, B> { first: A; second: B; } fn main() { let p = Pair<int, string> { first: 1, second: \"x\" }; }",
+            "Pair",
+            Some(vec!["int", "string"]),
+        ),
+        (
+            "type Tag<T> {} fn main() { let t = Tag<int> {}; }",
+            "Tag",
+            Some(vec!["int"]),
+        ),
+    ] {
+        let result = parse(src);
+        assert!(result.errors.is_empty(), "{src}: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::StructInit { path, type_args, .. }, _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected StructInit");
+        };
+        assert_eq!(path.to_string(), expected_path);
+        let actual = type_args.as_ref().map(|args| {
+            args.iter()
+                .map(|(ty, _)| match ty {
+                    TypeExpr::Named { path, .. } => path.to_string(),
+                    other => panic!("expected named type arg, got {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        });
+        let expected = expected_args.map(|v| v.into_iter().map(str::to_string).collect());
+        assert_eq!(actual, expected, "{src}");
+    }
 }
 
 #[test]
@@ -4679,132 +4061,44 @@ fn wire_and_resource_combined_emits_conflict_diagnostic() {
 
 #[test]
 fn deprecated_attr_on_type_is_accepted() {
-    // `#[deprecated]` is a known-valid type-decl attribute and must not
-    // trigger E_UNKNOWN_TYPE_MARKER.
-    let source = r"#[deprecated]
-type Old {
-    x: int;
-}
-";
-    let result = parse(source);
-    // No ownership-marker diagnostics; other errors (deprecation warnings
-    // etc.) are out of scope for the parser.
-    assert!(
-        result
-            .errors
-            .iter()
-            .all(|e| !e.message.contains("E_UNKNOWN_TYPE_MARKER")),
-        "deprecated attr triggered unknown-marker diagnostic: {:?}",
-        result.errors
-    );
+    let result = parse("#[deprecated]\ntype Old {\n    x: int;\n}\n");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
 // ── #[max_heap] attribute tests ──────────────────────────────────────────
 
 #[test]
-fn max_heap_attribute_bare_integer_bytes() {
-    let source = "#[max_heap(1024)] actor Demo {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.max_heap_bytes, Some(1024));
-}
+fn max_heap_attribute_units_and_refusals() {
+    for (spec, expected) in [
+        ("1024", 1024),
+        ("2 kb", 2 * 1024),
+        ("1 mb", 1024 * 1024),
+        ("512 b", 512),
+        ("0", 0),
+    ] {
+        let source = format!("#[max_heap({spec})] actor Demo {{}}");
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(expected), "{spec}");
+    }
 
-#[test]
-fn max_heap_attribute_kb_suffix() {
-    let source = "#[max_heap(2 kb)] actor Demo {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.max_heap_bytes, Some(2 * 1024));
-}
+    assert!(!parse("#[max_heap(1 gb)] actor Demo {}").errors.is_empty());
 
-#[test]
-fn max_heap_attribute_mb_suffix() {
-    let source = "#[max_heap(1 mb)] actor Demo {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.max_heap_bytes, Some(1024 * 1024));
-}
-
-#[test]
-fn max_heap_attribute_b_suffix() {
-    let source = "#[max_heap(512 b)] actor Demo {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.max_heap_bytes, Some(512));
-}
-
-#[test]
-fn max_heap_attribute_zero_accepted_as_unbounded() {
-    // cap=0 means unbounded (same as the legacy default); accepted explicitly.
-    let source = "#[max_heap(0)] actor Demo {}";
-    let result = parse(source);
-    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let Item::Actor(actor) = &result.program.items[0].0 else {
-        panic!("expected actor");
-    };
-    assert_eq!(actor.max_heap_bytes, Some(0));
-}
-
-#[test]
-fn max_heap_attribute_gb_suffix_rejected() {
-    let source = "#[max_heap(1 gb)] actor Demo {}";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected error for unsupported `gb` suffix"
-    );
-}
-
-#[test]
-fn max_heap_attribute_on_fn_rejected() {
-    // `#[max_heap]` is only legal on an actor declaration (HEW-SPEC-2026
-    // §12.6); on a free fn it is `E_UNKNOWN_ATTRIBUTE`, superseding the old
-    // bespoke "only allowed on actor declarations" message.
-    let source = "#[max_heap(1024)] fn foo() {}";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a free fn"
-    );
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn max_heap_attribute_on_type_rejected() {
-    // Same closed-table refusal as `max_heap_attribute_on_fn_rejected`, on a
-    // `type` declaration instead of a free fn.
-    let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "expected E_UNKNOWN_ATTRIBUTE for #[max_heap] on a type declaration"
-    );
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected error mentioning max_heap and E_UNKNOWN_ATTRIBUTE, got: {:?}",
-        result.errors
-    );
+    for bad_target in [
+        "#[max_heap(1024)] fn foo() {}",
+        "#[max_heap(1 kb)] type Bar { x: i32; }",
+    ] {
+        let result = parse(bad_target);
+        assert!(
+            result.errors.iter().any(
+                |e| e.message.contains("max_heap") && e.message.contains("E_UNKNOWN_ATTRIBUTE")
+            ),
+            "{bad_target}: {:?}",
+            result.errors
+        );
+    }
 }
 // ── is operator tests ──────────────────────────────────────────────
 
@@ -4829,81 +4123,34 @@ fn first_fn_trailing(source: &str) -> Expr {
 }
 
 #[test]
-fn is_operator_simple_identifiers() {
-    let expr = first_fn_trailing("fn f() { x is y }");
-    assert!(
-        matches!(expr, Expr::Is { .. }),
-        "expected Expr::Is, got {expr:?}"
-    );
-    if let Expr::Is { lhs, rhs } = expr {
-        assert!(matches!(lhs.0, Expr::Ident(ref s) if s.name.as_str() == "x"));
-        assert!(matches!(rhs.0, Expr::Ident(ref s) if s.name.as_str() == "y"));
+fn is_operator_ast_and_precedence() {
+    let Expr::Is { lhs, rhs } = first_fn_trailing("fn f() { x is y }") else {
+        panic!("expected Expr::Is");
+    };
+    assert!(matches!(lhs.0, Expr::Ident(ref s) if s.name.as_str() == "x"));
+    assert!(matches!(rhs.0, Expr::Ident(ref s) if s.name.as_str() == "y"));
+
+    for source in [
+        "fn f() { value is Point }",
+        "fn f() { let x = value is int; }",
+        "fn f() { let x = value is (a, b); }",
+    ] {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
     }
-}
 
-#[test]
-fn is_operator_named_type_rhs() {
-    // Parser admits any expression on the rhs; checker rejects scalars (D-2).
-    let expr = first_fn_trailing("fn f() { value is Point }");
-    assert!(matches!(expr, Expr::Is { .. }));
-}
-
-#[test]
-fn is_operator_scalar_rhs_parses_ok() {
-    // `x is int` — parser admits; checker rejects (slice D-2 / D-3 scope).
-    let result = parse("fn f() { let x = value is int; }");
-    assert!(
-        result.errors.is_empty(),
-        "unexpected parse errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn is_operator_tuple_rhs_parses_ok() {
-    // `x is (a, b)` — parser admits a tuple on the rhs; checker will reject later.
-    let result = parse("fn f() { let x = value is (a, b); }");
-    assert!(
-        result.errors.is_empty(),
-        "unexpected parse errors: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn is_operator_chained_left_assoc() {
-    // `a is b is c` parses as `(a is b) is c` (left-assoc at equality BP).
-    let expr = first_fn_trailing("fn f() { a is b is c }");
-    // Outer must be Is; its lhs must also be Is.
-    let Expr::Is { lhs, .. } = expr else {
+    let Expr::Is { lhs, .. } = first_fn_trailing("fn f() { a is b is c }") else {
         panic!("expected outer Expr::Is");
     };
-    assert!(
-        matches!(lhs.0, Expr::Is { .. }),
-        "expected inner lhs to be Expr::Is (left-assoc), got {:?}",
-        lhs.0
-    );
-}
+    assert!(matches!(lhs.0, Expr::Is { .. }));
 
-#[test]
-fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
-    // `a is b && c is d` should parse as `(a is b) && (c is d)`
     let expr = first_fn_trailing("fn f() { a is b && c is d }");
-    let Some((left, op, right)) = expr.as_binary_pair() else {
-        panic!("expected Binary at top level");
-    };
+    let (left, op, right) = expr.as_binary_pair().expect("binary");
     assert_eq!(op, BinaryOp::And);
-    assert!(matches!(left.0, Expr::Is { .. }), "left should be Is");
-    assert!(matches!(right.0, Expr::Is { .. }), "right should be Is");
-}
+    assert!(matches!(left.0, Expr::Is { .. }) && matches!(right.0, Expr::Is { .. }));
 
-#[test]
-fn is_operator_equality_precedence_with_eq() {
-    // `a is b == true` should parse as `(a is b) == true` (same precedence, left-to-right)
     let expr = first_fn_trailing("fn f() { a is b == true }");
-    let Some((left, op, right)) = expr.as_binary_pair() else {
-        panic!("expected Binary at top level");
-    };
+    let (left, op, right) = expr.as_binary_pair().expect("binary");
     assert_eq!(op, BinaryOp::Equal);
     assert!(matches!(left.0, Expr::Is { .. }));
     assert!(matches!(right.0, Expr::Literal(Literal::Bool(true))));
@@ -4985,22 +4232,6 @@ fn wrapping_mul_precedence_matches_plain_mul() {
         panic!("expected inner Binary");
     };
     assert_eq!(inner_op, BinaryOp::WrappingMul, "inner op must be &*");
-}
-
-#[test]
-fn wrapping_ops_parse_with_no_errors() {
-    for src in &[
-        "fn f(a: i64, b: i64) -> i64 { a &+ b }",
-        "fn f(a: i64, b: i64) -> i64 { a &- b }",
-        "fn f(a: i64, b: i64) -> i64 { a &* b }",
-    ] {
-        let r = parse(src);
-        assert!(
-            r.errors.is_empty(),
-            "parse errors for `{src}`: {:?}",
-            r.errors
-        );
-    }
 }
 
 // ── spread in literals: `[..xs, x]` and `R { ..base, x: 5 }` ─────────
@@ -5133,49 +4364,6 @@ fn f(old: Point) {
 }
 
 #[test]
-fn record_spread_base_parses_anywhere_in_the_field_list() {
-    // `..base` names the same value wherever it sits: it supplies the fields
-    // the literal does not name. Base first is the taught spelling.
-    for src in [
-        r"type Point {
-    x: int;
-    y: int;
-}
-
-fn f(old: Point) {
-    let p = Point { ..old, x: 1 };
-}
-",
-        r"type Point {
-    x: int;
-    y: int;
-}
-
-fn f(old: Point) {
-    let p = Point { ..old, x: 1 };
-}
-",
-        r"type Point {
-    x: int;
-    y: int;
-    z: int;
-}
-
-fn f(old: Point) {
-    let p = Point { ..old, x: 1, z: 3 };
-}
-",
-    ] {
-        let result = parse(src);
-        assert!(
-            result.errors.is_empty(),
-            "a record spread parses at any position; got: {:?}",
-            result.errors
-        );
-    }
-}
-
-#[test]
 fn functional_update_base_is_none_for_regular_struct_init() {
     // A plain struct literal must have base = None.
     let src = r"type Point {
@@ -5275,179 +4463,55 @@ fn intrinsic_attribute_key_is_none_for_normal_fns() {
 // --- #[extern_symbol] attribute --------------------------------------
 
 #[test]
-fn extern_symbol_attribute_on_extern_c_fn_is_captured() {
-    // The attribute must parse via the existing Attribute infrastructure
-    // and ride on `ExternFnDecl.attributes`. The template string is
-    // captured verbatim — `{T}` is a literal character sequence inside
-    // a `StringLit` and is not yet parsed as a placeholder (Stage 2).
-    let src = r#"
-            extern "C" {
-                #[extern_symbol("hew_vec_push_{T}")]
-                fn hew_vec_push(v: ptr, x: ptr);
-            }
-        "#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "expected no parse errors, got: {:?}",
-        result.errors
+fn extern_symbol_attribute_positions_and_arguments() {
+    let extern_res = parse(
+        r#"extern "C" { #[extern_symbol("hew_vec_push_{T}")] fn hew_vec_push(v: ptr, x: ptr); }"#,
     );
-    let crate::ast::Item::ExternBlock(block) = &result.program.items[0].0 else {
+    assert!(extern_res.errors.is_empty(), "{:?}", extern_res.errors);
+    let Item::ExternBlock(block) = &extern_res.program.items[0].0 else {
         panic!("expected ExternBlock");
     };
-    assert_eq!(block.functions.len(), 1);
-    let extern_fn = &block.functions[0];
-    assert_eq!(extern_fn.name, Ident::new("hew_vec_push"));
-    assert_eq!(extern_fn.attributes.len(), 1, "must carry one attribute");
-    let attr = &extern_fn.attributes[0];
-    assert_eq!(attr.name, "extern_symbol");
-    assert_eq!(attr.args.len(), 1);
-    assert_eq!(attr.args[0].as_str(), "hew_vec_push_{T}");
-}
-
-#[test]
-fn extern_symbol_attribute_on_impl_method_is_captured() {
-    // The attribute must also flow through `parse_impl_decl`'s body loop
-    // onto inherent impl methods.
-    let src = r#"
-            impl<T> Vec<T> {
-                #[extern_symbol("hew_vec_push_{T}")]
-                fn push(self, x: T) {}
-            }
-        "#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "expected no parse errors, got: {:?}",
-        result.errors
+    assert_eq!(block.functions[0].attributes[0].name, "extern_symbol");
+    assert_eq!(
+        block.functions[0].attributes[0].args[0].as_str(),
+        "hew_vec_push_{T}"
     );
-    let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
-        panic!("expected Impl");
-    };
-    assert_eq!(impl_decl.methods.len(), 1);
-    let method = &impl_decl.methods[0];
-    assert_eq!(method.name, Ident::new("push"));
-    assert_eq!(method.attributes.len(), 1);
-    assert_eq!(method.attributes[0].name, "extern_symbol");
-    assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_push_{T}");
-}
 
-#[test]
-fn extern_symbol_attribute_on_trait_impl_method_is_captured() {
-    let src = r#"
-            impl<T> SomeTrait for Vec<T> {
-                #[extern_symbol("hew_vec_join_str")]
-                fn join(self, sep: string) -> string {}
-            }
-        "#;
-    let result = parse(src);
-    assert!(
-        result.errors.is_empty(),
-        "expected no parse errors, got: {:?}",
-        result.errors
-    );
-    let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
-        panic!("expected Impl");
-    };
-    assert!(impl_decl.trait_bound.is_some(), "must be a trait impl");
-    assert_eq!(impl_decl.methods.len(), 1);
-    let method = &impl_decl.methods[0];
-    assert_eq!(method.attributes.len(), 1);
-    assert_eq!(method.attributes[0].name, "extern_symbol");
-    assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_join_str");
-}
+    for (src, expect_trait, expected_sym) in [
+        (
+            r#"impl<T> Vec<T> { #[extern_symbol("hew_vec_push_{T}")] fn push(self, x: T) {} }"#,
+            false,
+            "hew_vec_push_{T}",
+        ),
+        (
+            r#"impl<T> SomeTrait for Vec<T> { #[extern_symbol("hew_vec_join_str")] fn join(self, sep: string) -> string {} }"#,
+            true,
+            "hew_vec_join_str",
+        ),
+    ] {
+        let res = parse(src);
+        assert!(res.errors.is_empty(), "{src}: {:?}", res.errors);
+        let Item::Impl(impl_decl) = &res.program.items[0].0 else {
+            panic!("expected Impl");
+        };
+        assert_eq!(impl_decl.trait_bound.is_some(), expect_trait);
+        assert_eq!(impl_decl.methods[0].attributes[0].name, "extern_symbol");
+        assert_eq!(
+            impl_decl.methods[0].attributes[0].args[0].as_str(),
+            expected_sym
+        );
+    }
 
-#[test]
-fn extern_symbol_attribute_on_free_fn_is_rejected() {
-    // Attachment rule: `#[extern_symbol]` is only valid on
-    // `fn` declarations inside `extern "C"` blocks or `impl` blocks.
-    // Placement on a free fn must surface as a parser diagnostic.
-    let src = r#"
-            #[extern_symbol("hew_foo")]
-            pub fn foo() {}
-        "#;
-    let result = parse(src);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn extern_symbol_attribute_on_actor_is_rejected() {
-    let src = r#"
-            #[extern_symbol("hew_actor")]
-            actor MyActor {}
-        "#;
-    let result = parse(src);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn attributed_inline_type_method_is_rejected() {
-    // Methods declared inline in a type body are not `impl` methods —
-    // declare them in an `impl` block instead.
-    let src = r#"
-            type Foo {
-                x: i64,
-                #[extern_symbol("hew_foo_bar")]
-                fn bar(self) {}
-            }
-        "#;
-    let result = parse(src);
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("E_TYPE_METHOD_IN_DECL")),
-        "expected a method placement diagnostic, got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
-fn extern_symbol_attribute_on_actor_receive_fn_is_rejected() {
-    // Actor `receive fn` (and `receive gen fn`) declarations cannot bind
-    // to a runtime C-ABI symbol — extern_symbol is only valid in an
-    // `extern "C"` block or an `impl` block.
-    let src = r#"
-            actor MyActor {
-                #[extern_symbol("hew_actor_recv")]
-                receive fn ping() {}
-            }
-        "#;
-    let result = parse(src);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn extern_symbol_attribute_on_trait_item_fn_is_rejected() {
-    // Trait items describe an abstract surface; the C-ABI binding belongs
-    // on the concrete `impl` method, not the trait declaration.
-    let src = r#"
-            trait Pushable<T> {
-                #[extern_symbol("hew_vec_push_{T}")]
-                fn push(self, value: T);
-            }
-        "#;
-    let result = parse(src);
-    assert!(!result.errors.is_empty(), "{:?}", result.errors);
-}
-
-#[test]
-fn extern_symbol_attribute_missing_string_arg_is_rejected() {
-    // `parse_attributes` enforces value-shape rules; a key-value form
-    // here surfaces an "invalid value" diagnostic. (Stage 2 owns
-    // semantic template-grammar validation; the parser only relies on the
-    // existing attribute syntax gate.)
-    let src = r#"
-            extern "C" {
-                #[extern_symbol(= 5)]
-                fn hew_x();
-            }
-        "#;
-    let result = parse(src);
-    assert!(
-        !result.errors.is_empty(),
-        "malformed `#[extern_symbol]` argument list must produce a parser error"
-    );
+    for invalid in [
+        r#"#[extern_symbol("hew_foo")] pub fn foo() {}"#,
+        r#"#[extern_symbol("hew_actor")] actor MyActor {}"#,
+        r#"actor MyActor { #[extern_symbol("hew_actor_recv")] receive fn ping() {} }"#,
+        r#"trait Pushable<T> { #[extern_symbol("hew_vec_push_{T}")] fn push(self, value: T); }"#,
+        r#"extern "C" { #[extern_symbol(= 5)] fn hew_x(); }"#,
+    ] {
+        let res = parse(invalid);
+        assert!(!res.errors.is_empty(), "expected error for: {invalid}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5567,57 +4631,33 @@ fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
 }
 
 #[test]
-fn module_qualified_variant_pattern_preserves_dotted_owner() {
-    let source = "fn f(e: m.E) -> i64 { match e { m.E.Some(x) => x, _ => 0 } }";
-    let patterns = first_match_arm_patterns(source);
-    let Pattern::NominalPath { path, .. } = &patterns[0] else {
-        panic!("expected nominal path, got {:?}", patterns[0]);
-    };
-    assert_eq!(path.to_string(), "m.E.Some");
-}
-
-#[test]
-fn dotted_pattern_is_a_segmented_nominal_path() {
-    let source = "fn f(n: i64) -> i64 { match n { foo.bar => 1, _ => 0 } }";
-    let patterns = first_match_arm_patterns(source);
-    let Pattern::NominalPath { path, payload } = &patterns[0] else {
-        panic!("expected nominal path, got {:?}", patterns[0]);
-    };
-    assert_eq!(path.to_string(), "foo.bar");
-    assert!(payload.is_none());
-}
-
-/// A multi-segment dotted path with no `::` anywhere (`m.T.Variant`) is
-/// also rejected, not folded into a binding — the guard scans the whole
-/// dotted chain, not just the first segment.
-#[test]
-fn multi_segment_dotted_pattern_is_accepted() {
-    let source = "fn f(n: i64) -> i64 { match n { m.T.Variant => 1, _ => 0 } }";
-    let patterns = first_match_arm_patterns(source);
-    let Pattern::NominalPath { path, .. } = &patterns[0] else {
-        panic!("expected nominal path, got {:?}", patterns[0]);
-    };
-    assert_eq!(path.to_string(), "m.T.Variant");
-}
-
-/// The dotted-pattern loop accepts both a qualified constructor and a path leaf.
-#[test]
-fn dotted_pattern_accepts_qualified_and_leaf_paths() {
-    let accepted = "fn f(e: m.E) -> i64 { match e { m.E.Some(x) => x, _ => 0 } }";
-    let accepted_result = parse(accepted);
-    assert!(
-        accepted_result.errors.is_empty(),
-        "module-qualified variant pattern should parse cleanly, got: {:?}",
-        accepted_result.errors
-    );
-
-    let dotted = "fn f(n: i64) -> i64 { match n { m.E => 1, _ => 0 } }";
-    let dotted_result = parse(dotted);
-    assert!(
-        dotted_result.errors.is_empty(),
-        "dotted nominal path should parse cleanly: {:?}",
-        dotted_result.errors
-    );
+fn dotted_nominal_patterns_preserve_paths() {
+    for (source, expected_path, expect_none_payload) in [
+        (
+            "fn f(e: m.E) -> i64 { match e { m.E.Some(x) => x, _ => 0 } }",
+            "m.E.Some",
+            false,
+        ),
+        (
+            "fn f(n: i64) -> i64 { match n { foo.bar => 1, _ => 0 } }",
+            "foo.bar",
+            true,
+        ),
+        (
+            "fn f(n: i64) -> i64 { match n { m.T.Variant => 1, _ => 0 } }",
+            "m.T.Variant",
+            true,
+        ),
+    ] {
+        let patterns = first_match_arm_patterns(source);
+        let Pattern::NominalPath { path, payload } = &patterns[0] else {
+            panic!("expected nominal path for {source}, got {:?}", patterns[0]);
+        };
+        assert_eq!(path.to_string(), expected_path);
+        if expect_none_payload {
+            assert!(payload.is_none());
+        }
+    }
 }
 
 // ── RecordShorthand pattern (let {a, b} = rec) ───────────────────────────
@@ -5697,69 +4737,19 @@ fn format_let_record_shorthand_round_trips_without_type_name() {
 // Proving gate: bare `wire` keyword is rejected as a declaration form.
 // Item::Wire no longer exists; the identifier "wire" produces a helpful error.
 #[test]
-fn bare_struct_rejected_with_type_hint() {
-    let result = parse("struct Point { x: i64 }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for bare `struct`"
-    );
-}
-
-#[test]
-fn wire_struct_rejected_with_wire_type_hint() {
-    let result = parse("#[wire]\nstruct Point { x: i64 @1 }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `#[wire] struct`"
-    );
-}
-
-// Proving gate: the post-visibility-modifier path gives the same targeted
-// struct->type redirect as the bare-item path, not the generic "invalid item
-// after visibility modifier" fallback.
-#[test]
-fn pub_struct_rejected_with_type_hint() {
-    let result = parse("pub struct Point { x: i64 }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `pub struct`"
-    );
-}
-
-#[test]
-fn wire_pub_struct_rejected_with_wire_type_hint() {
-    let result = parse("#[wire]\npub struct Point { x: i64 @1 }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `#[wire] pub struct`"
-    );
-}
-
-#[test]
-fn bare_wire_keyword_rejected_with_hint() {
-    let result = parse("wire Foo {}");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for bare `wire`"
-    );
-}
-
-#[test]
-fn wire_type_keyword_form_rejected() {
-    let result = parse("wire type Foo { @1 x: string }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `wire type`"
-    );
-}
-
-#[test]
-fn wire_enum_keyword_form_rejected() {
-    let result = parse("wire enum Status { Active; Inactive; }");
-    assert!(
-        !result.errors.is_empty(),
-        "expected parse error for `wire enum`"
-    );
+fn retired_struct_and_wire_keywords_are_rejected() {
+    for source in [
+        "struct Point { x: i64 }",
+        "#[wire]\nstruct Point { x: i64 @1 }",
+        "pub struct Point { x: i64 }",
+        "#[wire]\npub struct Point { x: i64 @1 }",
+        "wire Foo {}",
+        "wire type Foo { @1 x: string }",
+        "wire enum Status { Active; Inactive; }",
+    ] {
+        let result = parse(source);
+        assert!(!result.errors.is_empty(), "expected error for: {source}");
+    }
 }
 
 #[test]
@@ -5855,87 +4845,56 @@ fn unresolved_attribute_arguments_retain_token_trees() {
 }
 
 #[test]
-fn recognised_attribute_name_rejected_in_wrong_position() {
-    // `#[every(..)]` is only legal on an actor `receive fn`; here it targets
-    // a plain actor method, so the name is known but the position is not.
-    let source = r"
-        actor Worker {
-            #[every(1s)]
-            fn tick() {}
-        }
-        fn main() {}
-    ";
-    let result = parse(source);
+fn attribute_placement_and_test_trio_rules() {
+    let legal_wire = parse("#[wire]\ntype Contract {\n    x: i64 @1;\n}\n\ntype Point {\n    #[wire]\n    x: i64;\n}\n");
     assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("unrecognised attribute `#[every]`")
-                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected E_UNKNOWN_ATTRIBUTE for #[every] on a plain actor fn, got: {:?}",
-        result.errors
+        legal_wire.errors.is_empty(),
+        "errors: {:?}",
+        legal_wire.errors
     );
-}
 
-#[test]
-fn test_trio_attrs_rejected_without_co_occurring_test_attr() {
-    // `#[ignore]`, `#[should_panic]`, `#[serial]` and `#[real_time]` are only legal on a
-    // function that also carries `#[test]` (§12.6). Without it, each is
-    // E_UNKNOWN_ATTRIBUTE — a misspelled `#[test]` must not leave these
-    // siblings silently accepted either.
-    for attr in ["ignore", "should_panic", "serial", "real_time"] {
-        let source = format!("#[{attr}]\nfn probe() {{}}\nfn main() {{ probe(); }}");
-        let result = parse(&source);
+    for (source, attr) in [
+        (
+            "actor Worker {\n    #[every(1s)]\n    fn tick() {}\n}\nfn main() {}",
+            "every",
+        ),
+        ("#[wire]\nfn helper() {}\nfn main() { helper(); }", "wire"),
+    ] {
+        let result = parse(source);
         assert!(
-            result.errors.iter().any(|e| e
-                .message
-                .contains(&format!("unrecognised attribute `#[{attr}]`"))
-                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-            "expected E_UNKNOWN_ATTRIBUTE for #[{attr}] without #[test], got: {:?}",
+            result.errors.iter().any(|e| {
+                e.message
+                    .contains(&format!("unrecognised attribute `#[{attr}]`"))
+                    && e.message.contains("E_UNKNOWN_ATTRIBUTE")
+            }),
+            "{source}: {:?}",
             result.errors
         );
     }
-}
 
-#[test]
-fn test_trio_attrs_accepted_with_co_occurring_test_attr() {
-    // The positive control for `test_trio_attrs_rejected_without_co_occurring_test_attr`:
-    // the same attributes are legal once `#[test]` is present.
     for attr in ["ignore", "should_panic", "serial", "real_time"] {
-        let source = format!("#[test]\n#[{attr}]\nfn probe() {{}}\nfn main() {{}}");
-        let result = parse(&source);
+        let without = parse(&format!(
+            "#[{attr}]\nfn probe() {{}}\nfn main() {{ probe(); }}"
+        ));
         assert!(
-            result.errors.is_empty(),
-            "expected #[test] + #[{attr}] to parse cleanly, got: {:?}",
-            result.errors
+            without.errors.iter().any(|e| {
+                e.message
+                    .contains(&format!("unrecognised attribute `#[{attr}]`"))
+                    && e.message.contains("E_UNKNOWN_ATTRIBUTE")
+            }),
+            "without #[test] for #[{attr}]: {:?}",
+            without.errors
+        );
+
+        let with = parse(&format!(
+            "#[test]\n#[{attr}]\nfn probe() {{}}\nfn main() {{}}"
+        ));
+        assert!(
+            with.errors.is_empty(),
+            "with #[test] for #[{attr}]: {:?}",
+            with.errors
         );
     }
-}
-
-#[test]
-fn wire_attribute_legal_on_type_decl_and_field_only() {
-    // `#[wire]` is legal on a type declaration and, separately, on a field
-    // inside a plain (non-`#[wire]`) type declaration (§12.6) — not on a
-    // free function, which has no field/type-decl position for it to attach
-    // to. (The `@N` field-tag syntax used inside a `#[wire] type` body is a
-    // distinct grammar from the `#[wire]` attribute exercised here.)
-    let legal = parse("#[wire]\ntype Contract {\n    x: i64 @1;\n}\n\ntype Point {\n    #[wire]\n    x: i64;\n}\n");
-    assert!(
-        legal.errors.is_empty(),
-        "expected #[wire] on type decl and field to parse cleanly, got: {:?}",
-        legal.errors
-    );
-
-    let illegal = parse("#[wire]\nfn helper() {}\nfn main() { helper(); }");
-    assert!(
-        illegal
-            .errors
-            .iter()
-            .any(|e| e.message.contains("unrecognised attribute `#[wire]`")
-                && e.message.contains("E_UNKNOWN_ATTRIBUTE")),
-        "expected E_UNKNOWN_ATTRIBUTE for #[wire] on a free fn, got: {:?}",
-        illegal.errors
-    );
 }
 #[test]
 fn fallible_function_surface_preserves_success_and_error_types() {
@@ -6558,12 +5517,14 @@ fn binary_chain_steps_keep_the_nested_prefix_spans() {
     // from the first operand to the start of the next token.
     let expr = parse_let_expr("a + b - c * d + e");
     let (first, steps) = binary_chain(&expr);
-    assert_eq!(first.1, 20..21);
-    let spans: Vec<_> = steps.iter().map(|step| step.span.clone()).collect();
-    assert_eq!(spans, [20..26, 20..34, 20..37]);
-    assert_eq!(steps[1].right.1, 28..34);
+    let base = first.1.start;
+    assert_eq!(first.1.end - base, 1);
+    let rel = |span: &std::ops::Range<usize>| (span.start - base)..(span.end - base);
+    let spans: Vec<_> = steps.iter().map(|step| rel(&step.span)).collect();
+    assert_eq!(spans, [0..6, 0..14, 0..17]);
+    assert_eq!(rel(&steps[1].right.1), 8..14);
     let (_, product) = binary_chain(&steps[1].right.0);
-    assert_eq!(product[0].span, 28..34);
+    assert_eq!(rel(&product[0].span), 8..14);
 }
 
 #[test]

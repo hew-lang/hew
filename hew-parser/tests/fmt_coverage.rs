@@ -1,7 +1,8 @@
-/// Formatter coverage tests — round-trip parse → format → verify output.
-///
-/// Each test parses Hew source, formats via `format_source`, and checks that
-/// the result is idempotent (formatting already-formatted code is a no-op).
+//! Formatter coverage tests — round-trip parse → format → verify output.
+//!
+//! Each test parses Hew source, formats via `format_source` or `format_program`,
+//! and checks that the result is idempotent and structurally sound.
+
 use hew_parser::ast::{Expr, Item, Stmt, Visibility};
 use hew_parser::ast_eq::program_eq_ignoring_spans;
 use hew_parser::fmt::{format_program, format_source};
@@ -12,8 +13,7 @@ use hew_parser::parse;
 // -----------------------------------------------------------------------
 
 /// Parse `source`, assert no errors, format with comment preservation,
-/// then re-parse and re-format to verify idempotency.  Returns the
-/// formatted string so callers can make additional assertions.
+/// then re-parse and re-format to verify idempotency.
 fn roundtrip(source: &str) -> String {
     let r1 = parse(source);
     assert!(
@@ -24,7 +24,6 @@ fn roundtrip(source: &str) -> String {
 
     let formatted = format_source(source, &r1.program);
 
-    // Re-parse the formatted output — it must still be valid.
     let r2 = parse(&formatted);
     assert!(
         r2.errors.is_empty(),
@@ -32,7 +31,6 @@ fn roundtrip(source: &str) -> String {
         r2.errors,
     );
 
-    // Idempotency: formatting the already-formatted output must be identical.
     let formatted2 = format_source(&formatted, &r2.program);
     assert_eq!(
         formatted, formatted2,
@@ -73,266 +71,125 @@ fn exact_roundtrip(source: &str) {
     let formatted = roundtrip_no_comments(source);
     assert_eq!(
         formatted, source,
-        "Formatter output changed.
-Expected:
-{source}
-Actual:
-{formatted}",
+        "Formatter output changed.\nExpected:\n{source}\nActual:\n{formatted}",
     );
 }
 
+fn assert_exact_roundtrips(sources: &[&str]) {
+    for &source in sources {
+        exact_roundtrip(source);
+    }
+}
+
 // -----------------------------------------------------------------------
-// Functions
+// Functions, signatures & control flow
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_function_multiple_statements() {
-    let src = r"fn compute(x: i32) -> i32 {
+fn fmt_functions_and_signatures_roundtrip() {
+    let out = roundtrip(
+        r"fn compute(x: i32) -> i32 {
     let y = x * 2;
     let z = y + 1;
     z
-}";
-    let out = roundtrip(src);
+}",
+    );
     assert!(out.contains("let y = x * 2;"), "output: {out}");
     assert!(out.contains("let z = y + 1;"), "output: {out}");
-}
 
-#[test]
-fn fmt_generic_function_with_bounds() {
-    let src = "fn print_it<T: Display>(x: T) { println(x); }";
-    let out = roundtrip(src);
+    let out = roundtrip("fn print_it<T: Display>(x: T) { println(x); }");
     assert!(out.contains("<T: Display>"), "output: {out}");
-}
 
-#[test]
-fn fmt_mutable_self_receiver_preserves_var() {
-    let src = "impl Counter {\n    fn next(var self) -> i64 {\n        1\n    }\n}\n";
-    let out = roundtrip(src);
+    let out = roundtrip("impl Counter {\n    fn next(var self) -> i64 {\n        1\n    }\n}\n");
     assert!(out.contains("fn next(var self) -> i64"), "output: {out}");
+
+    let out = roundtrip("fn modify(var x: i32) -> i32 { x = x + 1; x }");
+    assert!(out.contains("var x: i32"), "output: {out}");
+
+    let out = roundtrip("#[test]\nfn fast() -> i32 {\n    42\n}");
+    assert!(out.contains("#[test]"), "output: {out}");
+
+    let out = roundtrip("fn process<T>(x: T) -> i32 where T: Display {\n    42\n}");
+    assert!(out.contains("where T: Display"), "output: {out}");
 }
 
-// -----------------------------------------------------------------------
-// If / else
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_if_else() {
-    let src = r"fn main() {
+fn fmt_conditionals_and_loops_roundtrip() {
+    let out = roundtrip(
+        r"fn main() {
     if x > 0 {
         println(x);
     } else {
         println(0);
     }
-}";
-    let out = roundtrip(src);
+}",
+    );
     assert!(out.contains("} else {"), "else on same line. output: {out}");
-}
 
-#[test]
-fn fmt_if_else_if_chain() {
-    exact_roundtrip(
-        "fn check(x: i32) {\n    if x > 10 {\n        println(1);\n    } else if x > 0 {\n        println(2);\n    } else {\n        println(3);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_if_else_if_let_chain() {
-    exact_roundtrip(
-        "fn check(maybe: Option<i32>, x: i32) {\n    if x > 10 {\n        println(1);\n    } else if let Some(y) = maybe {\n        println(y);\n    } else {\n        println(3);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_if_expression() {
-    let src = r"fn main() -> i32 {
-    let val = if true { 1 } else { 0 };
-    val
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("fn main() -> i32 {\n    let val = if true { 1 } else { 0 };\n    val\n}");
     assert!(out.contains("if true {"), "output: {out}");
-}
 
-#[test]
-fn fmt_if_let() {
-    exact_roundtrip("fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    }\n}\n");
-}
-
-#[test]
-fn fmt_if_let_else_body_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    } else {\n        println(0);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_if_let_struct_pattern_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    if let Point { x, y } = p {\n        println(x);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_if_let_tuple_pattern_roundtrip() {
-    exact_roundtrip("fn main() {\n    if let (a, b) = pair {\n        println(a);\n    }\n}\n");
-}
-
-#[test]
-fn fmt_if_let_or_pattern_roundtrip() {
-    exact_roundtrip("fn main() {\n    if let A | B = val {\n        work();\n    }\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// For loops
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_for_loop() {
-    let src = r"fn main() {
-    for i in 0..10 {
-        println(i);
-    }
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("fn main() {\n    for i in 0..10 {\n        println(i);\n    }\n}");
     assert!(out.contains("for i in 0..10 {"), "output: {out}");
-}
 
-#[test]
-fn fmt_for_with_pattern() {
-    let src = r"fn main() {
-    for (k, v) in items {
-        println(k);
-    }
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("fn main() {\n    for (k, v) in items {\n        println(k);\n    }\n}");
     assert!(out.contains("for (k, v) in items"), "output: {out}");
-}
 
-// -----------------------------------------------------------------------
-// While loops
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_while_loop() {
-    let src = r"fn main() {
-    var x = 10;
-    while x > 0 {
-        x = x - 1;
-    }
-}";
-    let out = roundtrip(src);
+    let out =
+        roundtrip("fn main() {\n    var x = 10;\n    while x > 0 {\n        x = x - 1;\n    }\n}");
     assert!(out.contains("while x > 0 {"), "output: {out}");
-}
 
-#[test]
-fn fmt_while_let_struct_pattern_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    while let Point { x, y } = next_point() {\n        work(x);\n    }\n}\n",
+    let out = roundtrip(
+        "fn main() {\n    var i = 0;\n    loop {\n        if i > 5 {\n            break;\n        }\n        i = i + 1;\n    }\n}",
     );
-}
-
-#[test]
-fn fmt_while_let_tuple_pattern_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    while let (k, v) = iter.next() {\n        use_pair(k, v);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_expr_if_let_as_value_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let x = if let Some(v) = opt {\n        v\n    } else {\n        0\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_expr_if_let_as_trailing_roundtrip() {
-    exact_roundtrip(
-        "fn foo() -> int {\n    if let Some(x) = maybe {\n        x\n    } else {\n        0\n    }\n}\n",
-    );
-}
-
-// -----------------------------------------------------------------------
-// Loop / break / continue
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_loop_with_break() {
-    let src = r"fn main() {
-    var i = 0;
-    loop {
-        if i > 5 {
-            break;
-        }
-        i = i + 1;
-    }
-}";
-    let out = roundtrip(src);
     assert!(out.contains("loop {"), "output: {out}");
     assert!(out.contains("break;"), "output: {out}");
-}
 
-#[test]
-fn fmt_continue_statement() {
-    let src = r"fn main() {
-    for i in 0..10 {
-        if i == 3 {
-            continue;
-        }
-        println(i);
-    }
-}";
-    let out = roundtrip(src);
+    let out = roundtrip(
+        "fn main() {\n    for i in 0..10 {\n        if i == 3 {\n            continue;\n        }\n        println(i);\n    }\n}",
+    );
     assert!(out.contains("continue;"), "output: {out}");
 }
 
 #[test]
-fn fmt_labeled_loop_roundtrip() {
-    exact_roundtrip("fn main() {\n    @outer: loop {\n        break @outer;\n    }\n}\n");
-}
-
-#[test]
-fn fmt_labeled_while_roundtrip() {
-    exact_roundtrip(
+fn fmt_if_let_while_let_and_labeled_loops_exact_roundtrip() {
+    assert_exact_roundtrips(&[
+        "fn check(x: i32) {\n    if x > 10 {\n        println(1);\n    } else if x > 0 {\n        println(2);\n    } else {\n        println(3);\n    }\n}\n",
+        "fn check(maybe: Option<i32>, x: i32) {\n    if x > 10 {\n        println(1);\n    } else if let Some(y) = maybe {\n        println(y);\n    } else {\n        println(3);\n    }\n}\n",
+        "fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    }\n}\n",
+        "fn main() {\n    if let Some(x) = maybe {\n        println(x);\n    } else {\n        println(0);\n    }\n}\n",
+        "fn main() {\n    if let Point { x, y } = p {\n        println(x);\n    }\n}\n",
+        "fn main() {\n    if let (a, b) = pair {\n        println(a);\n    }\n}\n",
+        "fn main() {\n    if let A | B = val {\n        work();\n    }\n}\n",
+        "fn main() {\n    while let Point { x, y } = next_point() {\n        work(x);\n    }\n}\n",
+        "fn main() {\n    while let (k, v) = iter.next() {\n        use_pair(k, v);\n    }\n}\n",
+        "fn main() {\n    while let Some(x) = iter.next() {\n        println(x);\n    }\n}\n",
+        "fn main() {\n    let x = if let Some(v) = opt {\n        v\n    } else {\n        0\n    };\n}\n",
+        "fn foo() -> int {\n    if let Some(x) = maybe {\n        x\n    } else {\n        0\n    }\n}\n",
+        "fn main() {\n    @outer: loop {\n        break @outer;\n    }\n}\n",
         "fn main() {\n    @counter: while x > 0 {\n        x = x - 1;\n        if x == 3 {\n            continue @counter;\n        }\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_labeled_for_roundtrip() {
-    exact_roundtrip(
         "fn main() {\n    @rows: for i in 0..n {\n        for j in 0..m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_labeled_while_let_roundtrip() {
-    exact_roundtrip(
         "fn main() {\n    @scan: while let Some(x) = iter.next() {\n        if x == 0 {\n            break @scan;\n        }\n    }\n}\n",
-    );
+    ]);
 }
 
-// -----------------------------------------------------------------------
-// Match expressions
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_match_statement() {
-    let src = r"fn describe(x: i32) {
+fn fmt_match_and_patterns_roundtrip() {
+    let out = roundtrip(
+        r"fn describe(x: i32) {
     match x {
         0 => println(0),
         1 => println(1),
         _ => println(x),
     }
-}";
-    let out = roundtrip(src);
+}",
+    );
     assert!(out.contains("match x {"), "output: {out}");
     assert!(out.contains("0 => println(0),"), "output: {out}");
     assert!(out.contains("_ => println(x),"), "output: {out}");
-}
 
-#[test]
-fn fmt_match_with_enum_patterns() {
-    let src = r"enum Colour {
+    let out = roundtrip(
+        r"enum Colour {
     Red;
     Green;
     Blue;
@@ -345,149 +202,89 @@ fn name(c: Colour) -> i32 {
         Colour.Blue => 3,
     }
 }
-";
-    let out = roundtrip(src);
+",
+    );
     assert!(out.contains("Colour.Red => 1,"), "output: {out}");
-}
 
-#[test]
-fn fmt_struct_pattern_in_match_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    match p {\n        Point { x, y } => println(x),\n        _ => println(0),\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_struct_pattern_field_rename_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    match e {\n        Ev { x: Some(v), y } => println(v),\n        _ => println(0),\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_match_with_guard() {
-    let src = r"fn classify(x: i32) -> i32 {
+    let out = roundtrip(
+        r"fn classify(x: i32) -> i32 {
     match x {
         n if n > 100 => 3,
         n if n > 0 => 2,
         _ => 1,
     }
-}";
-    let out = roundtrip(src);
+}",
+    );
     assert!(out.contains("n if n > 100 => 3,"), "output: {out}");
+
+    assert_exact_roundtrips(&[
+        "fn main() {\n    match p {\n        Point { x, y } => println(x),\n        _ => println(0),\n    }\n}\n",
+        "fn main() {\n    match e {\n        Ev { x: Some(v), y } => println(v),\n        _ => println(0),\n    }\n}\n",
+        "fn main() {\n    match x {\n        1 | 2 => 3,\n        _ => 0,\n    }\n}\n",
+    ]);
 }
 
 // -----------------------------------------------------------------------
-// Struct definitions (type keyword in Hew)
+// Types, enums, traits, impls & actors
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_struct_definition() {
-    let src = r"type Point {
-    x: f64;
-    y: f64;
-}
-";
-    let out = roundtrip(src);
+fn fmt_struct_and_enum_definitions_roundtrip() {
+    let out = roundtrip("type Point {\n    x: f64;\n    y: f64;\n}\n");
     assert!(out.contains("type Point {"), "output: {out}");
     assert!(out.contains("    x: f64;"), "output: {out}");
     assert!(out.contains("    y: f64;"), "output: {out}");
-}
 
-#[test]
-fn fmt_generic_struct() {
-    let src = r"type Pair<A, B> {
-    first: A;
-    second: B;
-}
-";
-    let out = roundtrip(src);
+    let out = roundtrip("type Pair<A, B> {\n    first: A;\n    second: B;\n}\n");
     assert!(out.contains("type Pair<A, B> {"), "output: {out}");
-}
 
-// -----------------------------------------------------------------------
-// Enum definitions
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_enum_definition() {
-    let src = r"enum Direction {
-    North;
-    South;
-    East;
-    West;
-}
-";
-    let out = roundtrip(src);
+    let out = roundtrip("enum Direction {\n    North;\n    South;\n    East;\n    West;\n}\n");
     assert!(out.contains("enum Direction {"), "output: {out}");
     assert!(out.contains("    North;"), "output: {out}");
-}
 
-#[test]
-fn fmt_enum_with_tuple_variant() {
-    let src = r"enum Shape {
-    Circle(f64);
-    Rectangle(f64, f64);
-}
-";
-    let out = roundtrip(src);
+    let out = roundtrip("enum Shape {\n    Circle(f64);\n    Rectangle(f64, f64);\n}\n");
     assert!(out.contains("Circle(f64);"), "output: {out}");
     assert!(out.contains("Rectangle(f64, f64);"), "output: {out}");
-}
 
-#[test]
-fn fmt_enum_with_struct_variant() {
-    let src = r"enum Event {
-    Click { x: i32; y: i32;  }
-    KeyPress { code: i32;  }
-}
-";
-    let out = roundtrip(src);
+    let out = roundtrip(
+        "enum Event {\n    Click { x: i32; y: i32;  }\n    KeyPress { code: i32;  }\n}\n",
+    );
     assert!(out.contains("Click { x: i32; y: i32; }"), "output: {out}");
 }
 
-// -----------------------------------------------------------------------
-// Trait definitions
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_trait_definition() {
-    let src = r"trait Greet {
-    fn hello() -> i32;
-}";
-    let out = roundtrip(src);
+fn fmt_trait_and_impl_definitions_roundtrip() {
+    let out = roundtrip("trait Greet {\n    fn hello() -> i32;\n}");
     assert!(out.contains("trait Greet {"), "output: {out}");
     assert!(out.contains("fn hello() -> i32;"), "output: {out}");
-}
 
-#[test]
-fn fmt_trait_with_default_method() {
-    let src = r"trait Describable {
-    fn describe() -> i32 {
-        42
-    }
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("trait Describable {\n    fn describe() -> i32 {\n        42\n    }\n}");
     assert!(out.contains("trait Describable {"), "output: {out}");
     assert!(out.contains("fn describe() -> i32 {"), "output: {out}");
-}
 
-#[test]
-fn fmt_trait_with_supertrait() {
-    let src = r"trait Printable: Display {
-    fn output();
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("trait Printable: Display {\n    fn output();\n}");
     assert!(out.contains("trait Printable: Display"), "output: {out}");
-}
 
-// -----------------------------------------------------------------------
-// Impl blocks
-// -----------------------------------------------------------------------
+    exact_roundtrip(
+        "trait Describable {\n    fn describe() -> i32 {\n        42\n    }\n\n    fn reset();\n}\n",
+    );
 
-#[test]
-fn fmt_impl_block() {
-    let src = r"type Counter {
+    let spaced = concat!(
+        "// Spacing follows the source.\n",
+        "trait Describable {\n",
+        "    fn describe() -> i32 {\n",
+        "        42\n",
+        "    }\n",
+        "\n",
+        "    fn reset();\n",
+        "}\n"
+    );
+    assert_eq!(roundtrip(spaced), spaced);
+    let adjacent = spaced.replace("    }\n\n", "    }\n");
+    assert_eq!(roundtrip(&adjacent), adjacent);
+
+    let out = roundtrip(
+        r"type Counter {
     value: i32;
 }
 
@@ -500,16 +297,14 @@ impl Counter {
         self.value
     }
 }
-";
-    let out = roundtrip(src);
+",
+    );
     assert!(out.contains("impl Counter {"), "output: {out}");
     assert!(out.contains("fn new() -> Counter"), "output: {out}");
     assert!(out.contains("fn get(self) -> i32"), "output: {out}");
-}
 
-#[test]
-fn fmt_trait_impl() {
-    let src = r#"type MyType {
+    let out = roundtrip(
+        r#"type MyType {
     val: i32;
 }
 
@@ -518,297 +313,231 @@ impl Display for MyType {
         f"{self.val}"
     }
 }
-"#;
-    let out = roundtrip(src);
+"#,
+    );
     assert!(out.contains("impl Display for MyType"), "output: {out}");
-}
 
-#[test]
-fn fmt_generic_impl() {
-    let src = r"type Wrapper<T> {
-    inner: T;
-}
-
-impl<T> Wrapper<T> {
-    fn unwrap(self) -> T {
-        self.inner
-    }
-}
-";
-    let out = roundtrip(src);
+    let out = roundtrip(
+        "type Wrapper<T> {\n    inner: T;\n}\n\nimpl<T> Wrapper<T> {\n    fn unwrap(self) -> T {\n        self.inner\n    }\n}\n",
+    );
     assert!(out.contains("impl<T> Wrapper<T>"), "output: {out}");
 }
 
-// -----------------------------------------------------------------------
-// Actors
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_simple_actor() {
-    let src = r"actor Counter {
-    let count: i32;
-
-    receive fn increment(n: i32) -> i32 {
-        count + n
-    }
-}
-";
-    let out = roundtrip(src);
+fn fmt_actor_declarations_and_hooks_roundtrip() {
+    let out = roundtrip(
+        "actor Counter {\n    let count: i32;\n\n    receive fn increment(n: i32) -> i32 {\n        count + n\n    }\n}\n",
+    );
     assert!(out.contains("actor Counter {"), "output: {out}");
     assert!(out.contains("let count: i32;"), "output: {out}");
     assert!(out.contains("receive fn increment"), "output: {out}");
-}
 
-#[test]
-fn fmt_actor_receive_without_preamble() {
-    let src = r"actor Worker {
-    receive fn work(n: i32) -> i32 {
-        n
-    }
-}";
-    let out = roundtrip(src);
+    let out =
+        roundtrip("actor Worker {\n    receive fn work(n: i32) -> i32 {\n        n\n    }\n}");
     assert!(
         out.contains("actor Worker {\n    receive fn work(n: i32) -> i32 {"),
         "output: {out}"
     );
-}
 
-#[test]
-fn fmt_receive_fn_every_attr_roundtrip() {
-    roundtrip(
-        "actor Ticker {\n    let count: int;\n\n    #[every(50ms)]\n    receive fn tick() {\n        count = count + 1;\n    }\n}\n\nfn main() {}\n",
+    let out = roundtrip(
+        "actor Worker {\n    let id: i32;\n\n    mailbox 16;\n\n    receive fn process(value: i32) {\n        println(value);\n    }\n}\n",
     );
-}
-
-#[test]
-fn fmt_actor_with_mailbox() {
-    let src = r"actor Worker {
-    let id: i32;
-
-    mailbox 16;
-
-    receive fn process(value: i32) {
-        println(value);
-    }
-}
-";
-    let out = roundtrip(src);
     assert!(out.contains("mailbox 16;"), "output: {out}");
-}
 
-#[test]
-fn fmt_actor_on_stop_hook_roundtrip() {
-    roundtrip(
-        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(stop)]\n    fn shutdown() {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_on_stop_and_receive_attributes_roundtrip() {
-    // The formatter emits actor body items in canonical order
-    // (receive fns before methods), independent of source order.
-    exact_roundtrip(
-        "actor Worker {\n    #[every(50ms)]\n    receive fn tick() {\n        work();\n    }\n\n    #[on(stop)]\n    fn cleanup() {\n        shutdown();\n    }\n}\n\nfn main() {\n}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_method_without_preamble() {
-    let src = r"actor Counter {
-    fn current() -> i32 {
-        0
-    }
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("actor Counter {\n    fn current() -> i32 {\n        0\n    }\n}");
     assert!(
         out.contains("actor Counter {\n    fn current() -> i32 {"),
         "output: {out}"
     );
-}
 
-#[test]
-fn fmt_this_expr_roundtrip() {
-    exact_roundtrip(
+    roundtrip(
+        "actor Ticker {\n    let count: int;\n\n    #[every(50ms)]\n    receive fn tick() {\n        count = count + 1;\n    }\n}\n\nfn main() {}\n",
+    );
+    roundtrip(
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(stop)]\n    fn shutdown() {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {}\n",
+    );
+
+    assert_exact_roundtrips(&[
         "actor Counter {\n    receive fn current() {\n        let me = this;\n    }\n}\n",
+        "actor Worker {\n    #[every(50ms)]\n    receive fn tick() {\n        work();\n    }\n\n    #[on(stop)]\n    fn cleanup() {\n        shutdown();\n    }\n}\n\nfn main() {\n}\n",
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
+        "actor Worker {\n    receive fn work() {\n        do_work();\n    }\n\n    #[on(restart)]\n    fn handle_restart() {\n        reset();\n    }\n}\n\nfn main() {\n}\n",
+        "actor Guard {\n    receive fn run() {\n        execute();\n    }\n\n    #[on(crash)]\n    fn on_crash() {\n        log_error();\n    }\n}\n\nfn main() {\n}\n",
+        "actor Service {\n    receive fn handle() {\n        process();\n    }\n\n    #[on(upgrade)]\n    fn migrate() {\n        migrate_state();\n    }\n}\n\nfn main() {\n}\n",
+    ]);
+}
+
+#[test]
+fn fmt_actor_field_mutability_preserved() {
+    let var_src =
+        "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let out = roundtrip(var_src);
+    assert!(
+        out.contains("var count: i64 = 0;"),
+        "formatter must not rewrite `var` field to `let`; output:\n{out}"
+    );
+    assert!(
+        !out.contains("let count:"),
+        "output must not contain `let count:`; output:\n{out}"
+    );
+
+    let p1 = parse(var_src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+    let formatted = format_program(&p1.program);
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    assert!(
+        program_eq_ignoring_spans(&p1.program, &p2.program),
+        "AST mismatch: var-field mutability lost after format+reparse.\nFormatted:\n{formatted}"
+    );
+
+    let let_out = roundtrip("actor Frozen {\n    let x: i64 = 0;\n\n    receive fn noop() {}\n}\n");
+    assert!(
+        let_out.contains("let x: i64 = 0;"),
+        "formatter must preserve `let` field; output:\n{let_out}"
+    );
+    assert!(
+        !let_out.contains("var x:"),
+        "formatter must not promote `let` field to `var`; output:\n{let_out}"
+    );
+
+    exact_roundtrip(
+        "actor Mixed {\n    let id: i64 = 0;\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
     );
 }
 
 // -----------------------------------------------------------------------
-// Closures / lambdas
+// Closures, generators & concurrency surfaces
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_lambda_with_types() {
-    let src = "fn main() { let f = |x: i32| -> i32 { x + 1 }; }";
-    let out = roundtrip(src);
+fn fmt_lambdas_and_actor_lambdas_roundtrip() {
+    let out = roundtrip("fn main() { let f = |x: i32| -> i32 { x + 1 }; }");
     assert!(out.contains("|x: i32| -> i32 {"), "output: {out}");
-}
 
-#[test]
-fn fmt_multi_param_lambda() {
-    let src = "fn main() { let add = |a, b| a + b; }";
-    let out = roundtrip(src);
+    let out = roundtrip("fn main() { let add = |a, b| a + b; }");
     assert!(out.contains("|a, b| a + b"), "output: {out}");
-}
 
-// Generic `<T>(params) => body` lambda syntax was removed in v0.5; the
-// formatter no longer needs a roundtrip test for it.  Pipe-closure tests
-// below cover `|params| body` formatting instead.
-
-#[test]
-fn fmt_gen_block_expression() {
-    // Generator block in expression position: `gen { yield ...; }`.
-    let src = "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n    };\n}\n";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("gen {"),
-        "formatted output should contain `gen {{`: {out}"
-    );
-    assert!(
-        out.contains("yield 1"),
-        "formatted output should contain `yield 1`: {out}"
-    );
+    assert_exact_roundtrips(&[
+        "fn main() {\n    let worker = actor |x: int| {\n        x + 1\n    };\n}\n",
+        "fn main() {\n    let adder = actor |x: int, y: int| {\n        x + y\n    };\n}\n",
+        "fn main() {\n    let f = move |x: i32| -> i32 {\n        x + 1\n    };\n}\n",
+        "fn main() {\n    scope {\n        (move || {\n            let _ = r;\n        })();\n    };\n}\n",
+        "fn main() {\n    let worker = actor move |x: int| {\n        x + 1\n    };\n}\n",
+    ]);
 }
 
 #[test]
-fn fmt_gen_block_compact_roundtrip() {
-    exact_roundtrip(
+fn fmt_generators_and_yield_roundtrip() {
+    let out = roundtrip(
+        "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n    };\n}\n",
+    );
+    assert!(out.contains("gen {"), "output: {out}");
+    assert!(out.contains("yield 1"), "output: {out}");
+
+    assert_exact_roundtrips(&[
         "fn main() {\n    let yields = gen { yield 1; yield 2; };\n    let returns = gen { yield 1; 2 };\n    let explicit = gen { return 1; };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_gen_block_multiline_roundtrip() {
-    exact_roundtrip(
         "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n        3\n    };\n}\n",
-    );
+        "gen fn counting(n: i32) -> i32 {\n    for i in 0..n {\n        yield i;\n    }\n}\n",
+        "actor NumberStream {\n    receive gen fn numbers() -> i32 {\n        yield 1;\n    }\n}\n",
+        "gen fn tick() -> i32 {\n    yield;\n}\n",
+    ]);
+}
+
+#[test]
+fn fmt_channels_and_surface_constructs_roundtrip() {
+    assert_exact_roundtrips(&[
+        "fn make_channel() -> Duplex<int, string> {\n    duplex_pair(16)\n}\n",
+        "fn pipe(src: Stream<string>, dst: Sink<string>) {\n    forward(src, dst);\n}\n",
+        "fn main() {\n    ch.send(42);\n    let v = ch.recv();\n    ch.try_send(1);\n    let r = ch.try_recv();\n    ch.close();\n}\n",
+        "fn main() {\n    let sink = ch.send_half();\n    let stream = ch.recv_half();\n}\n",
+        "fn main() {\n    scope {\n        let child = fork run();\n    };\n}\n",
+        "fn main() {\n    scope {\n        let worker = fork compute();\n        let auditor = fork audit();\n        worker\n    };\n}\n",
+        "fn main() {\n    let (tx, rx) = duplex_pair<int, string>(16);\n}\n",
+        "fn main() {\n    let value = select {\n        msg from inbox.recv() => msg,\n        after 100ms => -1,\n    };\n}\n",
+        "fn main() {\n    let value = result?;\n}\n",
+        "fn main() {\n    unsafe {\n        do_thing();\n    };\n}\n",
+        "fn main() {\n    defer {\n        cleanup();\n    }\n}\n",
+    ]);
+
+    let out = roundtrip("fn main() { defer cleanup(); }");
+    assert!(out.contains("defer cleanup();"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
-// Method calls and chaining
+// Calls, imports, interpolation, contextual paths & spreads
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_chained_method_calls() {
-    let src = "fn main() { list.push(1).push(2).push(3); }";
-    let out = roundtrip(src);
+fn fmt_calls_and_generic_values_roundtrip() {
+    let out = roundtrip("fn main() { list.push(1).push(2).push(3); }");
     assert!(
         out.contains("list.push(1).push(2).push(3)"),
         "output: {out}"
     );
+
+    let out = roundtrip(
+        "type Pt {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Pt(x: 10, y: 20);\n}\n",
+    );
+    assert!(out.contains("Pt(x: 10, y: 20)"), "output: {out}");
+
+    assert_exact_roundtrips(&[
+        "fn main() {\n    restarted(sup.worker);\n}\n",
+        "fn main() {\n    let a = worker<Vec<Vec<i64>>>();\n    let b = service.compute<string>();\n    let c = HashMap<string, User>.new();\n    let d = Tag<bool> { value: true };\n}\n",
+        "fn make() -> fn(i64) -> i64 {\n    let f = id<i64>;\n    let pair = (id<i64>, id<string>);\n    use_fn(id<i64>);\n    id<i64>\n}\n",
+    ]);
 }
 
-// -----------------------------------------------------------------------
-// String interpolation
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_string_interpolation() {
-    let src = r#"fn main() { let msg = f"value is {x}"; }"#;
-    let out = roundtrip(src);
+fn fmt_string_interpolation_roundtrip() {
+    let out = roundtrip(r#"fn main() { let msg = f"value is {x}"; }"#);
     assert!(out.contains(r#"f"value is {x}""#), "output: {out}");
-}
 
-#[test]
-fn fmt_string_interpolation_multiple() {
-    let src = r#"fn main() { let msg = f"{a} plus {b} equals {c}"; }"#;
-    let out = roundtrip(src);
+    let out = roundtrip(r#"fn main() { let msg = f"{a} plus {b} equals {c}"; }"#);
     assert!(
         out.contains(r#"f"{a} plus {b} equals {c}""#),
         "output: {out}"
     );
 }
 
-// -----------------------------------------------------------------------
-// Import statements
-// -----------------------------------------------------------------------
-
 #[test]
-fn fmt_import_path() {
-    let src = "import std.io;";
-    let out = roundtrip(src);
-    assert!(out.contains("import std.io;"), "output: {out}");
+fn fmt_import_forms_roundtrip() {
+    for (src, expected) in [
+        ("import std.io;", "import std.io;"),
+        (
+            "import std.collections.{HashMap, HashSet};",
+            "import std.collections.{HashMap, HashSet};",
+        ),
+        (
+            "import std.{println, print};",
+            "import std.{println, print};",
+        ),
+    ] {
+        let out = roundtrip(src);
+        assert!(out.contains(expected), "output: {out}");
+    }
+
+    assert_exact_roundtrips(&[
+        "import std.net.{http as h, websocket as ws};\n",
+        "import std.net as n;\n",
+        "import \"codecs/huffman.hew\" as huffman;\n",
+        "import \"codecs/rle.hew\";\n",
+        "import app.net.http as transport;\n",
+        "import app.net.http.{self as transport, Client as C,};\n",
+    ]);
 }
 
 #[test]
-fn fmt_import_selection() {
-    let src = "import std.collections.{HashMap, HashSet};";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("import std.collections.{HashMap, HashSet};"),
-        "output: {out}"
-    );
-}
-
-#[test]
-fn fmt_import_named() {
-    let src = "import std.{println, print};";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("import std.{println, print};"),
-        "output: {out}"
-    );
-}
-
-#[test]
-fn fmt_import_alias_roundtrip() {
-    exact_roundtrip("import std.net.{http as h, websocket as ws};\n");
-}
-
-#[test]
-fn fmt_import_whole_module_alias_roundtrip() {
-    exact_roundtrip("import std.net as n;\n");
-}
-
-#[test]
-fn fmt_file_import_alias_roundtrip() {
-    exact_roundtrip("import \"codecs/huffman.hew\" as huffman;\n");
-    exact_roundtrip("import \"codecs/rle.hew\";\n");
-}
-
-#[test]
-fn fmt_dotted_import_forms_roundtrip() {
-    exact_roundtrip("import app.net.http as transport;\n");
-    exact_roundtrip("import app.net.http.{self as transport, Client as C,};\n");
-}
-
-#[test]
-fn fmt_contextual_variants_roundtrip() {
-    exact_roundtrip(
+fn fmt_contextual_paths_and_spreads_roundtrip() {
+    assert_exact_roundtrips(&[
         "fn main() {\n    let a = .None;\n    let b = .Some(value);\n    let c = .Ready { ..base, value: value };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_dotted_and_mixed_nominal_patterns_roundtrip() {
-    exact_roundtrip(
         "fn f(value: module.E) {\n    match value {\n        module.E.Some(x) => x,\n        module.E.None => 0,\n        .Other => 1,\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_generic_apply_suffix_forms_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let a = worker<Vec<Vec<i64>>>();\n    let b = service.compute<string>();\n    let c = HashMap<string, User>.new();\n    let d = Tag<bool> { value: true };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_qualified_assoc_paths_roundtrip() {
-    exact_roundtrip(
         "fn project<T>(x: <T as iter.Iterator>.Item) {\n    let make = <T as iter.Iterator>.make();\n}\n",
-    );
-}
-
-#[test]
-fn fmt_spread_elements_roundtrip() {
-    exact_roundtrip(
         "fn main() {\n    let a = [..xs, 1, ..ys];\n    let b = [..xs];\n    let c = [1, ..xs];\n}\n",
-    );
-}
+        "fn main() {\n    let data = wire.Message.Data { ..base, bytes: payload };\n}\n",
+        "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",
+    ]);
 
-#[test]
-fn fmt_record_spread_normalizes_to_base_first() {
     let out = roundtrip("fn main() { let p = Point { x: 1, ..base }; }");
     assert!(
         out.contains("Point { ..base, x: 1 }"),
@@ -816,677 +545,255 @@ fn fmt_record_spread_normalizes_to_base_first() {
     );
 }
 
-#[test]
-fn fmt_pure_dot_record_init_with_update_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let data = wire.Message.Data { ..base, bytes: payload };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_import_file() {
-    let src = r#"import "helpers.hew";"#;
-    let out = roundtrip(src);
-    assert!(out.contains(r#"import "helpers.hew";"#), "output: {out}");
-}
-
 // -----------------------------------------------------------------------
-// Return statement
+// Operators, assignments, expressions & parenthesisation
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_return_statement() {
-    let src = "fn early(x: i32) -> i32 { if x < 0 { return 0; } x }";
-    let out = roundtrip(src);
+fn fmt_statements_and_blocks_roundtrip() {
+    let out = roundtrip("fn early(x: i32) -> i32 { if x < 0 { return 0; } x }");
     assert!(out.contains("return 0;"), "output: {out}");
-}
 
-// -----------------------------------------------------------------------
-// Assignment / compound assignment
-// -----------------------------------------------------------------------
+    let out = roundtrip("fn compute() -> i32 {\n    let x = 1;\n    let y = 2;\n    x + y\n}");
+    assert!(out.contains("    x + y\n"), "output: {out}");
 
-#[test]
-fn fmt_assignment() {
-    let src = "fn main() { var x = 1; x = 2; }";
-    let out = roundtrip(src);
-    assert!(out.contains("x = 2;"), "output: {out}");
-}
-
-#[test]
-fn fmt_compound_assignment() {
-    let src = "fn main() { var x = 0; x += 10; }";
-    let out = roundtrip(src);
-    assert!(out.contains("x += 10;"), "output: {out}");
-}
-
-#[test]
-fn fmt_compound_subtract_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x -= 1;\n}\n");
-}
-
-#[test]
-fn fmt_compound_multiply_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x *= 2;\n}\n");
-}
-
-#[test]
-fn fmt_compound_divide_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x /= 2;\n}\n");
-}
-
-#[test]
-fn fmt_compound_modulo_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x %= 3;\n}\n");
-}
-
-#[test]
-fn fmt_compound_bitand_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x &= 0xFF;\n}\n");
-}
-
-#[test]
-fn fmt_compound_bitor_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x |= 1;\n}\n");
-}
-
-#[test]
-fn fmt_compound_bitxor_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x ^= mask;\n}\n");
-}
-
-#[test]
-fn fmt_compound_shl_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x <<= 2;\n}\n");
-}
-
-#[test]
-fn fmt_compound_shr_roundtrip() {
-    exact_roundtrip("fn main() {\n    var x = 10;\n    x >>= 1;\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// Binary / unary operators
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_binary_operators() {
-    let src = "fn main() { let r = a + b * c - d / e; }";
-    let out = roundtrip(src);
-    // Formatter should preserve operator precedence correctly.
-    assert!(out.contains("a + b * c - d / e"), "output: {out}");
-}
-
-#[test]
-fn fmt_comparison_operators() {
-    let src = "fn main() { let r = x >= 0 && x < 100; }";
-    let out = roundtrip(src);
-    assert!(out.contains("x >= 0 && x < 100"), "output: {out}");
-}
-
-#[test]
-fn fmt_regex_literal_roundtrip() {
-    exact_roundtrip("fn main() {\n    let ok = re\"pat\".is_match(s);\n}\n");
-}
-
-#[test]
-fn fmt_regex_negation_roundtrip() {
-    exact_roundtrip("fn main() {\n    let no = !re\"pat\".is_match(s);\n}\n");
-}
-
-#[test]
-fn fmt_bitwise_and_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = a & b;\n}\n");
-}
-
-#[test]
-fn fmt_bitwise_or_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = a | b;\n}\n");
-}
-
-#[test]
-fn fmt_bitwise_xor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = a ^ b;\n}\n");
-}
-
-#[test]
-fn fmt_shift_left_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = a << 2;\n}\n");
-}
-
-#[test]
-fn fmt_shift_right_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = a >> 1;\n}\n");
-}
-
-#[test]
-fn fmt_logical_not_roundtrip() {
-    exact_roundtrip("fn main() {\n    let ok = !flag;\n}\n");
-}
-
-#[test]
-fn fmt_negate_roundtrip() {
-    exact_roundtrip("fn main() {\n    let n = -x;\n}\n");
-}
-
-#[test]
-fn fmt_bitnot_roundtrip() {
-    exact_roundtrip("fn main() {\n    let m = ~mask;\n}\n");
-}
-
-#[test]
-fn fmt_unary_not_paren_wrapping_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = !(a && b);\n}\n");
-}
-
-#[test]
-fn fmt_unary_negate_paren_wrapping_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = -(a + b);\n}\n");
-}
-
-#[test]
-fn fmt_unary_bitnot_paren_wrapping_roundtrip() {
-    exact_roundtrip("fn main() {\n    let r = ~(a | b);\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// Array / tuple / map literals
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_array_literal() {
-    let src = "fn main() { let arr = [1, 2, 3]; }";
-    let out = roundtrip(src);
-    assert!(out.contains("[1, 2, 3]"), "output: {out}");
-}
-
-#[test]
-fn fmt_tuple_literal() {
-    let src = "fn main() { let t = (1, 2, 3); }";
-    let out = roundtrip(src);
-    assert!(out.contains("(1, 2, 3)"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Struct initialisation
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_struct_init() {
-    let src = r"type Point {
-    x: i32;
-    y: i32;
-}
-
-fn main() {
-    let p = Point(x: 1, y: 2);
-}
-";
-    let out = roundtrip(src);
-    assert!(out.contains("Point(x: 1, y: 2)"), "output: {out}");
-}
-
-#[test]
-fn fmt_struct_init_brace_form_roundtrip() {
-    exact_roundtrip(
-        "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
-    );
-}
-
-// -----------------------------------------------------------------------
-// Index expressions
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_index_expr() {
-    let src = "fn main() { let v = arr[0]; }";
-    let out = roundtrip(src);
-    assert!(out.contains("arr[0]"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Range expressions
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_range_atoms_print_tight() {
-    let src = "fn main() { for i in 0 .. n { f(i); } for j in a.b ..= c.len() { f(j); } }";
-    let out = roundtrip(src);
-    assert!(out.contains("0..n"), "output: {out}");
-    assert!(out.contains("a.b..=c.len()"), "output: {out}");
-}
-
-#[test]
-fn fmt_range_compound_operands_print_spaced() {
-    let src = "fn main() { for i in n-1..m { f(i); } for j in 0..=(a + b) { f(j); } let s = v[a..b + 1]; let t = v[a .. b]; }";
-    let out = roundtrip(src);
-    assert!(out.contains("n - 1 .. m"), "output: {out}");
-    assert!(out.contains("0 ..= (a + b)"), "output: {out}");
-    assert!(out.contains("v[a .. b + 1]"), "output: {out}");
-    assert!(out.contains("v[a..b]"), "output: {out}");
-}
-
-#[test]
-fn fmt_inclusive_range_roundtrip() {
-    exact_roundtrip("fn main() {\n    for i in 0..=9 {\n        println(i);\n    }\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// Cast expressions
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_cast_expression() {
-    let src = "fn main() { let x = 42 as f64; }";
-    let out = roundtrip(src);
-    assert!(out.contains("42 as f64"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Spawn / await
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_spawn_expression() {
-    let src = r"actor Worker {
-    receive fn work(n: i32) -> i32 { n }
-}
-
-fn main() {
-    let w = spawn Worker;
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("actor Worker {\n    receive fn work(n: i32) -> i32 { n }\n}\n\nfn main() {\n    let w = spawn Worker;\n}");
     assert!(out.contains("spawn Worker"), "output: {out}");
-}
 
-#[test]
-fn fmt_await_expression() {
-    // `await` expression formatting is independent of the function modifier.
-    let src = r"fn fetch() -> i32 {
-    42
-}
-
-fn main() {
-    let f = fetch();
-    let r = await f;
-}";
-    let out = roundtrip(src);
+    let out = roundtrip("fn fetch() -> i32 {\n    42\n}\n\nfn main() {\n    let f = fetch();\n    let r = await f;\n}");
     assert!(out.contains("await f"), "output: {out}");
 }
 
 #[test]
-fn fmt_restarted_call_roundtrips() {
-    exact_roundtrip("fn main() {\n    restarted(sup.worker);\n}\n");
-}
+fn fmt_assignments_and_compound_ops_roundtrip() {
+    let out = roundtrip("fn main() { var x = 1; x = 2; }");
+    assert!(out.contains("x = 2;"), "output: {out}");
 
-// -----------------------------------------------------------------------
-// Comments preservation
-// -----------------------------------------------------------------------
+    let out = roundtrip("fn main() { var x = 0; x += 10; }");
+    assert!(out.contains("x += 10;"), "output: {out}");
 
-#[test]
-fn fmt_preserves_line_comments() {
-    let src = r"// This is a comment
-fn main() {
-    // Inner comment
-    let x = 1;
-}";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("// This is a comment"),
-        "Line comment lost. output: {out}"
-    );
-    assert!(
-        out.contains("// Inner comment"),
-        "Inner comment lost. output: {out}"
-    );
+    assert_exact_roundtrips(&[
+        "fn main() {\n    var x = 10;\n    x -= 1;\n}\n",
+        "fn main() {\n    var x = 10;\n    x *= 2;\n}\n",
+        "fn main() {\n    var x = 10;\n    x /= 2;\n}\n",
+        "fn main() {\n    var x = 10;\n    x %= 3;\n}\n",
+        "fn main() {\n    var x = 10;\n    x &= 0xFF;\n}\n",
+        "fn main() {\n    var x = 10;\n    x |= 1;\n}\n",
+        "fn main() {\n    var x = 10;\n    x ^= mask;\n}\n",
+        "fn main() {\n    var x = 10;\n    x <<= 2;\n}\n",
+        "fn main() {\n    var x = 10;\n    x >>= 1;\n}\n",
+    ]);
 }
 
 #[test]
-fn fmt_preserves_block_comments() {
-    let src = r"/* Block comment */
-fn main() { let x = 1; }";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("/* Block comment */"),
-        "Block comment lost. output: {out}"
+fn fmt_operators_and_unary_paren_roundtrip() {
+    let out = roundtrip("fn main() { let r = a + b * c - d / e; }");
+    assert!(out.contains("a + b * c - d / e"), "output: {out}");
+
+    let out = roundtrip("fn main() { let r = x >= 0 && x < 100; }");
+    assert!(out.contains("x >= 0 && x < 100"), "output: {out}");
+
+    assert_exact_roundtrips(&[
+        "fn main() {\n    let ok = re\"pat\".is_match(s);\n}\n",
+        "fn main() {\n    let no = !re\"pat\".is_match(s);\n}\n",
+        "fn main() {\n    let r = a & b;\n}\n",
+        "fn main() {\n    let r = a | b;\n}\n",
+        "fn main() {\n    let r = a ^ b;\n}\n",
+        "fn main() {\n    let r = a << 2;\n}\n",
+        "fn main() {\n    let r = a >> 1;\n}\n",
+        "fn main() {\n    let ok = !flag;\n}\n",
+        "fn main() {\n    let n = -x;\n}\n",
+        "fn main() {\n    let m = ~mask;\n}\n",
+        "fn main() {\n    let r = !(a && b);\n}\n",
+        "fn main() {\n    let r = -(a + b);\n}\n",
+        "fn main() {\n    let r = ~(a | b);\n}\n",
+    ]);
+}
+
+#[test]
+fn fmt_literals_collections_and_postfix_roundtrip() {
+    for (src, needle) in [
+        ("fn main() { let arr = [1, 2, 3]; }", "[1, 2, 3]"),
+        ("fn main() { let t = (1, 2, 3); }", "(1, 2, 3)"),
+        (
+            "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point(x: 1, y: 2);\n}\n",
+            "Point(x: 1, y: 2)",
+        ),
+        ("fn main() { let v = arr[0]; }", "arr[0]"),
+        ("fn main() { let x = 42 as f64; }", "42 as f64"),
+        ("fn main() { let x = (a + b) * c; }", "(a + b) * c"),
+    ] {
+        let out = roundtrip(src);
+        assert!(out.contains(needle), "output: {out}");
+    }
+
+    assert_exact_roundtrips(&[
+        "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
+        "fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n}\n",
+        "fn main() {\n    let values = [0; 10];\n}\n",
+    ]);
+}
+
+#[test]
+fn fmt_range_formatting_roundtrip() {
+    let out =
+        roundtrip("fn main() { for i in 0 .. n { f(i); } for j in a.b ..= c.len() { f(j); } }");
+    assert!(out.contains("0..n"), "output: {out}");
+    assert!(out.contains("a.b..=c.len()"), "output: {out}");
+
+    let out = roundtrip(
+        "fn main() { for i in n-1..m { f(i); } for j in 0..=(a + b) { f(j); } let s = v[a..b + 1]; let t = v[a .. b]; }",
     );
+    assert!(out.contains("n - 1 .. m"), "output: {out}");
+    assert!(out.contains("0 ..= (a + b)"), "output: {out}");
+    assert!(out.contains("v[a .. b + 1]"), "output: {out}");
+    assert!(out.contains("v[a..b]"), "output: {out}");
+
+    exact_roundtrip("fn main() {\n    for i in 0..=9 {\n        println(i);\n    }\n}\n");
+}
+
+#[test]
+fn fmt_receiver_parenthesisation_roundtrip() {
+    for src in [
+        "fn f() -> i64 {\n    let _b = (\"p-\" + \"q\").len();\n    0\n}\n",
+        "fn f(a: Point, b: Point) -> i64 {\n    (a + b).x\n}\n",
+        "fn f(x: i64) -> i64 {\n    (-x).abs()\n}\n",
+    ] {
+        exact_roundtrip(src);
+        let p1 = parse(src);
+        let formatted = format_program(&p1.program);
+        let p2 = parse(&formatted);
+        assert!(
+            program_eq_ignoring_spans(&p1.program, &p2.program),
+            "AST mismatch after format.\nFormatted:\n{formatted}"
+        );
+    }
+}
+
+#[test]
+fn fmt_numeric_field_chains_preserve_parse_and_identity() {
+    for expression in [
+        "(outer.0).1",
+        "((outer.0).1).2",
+        "(outer.inner.10).11",
+        "((outer.0).1).name",
+        "(outer.0)[1].2",
+        "(1).0",
+        "outer.0.name",
+        "outer.name.0",
+    ] {
+        let source = format!("fn f() {{ let _ = {expression}; }}");
+        let formatted = roundtrip(&source);
+        let original = parse(&source);
+        let reparsed = parse(&formatted);
+        assert!(
+            program_eq_ignoring_spans(&original.program, &reparsed.program),
+            "field expression changed: {expression}\n{formatted}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
-// Indentation & nesting
+// Indentation, visibility & comment stripping
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_nested_blocks_indentation() {
-    let src = r"fn main() {
+fn fmt_indentation_blank_lines_and_comment_stripping() {
+    let out = roundtrip(
+        r"fn main() {
     if true {
         if false {
             println(1);
         }
     }
-}";
-    let out = roundtrip(src);
-    // Inner println should be indented 12 spaces (3 levels × 4 spaces).
-    assert!(
-        out.contains("            println(1);"),
-        "Nested indentation incorrect. output: {out}"
+}",
     );
-}
+    assert!(out.contains("            println(1);"), "output: {out}");
 
-#[test]
-fn fmt_uses_four_space_indent() {
-    let src = "fn main() { let x = 1; }";
-    let out = roundtrip(src);
-    // The let statement inside the block should be indented with 4 spaces.
-    assert!(
-        out.contains("    let x = 1;"),
-        "Expected 4-space indent. output: {out}"
-    );
-}
+    let out = roundtrip("fn main() { let x = 1; }");
+    assert!(out.contains("    let x = 1;"), "output: {out}");
 
-// -----------------------------------------------------------------------
-// Idempotency on well-formatted code
-// -----------------------------------------------------------------------
+    let src = "fn fibonacci(n: i32) -> i32 {\n    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }\n}\n";
+    assert_eq!(src, roundtrip(src));
 
-#[test]
-fn fmt_already_formatted_is_idempotent() {
-    // This code is already well-formatted; the formatter should not change it.
-    let src = r"fn fibonacci(n: i32) -> i32 {
-    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
-}
-";
-    let out = roundtrip(src);
-    assert_eq!(src, out, "Well-formatted code should be unchanged");
-}
-
-// -----------------------------------------------------------------------
-// format_program vs format_source
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_format_program_strips_comments() {
-    let src = r"// This comment should be stripped
-fn main() {
-    // So should this
-    let x = 1;
-}";
-    let out = roundtrip_no_comments(src);
-    assert!(
-        !out.contains("// This comment"),
-        "format_program should strip comments. output: {out}"
-    );
-    // But the code should still be there.
+    let out =
+        roundtrip_no_comments("// strip me\nfn main() {\n    // strip too\n    let x = 1;\n}");
+    assert!(!out.contains("// strip"), "output: {out}");
     assert!(out.contains("fn main()"), "output: {out}");
     assert!(out.contains("let x = 1;"), "output: {out}");
-}
 
-// -----------------------------------------------------------------------
-// Defer statement
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_defer_statement() {
-    let src = "fn main() { defer cleanup(); }";
-    let out = roundtrip(src);
-    assert!(out.contains("defer cleanup();"), "output: {out}");
+    let out = roundtrip("fn foo() {\n}\n\nfn bar() {\n}\n");
+    assert!(out.contains("}\n\nfn bar"), "output: {out}");
 }
 
 #[test]
-fn fmt_defer_block_roundtrip() {
-    exact_roundtrip("fn main() {\n    defer {\n        cleanup();\n    }\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// Block expression (trailing expression)
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_block_trailing_expression() {
-    let src = r"fn compute() -> i32 {
-    let x = 1;
-    let y = 2;
-    x + y
-}";
-    let out = roundtrip(src);
-    // The trailing expression (x + y) should appear without a semicolon.
-    assert!(out.contains("    x + y\n"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Extern block
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_extern_block() {
-    let src = r#"extern "C" {
-    fn puts(s: CString) -> i32;
-}"#;
-    let out = roundtrip(src);
-    assert!(out.contains(r#"extern "C" {"#), "output: {out}");
-    assert!(out.contains("fn puts(s: CString) -> i32;"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Visibility modifiers
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_pub_function_in_impl() {
-    let src = "pub fn helper() -> i32 {
-    42
-}
-
-fn internal() -> i32 {
-    0
-}
-";
-    let out = roundtrip(src);
+fn fmt_pub_visibility_roundtrip() {
+    let out =
+        roundtrip("pub fn helper() -> i32 {\n    42\n}\n\nfn internal() -> i32 {\n    0\n}\n");
     assert!(out.contains("pub fn helper"), "output: {out}");
     assert!(out.contains("fn internal"), "output: {out}");
-}
 
-#[test]
-fn fmt_pub_method_in_impl_body() {
-    let src = "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(self) -> int {\n        self.x\n    }\n}\n";
-    let out = roundtrip(src);
+    let out = roundtrip(
+        "type Foo {\n    x: int;\n}\n\nimpl Foo {\n    pub fn make(v: int) -> Foo {\n        Foo { x: v }\n    }\n\n    fn private_helper(self) -> int {\n        self.x\n    }\n}\n",
+    );
     assert!(out.contains("pub fn make"), "output: {out}");
     assert!(out.contains("fn private_helper"), "output: {out}");
 }
 
-// -----------------------------------------------------------------------
-// package visibility — formatter / AST round-trip
-// -----------------------------------------------------------------------
-//
-// These tests verify that `Visibility::Package` survives the full cycle:
-//   parse(src) → format → re-parse → AST equal (spans ignored)
-// and that the formatter emits the `package` keyword (not `pub`) so the
-// re-parsed AST carries `Visibility::Package`, not `Visibility::Pub`.
-
 #[test]
-fn fmt_package_fn_roundtrip_preserves_visibility() {
-    let src = "package fn f() {}\n";
-    let r1 = parse(src);
-    assert!(
-        r1.errors.is_empty(),
-        "initial parse failed: {:?}",
-        r1.errors
-    );
+fn fmt_package_visibility_roundtrip_preserves_visibility() {
+    fn extract_vis(program: &hew_parser::ast::Program) -> Visibility {
+        match program.items.first().map(|(i, _)| i) {
+            Some(Item::Function(f)) => f.visibility,
+            Some(Item::TypeDecl(t)) => t.visibility,
+            Some(Item::Const(c)) => c.visibility,
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
 
-    // Verify the parser set the visibility to Package.
-    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
-        Some(Item::Function(f)) => f.visibility,
-        other => panic!("expected Function item, got {other:?}"),
-    };
-    assert_eq!(
-        vis1,
-        Visibility::Package,
-        "parser did not set Visibility::Package"
-    );
+    for (src, expected_kw) in [
+        ("package fn f() {}\n", "package fn f"),
+        (
+            "package type Point {\n    x: i64;\n    y: i64;\n}\n",
+            "package type Point",
+        ),
+        ("package const MAX: i64 = 100;\n", "package const MAX"),
+    ] {
+        let r1 = parse(src);
+        assert!(r1.errors.is_empty(), "parse failed: {:?}", r1.errors);
+        assert_eq!(extract_vis(&r1.program), Visibility::Package);
 
-    let formatted = format_source(src, &r1.program);
+        let formatted = format_source(src, &r1.program);
+        assert!(
+            formatted.contains(expected_kw),
+            "formatter dropped `{expected_kw}`: {formatted:?}"
+        );
 
-    // Formatter must emit `package fn`, not `pub fn` or bare `fn`.
-    assert!(
-        formatted.contains("package fn f"),
-        "formatter dropped `package` keyword; output: {formatted:?}"
-    );
+        let r2 = parse(&formatted);
+        assert!(
+            r2.errors.is_empty(),
+            "re-parse failed: {:?}\nFormatted:\n{formatted}",
+            r2.errors
+        );
+        assert!(
+            program_eq_ignoring_spans(&r1.program, &r2.program),
+            "AST mismatch for {expected_kw}"
+        );
+        assert_eq!(extract_vis(&r2.program), Visibility::Package);
 
-    let r2 = parse(&formatted);
-    assert!(
-        r2.errors.is_empty(),
-        "re-parse of formatted output failed: {:?}\nFormatted:\n{formatted}",
-        r2.errors,
-    );
-
-    // AST must be structurally equal (ignoring spans).
-    assert!(
-        program_eq_ignoring_spans(&r1.program, &r2.program),
-        "AST mismatch after format → re-parse"
-    );
-
-    // Explicit visibility check on the re-parsed tree.
-    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
-        Some(Item::Function(f)) => f.visibility,
-        other => panic!("expected Function item in re-parsed tree, got {other:?}"),
-    };
-    assert_eq!(
-        vis2,
-        Visibility::Package,
-        "re-parsed visibility is {vis2:?}, expected Package"
-    );
-
-    // Idempotency.
-    let formatted2 = format_source(&formatted, &r2.program);
-    assert_eq!(
-        formatted, formatted2,
-        "formatter is not idempotent for `package fn`"
-    );
-}
-
-#[test]
-fn fmt_package_type_roundtrip_preserves_visibility() {
-    let src = "package type Point {\n    x: i64;\n    y: i64;\n}\n";
-    let r1 = parse(src);
-    assert!(
-        r1.errors.is_empty(),
-        "initial parse failed: {:?}",
-        r1.errors
-    );
-
-    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
-        Some(Item::TypeDecl(t)) => t.visibility,
-        other => panic!("expected TypeDecl item, got {other:?}"),
-    };
-    assert_eq!(
-        vis1,
-        Visibility::Package,
-        "parser did not set Visibility::Package for type"
-    );
-
-    let formatted = format_source(src, &r1.program);
-    assert!(
-        formatted.contains("package type Point"),
-        "formatter dropped `package` keyword for type; output: {formatted:?}"
-    );
-
-    let r2 = parse(&formatted);
-    assert!(
-        r2.errors.is_empty(),
-        "re-parse of formatted type failed: {:?}\nFormatted:\n{formatted}",
-        r2.errors,
-    );
-
-    assert!(
-        program_eq_ignoring_spans(&r1.program, &r2.program),
-        "AST mismatch after format → re-parse for `package type`"
-    );
-
-    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
-        Some(Item::TypeDecl(t)) => t.visibility,
-        other => panic!("expected TypeDecl item in re-parsed tree, got {other:?}"),
-    };
-    assert_eq!(
-        vis2,
-        Visibility::Package,
-        "re-parsed type visibility is {vis2:?}, expected Package"
-    );
-}
-
-#[test]
-fn fmt_package_const_roundtrip_preserves_visibility() {
-    let src = "package const MAX: i64 = 100;\n";
-    let r1 = parse(src);
-    assert!(
-        r1.errors.is_empty(),
-        "initial parse failed: {:?}",
-        r1.errors
-    );
-
-    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
-        Some(Item::Const(c)) => c.visibility,
-        other => panic!("expected Const item, got {other:?}"),
-    };
-    assert_eq!(
-        vis1,
-        Visibility::Package,
-        "parser did not set Visibility::Package for const"
-    );
-
-    let formatted = format_source(src, &r1.program);
-    assert!(
-        formatted.contains("package const MAX"),
-        "formatter dropped `package` keyword for const; output: {formatted:?}"
-    );
-
-    let r2 = parse(&formatted);
-    assert!(
-        r2.errors.is_empty(),
-        "re-parse of formatted const failed: {:?}\nFormatted:\n{formatted}",
-        r2.errors,
-    );
-
-    assert!(
-        program_eq_ignoring_spans(&r1.program, &r2.program),
-        "AST mismatch after format → re-parse for `package const`"
-    );
-
-    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
-        Some(Item::Const(c)) => c.visibility,
-        other => panic!("expected Const item in re-parsed tree, got {other:?}"),
-    };
-    assert_eq!(
-        vis2,
-        Visibility::Package,
-        "re-parsed const visibility is {vis2:?}, expected Package"
-    );
+        let formatted2 = format_source(&formatted, &r2.program);
+        assert_eq!(formatted, formatted2);
+    }
 }
 
 // -----------------------------------------------------------------------
-// Named call arguments
+// Combined programs, extern pointers/borrows, assoc types, wire, machines, supervisors
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_named_arguments() {
-    let src = r"type Pt {
-    x: i32;
-    y: i32;
-}
-
-fn main() {
-    let p = Pt(x: 10, y: 20);
-}
-";
-    let out = roundtrip(src);
-    assert!(out.contains("Pt(x: 10, y: 20)"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Complex / combined constructs
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_full_program() {
-    // A small but complete program exercising multiple constructs.
-    let src = r"const MAX: i32 = 100;
+fn fmt_full_programs_roundtrip() {
+    let out = roundtrip(
+        r"const MAX: i32 = 100;
 
 type Point {
     x: f64;
@@ -1505,16 +812,17 @@ fn main() {
         println(i);
     }
 }
-";
-    let out = roundtrip(src);
-    assert!(out.contains("const MAX: i32 = 100;"), "output: {out}");
-    assert!(out.contains("type Point {"), "output: {out}");
-    assert!(out.contains("impl Point {"), "output: {out}");
-    assert!(out.contains("fn main()"), "output: {out}");
-}
+",
+    );
+    for needle in [
+        "const MAX: i32 = 100;",
+        "type Point {",
+        "impl Point {",
+        "fn main()",
+    ] {
+        assert!(out.contains(needle), "output: {out}");
+    }
 
-#[test]
-fn fmt_enum_and_match_combined() {
     let src = r"enum Colour {
     Red;
     Green;
@@ -1529,69 +837,126 @@ fn to_hex(c: Colour) -> i32 {
     }
 }
 ";
-    let out = roundtrip(src);
-    assert_eq!(src, out, "Well-formatted combined code should be unchanged");
-}
-
-// -----------------------------------------------------------------------
-// Mutable parameter
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_mutable_parameter() {
-    let src = "fn modify(var x: i32) -> i32 { x = x + 1; x }";
-    let out = roundtrip(src);
-    assert!(out.contains("var x: i32"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Attributes
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_function_attribute() {
-    // `#[test]` (not `#[inline]`, which HEW-SPEC-2026 §12.6's closed
-    // attribute table does not recognise) exercises the formatter's
-    // attribute-printing path on a free function.
-    let src = r"#[test]
-fn fast() -> i32 {
-    42
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("#[test]"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Bool / string / char literals
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_bool_literals() {
-    let src = "fn main() { let a = true; let b = false; }";
-    let out = roundtrip(src);
-    assert!(out.contains("true"), "output: {out}");
-    assert!(out.contains("false"), "output: {out}");
+    assert_eq!(src, roundtrip(src));
 }
 
 #[test]
-fn fmt_string_literal() {
-    let src = r#"fn main() { let s = "hello world"; }"#;
-    let out = roundtrip(src);
-    assert!(out.contains(r#""hello world""#), "output: {out}");
+fn fmt_extern_pointers_and_borrows_roundtrip() {
+    let out = roundtrip("extern \"C\" {\n    fn puts(s: CString) -> i32;\n}");
+    assert!(out.contains("extern \"C\" {"), "output: {out}");
+    assert!(out.contains("fn puts(s: CString) -> i32;"), "output: {out}");
+
+    assert_exact_roundtrips(&[
+        "extern \"C\" {\n    fn malloc(n: i32) -> *const u8;\n}\n",
+        "extern \"C\" {\n    fn free(ptr: *mut u8);\n}\n",
+        "extern \"C\" {\n    fn foo(x: &string) -> i32;\n}\n",
+        "extern \"C\" {\n    fn bar(x: &Vec<i32>) -> i32;\n}\n",
+        "extern \"C\" {\n    fn baz() -> &string;\n}\n",
+    ]);
+
+    let borrow_fmt = roundtrip("extern \"C\" { fn f(x: &i32) -> i32; }");
+    assert!(borrow_fmt.contains("&i32"), "got: {borrow_fmt}");
+    assert!(!borrow_fmt.contains("*const"), "got: {borrow_fmt}");
 }
 
 #[test]
-fn fmt_char_literal() {
-    let src = "fn main() { let c = 'a'; }";
-    let out = roundtrip(src);
-    assert!(out.contains("'a'"), "output: {out}");
+fn fmt_types_assoc_and_wire_decls_roundtrip() {
+    assert_exact_roundtrips(&[
+        "const X: i32 = 42;\n",
+        "type Alias = i32;\n",
+        "fn apply(f: fn(i32) -> bool) -> bool {\n    f(1)\n}\n",
+        "fn main() {\n    let x: _ = 42;\n}\n",
+        "type Showable = dyn (Display + Debug);\n",
+        "fn use_iter(iter: dyn Iterator<Item = i32>) {\n}\n",
+        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self.Item>;\n}\n",
+        "fn use_pair(pair: dyn Pair<Left = i32, Right = string>) {\n}\n",
+        "fn use_mapper(mapper: dyn Mapper<i32, string, Key = i32, Value = string>) {\n}\n",
+        "trait Container {\n    type Item;\n\n    fn get(self) -> Self.Item;\n}\n",
+        "trait AssocForms {\n    type Plain;\n\n    fn make(self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(self) -> i32 {\n        self[0]\n    }\n}\n",
+        "impl Container for Widget {\n    fn get(self) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+        "fn collect<I: Iterator>(it: I) -> Vec<I.Item> where I.Item: Display {\n    empty()\n}\n",
+        "fn collect_display<I>(it: I) -> Vec<I.Item> where I: Iterator<Item = string>, I.Item: Display {\n    empty()\n}\n",
+        "#[wire]\ntype Message {\n    id: i32 @1;\n}\n",
+        "#[wire]\ntype Message {\n    id: i32 @1;\n    reserved @2;\n    body: string;\n    labels: Vec<string> repeated;\n}\n",
+        "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
+        "#[wire]\nenum Command {\n    Start;\n    Fixed @0;\n    reserved @2;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
+        "#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1 @0;\n    V2 @1;\n}\n",
+    ]);
 }
 
 #[test]
-fn fmt_byte_string_literal_escapes() {
-    let src = r#"fn main() { let bytes = b"quote\"slash\\line\n"; }"#;
-    let out = roundtrip(src);
-    assert!(out.contains(r#"b"quote\"slash\\line\n""#), "output: {out}");
+fn fmt_machine_and_supervisor_syntax_roundtrip() {
+    assert_exact_roundtrips(&[
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => .Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => _ {\n        state\n    }\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open { balance: Int; }\n\n    on Deposit: Open => .Open { balance: event.amount }\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => .Locked when flag;\n    on Try: Locked => .Open reenter;\n}\n",
+        "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",
+        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready;\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
+        "machine Meter {\n    events {\n        Sample { value: i64; }\n    }\n\n    emits {\n        Quiet;\n        Rule;\n        Alarm { value: i64; }\n    }\n\n    state Watching { peak: i64; }\n\n    on Sample: Watching => Watching {\n        emit Quiet;\n        emit Rule;\n        emit Alarm { value: event.value };\n        Watching { peak: event.value }\n    }\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => Locked when flag;\n    on Try: Locked => Open;\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when state.n < 10 { n: state.n + 1 }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when flag { n: state.n + 1 }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",
+        "machine Safe {\n    events {\n        Toggle;\n    }\n\n    state On;\n    state Off;\n\n    on Toggle: On => Off;\n\n    default { state }\n}\n",
+        "machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
+        "machine Pair<K, V> {\n    events {\n        Insert;\n    }\n\n    state Empty;\n    state Filled;\n\n    on Insert: Empty => Filled;\n    on Insert: Filled => Filled;\n}\n",
+        "pub machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker { id: 1 };\n}\n",
+        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker { id: 1 };\n}\n",
+        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database { connections: 4 } restart: permanent stop: 10s;\n    child api: ApiHandler { port: 8080 } restart: transient stop: 0s wired_to: { backend: db };\n}\n",
+        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler { port: 8080 };\n}\n",
+        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker { value: 7 } count: 3;\n}\n",
+    ]);
+
+    let formatted = roundtrip("machine Delivery{events{Send;Completion;}state Ready;state Running{initial state Waiting;final state Paid;on Send:Waiting=>Paid;}final state Finished;on Completion:Ready=>Running;on completion:Running=>Finished;always:Ready=>Finished when false;default{state}}");
+    for needle in [
+        "final state Paid;",
+        "final state Finished;",
+        "on completion: Running => Finished;",
+        "always: Ready => Finished when false;",
+        "on Completion: Ready => Running;",
+    ] {
+        assert!(formatted.contains(needle), "{formatted}");
+    }
+}
+
+// -----------------------------------------------------------------------
+// Literals & escape sequences
+// -----------------------------------------------------------------------
+
+#[test]
+fn fmt_literals_roundtrip() {
+    for (src, expected) in [
+        (
+            "fn main() { let a = true; let b = false; }",
+            vec!["true", "false"],
+        ),
+        (
+            r#"fn main() { let s = "hello world"; }"#,
+            vec![r#""hello world""#],
+        ),
+        ("fn main() { let c = 'a'; }", vec!["'a'"]),
+        ("fn main() { let x = 42; }", vec!["42"]),
+        ("fn main() { let x = 3.14; }", vec!["3.14"]),
+    ] {
+        let out = roundtrip(src);
+        for needle in expected {
+            assert!(out.contains(needle), "output: {out}");
+        }
+    }
+
+    assert_exact_roundtrips(&[
+        "fn main() {\n    let data = bytes [0x48, 0x65, 0x77];\n}\n",
+        "fn main() {\n    let short = 100ms;\n    let medium = 5s;\n    let long = 1m;\n}\n",
+        "fn main() {\n    let hex = 0xFF;\n    let octal = 0o77;\n    let binary = 0b1010;\n}\n",
+    ]);
 }
 
 #[test]
@@ -1626,11 +991,6 @@ fn byte_literal_hex_escapes_preserve_every_byte_through_formatting() {
 }
 
 #[test]
-fn fmt_bytes_array_roundtrip() {
-    exact_roundtrip("fn main() {\n    let data = bytes [0x48, 0x65, 0x77];\n}\n");
-}
-
-#[test]
 fn fmt_regex_literal_escapes_delimiters() {
     let mut parsed = parse(r#"fn main() { let rx = re"ok"; }"#);
     assert!(
@@ -1662,1103 +1022,32 @@ fn fmt_regex_literal_escapes_delimiters() {
     );
 
     let reformatted = format_program(&reparsed.program);
-    assert_eq!(
-        formatted, reformatted,
-        "format_program is not idempotent.\nFirst:\n{formatted}\nSecond:\n{reformatted}",
-    );
+    assert_eq!(formatted, reformatted);
 }
 
-// -----------------------------------------------------------------------
-// Numeric literals
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_integer_literal() {
-    let src = "fn main() { let x = 42; }";
-    let out = roundtrip(src);
-    assert!(out.contains("42"), "output: {out}");
-}
-
-#[test]
-fn fmt_float_literal() {
-    let src = "fn main() { let x = 3.14; }";
-    let out = roundtrip(src);
-    assert!(out.contains("3.14"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Parenthesised expressions
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_parenthesised_expression() {
-    let src = "fn main() { let x = (a + b) * c; }";
-    let out = roundtrip(src);
-    assert!(out.contains("(a + b) * c"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Multiple items separated by blank lines
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_items_separated_by_blank_lines() {
-    let src = r"fn foo() {
-}
-
-fn bar() {
-}
-";
-    let out = roundtrip(src);
-    // Items should be separated by a blank line.
-    assert!(out.contains("}\n\nfn bar"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Generator function
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_generator_function() {
-    exact_roundtrip(
-        "gen fn counting(n: i32) -> i32 {\n    for i in 0..n {\n        yield i;\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_receive_gen() {
-    exact_roundtrip(
-        "actor NumberStream {\n    receive gen fn numbers() -> i32 {\n        yield 1;\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_yield_bare_roundtrip() {
-    exact_roundtrip("gen fn tick() -> i32 {\n    yield;\n}\n");
-}
-
-// -----------------------------------------------------------------------
-// Where clause
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_where_clause() {
-    let src = r"fn process<T>(x: T) -> i32 where T: Display {
-    42
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("where T: Display"), "output: {out}");
-}
-
-#[test]
-fn fmt_map_literal_roundtrip() {
-    exact_roundtrip("fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n}\n");
-}
-
-#[test]
-fn fmt_array_repeat_roundtrip() {
-    exact_roundtrip("fn main() {\n    let values = [0; 10];\n}\n");
-}
-
-#[test]
-fn fmt_scope_block_roundtrip() {
-    exact_roundtrip("fn main() {\n    scope {\n        let child = fork run();\n    };\n}\n");
-}
-
-#[test]
-fn fmt_lambda_actor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let worker = actor |x: int| {\n        x + 1\n    };\n}\n");
-}
-
-#[test]
-fn fmt_move_lambda_roundtrip() {
-    exact_roundtrip("fn main() {\n    let f = move |x: i32| -> i32 {\n        x + 1\n    };\n}\n");
-}
-
-#[test]
-fn fmt_move_lambda_call_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    scope {\n        (move || {\n            let _ = r;\n        })();\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_move_lambda_actor_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let worker = actor move |x: int| {\n        x + 1\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_postfix_try_roundtrip() {
-    exact_roundtrip("fn main() {\n    let value = result?;\n}\n");
-}
-
-#[test]
-fn fmt_select_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let value = select {\n        msg from inbox.recv() => msg,\n        after 100ms => -1,\n    };\n}\n",
-    );
-}
-
-/// The `<-` operator was removed in v0.5.  Verify the parser rejects it
-/// rather than producing a silent no-op.  Pairs with the accept path in
-/// `parser_error_recovery.rs` (`left_arrow_send_operator_is_rejected`).
-#[test]
-fn fmt_send_operator_removed_rejects() {
-    let result = hew_parser::parse("fn main() {\n    worker <- 42;\n}\n");
-    assert!(
-        !result.errors.is_empty(),
-        "expected `<-` to be rejected (E_OPERATOR_REMOVED), got clean parse"
-    );
-}
-
-#[test]
-fn fmt_while_let_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    while let Some(x) = iter.next() {\n        println(x);\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_unsafe_block_roundtrip() {
-    exact_roundtrip("fn main() {\n    unsafe {\n        do_thing();\n    };\n}\n");
-}
-
-#[test]
-fn fmt_type_alias_roundtrip() {
-    exact_roundtrip("type Alias = i32;\n");
-}
-
-#[test]
-fn fmt_function_type_roundtrip() {
-    exact_roundtrip("fn apply(f: fn(i32) -> bool) -> bool {\n    f(1)\n}\n");
-}
-
-#[test]
-fn fmt_trait_object_type_roundtrip() {
-    exact_roundtrip("type Showable = dyn (Display + Debug);\n");
-}
-
-#[test]
-fn fmt_trait_object_assoc_binding_roundtrip() {
-    exact_roundtrip("fn use_iter(iter: dyn Iterator<Item = i32>) {\n}\n");
-}
-
-#[test]
-fn fmt_trait_implicit_self_roundtrip() {
-    exact_roundtrip(
-        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self.Item>;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_trait_object_multiple_assoc_bindings_roundtrip() {
-    exact_roundtrip("fn use_pair(pair: dyn Pair<Left = i32, Right = string>) {\n}\n");
-}
-
-#[test]
-fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
-    exact_roundtrip(
-        "fn use_mapper(mapper: dyn Mapper<i32, string, Key = i32, Value = string>) {\n}\n",
-    );
-}
-
-#[test]
-fn fmt_trait_associated_type_roundtrip() {
-    exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(self) -> Self.Item;\n}\n");
-}
-
-#[test]
-fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
-    exact_roundtrip(
-        "trait AssocForms {\n    type Plain;\n\n    fn make(self) -> Self.Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(self) -> Self.Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_impl_associated_type_binding_roundtrip() {
-    exact_roundtrip(
-        "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(self) -> i32 {\n        self[0]\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_impl_members_keep_source_order() {
-    // An associated type written after a method stays after it: the formatter
-    // reprints members in the order the source declares them.
-    exact_roundtrip(
-        "impl Container for Widget {\n    fn get(self) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_projection_in_generic_where_position_roundtrip() {
-    exact_roundtrip(
-        "fn collect<I: Iterator>(it: I) -> Vec<I.Item> where I.Item: Display {\n    empty()\n}\n",
-    );
-}
-
-#[test]
-fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
-    exact_roundtrip(
-        "fn collect_display<I>(it: I) -> Vec<I.Item> where I: Iterator<Item = string>, I.Item: Display {\n    empty()\n}\n",
-    );
-}
-
-#[test]
-fn fmt_wire_declarations_roundtrip() {
-    // Canonical wire type form (attribute-based).
-    exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1;\n}\n");
-    exact_roundtrip(
-        "#[wire]\ntype Message {\n    id: i32 @1;\n    reserved @2;\n    body: string;\n    labels: Vec<string> repeated;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_wire_attr_enum_roundtrip() {
-    // `#[wire] enum` is the canonical (attribute) form for wire-annotated
-    // enums; verify the formatter round-trips unit, tuple, and struct
-    // variant payloads while preserving the `#[wire]` attribute.
-    exact_roundtrip(
-        "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
-    );
-    exact_roundtrip(
-        "#[wire]\nenum Command {\n    Start;\n    Fixed @0;\n    reserved @2;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_wire_attr_enum_with_version_roundtrip() {
-    // `#[wire(version = N, min_version = M)]` on an enum.
-    exact_roundtrip(
-        "#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1 @0;\n    V2 @1;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_decl_roundtrip() {
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n",
-    );
-}
-
-// The authored spelling of a transition target (`=> On` vs `=> .On`) lives on
-// `MachineTransition::target_is_contextual`, not in the body expression, so the
-// formatter must preserve it under every body form. Source states are patterns
-// and have no contextual form, so they are always bare — including `_`.
-
-#[test]
-fn fmt_machine_contextual_transition_target_roundtrip() {
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_mixed_transition_target_spellings_roundtrip() {
-    // A half-migrated machine: the formatter neither adds a dot to the bare
-    // target nor drops the one the author already wrote.
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: On => Off;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_wildcard_source_contextual_target_roundtrip() {
-    // `_` is a pattern, never `._`, even when the target is contextual.
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => .Off;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_wildcard_target_stays_bare_roundtrip() {
-    // `_` is a wildcard on either side of the arrow, never `._`, even in a
-    // machine whose other targets are contextual.
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On;\n    on Toggle: _ => _ {\n        state\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_contextual_target_with_block_body_roundtrip() {
-    exact_roundtrip(
-        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => .On {\n        state\n    }\n    on Toggle: On => .Off {\n        state\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_contextual_target_with_payload_shorthand_roundtrip() {
-    exact_roundtrip(
-        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open { balance: Int; }\n\n    on Deposit: Open => .Open { balance: event.amount }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_contextual_target_with_reenter_and_guard_roundtrip() {
-    exact_roundtrip(
-        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => .Locked when flag;\n    on Try: Locked => .Open reenter;\n}\n",
-    );
-}
-
 #[test]
-fn fmt_machine_state_with_fields_roundtrip() {
-    exact_roundtrip(
-        "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_final_completion_and_always_roundtrip() {
-    let formatted = roundtrip("machine Delivery{events{Send;Completion;}state Ready;state Running{initial state Waiting;final state Paid;on Send:Waiting=>Paid;}final state Finished;on Completion:Ready=>Running;on completion:Running=>Finished;always:Ready=>Finished when false;default{state}}");
-    assert!(formatted.contains("final state Paid;"), "{formatted}");
-    assert!(formatted.contains("final state Finished;"), "{formatted}");
-    assert!(
-        formatted.contains("on completion: Running => Finished;"),
-        "{formatted}"
-    );
-    assert!(
-        formatted.contains("always: Ready => Finished when false;"),
-        "{formatted}"
-    );
-    assert!(
-        formatted.contains("on Completion: Ready => Running;"),
-        "{formatted}"
-    );
-}
-
-#[test]
-fn fmt_machine_event_with_payload_roundtrip() {
-    exact_roundtrip(
-        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_emits_manifest_roundtrip() {
-    exact_roundtrip(
-        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready;\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_unit_emits_before_state_literal_roundtrip() {
-    exact_roundtrip(
-        "machine Meter {\n    events {\n        Sample { value: i64; }\n    }\n\n    emits {\n        Quiet;\n        Rule;\n        Alarm { value: i64; }\n    }\n\n    state Watching { peak: i64; }\n\n    on Sample: Watching => Watching {\n        emit Quiet;\n        emit Rule;\n        emit Alarm { value: event.value };\n        Watching { peak: event.value }\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
-    exact_roundtrip(
-        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => Locked when flag;\n    on Try: Locked => Open;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_transition_with_guard_and_body_roundtrip() {
-    exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when state.n < 10 { n: state.n + 1 }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_guard_ending_in_bare_identifier_then_fields_roundtrip() {
-    // A guard ending in a bare identifier (`flag`) directly followed by the
-    // transition's fielded body must parse as guard `flag` / body
-    // `{ n: state.n + 1 }`, not an elided-body struct literal `flag { ... }`
-    // that leaves the transition with an implicit body the re-parse then
-    // rejects (`exact_roundtrip` re-parses the formatted output).
-    exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when flag { n: state.n + 1 }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_transition_with_reenter_roundtrip() {
-    exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_default_clause_roundtrip() {
-    exact_roundtrip(
-        "machine Safe {\n    events {\n        Toggle;\n    }\n\n    state On;\n    state Off;\n\n    on Toggle: On => Off;\n\n    default { state }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_single_generic_param_roundtrip() {
-    exact_roundtrip(
-        "machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_multiple_generic_params_roundtrip() {
-    exact_roundtrip(
-        "machine Pair<K, V> {\n    events {\n        Insert;\n    }\n\n    state Empty;\n    state Filled;\n\n    on Insert: Empty => Filled;\n    on Insert: Filled => Filled;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_machine_pub_generic_param_roundtrip() {
-    exact_roundtrip(
-        "pub machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_supervisor_decl_roundtrip() {
-    // Flat reliability fields: fused `intensity:`, named init args, and the
-    // explicit `strategy:` the formatter always materializes.
-    exact_roundtrip(
-        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker { id: 1 };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_supervisor_omitted_strategy_stays_omitted() {
-    // Formatting is not rewriting: a declaration that omits `strategy:` keeps
-    // it omitted. Materializing the default here reparsed as a different AST
-    // and broke the corpus round-trip.
-    exact_roundtrip(
-        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker { id: 1 };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_supervisor_pool_and_clauses_roundtrip() {
-    // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
-    // `restart:` and `stop:` round-trip beside `wired_to:`.
-    exact_roundtrip(
-        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database { connections: 4 } restart: permanent stop: 10s;\n    child api: ApiHandler { port: 8080 } restart: transient stop: 0s wired_to: { backend: db };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_supervisor_pool_keyword_roundtrip() {
-    exact_roundtrip(
-        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler { port: 8080 };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_supervisor_static_pool_count_roundtrip() {
-    // The static-pool `count:` clause must round-trip exactly, outside the
-    // init-arg parentheses and beside the other per-child clauses, so the
-    // formatter neither drops it nor folds it back into the parenthesised
-    // field list (the C4/C5 B3 formatter-drops-new-syntax lesson).
-    exact_roundtrip(
-        "supervisor Pool {\n    strategy: simple_one_for_one;\n    intensity: 5 within 60s;\n\n    pool workers: Worker { value: 7 } count: 3;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_duration_literals_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let short = 100ms;\n    let medium = 5s;\n    let long = 1m;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_integer_radix_literals_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    let hex = 0xFF;\n    let octal = 0o77;\n    let binary = 0b1010;\n}\n",
-    );
-}
-
-#[test]
-fn fmt_type_infer_roundtrip() {
-    exact_roundtrip("fn main() {\n    let x: _ = 42;\n}\n");
-}
-
-#[test]
-fn fmt_pattern_or_roundtrip() {
-    exact_roundtrip("fn main() {\n    match x {\n        1 | 2 => 3,\n        _ => 0,\n    }\n}\n");
-}
-
-#[test]
-fn fmt_for_await_roundtrip() {
-    exact_roundtrip("fn main() {\n    for x in stream {\n        println(x);\n    }\n}\n");
-}
-
-#[test]
-fn fmt_const_decl_roundtrip() {
-    exact_roundtrip("const X: i32 = 42;\n");
-}
-
-#[test]
-fn fmt_extern_immutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *const u8;\n}\n");
-}
-
-#[test]
-fn fmt_extern_mutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *mut u8);\n}\n");
-}
-
-#[test]
-fn fmt_trait_multi_item_blank_lines_roundtrip() {
-    exact_roundtrip(
-        "trait Describable {\n    fn describe() -> i32 {\n        42\n    }\n\n    fn reset();\n}\n",
-    );
-}
-
-#[test]
-fn fmt_trait_items_keep_author_blank_lines_with_comments() {
-    // Members keep the author's spacing whether or not the file has comments:
-    // a blank line between trait items stays, and adjacent items stay adjacent.
-    let spaced = concat!(
-        "// Spacing follows the source.\n",
-        "trait Describable {\n",
-        "    fn describe() -> i32 {\n",
-        "        42\n",
-        "    }\n",
-        "\n",
-        "    fn reset();\n",
-        "}\n"
-    );
-    assert_eq!(roundtrip(spaced), spaced);
-    let adjacent = spaced.replace("    }\n\n", "    }\n");
-    assert_eq!(roundtrip(&adjacent), adjacent);
-}
-
-#[test]
-fn fmt_contextual_keywords_as_identifiers_roundtrip() {
-    exact_roundtrip(
-        "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",
-    );
-}
-
-// -----------------------------------------------------------------------
-// v0.5 surface constructs
-// -----------------------------------------------------------------------
-
-// --- actor |params| { body } lambda-actor form --------------------------
-
-#[test]
-fn fmt_actor_lambda_multi_param_roundtrip() {
-    // Multi-parameter lambda-actor with a typed return annotation.
-    exact_roundtrip(
-        "fn main() {\n    let adder = actor |x: int, y: int| {\n        x + y\n    };\n}\n",
-    );
-}
-
-// --- Duplex<S, R> / Sink<T> / Stream<T> type annotations ---------------
-
-#[test]
-fn fmt_duplex_type_annotation_roundtrip() {
-    // Duplex<S, R> in a parameter and return type position.
-    exact_roundtrip("fn make_channel() -> Duplex<int, string> {\n    duplex_pair(16)\n}\n");
-}
-
-#[test]
-fn fmt_sink_stream_type_annotation_roundtrip() {
-    // Sink<T> and Stream<T> in function parameter and return position.
-    exact_roundtrip(
-        "fn pipe(src: Stream<string>, dst: Sink<string>) {\n    forward(src, dst);\n}\n",
-    );
-}
-
-// --- Channel method calls -----------------------------------------------
-
-#[test]
-fn fmt_channel_send_recv_roundtrip() {
-    // .send(), .recv(), .try_send(), .try_recv(), .close() method calls
-    // are plain MethodCall nodes; verify the formatter emits them unchanged.
-    exact_roundtrip(
-        "fn main() {\n    ch.send(42);\n    let v = ch.recv();\n    ch.try_send(1);\n    let r = ch.try_recv();\n    ch.close();\n}\n",
-    );
-}
-
-#[test]
-fn fmt_channel_half_handle_roundtrip() {
-    // .send_half() and .recv_half() split a Duplex into directional halves.
-    exact_roundtrip(
-        "fn main() {\n    let sink = ch.send_half();\n    let stream = ch.recv_half();\n}\n",
-    );
-}
-
-// --- scope { let name = fork call(); } structured concurrency ---------------
-
-#[test]
-fn fmt_scope_fork_named_binding_roundtrip() {
-    // A scope can be used as an expression statement with named fork bindings.
-    exact_roundtrip(
-        "fn main() {\n    scope {\n        let worker = fork compute();\n        let auditor = fork audit();\n        worker\n    };\n}\n",
-    );
-}
-
-// --- Lifecycle attributes: #[on(start/stop/restart/crash/upgrade)] ------
-
-#[test]
-fn fmt_actor_on_start_hook_roundtrip() {
-    // Canonical order: receive fn before lifecycle-hook fn (methods follow receive fns).
-    exact_roundtrip(
-        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_on_restart_hook_roundtrip() {
-    // #[on(restart)] uses the same Attribute/AttributeArg::Positional path as
-    // #[on(stop)] and #[on(start)]; this test locks in the canonical spelling.
-    // Canonical order: receive fn before lifecycle-hook fn.
-    exact_roundtrip(
-        "actor Worker {\n    receive fn work() {\n        do_work();\n    }\n\n    #[on(restart)]\n    fn handle_restart() {\n        reset();\n    }\n}\n\nfn main() {\n}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_on_crash_hook_roundtrip() {
-    // Canonical order: receive fn before lifecycle-hook fn.
-    exact_roundtrip(
-        "actor Guard {\n    receive fn run() {\n        execute();\n    }\n\n    #[on(crash)]\n    fn on_crash() {\n        log_error();\n    }\n}\n\nfn main() {\n}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_on_upgrade_hook_roundtrip() {
-    // Canonical order: receive fn before lifecycle-hook fn.
-    exact_roundtrip(
-        "actor Service {\n    receive fn handle() {\n        process();\n    }\n\n    #[on(upgrade)]\n    fn migrate() {\n        migrate_state();\n    }\n}\n\nfn main() {\n}\n",
-    );
-}
-
-// --- let (a, b) = duplex_pair<S, R>(N) tuple-destructure + generic call --
-
-#[test]
-fn fmt_tuple_destructure_generic_call_roundtrip() {
-    // Tuple pattern on the left, generic-argument call on the right.
-    exact_roundtrip("fn main() {\n    let (tx, rx) = duplex_pair<int, string>(16);\n}\n");
-}
-
-// --- extern-only &T foreign boundary view syntax -------------------------
-
-#[test]
-fn fmt_borrow_type_in_param_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn foo(x: &string) -> i32;\n}\n");
-}
-
-#[test]
-fn fmt_borrow_type_nested_generic_roundtrip() {
-    // `&Vec<i32>` — borrow over a generic type must round-trip without
-    // collapsing to `*const Vec<i32>`.
-    exact_roundtrip("extern \"C\" {\n    fn bar(x: &Vec<i32>) -> i32;\n}\n");
-}
-
-#[test]
-fn fmt_borrow_type_return_position_roundtrip() {
-    // `&T` is valid in return-type position as well.
-    exact_roundtrip("extern \"C\" {\n    fn baz() -> &string;\n}\n");
-}
-
-#[test]
-fn fmt_borrow_type_preserved_distinct_from_pointer() {
-    // `&T` must NOT be re-formatted as `*const T` — the two are distinct
-    // surface forms and the formatter must preserve each.
-    let borrow_fmt = roundtrip("extern \"C\" { fn f(x: &i32) -> i32; }");
-    assert!(
-        borrow_fmt.contains("&i32"),
-        "borrow type must be formatted as `&i32`, got: {borrow_fmt}",
-    );
-    assert!(
-        !borrow_fmt.contains("*const"),
-        "formatter must not coerce `&T` to `*const T`, got: {borrow_fmt}",
-    );
-}
-
-// -----------------------------------------------------------------------
-// Receiver parenthesisation (postfix precedence)
-// -----------------------------------------------------------------------
+fn fmt_string_and_fstring_escapes_roundtrip() {
+    let out = roundtrip(r#"fn main() { let bytes = b"quote\"slash\\line\n"; }"#);
+    assert!(out.contains(r#"b"quote\"slash\\line\n""#), "output: {out}");
 
-#[test]
-fn fmt_binary_receiver_of_method_call_is_parenthesised() {
-    // `("p-" + "q").len()` — the binary expr is receiver of a method call.
-    // Without parens the formatter would emit `"p-" + "q".len()`, which
-    // reparses as `"p-" + ("q".len())` — a different AST.
-    exact_roundtrip("fn f() -> i64 {\n    let _b = (\"p-\" + \"q\").len();\n    0\n}\n");
-}
+    let out = roundtrip(r#"fn main() { let s = "a\nb\tc\\d\"e\rf"; }"#);
+    assert!(out.contains(r#""a\nb\tc\\d\"e\rf""#), "output: {out}");
+    let canonical = "fn main() {\n    let s = \"a\\nb\\tc\\\\d\\\"e\\rf\";\n}\n";
+    assert_eq!(roundtrip(canonical), canonical);
 
-#[test]
-fn fmt_numeric_field_chains_preserve_parse_and_identity() {
-    for expression in [
-        "(outer.0).1",
-        "((outer.0).1).2",
-        "(outer.inner.10).11",
-        "((outer.0).1).name",
-        "(outer.0)[1].2",
-        "(1).0",
-        "outer.0.name",
-        "outer.name.0",
-    ] {
-        let source = format!("fn f() {{ let _ = {expression}; }}");
-        let formatted = roundtrip(&source);
-        let original = parse(&source);
-        let reparsed = parse(&formatted);
-        assert!(
-            program_eq_ignoring_spans(&original.program, &reparsed.program),
-            "field expression changed: {expression}\n{formatted}"
-        );
+    let out = roundtrip(r#"fn main() { let s = f"line1\nline2\ttab\\back\"quote\rcr"; }"#);
+    for needle in ["\\n", "\\t", "\\\\", "\\\"", "\\r"] {
+        assert!(out.contains(needle), "missing {needle}: {out}");
     }
-}
 
-#[test]
-fn fmt_binary_receiver_of_field_access_is_parenthesised() {
-    // `(a + b).x` — binary expr as object of a field access.
-    exact_roundtrip("fn f(a: Point, b: Point) -> i64 {\n    (a + b).x\n}\n");
-}
+    let out = roundtrip(r#"fn greet(name: string) { println(f"hello\t{name}\n"); }"#);
+    for needle in ["\\t", "\\n", "{name}"] {
+        assert!(out.contains(needle), "missing {needle}: {out}");
+    }
 
-#[test]
-fn fmt_unary_receiver_of_method_call_is_parenthesised() {
-    // `(-x).abs()` — unary negate as receiver; without parens `-(x.abs())`
-    // is a different AST.
-    exact_roundtrip("fn f(x: i64) -> i64 {\n    (-x).abs()\n}\n");
-}
-
-#[test]
-fn fmt_method_chain_on_plain_binary_receiver_roundtrips() {
-    // Multi-level: `("left-" + "right").len()` with AST-equality check.
-    use hew_parser::ast_eq::program_eq_ignoring_spans;
-    let src = "fn f() -> i64 {\n    let _a = (\"left-\" + \"right\").len();\n    0\n}\n";
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty());
-    let formatted = format_program(&p1.program);
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse failed: {:?}", p2.errors);
-    assert!(
-        program_eq_ignoring_spans(&p1.program, &p2.program),
-        "AST mismatch after format.\nFormatted:\n{formatted}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// Actor field mutability (var vs let)
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_actor_var_field_preserved_not_rewritten_to_let() {
-    // Regression: formatter was silently rewriting `var` actor fields to `let`,
-    // a semantic mutation — `var` fields are mutable in handlers, `let` are not.
-    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("var count: i64 = 0;"),
-        "formatter must not rewrite `var` field to `let`; output:\n{out}"
-    );
-    assert!(
-        !out.contains("let count:"),
-        "output must not contain `let count:` when field was declared `var`; output:\n{out}"
-    );
-}
-
-#[test]
-fn fmt_actor_let_field_stays_let() {
-    // A `let` field (immutable actor state) must stay `let` — not promoted to `var`.
-    let src = "actor Frozen {\n    let x: i64 = 0;\n\n    receive fn noop() {}\n}\n";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("let x: i64 = 0;"),
-        "formatter must preserve `let` field; output:\n{out}"
-    );
-    assert!(
-        !out.contains("var x:"),
-        "formatter must not promote `let` field to `var`; output:\n{out}"
-    );
-}
-
-#[test]
-fn fmt_actor_mixed_var_and_let_fields_roundtrip() {
-    // Actor with both mutable and immutable fields — each must keep its keyword.
-    exact_roundtrip(
-        "actor Mixed {\n    let id: i64 = 0;\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
-    );
-}
-
-#[test]
-fn fmt_actor_var_field_ast_equality_after_format() {
-    // AST-equality check: parse(format(parse(src))) must equal parse(src)
-    // including the is_mutable flag on FieldDecl.
-    use hew_parser::ast_eq::program_eq_ignoring_spans;
-    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
-    let formatted = format_program(&p1.program);
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
-    assert!(
-        program_eq_ignoring_spans(&p1.program, &p2.program),
-        "AST mismatch: var-field mutability lost after format+reparse.\nFormatted:\n{formatted}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// Unicode brace escape round-trip
-// -----------------------------------------------------------------------
-
-/// Verify parse → format → parse is idempotent for `\u{...}` string literals.
-///
-/// The formatter normalises `\u{XXXX}` to the literal UTF-8 character; this
-/// test asserts that the resulting AST is identical to the one produced by the
-/// original source (i.e., `program_eq_ignoring_spans` holds).
-#[test]
-fn fmt_unicode_brace_escape_roundtrip() {
-    use hew_parser::ast_eq::program_eq_ignoring_spans;
-
-    for src in &[
-        // BMP: U+00E9 LATIN SMALL LETTER E WITH ACUTE
+    for src in [
         r#"fn main() { let s = "\u{00E9}"; }"#,
-        // Astral: U+1F600 GRINNING FACE
         r#"fn main() { let s = "\u{1F600}"; }"#,
-    ] {
-        let p1 = parse(src);
-        assert!(
-            p1.errors.is_empty(),
-            "parse errors for {src:?}: {:?}",
-            p1.errors
-        );
-
-        let formatted = format_program(&p1.program);
-
-        let p2 = parse(&formatted);
-        assert!(
-            p2.errors.is_empty(),
-            "reparse errors for {src:?}: {:?}\nFormatted:\n{formatted}",
-            p2.errors
-        );
-
-        assert!(
-            program_eq_ignoring_spans(&p1.program, &p2.program),
-            "AST mismatch after format+reparse for {src:?}.\nFormatted:\n{formatted}"
-        );
-
-        // Also verify idempotency: a second format pass must be identical.
-        let formatted2 = format_program(&p2.program);
-        assert_eq!(
-            formatted, formatted2,
-            "format_program not idempotent for {src:?}.\nFirst:\n{formatted}\nSecond:\n{formatted2}"
-        );
-    }
-}
-
-// -----------------------------------------------------------------------
-// Escape sequence preservation (regression: fmt P0 FAIL-OPEN)
-//
-// The formatter must re-emit escape sequences faithfully in both plain
-// string literals and f-string literal parts.  Before the fix the
-// f-string path emitted the *resolved* bytes (real newline / tab / etc.)
-// instead of the source representation, silently corrupting the file.
-// -----------------------------------------------------------------------
-
-/// Plain string literals: every escape sequence survives round-trip.
-///
-/// Control characters are preserved through the managed string carrier.
-#[test]
-fn fmt_string_literal_escapes_preserved() {
-    // The raw-string source contains the two-char sequences \n \t \\ \" \r
-    // which the lexer resolves to their single-byte values.  After formatting
-    // those single bytes must be re-escaped back to the two-char form.
-    let src = r#"fn main() { let s = "a\nb\tc\\d\"e\rf"; }"#;
-    let out = roundtrip(src);
-    assert!(
-        out.contains(r#""a\nb\tc\\d\"e\rf""#),
-        "escape sequences not preserved in plain string literal.\nOutput: {out}"
-    );
-}
-
-/// Plain string literal idempotency: fmt(fmt(x)) == fmt(x).
-#[test]
-fn fmt_string_literal_escapes_idempotent() {
-    // Source already in canonical fmt form — round-trip must be identity.
-    let src = "fn main() {\n    let s = \"a\\nb\\tc\\\\d\\\"e\\rf\";\n}\n";
-    let out = roundtrip(src);
-    assert_eq!(
-        out, src,
-        "plain-string escape round-trip changed the source"
-    );
-}
-
-/// f-string literal parts: control-character escapes must be re-emitted.
-///
-/// Control characters are preserved through the managed string carrier.
-#[test]
-fn fmt_fstring_literal_escapes_preserved() {
-    // f-string with escape sequences in the literal part, not the interpolation.
-    let src = r#"fn main() { let s = f"line1\nline2\ttab\\back\"quote\rcr"; }"#;
-    let out = roundtrip(src);
-    assert!(
-        out.contains("\\n"),
-        "\\n should be preserved in f-string literal part.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("\\t"),
-        "\\t should be preserved in f-string literal part.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("\\\\"),
-        "\\\\ should be preserved in f-string literal part.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("\\\""),
-        "\\\" should be preserved in f-string literal part.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("\\r"),
-        "\\r should be preserved in f-string literal part.\nOutput: {out}"
-    );
-}
-
-/// f-string with both escapes and an interpolated expression: all parts survive.
-#[test]
-fn fmt_fstring_with_interp_and_escapes_preserved() {
-    let src = r#"fn greet(name: string) { println(f"hello\t{name}\n"); }"#;
-    let out = roundtrip(src);
-    assert!(
-        out.contains("\\t"),
-        "\\t should survive in f-string literal part adjacent to interpolation.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("\\n"),
-        "\\n should survive in f-string literal part adjacent to interpolation.\nOutput: {out}"
-    );
-    assert!(
-        out.contains("{name}"),
-        "interpolated expression should be preserved.\nOutput: {out}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// \xNN and \u{...} escape faithfulness — plain strings and f-strings
-//
-// The parser resolves `\xNN` to a raw byte and `\u{HHHH}` to a Unicode
-// scalar before storing them in the AST.  The formatter must re-escape
-// those resolved values back to their source form so that the output
-// round-trips faithfully — especially for non-printable / invisible chars
-// that are indistinguishable from surrounding text when emitted as raw bytes.
-// -----------------------------------------------------------------------
-
-/// Plain string: `\xNN` non-printable ASCII bytes must be re-escaped, not
-/// silently emitted as raw bytes in the formatted output.
-#[test]
-fn fmt_string_xnn_escape_preserved_exact() {
-    // \x07 is BEL (U+0007), non-printable, byte value 0x07.
-    // The formatter must emit `\x07` not a literal BEL byte.
-    let src = r#"fn main() { let s = "bell\x07end"; }"#;
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
-
-    let formatted = format_program(&p1.program);
-
-    // Exact-value check: must re-emit as \x07, not a raw byte.
-    assert_eq!(
-        formatted, "fn main() {\n    let s = \"bell\\x07end\";\n}\n",
-        "plain-string \\xNN must be re-escaped in formatter output;\nActual: {formatted:?}"
-    );
-
-    // Idempotency.
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
-    let formatted2 = format_program(&p2.program);
-    assert_eq!(
-        formatted, formatted2,
-        "plain-string \\xNN formatter output is not idempotent"
-    );
-}
-
-/// Plain string: `\u{...}` invisible / non-ASCII Unicode must be re-escaped.
-#[test]
-fn fmt_string_unicode_invisible_escape_preserved_exact() {
-    // \u{200B} is ZERO WIDTH SPACE — invisible, non-printable in context.
-    // The formatter must re-emit \u{200B}, not a raw zero-width-space byte sequence.
-    let src = r#"fn main() { let s = "a\u{200B}b"; }"#;
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
-
-    let formatted = format_program(&p1.program);
-
-    // Exact-value check: must re-emit as \u{200B}.
-    assert_eq!(
-        formatted, "fn main() {\n    let s = \"a\\u{200B}b\";\n}\n",
-        "plain-string \\u{{...}} must be re-escaped in formatter output;\nActual: {formatted:?}"
-    );
-
-    // Idempotency.
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
-    let formatted2 = format_program(&p2.program);
-    assert_eq!(
-        formatted, formatted2,
-        "plain-string \\u{{...}} formatter output is not idempotent"
-    );
-}
-
-/// f-string: `\xNN` non-printable ASCII bytes in literal parts must be
-/// re-escaped, not emitted as raw bytes.
-#[test]
-fn fmt_fstring_xnn_escape_preserved_exact() {
-    // \x07 (BEL) in a literal part adjacent to an interpolation.
-    let src = r#"fn main() { let s = f"bell\x07{x}end"; }"#;
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
-
-    let formatted = format_program(&p1.program);
-
-    // Exact-value check: must re-emit as \x07, not a raw byte.
-    assert_eq!(
-        formatted, "fn main() {\n    let s = f\"bell\\x07{x}end\";\n}\n",
-        "f-string \\xNN must be re-escaped in formatter output;\nActual: {formatted:?}"
-    );
-
-    // Idempotency.
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
-    let formatted2 = format_program(&p2.program);
-    assert_eq!(
-        formatted, formatted2,
-        "f-string \\xNN formatter output is not idempotent"
-    );
-}
-
-/// f-string: `\u{...}` invisible Unicode in literal parts must be re-escaped.
-#[test]
-fn fmt_fstring_unicode_invisible_escape_preserved_exact() {
-    // \u{200B} (ZERO WIDTH SPACE) in a literal part adjacent to interpolation.
-    let src = r#"fn main() { let s = f"a\u{200B}{x}b"; }"#;
-    let p1 = parse(src);
-    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
-
-    let formatted = format_program(&p1.program);
-
-    // Exact-value check: must re-emit as \u{200B}.
-    assert_eq!(
-        formatted, "fn main() {\n    let s = f\"a\\u{200B}{x}b\";\n}\n",
-        "f-string \\u{{...}} must be re-escaped in formatter output;\nActual: {formatted:?}"
-    );
-
-    // Idempotency.
-    let p2 = parse(&formatted);
-    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
-    let formatted2 = format_program(&p2.program);
-    assert_eq!(
-        formatted, formatted2,
-        "f-string \\u{{...}} formatter output is not idempotent"
-    );
-}
-
-/// Full escape set round-trip on plain strings: every escape sequence the
-/// parser accepts must survive format → re-parse with identical AST value.
-///
-/// Covers: `\n \t \r \\ \" \x07 \u{200B}`.
-/// Embedded NUL is retained by the managed string carrier.
-#[test]
-fn fmt_string_full_escape_set_roundtrip() {
-    use hew_parser::ast_eq::program_eq_ignoring_spans;
-
-    // Each input has one escape; exact re-emit verified by AST equality.
-    let cases = [
         r#"fn f() { let s = "a\nb"; }"#,
         r#"fn f() { let s = "a\tb"; }"#,
         r#"fn f() { let s = "a\rb"; }"#,
@@ -2768,41 +1057,6 @@ fn fmt_string_full_escape_set_roundtrip() {
         r#"fn f() { let s = "a\u{200B}b"; }"#,
         r#"fn f() { let s = "a\0b"; }"#,
         r#"fn f() { let s = f"a\0{1}"; }"#,
-    ];
-
-    for src in &cases {
-        let p1 = parse(src);
-        assert!(
-            p1.errors.is_empty(),
-            "parse failed for {src:?}: {:?}",
-            p1.errors
-        );
-
-        let formatted = format_program(&p1.program);
-
-        let p2 = parse(&formatted);
-        assert!(
-            p2.errors.is_empty(),
-            "reparse failed for {src:?}:\nFormatted: {formatted:?}\nErrors: {:?}",
-            p2.errors
-        );
-
-        assert!(
-            program_eq_ignoring_spans(&p1.program, &p2.program),
-            "AST mismatch for {src:?}.\nFormatted: {formatted:?}"
-        );
-
-        let formatted2 = format_program(&p2.program);
-        assert_eq!(formatted, formatted2, "idempotency failure for {src:?}");
-    }
-}
-
-/// Full escape set round-trip on f-string literal parts.
-#[test]
-fn fmt_fstring_full_escape_set_roundtrip() {
-    use hew_parser::ast_eq::program_eq_ignoring_spans;
-
-    let cases = [
         r#"fn f(x: i64) { let s = f"a\n{x}b"; }"#,
         r#"fn f(x: i64) { let s = f"a\t{x}b"; }"#,
         r#"fn f(x: i64) { let s = f"a\r{x}b"; }"#,
@@ -2810,36 +1064,38 @@ fn fmt_fstring_full_escape_set_roundtrip() {
         r#"fn f(x: i64) { let s = f"a\"{x}b"; }"#,
         r#"fn f(x: i64) { let s = f"a\x07{x}b"; }"#,
         r#"fn f(x: i64) { let s = f"a\u{200B}{x}b"; }"#,
-    ];
-
-    for src in &cases {
+    ] {
         let p1 = parse(src);
         assert!(
             p1.errors.is_empty(),
             "parse failed for {src:?}: {:?}",
             p1.errors
         );
-
         let formatted = format_program(&p1.program);
-
         let p2 = parse(&formatted);
         assert!(
             p2.errors.is_empty(),
             "reparse failed for {src:?}:\nFormatted: {formatted:?}\nErrors: {:?}",
             p2.errors
         );
-
         assert!(
             program_eq_ignoring_spans(&p1.program, &p2.program),
             "AST mismatch for {src:?}.\nFormatted: {formatted:?}"
         );
-
-        let formatted2 = format_program(&p2.program);
-        assert_eq!(formatted, formatted2, "idempotency failure for {src:?}");
+        assert_eq!(
+            formatted,
+            format_program(&p2.program),
+            "format_program not idempotent for {src:?}"
+        );
     }
 }
 
 #[test]
-fn fmt_generic_function_values_roundtrip_at_expression_boundaries() {
-    exact_roundtrip("fn make() -> fn(i64) -> i64 {\n    let f = id<i64>;\n    let pair = (id<i64>, id<string>);\n    use_fn(id<i64>);\n    id<i64>\n}\n");
+fn fmt_invisible_escapes_preserved_exact() {
+    assert_exact_roundtrips(&[
+        "fn main() {\n    let s = \"bell\\x07end\";\n}\n",
+        "fn main() {\n    let s = \"a\\u{200B}b\";\n}\n",
+        "fn main() {\n    let s = f\"bell\\x07{x}end\";\n}\n",
+        "fn main() {\n    let s = f\"a\\u{200B}{x}b\";\n}\n",
+    ]);
 }

@@ -2081,6 +2081,28 @@ pub(crate) fn init_real_scheduler_for_test() {
     }
 }
 
+/// A worker-backed scheduler for one test, shut down and cleaned up on drop so
+/// its workers neither outlive the test nor leave a runtime installed for the
+/// next test in the same process.
+#[cfg(test)]
+pub(crate) struct RealSchedulerForTest;
+
+#[cfg(test)]
+impl RealSchedulerForTest {
+    pub(crate) fn install() -> Self {
+        init_real_scheduler_for_test();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for RealSchedulerForTest {
+    fn drop(&mut self) {
+        hew_sched_shutdown();
+        hew_runtime_cleanup();
+    }
+}
+
 /// Box `sched` inside a default `RuntimeInner` and install it in the runtime
 /// slot, returning the raw `RuntimeInner` pointer the test owns.
 ///
@@ -2920,7 +2942,7 @@ mod tests {
         }
 
         let _rt = crate::runtime_test_guard();
-        init_real_scheduler_for_test();
+        let _scheduler = RealSchedulerForTest::install();
         let sched = get_scheduler().expect("real scheduler installed");
         let polled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let episodes_before = spin::spin_episodes_total();
@@ -6268,7 +6290,7 @@ mod tests {
     #[test]
     fn a_popped_actor_awaiting_activation_is_not_idle() {
         let _rt = crate::runtime_test_guard();
-        init_real_scheduler_for_test();
+        let _scheduler = RealSchedulerForTest::install();
 
         // SAFETY: fresh mailbox, owned through the end of the test.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };

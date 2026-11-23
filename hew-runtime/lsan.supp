@@ -64,7 +64,8 @@ leak:hew_duplex_recv_half
 
 # ── hew_sched_init test-harness scheduler (test-only, one-shot) ──────────
 # WHY: Tests that call hew_sched_init directly (e.g.
-# hew_sched_init_returns_zero_on_success, connection_drop_wakes_pending_remote_ask)
+# timed_out_real_worker_keeps_runtime_installed_until_later_cleanup,
+# connection_drop_wakes_pending_remote_ask)
 # create a full Scheduler box with crossbeam deques, work-stealers, and
 # parker pairs but never call hew_sched_shutdown + hew_runtime_cleanup
 # because those tests only exercise the init path in isolation. The scheduler

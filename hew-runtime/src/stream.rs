@@ -2813,29 +2813,17 @@ mod tests {
     // ── Validity checks ─────────────────────────────────────────────────
 
     #[test]
-    fn null_stream_reports_invalid() {
+    fn stream_and_sink_validity_contracts() {
         assert_eq!(hew_stream_is_valid(ptr::null()), 0);
-    }
-
-    #[test]
-    fn null_sink_reports_invalid() {
         assert_eq!(hew_sink_is_valid(ptr::null()), 0);
-    }
 
-    #[test]
-    fn non_null_stream_reports_valid() {
         let data = b"hello";
-        // SAFETY: data is valid for its length.
-        let stream = unsafe { hew_stream_from_bytes(data.as_ptr(), data.len(), 0) };
-        assert_eq!(hew_stream_is_valid(stream), 1);
-        // SAFETY: stream was created above.
-        unsafe { hew_stream_close(stream) };
-    }
-
-    #[test]
-    fn non_null_sink_reports_valid() {
-        // SAFETY: hew_stream_channel returns a valid pair.
+        // SAFETY: data is valid for its length and handles are created and closed here.
         unsafe {
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            assert_eq!(hew_stream_is_valid(stream), 1);
+            hew_stream_close(stream);
+
             let pair = hew_stream_channel(1);
             let sink = hew_stream_pair_sink(pair);
             assert_eq!(hew_sink_is_valid(sink), 1);
@@ -2845,15 +2833,6 @@ mod tests {
     }
 
     // ── Channel creation and pair extraction ────────────────────────────
-
-    #[test]
-    fn channel_creates_non_null_pair() {
-        // SAFETY: FFI call with valid capacity.
-        let pair = unsafe { hew_stream_channel(4) };
-        assert!(!pair.is_null());
-        // SAFETY: pair was just created.
-        unsafe { hew_stream_pair_free(pair) };
-    }
 
     #[test]
     fn channel_negative_capacity_returns_invalid_pair_with_exact_error() {
@@ -2868,10 +2847,15 @@ mod tests {
     }
 
     #[test]
-    fn pair_extraction_returns_non_null_handles() {
-        // SAFETY: FFI calls with valid pointers.
+    fn stream_channel_pair_extraction_and_null_guards() {
+        // SAFETY: null pair args are explicitly handled; live pair handles are freed.
         unsafe {
+            assert!(hew_stream_pair_sink(ptr::null_mut()).is_null());
+            assert!(hew_stream_pair_stream(ptr::null_mut()).is_null());
+            hew_stream_pair_free(ptr::null_mut());
+
             let pair = hew_stream_channel(4);
+            assert!(!pair.is_null());
             let sink = hew_stream_pair_sink(pair);
             let stream = hew_stream_pair_stream(pair);
             assert!(!sink.is_null());
@@ -2879,28 +2863,11 @@ mod tests {
             hew_sink_close(sink);
             hew_stream_close(stream);
             hew_stream_pair_free(pair);
+
+            // Dropping a pair without extracting either half must still release
+            // its owned sink and stream handles cleanly.
+            hew_stream_pair_free(hew_stream_channel(4));
         }
-    }
-
-    #[test]
-    fn pair_sink_null_pair_returns_null() {
-        // SAFETY: null is explicitly handled by cabi_guard.
-        let result = unsafe { hew_stream_pair_sink(ptr::null_mut()) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn pair_stream_null_pair_returns_null() {
-        // SAFETY: null is explicitly handled by cabi_guard.
-        let result = unsafe { hew_stream_pair_stream(ptr::null_mut()) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn pair_free_null_is_safe() {
-        // Must not crash.
-        // SAFETY: null is explicitly handled by hew_stream_pair_free.
-        unsafe { hew_stream_pair_free(ptr::null_mut()) };
     }
 
     // ── Channel write-read round-trip ───────────────────────────────────
@@ -3023,17 +2990,7 @@ mod tests {
         }
     }
 
-    // ── hew_stream_next ─────────────────────────────────────────────────
-
     // ── hew_stream_next_sized ───────────────────────────────────────────
-
-    #[test]
-    fn stream_next_sized_null_returns_null() {
-        let mut size: usize = 999;
-        // SAFETY: null stream is handled; size is a valid local.
-        let result = unsafe { hew_stream_next_sized(ptr::null_mut(), &raw mut size) };
-        assert!(result.is_null());
-    }
 
     #[test]
     fn stream_next_sized_reports_correct_length() {
@@ -3066,37 +3023,49 @@ mod tests {
     // ── hew_stream_next_view ─────────────────────────────────────────────
 
     #[test]
-    fn stream_next_view_null_stream_returns_eof() {
+    fn stream_next_null_arg_guards_return_eof_or_null() {
+        let mut size: usize = 999;
         let mut buf: *mut u8 = ptr::null_mut();
         let mut cap: usize = 0;
-        // SAFETY: null stream is explicitly handled.
-        let ret = unsafe { hew_stream_next_view(ptr::null_mut(), &raw mut buf, &raw mut cap) };
-        assert_eq!(ret, -1);
-    }
-
-    #[test]
-    fn stream_next_view_null_buf_returns_eof() {
         let data = b"hello";
-        // SAFETY: stream is valid; null buf pointer is handled.
+        // SAFETY: null stream/buf/cap pointers are explicitly guarded.
         unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut cap: usize = 0;
-            let ret = hew_stream_next_view(stream, ptr::null_mut(), &raw mut cap);
-            assert_eq!(ret, -1);
-            hew_stream_close(stream);
-        }
-    }
+            assert!(hew_stream_next_sized(ptr::null_mut(), &raw mut size).is_null());
+            assert_eq!(
+                hew_stream_next_view(ptr::null_mut(), &raw mut buf, &raw mut cap),
+                -1
+            );
 
-    #[test]
-    fn stream_next_view_null_cap_returns_eof() {
-        let data = b"hello";
-        // SAFETY: stream is valid; null buf_cap pointer is handled.
-        unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = ptr::null_mut();
-            let ret = hew_stream_next_view(stream, &raw mut buf, ptr::null_mut());
-            assert_eq!(ret, -1);
-            hew_stream_close(stream);
+            let stream_null_buf = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            assert_eq!(
+                hew_stream_next_view(stream_null_buf, ptr::null_mut(), &raw mut cap),
+                -1
+            );
+            // Null out_buf guard must return before consuming the item.
+            let mut probe_buf = [0u8; 16];
+            let mut probe_ptr = probe_buf.as_mut_ptr();
+            let mut probe_cap = probe_buf.len();
+            assert_eq!(
+                hew_stream_next_view(stream_null_buf, &raw mut probe_ptr, &raw mut probe_cap),
+                i64::try_from(data.len()).unwrap()
+            );
+            assert_eq!(&probe_buf[..data.len()], data);
+            hew_stream_close(stream_null_buf);
+
+            let stream_null_cap = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            assert_eq!(
+                hew_stream_next_view(stream_null_cap, &raw mut buf, ptr::null_mut()),
+                -1
+            );
+            let mut probe_buf2 = [0u8; 16];
+            let mut probe_ptr2 = probe_buf2.as_mut_ptr();
+            let mut probe_cap2 = probe_buf2.len();
+            assert_eq!(
+                hew_stream_next_view(stream_null_cap, &raw mut probe_ptr2, &raw mut probe_cap2),
+                i64::try_from(data.len()).unwrap()
+            );
+            assert_eq!(&probe_buf2[..data.len()], data);
+            hew_stream_close(stream_null_cap);
         }
     }
 
@@ -3282,17 +3251,12 @@ mod tests {
     // ── Close / free ────────────────────────────────────────────────────
 
     #[test]
-    fn stream_close_null_is_safe() {
-        // Must not crash.
-        // SAFETY: null is explicitly handled by hew_stream_close.
-        unsafe { hew_stream_close(ptr::null_mut()) };
-    }
-
-    #[test]
-    fn sink_close_null_is_safe() {
-        // Must not crash.
-        // SAFETY: null is explicitly handled by hew_sink_close.
-        unsafe { hew_sink_close(ptr::null_mut()) };
+    fn stream_and_sink_close_null_is_safe() {
+        // SAFETY: null pointers are explicitly handled by both close functions.
+        unsafe {
+            hew_stream_close(ptr::null_mut());
+            hew_sink_close(ptr::null_mut());
+        }
     }
 
     // ── Sink operations ─────────────────────────────────────────────────
@@ -3380,62 +3344,27 @@ mod tests {
     }
 
     #[test]
-    fn sink_write_null_sink_is_safe() {
-        let data = b"ignored";
-        // SAFETY: null sink is handled with early return.
-        unsafe { hew_sink_write(ptr::null_mut(), data.as_ptr().cast(), data.len()) };
-    }
-
-    #[test]
-    fn sink_write_null_data_is_safe() {
-        // SAFETY: FFI calls with valid pair; null data is handled.
+    fn sink_write_and_flush_null_or_noop_guards() {
+        let ignored = b"ignored";
+        let empty = b"should not appear";
+        // SAFETY: null guards and zero-size writes are explicitly safe/noop.
         unsafe {
-            let pair = hew_stream_channel(1);
-            let sink = hew_stream_pair_sink(pair);
-            hew_sink_write(sink, ptr::null(), 5);
-            hew_sink_close(sink);
-            hew_stream_pair_free(pair);
-        }
-    }
+            hew_sink_write(ptr::null_mut(), ignored.as_ptr().cast(), ignored.len());
+            hew_sink_flush(ptr::null_mut());
 
-    #[test]
-    fn sink_write_zero_size_is_noop() {
-        // SAFETY: FFI calls with valid pointers; zero-size write is handled.
-        unsafe {
             let pair = hew_stream_channel(1);
             let sink = hew_stream_pair_sink(pair);
             let stream = hew_stream_pair_stream(pair);
-
-            let data = b"should not appear";
-            hew_sink_write(sink, data.as_ptr().cast(), 0);
-            hew_sink_close(sink);
-
-            let items = drain_stream(stream);
-            assert!(
-                items.is_empty(),
-                "zero-size write should not produce an item"
-            );
-            hew_stream_close(stream);
-            hew_stream_pair_free(pair);
-        }
-    }
-
-    #[test]
-    fn sink_flush_null_is_safe() {
-        // Must not crash.
-        // SAFETY: null is explicitly handled by hew_sink_flush.
-        unsafe { hew_sink_flush(ptr::null_mut()) };
-    }
-
-    #[test]
-    fn sink_flush_channel_is_noop() {
-        // Channel sinks have no buffering; flush should succeed silently.
-        // SAFETY: FFI calls with valid pointers.
-        unsafe {
-            let pair = hew_stream_channel(1);
-            let sink = hew_stream_pair_sink(pair);
+            hew_sink_write(sink, ptr::null(), 5);
+            hew_sink_write(sink, empty.as_ptr().cast(), 0);
             hew_sink_flush(sink);
             hew_sink_close(sink);
+
+            assert!(
+                drain_stream(stream).is_empty(),
+                "null/zero-size writes must not produce items"
+            );
+            hew_stream_close(stream);
             hew_stream_pair_free(pair);
         }
     }
@@ -3878,16 +3807,11 @@ mod tests {
     }
 
     #[test]
-    fn write_string_null_sink_is_safe() {
+    fn write_string_null_guards_are_safe() {
         let msg = ManagedString::new("ignored");
-        // SAFETY: null sink is handled by cabi_guard.
-        unsafe { hew_sink_write_string(ptr::null_mut(), msg.as_ptr()) };
-    }
-
-    #[test]
-    fn write_string_null_data_is_safe() {
-        // SAFETY: FFI calls with valid pair; null data is handled by cabi_guard.
+        // SAFETY: null sink and null data are handled safely by cabi_guard.
         unsafe {
+            hew_sink_write_string(ptr::null_mut(), msg.as_ptr());
             let pair = hew_stream_channel(1);
             let sink = hew_stream_pair_sink(pair);
             hew_sink_write_string(sink, ptr::null());
@@ -3899,99 +3823,52 @@ mod tests {
     // ── Is closed ───────────────────────────────────────────────────────
 
     #[test]
-    fn is_closed_null_returns_one() {
-        // SAFETY: null is handled by cabi_guard (returns 1).
-        assert_eq!(unsafe { hew_stream_is_closed(ptr::null_mut()) }, 1);
-    }
-
-    #[test]
-    fn is_closed_false_for_non_empty_vec_stream() {
-        let data = b"content";
-        // SAFETY: data is valid; stream is created from it.
+    fn stream_is_closed_contracts() {
+        // SAFETY: null, non-empty, and exhausted vec streams are explicitly checked.
         unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            assert_eq!(hew_stream_is_closed(stream), 0);
-            hew_stream_close(stream);
-        }
-    }
+            assert_eq!(hew_stream_is_closed(ptr::null_mut()), 1);
 
-    #[test]
-    fn is_closed_true_for_exhausted_vec_stream() {
-        let data = b"x";
-        // SAFETY: data is valid; stream is created from it.
-        unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            // Drain the stream via the sized accessor (raw libc buffer).
+            let data = b"content";
+            let non_empty = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
+            assert_eq!(hew_stream_is_closed(non_empty), 0);
+            hew_stream_close(non_empty);
+
+            let single = b"x";
+            let exhausted = hew_stream_from_bytes(single.as_ptr(), single.len(), 0);
             let mut size: usize = 0;
-            let buf = hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size));
+            let buf = hew_stream_next_sized(exhausted, std::ptr::addr_of_mut!(size));
             assert!(!buf.is_null());
             crate::mem::buf_free(buf); // ALLOCATOR-PAIRING: GlobalAlloc
-            assert_eq!(hew_stream_is_closed(stream), 1);
-            hew_stream_close(stream);
+            assert_eq!(hew_stream_is_closed(exhausted), 1);
+            hew_stream_close(exhausted);
         }
     }
 
     // ── Take adapter ────────────────────────────────────────────────────
 
     #[test]
-    fn take_limits_items_yielded() {
-        let data = b"abcdef"; // item_size=1 → 6 items
-                              // SAFETY: all FFI calls use valid pointers.
+    fn take_adapter_contracts() {
+        // SAFETY: null stream and all byte-backed streams are valid FFI inputs.
         unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
-            let taken = hew_stream_take(raw, 3);
-            let items = drain_stream(taken);
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0], b"a");
-            assert_eq!(items[1], b"b");
-            assert_eq!(items[2], b"c");
-            hew_stream_close(taken);
-        }
-    }
+            assert!(hew_stream_take(ptr::null_mut(), 5).is_null());
 
-    #[test]
-    fn take_zero_yields_nothing() {
-        let data = b"nonempty";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
-            let taken = hew_stream_take(raw, 0);
-            let items = drain_stream(taken);
-            assert!(items.is_empty());
-            hew_stream_close(taken);
-        }
-    }
+            let full = hew_stream_take(hew_stream_from_bytes(b"abcdef".as_ptr(), 6, 1), 3);
+            assert_eq!(
+                drain_stream(full),
+                vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+            );
+            hew_stream_close(full);
 
-    #[test]
-    fn take_negative_yields_nothing() {
-        let data = b"stuff";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
-            let taken = hew_stream_take(raw, -10);
-            let items = drain_stream(taken);
-            assert!(items.is_empty());
-            hew_stream_close(taken);
-        }
-    }
+            for (data, count) in [(b"nonempty".as_slice(), 0), (b"stuff".as_slice(), -10)] {
+                let taken =
+                    hew_stream_take(hew_stream_from_bytes(data.as_ptr(), data.len(), 1), count);
+                assert!(drain_stream(taken).is_empty());
+                hew_stream_close(taken);
+            }
 
-    #[test]
-    fn take_null_stream_returns_null() {
-        // SAFETY: null is handled by cabi_guard.
-        let result = unsafe { hew_stream_take(ptr::null_mut(), 5) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn take_more_than_available_yields_all() {
-        let data = b"ab"; // 2 items of 1 byte
-                          // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 1);
-            let taken = hew_stream_take(raw, 100);
-            let items = drain_stream(taken);
-            assert_eq!(items.len(), 2);
-            hew_stream_close(taken);
+            let over = hew_stream_take(hew_stream_from_bytes(b"ab".as_ptr(), 2, 1), 100);
+            assert_eq!(drain_stream(over).len(), 2);
+            hew_stream_close(over);
         }
     }
 
@@ -4569,6 +4446,10 @@ mod tests {
             hew_sink_close(sink);
             hew_stream_close(stream);
             hew_stream_pair_free(pair);
+
+            // Dropping a pair without extracting either half must still release
+            // its owned sink and stream handles cleanly.
+            hew_stream_pair_free(hew_stream_channel(4));
         }
     }
 

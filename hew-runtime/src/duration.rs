@@ -46,6 +46,13 @@ mod tests {
     }
 
     #[test]
+    fn seconds_zero_returns_zero() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(0) };
+        assert_eq!(d.ms, 0);
+    }
+
+    #[test]
     fn seconds_negative_matches_native_unsigned_cast_semantics() {
         // SAFETY: pure arithmetic, no preconditions.
         let d = unsafe { hew_seconds(-1) };
@@ -53,10 +60,25 @@ mod tests {
     }
 
     #[test]
+    fn seconds_large_value_wraps_correctly() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_seconds(c_int::MAX) };
+        let expected = u64::from(c_int::MAX.cast_unsigned()).wrapping_mul(1000);
+        assert_eq!(d.ms, expected);
+    }
+
+    #[test]
     fn milliseconds_positive_passes_through() {
         // SAFETY: pure arithmetic, no preconditions.
         let d = unsafe { hew_milliseconds(42) };
         assert_eq!(d.ms, 42);
+    }
+
+    #[test]
+    fn milliseconds_zero_returns_zero() {
+        // SAFETY: pure arithmetic, no preconditions.
+        let d = unsafe { hew_milliseconds(0) };
+        assert_eq!(d.ms, 0);
     }
 
     #[test]

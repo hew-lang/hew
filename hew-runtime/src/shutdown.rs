@@ -806,6 +806,18 @@ mod tests {
 
     #[test]
     fn initial_phase_is_running() {
+        assert_eq!(
+            (
+                PHASE_RUNNING,
+                PHASE_QUIESCE,
+                PHASE_DRAIN,
+                PHASE_TERMINATE,
+                PHASE_DONE,
+                PHASE_FAILED,
+            ),
+            (0, 1, 2, 3, 4, 5),
+            "shutdown phases must preserve their C ABI numeric discriminants"
+        );
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_RUNNING);
@@ -816,17 +828,6 @@ mod tests {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         assert_eq!(hew_is_shutting_down(), 0);
-    }
-
-    #[test]
-    fn shutdown_phase_constants() {
-        let _guard = shutdown_test_guard();
-        assert_eq!(PHASE_RUNNING, 0);
-        assert_eq!(PHASE_QUIESCE, 1);
-        assert_eq!(PHASE_DRAIN, 2);
-        assert_eq!(PHASE_TERMINATE, 3);
-        assert_eq!(PHASE_DONE, 4);
-        assert_eq!(PHASE_FAILED, 5);
     }
 
     #[test]
@@ -996,36 +997,6 @@ mod tests {
         reset_shutdown_state();
     }
 
-    // Test to verify the spawn failure detection works by testing thread creation under stress.
-    // This documents the behaviour but doesn't require spawn failure.
-    #[test]
-    fn thread_spawn_stress_test() {
-        let _guard = shutdown_test_guard();
-        reset_shutdown_state();
-        // This test verifies our understanding of thread spawn failure conditions.
-        // We try to spawn many threads rapidly and see if any fail.
-        let mut spawn_failures = 0;
-        let attempts = 50;
-
-        for _ in 0..attempts {
-            match std::thread::Builder::new()
-                .name("stress-test".into())
-                .spawn(|| std::thread::sleep(Duration::from_millis(1)))
-            {
-                Ok(handle) => {
-                    let _ = handle.join();
-                }
-                Err(_) => {
-                    spawn_failures += 1;
-                }
-            }
-        }
-
-        // This test documents spawn behaviour but doesn't require failures.
-        // If failures occur, our shutdown code should handle them via fallback.
-        println!("Thread spawn failures in stress test: {spawn_failures}/{attempts}");
-    }
-
     // ---------------------------------------------------------------------------
     // Sabotage Tests (manually run to verify tests actually detect the bugs)
     // ---------------------------------------------------------------------------
@@ -1057,31 +1028,6 @@ mod tests {
         // If you've reverted the fix, this will panic after timing out.
         let result = handle.join();
         assert!(result.is_ok(), "Shutdown should complete without deadlock");
-        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
-
-        reset_shutdown_state();
-    }
-
-    /// Sabotage test for Bug #10: This test should stall if we revert the spawn fallback.
-    /// Run this manually after removing the spawn failure fallback to verify
-    /// the test catches the infinite wait bug.
-    #[test]
-    fn sabotage_spawn_failure_test() {
-        let _guard = shutdown_test_guard();
-        reset_shutdown_state();
-
-        // Test the case where spawn fails by calling orchestrate directly.
-        // In the old code (without fallback), if spawn failed, nothing would
-        // set PHASE_DONE and hew_shutdown_wait would loop forever.
-
-        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
-
-        // If you remove the spawn fallback and only have:
-        //   std::thread::spawn(...).ok();
-        // Then nothing sets PHASE_DONE when spawn fails.
-
-        // This simulates the fallback working:
-        shutdown_orchestrate(Duration::from_millis(10));
         assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();

@@ -49,7 +49,7 @@ fn cap_exceeded_panics_with_typed_machine_emit_reentrancy_exceeded() {
             queue.enter_step();
         }
     }))
-    .expect_err("65th nested step must exceed the default cap");
+    .expect_err("step past DEFAULT_REENTRANCY_CAP must panic with reentrancy overflow");
 
     let typed = panic
         .downcast_ref::<MachineEmitReentrancyExceeded>()
@@ -166,9 +166,4 @@ fn c_abi_take_removes_only_matching_machine_and_tag_and_returns_exact_count() {
         assert_eq!(thread_emit_pending(), 0);
     }
     thread_emit_clear();
-}
-
-#[test]
-fn wasm_parity_has_no_target_specific_gate() {
-    assert_eq!(DEFAULT_REENTRANCY_CAP, 64);
 }

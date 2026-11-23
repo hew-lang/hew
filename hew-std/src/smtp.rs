@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_impl() {
+    fn debug_impl_redacts_transport_state() {
         let formatted = format!(
             "{:?}",
             HewSmtpConn {
@@ -639,8 +639,12 @@ mod tests {
             }
         );
         assert!(
-            formatted.contains("HewSmtpConn"),
-            "Debug output should contain struct name"
+            formatted.contains("HewSmtpConn") && formatted.contains(".."),
+            "Debug output must preserve struct name and non-exhaustive redaction: {formatted}"
+        );
+        assert!(
+            !formatted.contains("transport"),
+            "Debug output must redact internal transport credentials: {formatted}"
         );
     }
 

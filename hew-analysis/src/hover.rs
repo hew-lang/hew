@@ -1112,7 +1112,7 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             path: named_path,
             type_args,
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             let base =
                 Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());
             if let Some(type_args) = type_args {

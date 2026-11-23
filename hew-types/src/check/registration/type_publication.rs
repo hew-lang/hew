@@ -130,8 +130,11 @@ impl Checker {
                 let TypeExpr::Named { path, .. } = &id.target_type.0 else {
                     return false;
                 };
-                let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                receiver_names.iter().any(|receiver| name == receiver)
+                path.as_single().is_some_and(|ident| {
+                    receiver_names
+                        .iter()
+                        .any(|receiver| ident.name.as_str() == *receiver)
+                })
             })
             .collect();
         if !impl_items.is_empty() {

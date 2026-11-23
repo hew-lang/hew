@@ -1092,7 +1092,7 @@ impl ModuleRegistry {
             if import_binding != binding {
                 return None;
             }
-            let imported_owner = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let imported_owner = import.path.to_string();
             self.exact_module_source_type_owner(&imported_owner, leaf)
                 .map(|canonical_owner| format!("{canonical_owner}.{leaf}"))
         })

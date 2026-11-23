@@ -10,18 +10,32 @@ use hew_parser::ast::Ident;
 
 use super::*;
 
-/// Reject an actor declaration on architectures without an actor runtime ABI.
-pub(super) fn check_actor_target_gate(ctx: &mut LowerCtx, actor_name: Ident, span: &Span) {
+fn reject_unsupported_target(
+    ctx: &mut LowerCtx,
+    construct: &str,
+    span: &Span,
+    message: impl Into<String>,
+) {
     if matches!(ctx.target_arch, TargetArch::Other) {
         ctx.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::TargetCoroutineUnsupported {
                 target_arch: format!("{:?}", ctx.target_arch),
-                construct: "actor decl".to_string(),
+                construct: construct.to_string(),
             },
             span.clone(),
-            format!("actor '{actor_name}' requires the actor runtime ABI (unsupported target)"),
+            message.into(),
         ));
     }
+}
+
+/// Reject an actor declaration on architectures without an actor runtime ABI.
+pub(super) fn check_actor_target_gate(ctx: &mut LowerCtx, actor_name: Ident, span: &Span) {
+    reject_unsupported_target(
+        ctx,
+        "actor decl",
+        span,
+        format!("actor '{actor_name}' requires the actor runtime ABI (unsupported target)"),
+    );
 }
 
 /// Reject a supervisor declaration on architectures without supervisor restart
@@ -31,47 +45,70 @@ pub(super) fn check_supervisor_target_gate(
     supervisor_name: Ident,
     span: &Span,
 ) {
-    if matches!(ctx.target_arch, TargetArch::Other) {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::TargetCoroutineUnsupported {
-                target_arch: format!("{:?}", ctx.target_arch),
-                construct: "supervisor decl".to_string(),
-            },
-            span.clone(),
-            format!(
-                "supervisor '{supervisor_name}' requires supervisor restart machinery \
-                 (unsupported target)"
-            ),
-        ));
-    }
+    reject_unsupported_target(
+        ctx,
+        "supervisor decl",
+        span,
+        format!(
+            "supervisor '{supervisor_name}' requires supervisor restart machinery \
+             (unsupported target)"
+        ),
+    );
 }
 
 /// Reject a structured-concurrency `scope` block on architectures without a
 /// task scheduler.
 pub(super) fn check_scope_target_gate(ctx: &mut LowerCtx, span: &Span) {
-    if matches!(ctx.target_arch, TargetArch::Other) {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::TargetCoroutineUnsupported {
-                target_arch: format!("{:?}", ctx.target_arch),
-                construct: "scope expr".to_string(),
-            },
-            span.clone(),
-            "structured concurrency `scope` requires the actor/task runtime ABI \
-             (unsupported target)",
-        ));
-    }
+    reject_unsupported_target(
+        ctx,
+        "scope expr",
+        span,
+        "structured concurrency `scope` requires the actor/task runtime ABI \
+         (unsupported target)",
+    );
+}
+
+/// Reject a structured-concurrency `select` expression on architectures without
+/// a task scheduler.
+pub(super) fn check_select_target_gate(ctx: &mut LowerCtx, span: &Span) {
+    reject_unsupported_target(
+        ctx,
+        "select expr",
+        span,
+        "structured concurrency `select` requires the actor/task runtime ABI \
+         (unsupported target)",
+    );
+}
+
+/// Reject a structured-concurrency `race` expression on architectures without
+/// a task scheduler.
+pub(super) fn check_race_target_gate(ctx: &mut LowerCtx, span: &Span) {
+    reject_unsupported_target(
+        ctx,
+        "race expr",
+        span,
+        "structured concurrency `race` requires the actor/task runtime ABI \
+         (unsupported target)",
+    );
+}
+
+/// Reject a generator expression or `gen fn` on architectures without
+/// coroutine runtime support.
+pub(super) fn check_gen_target_gate(ctx: &mut LowerCtx, span: &Span) {
+    reject_unsupported_target(
+        ctx,
+        "gen expr",
+        span,
+        "generator coroutines require the coroutine runtime ABI (unsupported target)",
+    );
 }
 
 /// Reject a lambda actor spawn on architectures without an actor runtime ABI.
 pub(super) fn check_lambda_actor_target_gate(ctx: &mut LowerCtx, span: &Span) {
-    if matches!(ctx.target_arch, TargetArch::Other) {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::TargetCoroutineUnsupported {
-                target_arch: format!("{:?}", ctx.target_arch),
-                construct: "lambda actor".to_string(),
-            },
-            span.clone(),
-            "lambda actor spawn requires the actor runtime ABI (unsupported target)",
-        ));
-    }
+    reject_unsupported_target(
+        ctx,
+        "lambda actor",
+        span,
+        "lambda actor spawn requires the actor runtime ABI (unsupported target)",
+    );
 }

@@ -174,18 +174,12 @@ impl LowerCtx<'_> {
                     {
                         let site = self.source_site(&span);
                         let result_ty = self.restore_type_declaration_facts(ty);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::MachineVariantCtor {
-                                machine_name,
-                                state_idx,
-                                payload: None,
-                            },
-                            span,
+                        let kind = HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
                         };
+                        return self.finish_inner_expr(kind, result_ty, site, intent, span);
                     }
                 }
             }
@@ -240,14 +234,7 @@ impl LowerCtx<'_> {
                     let LoweredCallArgs { args, .. } =
                         self.lower_call_args_for_callee(args, &span, None);
                     let (kind, ty) = self.lower_variant_ctor_tuple_call(&qualified, args, &span);
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty,
-                        intent,
-                        kind,
-                        span,
-                    };
+                    return self.finish_inner_expr(kind, ty, site, intent, span);
                 }
             }
         }
@@ -269,29 +256,16 @@ impl LowerCtx<'_> {
                     self.lookup_variant_ctor(&contextual_name, checker_ty.as_ref())
                 {
                     if let Some(result_ty) = checker_ty {
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::MachineVariantCtor {
-                                machine_name,
-                                state_idx,
-                                payload: None,
-                            },
-                            span,
+                        let kind = HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
                         };
+                        return self.finish_inner_expr(kind, result_ty, site, intent, span);
                     }
                 }
                 let (kind, ty) = self.lower_identifier(&contextual_name, span.clone(), site);
-                return HirExpr {
-                    node: self.ids.node(),
-                    site,
-                    ty,
-                    intent,
-                    kind,
-                    span,
-                };
+                return self.finish_inner_expr(kind, ty, site, intent, span);
             }
         }
         if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
@@ -1117,16 +1091,23 @@ impl LowerCtx<'_> {
                 }
             }
             Expr::Select { arms, timeout } => {
+                check_select_target_gate(self, &span);
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
-            Expr::Race(branches) => self.lower_race(branches, span.clone()),
+            Expr::Race(branches) => {
+                check_race_target_gate(self, &span);
+                self.lower_race(branches, span.clone())
+            }
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor { params, body, .. } => {
                 check_lambda_actor_target_gate(self, &span);
                 self.lower_spawn_lambda_actor(params, body, &span)
             }
             Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
-            Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
+            Expr::GenBlock { body } => {
+                check_gen_target_gate(self, &span);
+                self.lower_gen_block(body, span.clone())
+            }
             Expr::Yield(value) => {
                 let value = value
                     .as_deref()

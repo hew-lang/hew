@@ -79,10 +79,10 @@ impl LowerCtx<'_> {
 
         match marker {
             ResourceMarker::Resource => {
-                self.check_resource_close_discipline(decl, &span, declaration);
+                self.check_resource_close_discipline(name, &span, declaration);
             }
             ResourceMarker::Linear if !interceptor_token => {
-                self.check_linear_consume_discipline(decl, &span, declaration);
+                self.check_linear_consume_discipline(name, &span, declaration);
             }
             ResourceMarker::Linear | ResourceMarker::None | ResourceMarker::BitCopy => {}
         }

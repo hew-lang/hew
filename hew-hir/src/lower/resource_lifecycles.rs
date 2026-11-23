@@ -557,7 +557,7 @@ impl LowerCtx<'_> {
     /// Require an inherent `close` method with a unit return type.
     pub(super) fn check_resource_close_discipline(
         &mut self,
-        decl: &TypeDecl,
+        name: &str,
         span: &Span,
         declaration: hew_types::DefId,
     ) {
@@ -573,17 +573,16 @@ impl LowerCtx<'_> {
                 self.resource_close_discipline_failures.insert(declaration);
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ResourceCloseMustReturnUnit {
-                        name: decl.name.to_string(),
+                        name: name.to_string(),
                         return_ty: display.clone(),
                     },
                     decl_span,
                     format!(
-                        "`#[resource]` type `{}` declares `close` returning \
+                        "`#[resource]` type `{name}` declares `close` returning \
                          `{display}`; the implicit drop contract dispatches \
                          `close` on every scope-exit path and only unit return \
                          is admitted in v0.5 — compose fallible cleanup via \
-                         `defer` instead",
-                        decl.name
+                         `defer` instead"
                     ),
                 ));
             }
@@ -592,7 +591,7 @@ impl LowerCtx<'_> {
         self.resource_close_discipline_failures.insert(declaration);
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::ResourceMissingClose {
-                name: decl.name.to_string(),
+                name: name.to_string(),
             },
             span.clone(),
             "`#[resource]` type must declare `fn close(consume self) { ... }` in a \
@@ -612,7 +611,7 @@ impl LowerCtx<'_> {
     ///
     pub(super) fn check_linear_consume_discipline(
         &mut self,
-        decl: &TypeDecl,
+        name: &str,
         span: &Span,
         declaration: hew_types::DefId,
     ) {
@@ -624,7 +623,7 @@ impl LowerCtx<'_> {
         }) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::LinearNoConsumingMethods {
-                    name: decl.name.to_string(),
+                    name: name.to_string(),
                 },
                 span.clone(),
                 "`#[linear]` type must declare at least one `consume self` method \

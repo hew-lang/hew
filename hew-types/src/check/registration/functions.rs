@@ -803,9 +803,12 @@ impl Checker {
     }
 
     pub(in crate::check) fn impl_decl_is_drop_impl(id: &ImplDecl) -> bool {
-        id.trait_bound
-            .as_ref()
-            .is_some_and(|trait_bound| trait_bound.path.to_string() == "Drop") // TRANSITION(P1): deleted by A1 commit 2
+        id.trait_bound.as_ref().is_some_and(|trait_bound| {
+            trait_bound
+                .path
+                .as_single()
+                .is_some_and(|ident| ident.name.as_str() == "Drop")
+        })
     }
 
     pub(in crate::check) fn register_fn_sig(&mut self, fd: &FnDecl) {

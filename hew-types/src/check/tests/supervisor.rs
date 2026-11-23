@@ -546,3 +546,220 @@ supervisor Shop<T>(__hew_wired_0_1: i64, seed: T) {
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
+
+#[test]
+fn private_supervisor_in_directory_module_uses_peer_file_import_before_function_projection() {
+    let workers_path = std::path::PathBuf::from("workers.hew");
+    let first_peer = std::path::PathBuf::from("consumer/api.hew");
+    let second_peer = std::path::PathBuf::from("consumer/sup.hew");
+    let workers =
+        hew_parser::parse("pub actor PeerWorker {\n    receive fn ping() -> i64 { 1 }\n}\n");
+    assert!(workers.errors.is_empty(), "{:?}", workers.errors);
+    let first =
+        hew_parser::parse("pub fn use_sup(s: Sup) -> i64 {\n    let w = s.worker;\n    1\n}\n");
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    let mut second = hew_parser::parse(
+        "import workers.{PeerWorker};\n\nsupervisor Sup {\n    strategy: one_for_one;\n    child worker: PeerWorker;\n}\n",
+    );
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    let import = second
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("peer import");
+    import.resolved_items = Some(workers.program.items.clone().into());
+    import.resolved_item_source_paths =
+        std::iter::repeat_n(workers_path.clone(), workers.program.items.len()).collect();
+    import.resolved_source_paths = vec![workers_path.clone()];
+
+    let root_id = ModulePath::root();
+    let workers_id = ModulePath::new(["workers"]);
+    let consumer_id = ModulePath::new(["consumer"]);
+    let mut consumer_items = first.program.items;
+    let first_count = consumer_items.len();
+    consumer_items.extend(second.program.items);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: workers_id.clone(),
+            items: workers.program.items,
+            imports: vec![],
+            source_paths: vec![workers_path],
+            doc: None,
+        })
+        .expect("workers module");
+    graph
+        .add_module(Module {
+            id: consumer_id.clone(),
+            items: consumer_items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: workers_id.clone(),
+                spec: Some(ImportSpec::Names(vec![ImportName {
+                    name: Ident::new("PeerWorker"),
+                    alias: None,
+                }])),
+                span: 0..29,
+            }],
+            source_paths: vec![first_peer.clone(), second_peer.clone()],
+            doc: None,
+        })
+        .expect("consumer module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "consumer".to_string(),
+        std::iter::repeat_n(first_peer, first_count)
+            .chain(std::iter::repeat_n(
+                second_peer,
+                graph.modules[&consumer_id].items.len() - first_count,
+            ))
+            .collect(),
+    );
+    graph.topo_order = vec![workers_id, consumer_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "private supervisor in directory module must resolve peer-file import before api projection: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_rejects_unimported_bare_child_when_root_has_same_named_actor() {
+    let sup_mod = hew_parser::parse(
+        "pub supervisor RootSup {\n    strategy: one_for_one;\n    child worker: Worker;\n}\n",
+    );
+    assert!(sup_mod.errors.is_empty(), "{:?}", sup_mod.errors);
+    let root =
+        hew_parser::parse("actor Worker {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {}\n");
+    assert!(root.errors.is_empty(), "{:?}", root.errors);
+
+    let root_id = ModulePath::root();
+    let sup_id = ModulePath::new(["sup_mod"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: sup_id.clone(),
+            items: sup_mod.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("sup module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root module");
+    graph.topo_order = vec![sup_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            e.kind,
+            TypeErrorKind::SupervisorError {
+                subkind: SupervisorErrorKind::UnknownChildActor
+            }
+        )),
+        "unimported bare child `Worker` must fail as UnknownChildActor instead of binding root `Worker`: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_rejects_private_child_actor_across_module_boundary() {
+    let secret_mod = hew_parser::parse("actor HiddenWorker {\n    receive fn ping() {}\n}\n");
+    assert!(secret_mod.errors.is_empty(), "{:?}", secret_mod.errors);
+    let mut root = hew_parser::parse(
+        "import secret_mod;\n\nsupervisor Root {\n    strategy: one_for_one;\n    child h: secret_mod.HiddenWorker;\n}\n",
+    );
+    assert!(root.errors.is_empty(), "{:?}", root.errors);
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.to_string() == "secret_mod" {
+                import.resolved_items = Some(secret_mod.program.items.clone().into());
+            }
+        }
+    }
+
+    let root_id = ModulePath::root();
+    let secret_id = ModulePath::new(["secret_mod"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: secret_id.clone(),
+            items: secret_mod.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("secret module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![hew_parser::module::ModuleImport {
+                target: secret_id.clone(),
+                spec: None,
+                span: 0..18,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .expect("root module");
+    graph.topo_order = vec![secret_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::VisibilityViolationPrivate { .. })),
+        "private child actor across module boundary must emit VisibilityViolationPrivate: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            e.kind,
+            TypeErrorKind::SupervisorError {
+                subkind: SupervisorErrorKind::UnknownChildActor
+            }
+        )),
+        "private child actor must not resolve cleanly: {:#?}",
+        output.errors
+    );
+}

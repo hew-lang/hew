@@ -380,7 +380,6 @@ pub(super) fn materialized_default_body_plan(
         return Vec::new();
     };
     let Some(owner_key) = ctx.trait_declaration(&trait_bound.path) else {
-        // TRANSITION(P1): deleted by A1 commit 2
         return Vec::new();
     };
     let Some(defaults) = ctx.trait_defaults.get(&owner_key).cloned() else {

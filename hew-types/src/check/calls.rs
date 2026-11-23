@@ -50,6 +50,28 @@ pub(super) struct AppliedCallSignature {
     pub(super) return_type: Ty,
 }
 
+#[derive(Clone, Copy)]
+enum CallCallee<'a> {
+    Expr(&'a Spanned<Expr>),
+    Named { name: &'a str, span: &'a Span },
+}
+
+impl<'a> CallCallee<'a> {
+    fn expr(self) -> Option<&'a Spanned<Expr>> {
+        match self {
+            Self::Expr(expr) => Some(expr),
+            Self::Named { .. } => None,
+        }
+    }
+
+    fn span(self) -> &'a Span {
+        match self {
+            Self::Expr(expr) => &expr.1,
+            Self::Named { span, .. } => span,
+        }
+    }
+}
+
 /// The source spelling of a variant owner in a qualified fix-it: the
 /// declaration's leaf name, which is how the enum is written where it is in
 /// scope (`Parcel.Filled`, not `left.render.Parcel.Filled`).
@@ -624,10 +646,6 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
-    )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
         func: &Spanned<Expr>,
@@ -636,8 +654,52 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
-        self.record_value_path_resolution(&func.0, &func.1);
-        if let Expr::ContextVariant(context) = &func.0 {
+        self.check_call_against_expected_constructor_callee(
+            CallCallee::Expr(func),
+            type_args,
+            args,
+            expected,
+            span,
+        )
+    }
+
+    pub(in crate::check) fn check_call_against_expected_constructor_named(
+        &mut self,
+        func_name: &str,
+        func_span: &Span,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        self.check_call_against_expected_constructor_callee(
+            CallCallee::Named {
+                name: func_name,
+                span: func_span,
+            },
+            type_args,
+            args,
+            expected,
+            span,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec.new context"
+    )]
+    fn check_call_against_expected_constructor_callee(
+        &mut self,
+        callee: CallCallee<'_>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        if let Some(func) = callee.expr() {
+            self.record_value_path_resolution(&func.0, &func.1);
+        }
+        if let Some(Expr::ContextVariant(context)) = callee.expr().map(|func| &func.0) {
             if let Some(result) = self.dispatch_context_builtin_variant(
                 expected,
                 context,
@@ -654,26 +716,29 @@ impl Checker {
         // Resolve the function name first so we can route turbofish for
         // `Vec.new` before the blanket early-return for other constructors.
         let mut contextual_name = None;
-        let func_name = match &func.0 {
-            Expr::Ident(name) => name.to_string(),
-            Expr::ContextVariant(context) => {
-                let Some(owner) = self.context_variant_expected_owner(expected, span) else {
-                    for arg in args {
-                        let (expr, arg_span) = arg.expr();
-                        self.synthesize(expr, arg_span);
-                    }
-                    return Some(Ty::Error);
-                };
-                contextual_name = Some(context.name);
-                format!("{owner}::{}", context.name)
-            }
-            Expr::FieldAccess { object, field } => {
-                let Expr::Ident(obj_name) = &object.0 else {
-                    return None;
-                };
-                format!("{obj_name}::{}", field.0)
-            }
-            _ => return None,
+        let func_name = match callee {
+            CallCallee::Named { name, .. } => name.to_string(),
+            CallCallee::Expr(func) => match &func.0 {
+                Expr::Ident(name) => name.to_string(),
+                Expr::ContextVariant(context) => {
+                    let Some(owner) = self.context_variant_expected_owner(expected, span) else {
+                        for arg in args {
+                            let (expr, arg_span) = arg.expr();
+                            self.synthesize(expr, arg_span);
+                        }
+                        return Some(Ty::Error);
+                    };
+                    contextual_name = Some(context.name);
+                    format!("{owner}::{}", context.name)
+                }
+                Expr::FieldAccess { object, field } => {
+                    let Expr::Ident(obj_name) = &object.0 else {
+                        return None;
+                    };
+                    format!("{obj_name}::{}", field.0)
+                }
+                _ => return None,
+            },
         };
 
         let constructor_family =
@@ -732,7 +797,11 @@ impl Checker {
                     return Some(Ty::Error);
                 }
             }
-            self.record_context_variant_resolution(&resolved_expected, context_ident.name, &func.1);
+            self.record_context_variant_resolution(
+                &resolved_expected,
+                context_ident.name,
+                callee.span(),
+            );
         }
 
         if let Some(targs) = type_args {
@@ -1881,10 +1950,6 @@ impl Checker {
         .then_some(family)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "call checking covers many builtin and method signatures"
-    )]
     pub(super) fn check_call(
         &mut self,
         func: &Spanned<Expr>,
@@ -1892,10 +1957,46 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        if let Some(view) = self.actor_delivery_view_builtin(&func.0) {
+        self.check_call_callee(CallCallee::Expr(func), type_args, args, span)
+    }
+
+    pub(in crate::check) fn check_call_named(
+        &mut self,
+        func_name: &str,
+        func_span: &Span,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        self.check_call_callee(
+            CallCallee::Named {
+                name: func_name,
+                span: func_span,
+            },
+            type_args,
+            args,
+            span,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "call checking covers many builtin and method signatures"
+    )]
+    fn check_call_callee(
+        &mut self,
+        callee: CallCallee<'_>,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        if let Some(view) = callee
+            .expr()
+            .and_then(|func| self.actor_delivery_view_builtin(&func.0))
+        {
             return self.check_actor_delivery_view(view, args, span);
         }
-        if let Expr::ContextVariant(context) = &func.0 {
+        if let Some(Expr::ContextVariant(context)) = callee.expr().map(|func| &func.0) {
             for arg in args {
                 let (expr, arg_span) = arg.expr();
                 self.synthesize(expr, arg_span);
@@ -1914,42 +2015,63 @@ impl Checker {
         // A body-local binding shadows a function of the same spelling (R3).
         // Keep it on the ordinary value-call path below, which also handles
         // polymorphic closures and actor-handle capture checks.
-        let lexical_shadow_of_item = matches!(&func.0, Expr::Ident(name)
-            if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
-                && self.visible_fn_signature_key(*name).is_some());
-        let func_name = match &func.0 {
-            Expr::Ident(name) => name.to_string(),
-            Expr::FieldAccess { object, field } => {
-                if let Expr::Ident(obj_name) = &object.0 {
-                    // When the object identifier names a live value binding,
-                    // the callee is a field access on a value — not a
-                    // module-qualified or type-namespaced name. Synthesise the
-                    // field type and delegate to the indirect-call path so that
-                    // `(rec.f)(args)` where `f: fn(A)->B` reaches
-                    // `check_call_with_type` instead of failing with
-                    // "undefined function `rec::f`".
-                    //
-                    // The `env.lookup_ref` guard keeps type and module
-                    // identifiers on the existing name-building path
-                    // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
-                    // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name).is_some() {
-                        let receiver_ty = self
-                            .env
-                            .lookup_ref(obj_name)
-                            .map(|binding| self.subst.resolve(&binding.ty));
-                        let has_method = receiver_ty
-                            .as_ref()
-                            .and_then(|ty| match ty {
-                                Ty::Named { head, args } => self.lookup_named_method_sig(
-                                    head.registry_key(),
-                                    args,
+        let lexical_shadow_of_item = callee.expr().is_some_and(|func| {
+            matches!(&func.0, Expr::Ident(name)
+                if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
+                    && self.visible_fn_signature_key(*name).is_some())
+        });
+        let func_name = match callee {
+            CallCallee::Named { name, .. } => name.to_string(),
+            CallCallee::Expr(func) => match &func.0 {
+                Expr::Ident(name) => name.to_string(),
+                Expr::FieldAccess { object, field } => {
+                    if let Expr::Ident(obj_name) = &object.0 {
+                        // When the object identifier names a live value binding,
+                        // the callee is a field access on a value — not a
+                        // module-qualified or type-namespaced name. Synthesise the
+                        // field type and delegate to the indirect-call path so that
+                        // `(rec.f)(args)` where `f: fn(A)->B` reaches
+                        // `check_call_with_type` instead of failing with
+                        // "undefined function `rec::f`".
+                        //
+                        // The `env.lookup_ref` guard keeps type and module
+                        // identifiers on the existing name-building path
+                        // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
+                        // names are not registered as value bindings.
+                        if self.env.lookup_ref(obj_name).is_some() {
+                            let receiver_ty = self
+                                .env
+                                .lookup_ref(obj_name)
+                                .map(|binding| self.subst.resolve(&binding.ty));
+                            let has_method = receiver_ty
+                                .as_ref()
+                                .and_then(|ty| match ty {
+                                    Ty::Named { head, args } => self.lookup_named_method_sig(
+                                        head.registry_key(),
+                                        args,
+                                        field.0.name.as_str(),
+                                    ),
+                                    _ => None,
+                                })
+                                .is_some();
+                            if type_args.is_some() && has_method {
+                                return self.check_method_call_with_type_args(
+                                    object,
                                     field.0.name.as_str(),
-                                ),
-                                _ => None,
-                            })
-                            .is_some();
-                        if type_args.is_some() && has_method {
+                                    Some(&field.1),
+                                    type_args,
+                                    args,
+                                    span,
+                                );
+                            }
+                            let field_ty = self.synthesize(&func.0, &func.1);
+                            let resolved = self.subst.resolve(&field_ty);
+                            return self
+                                .check_call_with_type(&resolved, func, type_args, args, span);
+                        }
+                        format!("{obj_name}::{}", field.0)
+                    } else {
+                        if type_args.is_some() {
                             return self.check_method_call_with_type_args(
                                 object,
                                 field.0.name.as_str(),
@@ -1959,30 +2081,15 @@ impl Checker {
                                 span,
                             );
                         }
-                        let field_ty = self.synthesize(&func.0, &func.1);
-                        let resolved = self.subst.resolve(&field_ty);
-                        return self.check_call_with_type(&resolved, func, type_args, args, span);
+                        let func_ty = self.synthesize(&func.0, &func.1);
+                        return self.check_call_with_type(&func_ty, func, type_args, args, span);
                     }
-                    format!("{obj_name}::{}", field.0)
-                } else {
-                    if type_args.is_some() {
-                        return self.check_method_call_with_type_args(
-                            object,
-                            field.0.name.as_str(),
-                            Some(&field.1),
-                            type_args,
-                            args,
-                            span,
-                        );
-                    }
+                }
+                _ => {
                     let func_ty = self.synthesize(&func.0, &func.1);
                     return self.check_call_with_type(&func_ty, func, type_args, args, span);
                 }
-            }
-            _ => {
-                let func_ty = self.synthesize(&func.0, &func.1);
-                return self.check_call_with_type(&func_ty, func, type_args, args, span);
-            }
+            },
         };
 
         if self.report_bare_function_import_ambiguity(&func_name, span) {
@@ -2046,7 +2153,9 @@ impl Checker {
             // credit below `check_struct_init` covers for record literals —
             // this call-form constructor is its own resolution path. Credit
             // the lexical binding the same way, via the resolved owner.
-            self.note_import_use_of_expr_head(&func.0);
+            if let Some(func) = callee.expr() {
+                self.note_import_use_of_expr_head(&func.0);
+            }
             let type_param_count = type_params.len();
             if type_param_count == 0 {
                 if let Some(type_args_provided) = type_args {
@@ -2364,10 +2473,11 @@ impl Checker {
         let visible_fn_key = if lexical_shadow_of_item {
             None
         } else {
-            self.visible_fn_signature_key(match &func.0 {
-                Expr::Ident(ident) => *ident,
-                _ => Ident::new(&func_name),
-            })
+            if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                self.visible_fn_signature_key(*ident)
+            } else {
+                self.visible_fn_signature_key(func_name.as_str())
+            }
             .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
         let has_visible_fn_signature = visible_fn_key.is_some();
@@ -2553,11 +2663,13 @@ impl Checker {
             // source spelling is not its registry key, so HIR must be told the
             // key rather than retry the leaf. Publishing it here is what makes
             // both spellings one shape downstream.
-            if matches!(
-                &func.0,
-                Expr::FieldAccess { object, .. }
-                    if matches!(object.0, Expr::Ident(_))
-            ) || self.actor_method_owner(&resolved_fn_name).is_some()
+            if callee.expr().is_some_and(|func| {
+                matches!(
+                    &func.0,
+                    Expr::FieldAccess { object, .. }
+                        if matches!(object.0, Expr::Ident(_))
+                )
+            }) || self.actor_method_owner(&resolved_fn_name).is_some()
             {
                 self.record_method_call_rewrite(
                     span,
@@ -2582,58 +2694,59 @@ impl Checker {
         }
 
         // Then check if it's a variable with a function type (e.g., lambda parameters)
-        if let Some((binding_depth, binding)) = self
-            .env
-            .lookup_with_depth(match &func.0 {
-                Expr::Ident(name) => *name,
-                _ => Ident::new(&func_name),
-            })
-            .map(|(depth, binding)| (depth, binding.clone()))
-        {
-            let recursive_actor_receiver = self.in_lambda_actor_body
+        if let Some(func) = callee.expr() {
+            if let Some((binding_depth, binding)) = self
+                .env
+                .lookup_with_depth(match &func.0 {
+                    Expr::Ident(name) => *name,
+                    _ => Ident::new(&func_name),
+                })
+                .map(|(depth, binding)| (depth, binding.clone()))
+            {
+                let recursive_actor_receiver = self.in_lambda_actor_body
                 && Some(&binding.value_candidates).is_some_and(|origins| {
                     !origins.may_be_unknown
                         && matches!(origins.known.as_slice(), [super::types::CallableCandidate::Closure(site)]
                             if self.effect_graph.current_body.as_ref()
                                 == Some(&super::effects::EffectBody::Closure(site.clone())))
                 });
-            if recursive_actor_receiver {
-                if let Expr::Ident(name) = &func.0 {
-                    // The actor's recursive receiver denotes its current turn,
-                    // not an owned capture from the enclosing environment.
-                    self.record_local_resolution(*name, &func.1);
+                if recursive_actor_receiver {
+                    if let Expr::Ident(name) = &func.0 {
+                        // The actor's recursive receiver denotes its current turn,
+                        // not an owned capture from the enclosing environment.
+                        self.record_local_resolution(*name, &func.1);
+                    }
+                } else {
+                    self.synthesize(&func.0, &func.1);
                 }
-            } else {
-                self.synthesize(&func.0, &func.1);
-            }
-            let func_ty = binding.ty.clone();
-            // Explicit fail-closed gate: a regular fn-closure must not capture a
-            // lambda-actor handle (`actor(M) -> R`) and call it with call syntax.
-            //
-            // Authority: checker (this site). MIR has a defence-in-depth guard at
-            // `materialize_closure_env` that names this site as authoritative. The
-            // rejection is deliberate: there is no env-materialization protocol for
-            // lambda-actor handles yet — the handle's release is owned by its
-            // spawning-scope slot, not by an env-loaded copy, so emitting the
-            // capture would release the runtime wrapper twice.
-            //
-            // When this restriction is lifted (full env-materialization protocol
-            // for lambda-actor captures), remove this guard AND the MIR assert in
-            // `materialize_closure_env`.
-            let resolved_func_ty = self.subst.resolve(&func_ty);
-            if matches!(
-                &resolved_func_ty,
-                Ty::Named {
-                    head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
-                    ..
-                }
-            ) {
-                if let Some(capture_depth) = self.lambda_capture_depth {
-                    // Allow the lambda-actor body to call its own handle
-                    // recursively (self-send pattern). Regular fn-closures must not
-                    // capture lambda-actor handles — no env-materialization protocol exists yet.
-                    if binding_depth < capture_depth && !self.in_lambda_actor_body {
-                        self.report_error(
+                let func_ty = binding.ty.clone();
+                // Explicit fail-closed gate: a regular fn-closure must not capture a
+                // lambda-actor handle (`actor(M) -> R`) and call it with call syntax.
+                //
+                // Authority: checker (this site). MIR has a defence-in-depth guard at
+                // `materialize_closure_env` that names this site as authoritative. The
+                // rejection is deliberate: there is no env-materialization protocol for
+                // lambda-actor handles yet — the handle's release is owned by its
+                // spawning-scope slot, not by an env-loaded copy, so emitting the
+                // capture would release the runtime wrapper twice.
+                //
+                // When this restriction is lifted (full env-materialization protocol
+                // for lambda-actor captures), remove this guard AND the MIR assert in
+                // `materialize_closure_env`.
+                let resolved_func_ty = self.subst.resolve(&func_ty);
+                if matches!(
+                    &resolved_func_ty,
+                    Ty::Named {
+                        head: crate::TypeHead::Builtin(crate::BuiltinType::ActorFn),
+                        ..
+                    }
+                ) {
+                    if let Some(capture_depth) = self.lambda_capture_depth {
+                        // Allow the lambda-actor body to call its own handle
+                        // recursively (self-send pattern). Regular fn-closures must not
+                        // capture lambda-actor handles — no env-materialization protocol exists yet.
+                        if binding_depth < capture_depth && !self.in_lambda_actor_body {
+                            self.report_error(
                             TypeErrorKind::ClosureCapturesDuplexHandle {
                                 name: func_name.clone(),
                             },
@@ -2646,13 +2759,14 @@ impl Checker {
                                  (E_CLOSURE_CAPTURES_LAMBDA_HANDLE)"
                             ),
                         );
-                        return Ty::Error;
+                            return Ty::Error;
+                        }
                     }
                 }
-            }
 
-            let ret = self.check_call_with_type(&func_ty, func, type_args, args, span);
-            return ret;
+                let ret = self.check_call_with_type(&func_ty, func, type_args, args, span);
+                return ret;
+            }
         }
 
         // Qualified trait method call: e.g. `Measurable::measure(item)`.
@@ -2756,7 +2870,7 @@ impl Checker {
         self.report_error_with_spelling_suggestions(
             TypeErrorKind::UndefinedFunction,
             span,
-            Some(&func.1),
+            Some(callee.span()),
             format!("undefined function `{func_name}`"),
             similar,
             help,

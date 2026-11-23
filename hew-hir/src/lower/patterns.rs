@@ -186,7 +186,6 @@ pub(super) fn collect_match_payload_predicates(
     scrutinee_ty: &ResolvedTy,
 ) -> Result<Vec<HirPayloadPredicate>, String> {
     match &pattern.0 {
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -214,7 +213,6 @@ pub(super) fn collect_match_payload_predicates(
                 })
                 .collect())
         }
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
@@ -405,8 +403,7 @@ pub(super) fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bo
                 path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
             } if path.segments.len() == 1
-        ) // TRANSITION(P1): deleted by A1 commit 2
-            || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+        ) || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
     })
 }
 
@@ -429,13 +426,12 @@ pub(super) fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) ->
     fields.iter().any(|pf| match &pf.pattern {
         Some((sub_pat, _)) => {
             matches!(
-            sub_pat,
-            Pattern::NominalPath {
-                path,
-                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-            } if path.segments.len() == 1
-        ) // TRANSITION(P1): deleted by A1 commit 2
-                || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+                sub_pat,
+                Pattern::NominalPath {
+                    path,
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                } if path.segments.len() == 1
+            ) || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
         }
         None => false,
     })
@@ -894,13 +890,12 @@ impl LowerCtx<'_> {
             .unwrap_or_default();
         for (field_idx, (sub_pat, sub_span)) in sub_patterns.iter().enumerate() {
             if !matches!(
-            sub_pat,
-            Pattern::NominalPath {
-                path,
-                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-            } if path.segments.len() == 1
-        ) // TRANSITION(P1): deleted by A1 commit 2
-                && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+                sub_pat,
+                Pattern::NominalPath {
+                    path,
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                } if path.segments.len() == 1
+            ) && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
             {
                 continue;
             }
@@ -1003,13 +998,12 @@ impl LowerCtx<'_> {
                 continue;
             };
             if !matches!(
-            sub_pat,
-            Pattern::NominalPath {
-                path,
-                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-            } if path.segments.len() == 1
-        ) // TRANSITION(P1): deleted by A1 commit 2
-                && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+                sub_pat,
+                Pattern::NominalPath {
+                    path,
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                } if path.segments.len() == 1
+            ) && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
             {
                 continue;
             }

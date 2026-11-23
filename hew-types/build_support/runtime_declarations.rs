@@ -39,7 +39,7 @@ pub fn generate(repo: &Path, out: &Path) -> String {
             let TypeExpr::Named { path, .. } = decl.target_type.0 else {
                 continue;
             };
-            let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = path.to_string();
             for method in decl.methods {
                 if let Some((family, row)) = render_method(module, &name, &method) {
                     assert!(
@@ -193,7 +193,7 @@ fn scalar(ty: &TypeExpr) -> &'static str {
         type_args.is_none(),
         "direct runtime scalar cannot have type arguments"
     );
-    let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+    let name = path.to_string();
     scalar_named(&name)
 }
 

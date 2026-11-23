@@ -887,7 +887,7 @@ fn qualified(source: AuthoritySource<'_>, declaration: &str) -> String {
 
 fn type_name(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+        TypeExpr::Named { path, .. } => path.to_string(),
         _ => "<unnamed>".to_string(),
     }
 }
@@ -902,7 +902,7 @@ fn collect_prelude_export(
     exports: &mut Vec<PreludeExport>,
     import: hew_parser::ast::ImportDecl,
 ) -> Result<(), AuthorityErrorKind> {
-    let module = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+    let module = import.path.to_string();
     match import.spec {
         None => Err(AuthorityErrorKind::PreludeModuleImport { module }),
         Some(ImportSpec::Names(names)) => {

@@ -1020,6 +1020,7 @@ impl LowerCtx<'_> {
         source_return_ty: ResolvedTy,
         span: &std::ops::Range<usize>,
     ) -> (HirBlock, ResolvedTy) {
+        check_gen_target_gate(self, span);
         let yield_ty = source_return_ty;
         let gen_return_ty = ResolvedTy::Unit;
         // Snapshot the enclosing scope (param scope on top) BEFORE lowering the

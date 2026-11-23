@@ -75,15 +75,29 @@ impl Checker {
                 .iter()
                 .map(|arg| self.resolve_type_expr(arg))
                 .collect();
-            // TRANSITION(A1c4): WHY the child actor is still named by its
-            // rendered spelling. WHEN supervisor children resolve through
-            // `Scope`, the child is its declaration. WHAT: resolve the
-            // written path to the actor's `NominalId`.
-            let child_type = self.canonical_supervisor_child_type(&c.actor_type);
-            let entry = (
-                c.name.to_string(),
-                Ty::actor_handle_of(&self.named_ty_for_key(&child_type, type_args)),
-            );
+            let actor_ty = if let Some(super::scope::Resolution::Nominal(actor)) =
+                self.resolve_type_path(&c.actor_type)
+            {
+                let child_span = c
+                    .actor_type
+                    .segments
+                    .last()
+                    .map_or(&c.span, |(_, span)| span);
+                if c.actor_type.segments.len() > 1
+                    && !self.check_declaration_visible(actor.declaration(), child_span)
+                {
+                    Ty::Error
+                } else {
+                    Ty::named_head(self.head_of_declaration(actor), type_args)
+                }
+            } else {
+                let child_type = crate::Symbol::intern(&c.actor_type.to_string());
+                Ty::Named {
+                    head: crate::TypeHead::Unresolved(child_type),
+                    args: type_args,
+                }
+            };
+            let entry = (c.name.to_string(), Ty::actor_handle_of(&actor_ty));
             if c.is_pool {
                 pools.push(entry);
             } else {

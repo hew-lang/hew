@@ -120,7 +120,6 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Tuple(_) | Pattern::Identifier(_) => {
             None
         }
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
@@ -155,7 +154,6 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         // Wildcard and bare identifiers: allowed or deferred to call site.
         Pattern::Wildcard | Pattern::Identifier(_) | Pattern::Literal(_) => None,
         Pattern::Tuple(pats) if pats.is_empty() => None,
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
@@ -1270,7 +1268,6 @@ impl Checker {
                 );
                 self.record_local_resolution(*name, span);
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -1333,7 +1330,6 @@ impl Checker {
                     }
                 }
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
@@ -1883,7 +1879,6 @@ impl Checker {
                     }
                 }
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -1898,7 +1893,6 @@ impl Checker {
                 };
                 resolution
             }
-            // TRANSITION(P1): deleted by A1 commit 2
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
@@ -2369,7 +2363,6 @@ impl Checker {
                                             )
                                             .is_some()
                                         }
-                                        // TRANSITION(P1): deleted by A1 commit 2
                                         Pattern::NominalPath { path, .. } => {
                                             path.segments.len() > 1
                                         }
@@ -2586,7 +2579,6 @@ impl Checker {
                     // Aggregate destructures, or-patterns and regex subpatterns
                     // require their own checked projection contracts.
                     let label = match other {
-                        // TRANSITION(P1): deleted by A1 commit 2
                         Pattern::NominalPath {
                             path,
                             payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),

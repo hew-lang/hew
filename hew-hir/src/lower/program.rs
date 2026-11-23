@@ -258,7 +258,6 @@ pub fn lower_program(
                             .map(|m| m.name.name.as_str())
                             .collect();
                         if let Some(default_owner) = ctx.trait_declaration(&tb.path) {
-                            // TRANSITION(P1): deleted by A1 commit 2
                             if let Some(defaults) = ctx.trait_defaults.get(&default_owner).cloned()
                             {
                                 for default_method in &defaults {
@@ -524,9 +523,7 @@ pub fn lower_program(
                                         .iter()
                                         .map(|m| m.name.name.as_str())
                                         .collect();
-                                    if let Some(default_owner) = ctx.trait_declaration(&tb.path)
-                                    // TRANSITION(P1): deleted by A1 commit 2
-                                    {
+                                    if let Some(default_owner) = ctx.trait_declaration(&tb.path) {
                                         if let Some(defaults) =
                                             ctx.trait_defaults.get(&default_owner).cloned()
                                         {
@@ -657,15 +654,6 @@ pub fn lower_program(
     }
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
-    // Pre-pass: target architecture gates (P0.1-P0.4 fail-closed runtime-panic
-    // prevention). Check if the program uses coroutine-dependent constructs
-    // (actors/tasks) or wasm32-unsupported constructs (blocking channel recv)
-    // on incompatible targets. Emit fatal diagnostics before lowering begins.
-    //
-    // This pass runs early so rejection happens before any HIR nodes are
-    // materialized, keeping the fail-closed contract clear: if a program uses
-    // unsupported runtime features, the compile stops here.
-    check_target_gates(&mut ctx, program);
 
     // Pre-pass: register module-scope tagged-union constructors so
     // `lower_identifier` can lower variant references to `MachineVariantCtor`
@@ -1546,10 +1534,12 @@ pub fn lower_program(
                 );
                 continue;
             };
-            let mut source = source.clone();
-            source.name = Ident::new(&canonical_name); // TRANSITION(P1): deleted by A1 commit 2
-            let Some(decl) = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)
-            else {
+            let Some(decl) = ctx.lower_type_decl_with_identity(
+                source,
+                &canonical_name,
+                span.clone(),
+                declaration,
+            ) else {
                 continue;
             };
             ctx.type_classes
@@ -1662,25 +1652,7 @@ pub fn lower_program(
                 ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
             }
             Item::Actor(actor) => {
-                // P0.1: Fail-closed gate: actors require the actor runtime ABI.
-                // wasm32 is admitted: `hew-runtime/src/scheduler_wasm.rs` provides
-                // the cooperative actor scheduler, mailbox, and coroutine substrate
-                // with C ABI parity to the native scheduler. `TargetArch::Other`
-                // (unknown/unsupported triples) remains gated — no scheduler exists
-                // for those targets (#1821).
-                if matches!(ctx.target_arch, TargetArch::Other) {
-                    ctx.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TargetCoroutineUnsupported {
-                            target_arch: format!("{:?}", ctx.target_arch),
-                            construct: "actor decl".to_string(),
-                        },
-                        span.clone(),
-                        format!(
-                            "actor '{}' requires the actor runtime ABI (unsupported target)",
-                            actor.name
-                        ),
-                    ));
-                }
+                check_actor_target_gate(&mut ctx, actor.name, span);
                 let defining_module = ctx.current_module_name.clone();
                 if let Some(actor) =
                     ctx.lower_actor(actor, span.clone(), defining_module.as_deref())
@@ -1701,22 +1673,7 @@ pub fn lower_program(
                 }
             }
             Item::Supervisor(decl) => {
-                // Native and WASI share the checked supervisor runtime.
-                // Other architectures have no runtime implementation.
-                if matches!(ctx.target_arch, TargetArch::Other) {
-                    ctx.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TargetCoroutineUnsupported {
-                            target_arch: format!("{:?}", ctx.target_arch),
-                            construct: "supervisor decl".to_string(),
-                        },
-                        span.clone(),
-                        format!(
-                            "supervisor '{}' requires supervisor restart machinery \
-                             (unsupported target)",
-                            decl.name
-                        ),
-                    ));
-                }
+                check_supervisor_target_gate(&mut ctx, decl.name, span);
                 if let Some(supervisor) = ctx.lower_supervisor(decl, span.clone()) {
                     items.push(HirItem::Supervisor(supervisor));
                 }
@@ -2123,23 +2080,7 @@ pub fn lower_program(
                         // is still spawned by its pub functions, so it needs its
                         // layout here.
                         Item::Actor(actor) => {
-                            // Fail-closed target gate: actors require the actor
-                            // runtime ABI, same as the root-item
-                            // actor arm in the source-order emit pass.
-                            if matches!(ctx.target_arch, TargetArch::Other) {
-                                ctx.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::TargetCoroutineUnsupported {
-                                        target_arch: format!("{:?}", ctx.target_arch),
-                                        construct: "actor decl".to_string(),
-                                    },
-                                    span.clone(),
-                                    format!(
-                                        "actor '{}' requires the actor runtime ABI \
-                                         (unsupported target)",
-                                        actor.name
-                                    ),
-                                ));
-                            }
+                            check_actor_target_gate(&mut ctx, actor.name, span);
                             let lowered =
                                 ctx.lower_imported_actor(actor, span.clone(), &source_module);
                             if let Some(lowered) = lowered {
@@ -2153,20 +2094,7 @@ pub fn lower_program(
                         // lowering with a handle no declaration answers. The
                         // root arm gates the target the same way.
                         Item::Supervisor(supervisor) => {
-                            if matches!(ctx.target_arch, TargetArch::Other) {
-                                ctx.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::TargetCoroutineUnsupported {
-                                        target_arch: format!("{:?}", ctx.target_arch),
-                                        construct: "supervisor decl".to_string(),
-                                    },
-                                    span.clone(),
-                                    format!(
-                                        "supervisor '{}' requires supervisor restart machinery \
-                                         (unsupported target)",
-                                        supervisor.name
-                                    ),
-                                ));
-                            }
+                            check_supervisor_target_gate(&mut ctx, supervisor.name, span);
                             if let Some(lowered) = ctx.lower_supervisor(supervisor, span.clone()) {
                                 items.push(HirItem::Supervisor(lowered));
                             }

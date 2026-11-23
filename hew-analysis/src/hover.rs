@@ -818,7 +818,6 @@ fn find_pattern_binding_type(
     }
     match &pattern.0 {
         Pattern::Identifier(name) => (name.name.as_str() == word).then(|| source_ty.clone()),
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
@@ -833,7 +832,6 @@ fn find_pattern_binding_type(
                     })
             })
         }
-        // TRANSITION(P1): deleted by A1 commit 2
         Pattern::NominalPath {
             path: one_path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
@@ -1114,7 +1112,7 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             path: named_path,
             type_args,
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             let base =
                 Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());
             if let Some(type_args) = type_args {
@@ -1230,7 +1228,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
     if let Some(type_args) = &bound.type_args {
         format!(
             "{}<{}>",
-            bound.path, // TRANSITION(P1): deleted by A1 commit 2
+            bound.path,
             type_args
                 .iter()
                 .map(|(arg, _)| format_type_expr_hover(arg))
@@ -1238,7 +1236,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
                 .join(", ")
         )
     } else {
-        bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+        bound.path.to_string()
     }
 }
 

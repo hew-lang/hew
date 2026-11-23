@@ -75,6 +75,31 @@ actor WorkerActor {
 }
 
 #[test]
+fn target_coroutine_unsupported_rejects_scope_expr() {
+    let source = r"fn main() -> int {
+    scope {
+        let task = fork { 42 };
+        await task
+    }
+}
+";
+    let output = lower(source, TargetArch::Other);
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::TargetCoroutineUnsupported { ref construct, .. }
+                if construct == "scope expr"
+        )),
+        "Expected TargetCoroutineUnsupported for scope expr, got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "into_result() should fail with unsupported target gate"
+    );
+}
+
+#[test]
 fn wasm32_target_lowers_supervisor_restart_program() {
     let source =
         include_str!("../../../tests/core-acceptance/cases/supervisor-restart-one-for-one.hew");
@@ -145,3 +170,113 @@ fn native_targets_accept_actors() {
 // `StreamRecv` async-suspend classification (see `runtime_call.rs`) on every
 // target, including wasm32, so there is no blocking runtime path left to
 // gate against.
+
+#[test]
+fn target_coroutine_unsupported_rejects_select_expr() {
+    let source = r"fn work() -> i64 {
+    42
+}
+
+fn main() -> i64 {
+    let task = fork work();
+    select {
+        value from task => value,
+        after 5ms => 0,
+    }
+}
+";
+    let output = lower(source, TargetArch::Other);
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::TargetCoroutineUnsupported { ref construct, .. }
+                if construct == "select expr"
+        )),
+        "Expected TargetCoroutineUnsupported for select expr, got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "into_result() should fail with unsupported target gate"
+    );
+}
+
+#[test]
+fn target_coroutine_unsupported_rejects_race_expr() {
+    let source = r"fn left() -> i64 { 1 }
+fn right() -> i64 { 2 }
+
+fn main() -> i64 {
+    await race [left(), right()]
+}
+";
+    let output = lower(source, TargetArch::Other);
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::TargetCoroutineUnsupported { ref construct, .. }
+                if construct == "race expr"
+        )),
+        "Expected TargetCoroutineUnsupported for race expr, got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "into_result() should fail with unsupported target gate"
+    );
+}
+
+#[test]
+fn target_coroutine_unsupported_rejects_gen_expr_and_gen_fn() {
+    for source in [
+        "fn main() { let g = gen { yield 1; }; }",
+        "gen fn nums() -> i64 { yield 1; }\nfn main() {}",
+    ] {
+        let output = lower(source, TargetArch::Other);
+        assert!(
+            output.diagnostics.iter().any(|d| matches!(
+                d.kind,
+                HirDiagnosticKind::TargetCoroutineUnsupported { ref construct, .. }
+                    if construct == "gen expr"
+            )),
+            "Expected TargetCoroutineUnsupported for `{source}`, got: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output.into_result().is_err(),
+            "into_result() should fail with unsupported target gate"
+        );
+    }
+}
+
+#[test]
+fn wasm32_target_accepts_select_race_and_generators() {
+    let source = r"fn left() -> i64 { 1 }
+fn right() -> i64 { 2 }
+gen fn nums() -> i64 { yield 1; }
+
+fn main() -> i64 {
+    let task = fork left();
+    let selected = select {
+        value from task => value,
+        after 5ms => 0,
+    };
+    let raced = await race [left(), right()];
+    let _g = gen { yield 2; };
+    let _f = nums();
+    selected + raced
+}
+";
+    let output = lower(source, TargetArch::Wasm32);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::TargetCoroutineUnsupported { .. })),
+        "wasm32 should admit select, race, and generator coroutines; got: {:?}",
+        output.diagnostics
+    );
+    output
+        .into_result()
+        .expect("wasm32 should lower select, race, and generators cleanly");
+}

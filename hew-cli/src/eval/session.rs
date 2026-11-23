@@ -362,7 +362,7 @@ fn summarize_import(import: &hew_parser::ast::ImportDecl) -> String {
     if import.path.segments.is_empty() {
         "import <module>".to_string()
     } else {
-        format!("import {}", import.path) // TRANSITION(P1): deleted by A1 commit 2
+        format!("import {}", import.path)
     }
 }
 

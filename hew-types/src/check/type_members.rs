@@ -301,15 +301,12 @@ impl Checker {
                 span,
             } if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) => {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
-                let constructor = (
-                    Expr::Ident(Ident::new(&constructor_name)), // TRANSITION(P1): deleted by A1 commit 2
-                    head.span.clone(),
-                );
                 let result = expected
                     .filter(|_| head.type_args.is_none())
                     .and_then(|expected| {
-                        self.check_call_against_expected_constructor(
-                            &constructor,
+                        self.check_call_against_expected_constructor_named(
+                            &constructor_name,
+                            &head.span,
                             None,
                             args,
                             expected,
@@ -317,7 +314,13 @@ impl Checker {
                         )
                     })
                     .unwrap_or_else(|| {
-                        self.check_call(&constructor, head.type_args.as_deref(), args, span)
+                        self.check_call_named(
+                            &constructor_name,
+                            &head.span,
+                            head.type_args.as_deref(),
+                            args,
+                            span,
+                        )
                     });
                 self.record_method_call_receiver_kind(
                     span,
@@ -508,10 +511,10 @@ impl Checker {
             && (self.has_fn_sig(internal_member) || is_vec_from))
             .then_some(internal_member.to_string());
         if let Some(checker_member) = checker_member {
-            let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {
-                self.check_call_against_expected_constructor(
-                    &function,
+                self.check_call_against_expected_constructor_named(
+                    &checker_member,
+                    &head.span,
                     head.type_args.as_deref(),
                     args,
                     expected,
@@ -521,7 +524,13 @@ impl Checker {
                 self.promote_dotted_static_call_rewrite(span, &checker_member);
                 return Some(result);
             }
-            let result = self.check_call(&function, head.type_args.as_deref(), args, span);
+            let result = self.check_call_named(
+                &checker_member,
+                &head.span,
+                head.type_args.as_deref(),
+                args,
+                span,
+            );
             self.promote_dotted_static_call_rewrite(span, &checker_member);
             return Some(result);
         }

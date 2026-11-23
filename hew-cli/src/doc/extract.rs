@@ -170,7 +170,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             path: named_path,
             type_args,
         } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = &named_path.to_string();
             if let Some(args) = type_args {
                 let arg_strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
                 format!("{name}<{}>", arg_strs.join(", "))
@@ -235,7 +235,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
                         let strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
                         format!("<{}>", strs.join(", "))
                     });
-                    format!("{}{args}", b.path) // TRANSITION(P1): deleted by A1 commit 2
+                    format!("{}{args}", b.path)
                 })
                 .collect();
             if parts.len() == 1 {

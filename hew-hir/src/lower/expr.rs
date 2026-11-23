@@ -1,7 +1,7 @@
 //! Expression lowering.
 
 use super::*;
-use hew_parser::ast::{Ident, Path};
+use hew_parser::ast::Ident;
 
 impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
@@ -168,14 +168,19 @@ impl LowerCtx<'_> {
         if let Expr::FieldAccess { object, field } = &expr.0 {
             if let Expr::Ident(owner) = &object.0 {
                 let qualified = format!("{owner}::{field}", field = field.0);
-                let checker_ty = self.checker_expr_ty_if_present(&span);
-                if matches!(
-                    self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
-                    Some((_, _, HirVariantKind::Unit))
-                ) {
-                    return self
-                        .lower_expr_inner(&(Expr::Ident(Ident::new(&qualified)), span), intent);
-                    // TRANSITION(P1): deleted by A1 commit 2
+                if let Some(ty) = self.checker_expr_ty_if_present(&span) {
+                    if let Some((machine_name, state_idx, HirVariantKind::Unit)) =
+                        self.lookup_variant_ctor(&qualified, Some(&ty))
+                    {
+                        let site = self.source_site(&span);
+                        let result_ty = self.restore_type_declaration_facts(ty);
+                        let kind = HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
+                        };
+                        return self.finish_inner_expr(kind, result_ty, site, intent, span);
+                    }
                 }
             }
         }
@@ -225,42 +230,43 @@ impl LowerCtx<'_> {
                         Some((_, _, HirVariantKind::Tuple(_)))
                     )
                 {
-                    let compatibility = Expr::Call {
-                        function: hew_parser::chain::Chain::new((
-                            Expr::Ident(Ident::new(&qualified)), // TRANSITION(P1): deleted by A1 commit 2
-                            receiver.1.clone(),
-                        )),
-                        type_args: None,
-                        args: args.clone(),
-                        is_tail_call: false,
-                    };
-                    return self.lower_expr_inner(&(compatibility, span), intent);
+                    let site = self.source_site(&span);
+                    let LoweredCallArgs { args, .. } =
+                        self.lower_call_args_for_callee(args, &span, None);
+                    let (kind, ty) = self.lower_variant_ctor_tuple_call(&qualified, args, &span);
+                    return self.finish_inner_expr(kind, ty, site, intent, span);
                 }
             }
         }
         if let Expr::ContextVariant(context) = &expr.0 {
-            let owner = self
-                .checker_expr_ty_if_present(&span)
-                .and_then(|ty| match ty {
+            if context.record.is_none() {
+                let site = self.source_site(&span);
+                let checker_ty = self
+                    .checker_expr_ty_if_present(&span)
+                    .map(|ty| self.restore_type_declaration_facts(ty));
+                let owner = checker_ty.as_ref().and_then(|ty| match ty {
                     ResolvedTy::Named { head, .. } => Some(head.registry_key()),
                     _ => None,
                 });
-            let contextual_name = owner.map_or_else(
-                || context.name.to_string(),
-                |owner| format!("{owner}::{}", context.name),
-            );
-            let compatibility = if let Some(record) = &context.record {
-                Expr::StructInit {
-                    path: Path::single(Ident::new(&contextual_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
-                    fields: record.fields.clone(),
-                    field_labels: Vec::new(),
-                    type_args: None,
-                    base: record.base.clone(),
+                let contextual_name = owner.map_or_else(
+                    || context.name.to_string(),
+                    |owner| format!("{owner}::{}", context.name),
+                );
+                if let Some((machine_name, state_idx, HirVariantKind::Unit)) =
+                    self.lookup_variant_ctor(&contextual_name, checker_ty.as_ref())
+                {
+                    if let Some(result_ty) = checker_ty {
+                        let kind = HirExprKind::MachineVariantCtor {
+                            machine_name,
+                            state_idx,
+                            payload: None,
+                        };
+                        return self.finish_inner_expr(kind, result_ty, site, intent, span);
+                    }
                 }
-            } else {
-                Expr::Ident(Ident::new(&contextual_name)) // TRANSITION(P1): deleted by A1 commit 2
-            };
-            return self.lower_expr_inner(&(compatibility, span), intent);
+                let (kind, ty) = self.lower_identifier(&contextual_name, span.clone(), site);
+                return self.finish_inner_expr(kind, ty, site, intent, span);
+            }
         }
         if let Expr::GenericApplySuffix { target, .. } = &expr.0 {
             if let Expr::Ident(name) = &target.0 {
@@ -619,7 +625,10 @@ impl LowerCtx<'_> {
                 // machine declaration context held in `current_machine_states`.
                 self.lower_identifier(name.name.as_str(), span.clone(), site)
             }
-            Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
+            Expr::ContextVariant(context) if context.record.is_none() => {
+                unreachable!("unit context variants are lowered before site allocation")
+            }
+            Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
             }
             Expr::QualifiedAssoc(path) => {
@@ -690,23 +699,32 @@ impl LowerCtx<'_> {
                     ty,
                 )
             }
-            Expr::StructInit {
-                fields,
-                // Surface-level explicit type arguments (`Box<i64> { ... }`).
-                // The HIR-recorded `type_args` below comes from the checker's
-                // resolved expression type, which already reconciles explicit
-                // and inferred arguments. Ignore the raw surface args here.
-                type_args: _,
-                base,
-                ..
-            }
-            | Expr::RecordInitSuffix { fields, base, .. } => {
+            Expr::StructInit { .. } | Expr::RecordInitSuffix { .. } | Expr::ContextVariant(_) => {
+                let (fields, base) = match &expr.0 {
+                    Expr::StructInit { fields, base, .. }
+                    | Expr::RecordInitSuffix { fields, base, .. } => (fields, base),
+                    Expr::ContextVariant(context) => {
+                        let record = context
+                            .record
+                            .as_ref()
+                            .expect("unit context variants are lowered before site allocation");
+                        (&record.fields, &record.base)
+                    }
+                    _ => unreachable!("record initializer match arm"),
+                };
                 let constructor_name = match &expr.0 {
                     Expr::StructInit { path, .. } => path.to_string(),
                     Expr::RecordInitSuffix { .. } => self
                         .checker_expr_ty_if_present(&span)
                         .and_then(|ty| ty.head().map(|head| head.registry_key().to_string()))
                         .unwrap_or_default(),
+                    Expr::ContextVariant(context) => self
+                        .checker_expr_ty_if_present(&span)
+                        .and_then(|ty| {
+                            ty.head()
+                                .map(|head| format!("{}::{}", head.registry_key(), context.name))
+                        })
+                        .unwrap_or_else(|| context.name.to_string()),
                     _ => unreachable!("record initializer match arm"),
                 };
                 let name = &constructor_name;
@@ -873,6 +891,7 @@ impl LowerCtx<'_> {
                 }
             }
             Expr::Scope { body } => {
+                check_scope_target_gate(self, &span);
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
@@ -969,6 +988,7 @@ impl LowerCtx<'_> {
                 )
             }
             Expr::ScopeDeadline { duration, body } => {
+                check_scope_target_gate(self, &span);
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
@@ -1071,15 +1091,23 @@ impl LowerCtx<'_> {
                 }
             }
             Expr::Select { arms, timeout } => {
+                check_select_target_gate(self, &span);
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
-            Expr::Race(branches) => self.lower_race(branches, span.clone()),
+            Expr::Race(branches) => {
+                check_race_target_gate(self, &span);
+                self.lower_race(branches, span.clone())
+            }
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor { params, body, .. } => {
+                check_lambda_actor_target_gate(self, &span);
                 self.lower_spawn_lambda_actor(params, body, &span)
             }
             Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
-            Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
+            Expr::GenBlock { body } => {
+                check_gen_target_gate(self, &span);
+                self.lower_gen_block(body, span.clone())
+            }
             Expr::Yield(value) => {
                 let value = value
                     .as_deref()

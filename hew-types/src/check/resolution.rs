@@ -1060,8 +1060,7 @@ impl Checker {
                     span,
                     format!(
                         "duplicate associated type binding `{}` in `dyn {}`",
-                        binding.name,
-                        bound.path // TRANSITION(P1): deleted by A1 commit 2
+                        binding.name, bound.path
                     ),
                 );
                 continue;
@@ -1072,7 +1071,7 @@ impl Checker {
                     &binding.ty.1,
                     format!(
                         "associated type binding `{}.{}` in a dyn trait object must be fully projected",
-                        bound.path, binding.name // TRANSITION(P1): deleted by A1 commit 2
+                        bound.path, binding.name
                     ),
                 );
             }
@@ -1102,14 +1101,14 @@ impl Checker {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
-                bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                bound.path.to_string(),
                 SpanKey::in_module(span, self.current_module_idx),
             );
             if self.reported_unknown_dyn_traits.insert(dedup_key) {
                 self.report_error(
                     TypeErrorKind::UndefinedType,
                     span,
-                    format!("unknown trait `{}` in `dyn` type", bound.path), // TRANSITION(P1): deleted by A1 commit 2
+                    format!("unknown trait `{}` in `dyn` type", bound.path),
                 );
             }
         }
@@ -1156,26 +1155,26 @@ impl Checker {
                         && matches!(
                             &err.kind,
                             TypeErrorKind::MissingAssocTypeBinding { trait_name, missing: prev }
-                                if trait_name == &bound.path.to_string() && prev == &missing // TRANSITION(P1): deleted by A1 commit 2
+                                if trait_name == &bound.path.to_string() && prev == &missing
                         )
                 });
                 if !already_reported {
                     self.report_error(
                         TypeErrorKind::MissingAssocTypeBinding {
-                            trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                            trait_name: bound.path.to_string(),
                             missing: missing.clone(),
                         },
                         span,
                         format!(
                             "`dyn {}` must bind associated type{} {}; write `dyn {}<{}>`",
-                            bound.path, // TRANSITION(P1): deleted by A1 commit 2
+                            bound.path,
                             if missing.len() == 1 { "" } else { "s" },
                             missing
                                 .iter()
                                 .map(|name| format!("`{name}`"))
                                 .collect::<Vec<_>>()
                                 .join(", "),
-                            bound.path, // TRANSITION(P1): deleted by A1 commit 2
+                            bound.path,
                             missing
                                 .iter()
                                 .map(|name| format!("{name} = ..."))
@@ -1192,8 +1191,7 @@ impl Checker {
                         span,
                         format!(
                             "trait `{}` has no associated type `{}` for dyn binding",
-                            bound.path,
-                            assoc_name // TRANSITION(P1): deleted by A1 commit 2
+                            bound.path, assoc_name
                         ),
                     );
                 } else if self.associated_type_owners(trait_id, assoc_name).len() != 1 {

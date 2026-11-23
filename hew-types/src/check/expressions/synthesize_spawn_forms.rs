@@ -1293,13 +1293,22 @@ impl Checker {
         // binding for `Type.Variant`, or the exact export table for
         // `module.Type.Variant`. The resulting registry key retains the full
         // declaration owner and never scans by final segment.
+        let in_lexical_scope = |surface: &str| {
+            self.scope_site().is_none()
+                || self.local_type_defs.contains(surface)
+                || self.source_type_defs.contains(surface)
+                || self.published_bare_type_qualified(surface).is_some()
+                || crate::lookup_builtin_type(surface).is_some()
+                || builtin_named_type(surface).is_some()
+        };
         let dotted_struct_variant = if resolved || name.contains("::") {
             None
         } else {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [surface_machine, "Event", variant]
-                    if self.env.lookup_ref(surface_machine).is_none() =>
+                    if self.env.lookup_ref(surface_machine).is_none()
+                        && in_lexical_scope(surface_machine) =>
                 {
                     self.source_nominal_declaration(surface_machine)
                         .and_then(|machine| self.defs.lookup_path(&machine))
@@ -1356,18 +1365,22 @@ impl Checker {
                             self.note_import_use(module_short);
                         })
                 }
-                [surface_type, variant] if self.env.lookup_ref(surface_type).is_none() => self
-                    .source_nominal_declaration(surface_type)
-                    .and_then(|canonical_type| {
-                        self.lookup_type_def(&canonical_type)
-                            .filter(|type_def| {
-                                matches!(
-                                    type_def.variants.get(*variant),
-                                    Some(VariantDef::Struct(_))
-                                )
-                            })
-                            .map(|_| format!("{canonical_type}::{variant}"))
-                    }),
+                [surface_type, variant]
+                    if self.env.lookup_ref(surface_type).is_none()
+                        && in_lexical_scope(surface_type) =>
+                {
+                    self.source_nominal_declaration(surface_type)
+                        .and_then(|canonical_type| {
+                            self.lookup_type_def(&canonical_type)
+                                .filter(|type_def| {
+                                    matches!(
+                                        type_def.variants.get(*variant),
+                                        Some(VariantDef::Struct(_))
+                                    )
+                                })
+                                .map(|_| format!("{canonical_type}::{variant}"))
+                        })
+                }
                 [module_short, surface_type, variant]
                     if self.env.lookup_ref(module_short).is_none() =>
                 {

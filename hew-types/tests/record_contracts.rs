@@ -44,7 +44,10 @@ fn record_contract_requires_a_declaration_and_exact_arity() {
         ResolvedTy::named_builtin(BuiltinType::VecIter, vec![]),
         ResolvedTy::named_path(service.defs(), "Missing", vec![]),
         ResolvedTy::named_path(service.defs(), "Item", vec![]),
-        ResolvedTy::named_opaque_path(service.defs(), "Handle", vec![]),
+        ResolvedTy::named_opaque(
+            hew_types::NominalHead::new(service.defs().lookup_nominal("Handle").unwrap(), "Handle"),
+            vec![],
+        ),
     ] {
         assert!(service.record_fields(&ty).is_err(), "{ty:?}");
     }
@@ -358,7 +361,10 @@ fn main() -> i64 {
         Some(Derived)
     );
     assert!(service.require(&key).unwrap().hash);
-    let opaque = ResolvedTy::named_opaque_path(service.defs(), "Handle", vec![]);
+    let opaque = ResolvedTy::named_opaque(
+        hew_types::NominalHead::new(service.defs().lookup_nominal("Handle").unwrap(), "Handle"),
+        vec![],
+    );
     assert_eq!(service.capability_plan(&opaque, Hash).unwrap(), None);
     assert!(!service.require(&opaque).unwrap().hash);
 }

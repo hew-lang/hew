@@ -1285,10 +1285,9 @@ struct LowerCtx<'checked> {
     /// distinguishes shipped source carriers from a user package with the same
     /// leaf module and type spelling.
     canonical_std_source_type_identities: HashSet<String>,
-    /// Exact nominal identities accepted by the checker. This proves that a
-    /// self-qualified spelling really belongs to the full current owner;
-    /// downstream lowering never recovers that proof from a short name.
-    checked_type_defs: HashMap<String, hew_types::check::TypeDef>,
+    /// Exact nominal definitions accepted by the checker, keyed by their
+    /// declaration identity.
+    checked_type_defs: HashMap<hew_types::DefId, hew_types::check::TypeDef>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with

@@ -1266,11 +1266,6 @@ impl Ty {
     }
 
     #[must_use]
-    pub(crate) fn is_named_builtin(name: &str) -> bool {
-        Self::canonical_named_builtin(name).is_some()
-    }
-
-    #[must_use]
     pub fn is_well_known_type_name(name: &str) -> bool {
         Self::from_name(name).is_some()
             || Self::canonical_named_builtin(name).is_some()

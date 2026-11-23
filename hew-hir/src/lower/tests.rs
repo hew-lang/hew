@@ -2654,7 +2654,11 @@ fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() 
         );
         ctx.canonical_std_source_type_identities
             .insert(name.to_string());
-        let opaque = ResolvedTy::named_opaque_path(&ctx.defs, name, vec![]);
+        let opaque = ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(builtin),
+            args: vec![],
+            is_opaque: true,
+        };
         assert_eq!(ctx.restore_type_declaration_facts(opaque.clone()), opaque);
     }
 }
@@ -3403,5 +3407,63 @@ fn opaque_resource_with_variants_emits_checker_boundary_violation() {
     assert!(
         reason.contains("variants have no single-representation lifecycle boundary to admit"),
         "reason must name the variants-lifecycle-boundary gap; got: {reason:?}"
+    );
+}
+
+#[test]
+fn lower_type_decl_with_identity_uses_canonical_name_in_lifecycle_diagnostics() {
+    let source = r"
+#[resource]
+type MissingClose { raw: i64; }
+
+#[resource]
+type BadClose { raw: i64; }
+impl BadClose {
+    fn close(consume self) -> i64 { 0 }
+}
+
+#[linear]
+type MissingConsume { raw: i64; }
+";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let mut ctx = LowerCtx::new(&output, TargetArch::host());
+    for (item, span) in &parsed.program.items {
+        if let Item::TypeDecl(decl) = item {
+            let declaration = ctx
+                .defs
+                .lookup_path(decl.name.name.as_str())
+                .expect("checked type decl");
+            let canonical = format!("std.builtins.{}", decl.name);
+            let _ = ctx.lower_type_decl_with_identity(decl, &canonical, span.clone(), declaration);
+        }
+    }
+
+    assert!(
+        ctx.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::ResourceMissingClose { name } if name == "std.builtins.MissingClose"
+        )),
+        "expected canonical name in ResourceMissingClose; got: {:#?}",
+        ctx.diagnostics
+    );
+    assert!(
+        ctx.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::ResourceCloseMustReturnUnit { name, .. } if name == "std.builtins.BadClose"
+        ) && d.note.contains("std.builtins.BadClose")),
+        "expected canonical name in ResourceCloseMustReturnUnit; got: {:#?}",
+        ctx.diagnostics
+    );
+    assert!(
+        ctx.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::LinearNoConsumingMethods { name } if name == "std.builtins.MissingConsume"
+        )),
+        "expected canonical name in LinearNoConsumingMethods; got: {:#?}",
+        ctx.diagnostics
     );
 }

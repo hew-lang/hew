@@ -206,7 +206,11 @@ impl<'checked> LowerCtx<'checked> {
                     })
                 })
                 .collect(),
-            checked_type_defs: tc_output.type_defs_by_path(),
+            checked_type_defs: tc_output
+                .type_defs
+                .iter()
+                .map(|(id, type_def)| (id.declaration(), type_def.clone()))
+                .collect(),
             current_module_idx: 0,
             item_files: HashMap::new(),
             item_receivers: HashMap::new(),
@@ -560,7 +564,7 @@ impl<'checked> LowerCtx<'checked> {
         declaration: hew_types::DefId,
         span: &Span,
     ) -> Option<hew_types::check::TypeDef> {
-        if let Some(definition) = self.checked_type_defs.get(self.defs.path(declaration)) {
+        if let Some(definition) = self.checked_type_defs.get(&declaration) {
             return Some(definition.clone());
         }
         self.diagnostics.push(HirDiagnostic::new(

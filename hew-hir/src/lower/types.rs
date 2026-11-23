@@ -17,7 +17,7 @@ impl LowerCtx<'_> {
             },
             0,
         )?;
-        self.lower_type_decl_with_identity(decl, span, declaration)
+        self.lower_type_decl_with_identity(decl, decl.name.name.as_str(), span, declaration)
     }
 
     #[expect(
@@ -27,6 +27,7 @@ impl LowerCtx<'_> {
     pub(super) fn lower_type_decl_with_identity(
         &mut self,
         decl: &TypeDecl,
+        name: &str,
         span: Span,
         declaration: hew_types::DefId,
     ) -> Option<HirTypeDecl> {
@@ -69,7 +70,7 @@ impl LowerCtx<'_> {
         {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
-                    name: decl.name.to_string(),
+                    name: name.to_string(),
                 },
                 span.clone(),
                 "generic opaque resource types have no per-instance release ABI",
@@ -78,10 +79,10 @@ impl LowerCtx<'_> {
 
         match marker {
             ResourceMarker::Resource => {
-                self.check_resource_close_discipline(decl, &span, declaration);
+                self.check_resource_close_discipline(name, &span, declaration);
             }
             ResourceMarker::Linear if !interceptor_token => {
-                self.check_linear_consume_discipline(decl, &span, declaration);
+                self.check_linear_consume_discipline(name, &span, declaration);
             }
             ResourceMarker::Linear | ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
@@ -142,7 +143,7 @@ impl LowerCtx<'_> {
             id,
             node: self.ids.node(),
             declaration,
-            name: decl.name.to_string(),
+            name: name.to_string(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
             // package-exported types.

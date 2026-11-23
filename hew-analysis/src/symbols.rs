@@ -142,7 +142,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
         }
         Item::Impl(i) => {
             let name = match &i.trait_bound {
-                Some(tb) => format!("impl {} for ...", tb.path), // TRANSITION(P1): deleted by A1 commit 2
+                Some(tb) => format!("impl {} for ...", tb.path),
                 None => "impl".to_string(),
             };
             let mut sym = symbol_with_spans(
@@ -273,7 +273,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             sym
         }
         Item::Import(i) => {
-            let name = i.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let name = i.path.to_string();
             symbol_with_spans(&name, SymbolKind::Module, item_span, item_span)
         }
         Item::Record(r) => named_symbol(source, r.name.name.as_str(), SymbolKind::Type, item_span),

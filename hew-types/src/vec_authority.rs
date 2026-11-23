@@ -342,7 +342,7 @@ fn load_method_specs() -> Vec<VecMethodSpec> {
         let TypeExpr::Named { path, .. } = &impl_decl.target_type.0 else {
             continue;
         };
-        let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+        let name = &path.to_string();
         if name != "Vec" {
             continue;
         }

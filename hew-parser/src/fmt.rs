@@ -1080,8 +1080,16 @@ impl<'a> Formatter<'a> {
     /// Drop spaces at the end of the output, unless they are the indent of
     /// an otherwise empty line.
     fn trim_trailing_spaces(&mut self) {
-        let line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
-        if !self.output[line_start..].trim().is_empty() {
+        // Look back only over the trailing whitespace: the line has content
+        // exactly when that run stops at something other than a newline. A
+        // scan from the line start would cost the whole line on every call.
+        let line_has_content = self
+            .output
+            .chars()
+            .rev()
+            .find(|c| *c == '\n' || !c.is_whitespace())
+            .is_some_and(|c| c != '\n');
+        if line_has_content {
             let kept = self.output.trim_end_matches(' ').len();
             self.output.truncate(kept);
         }

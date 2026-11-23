@@ -377,3 +377,15 @@ fn fmt_totality_type_expr_variants() {
         ("TypeExpr::Infer", "fn f() {\n    let x: _ = 1;\n}\n"),
     ]);
 }
+
+/// A very long line formats in time linear in its length: tidying the end of
+/// the output looks back over trailing whitespace only, not the whole line.
+#[test]
+fn a_long_single_line_call_formats_without_rescanning_the_line() {
+    let args = vec!["1"; 100_000].join(", ");
+    let src = format!("fn main() {{\n    f({args});\n}}\n");
+    let parsed = parse(&src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let formatted = hew_parser::fmt::format_source(&src, &parsed.program);
+    assert_eq!(formatted, src);
+}

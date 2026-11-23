@@ -20,10 +20,6 @@
 //!
 //! Native-only: the reactor that fills the slot is `epoll`/`kqueue`-backed and
 //! does not exist on `wasm32`.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at each fn signature."
-)]
 
 use crate::runtime_sync::{AtomicI32, AtomicPtr, AtomicUsize};
 use std::sync::atomic::Ordering;

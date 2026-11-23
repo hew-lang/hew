@@ -161,10 +161,13 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     let Some(kind) = crate::request_state::RequestKind::from_wire(kind) else {
         return;
     };
+    if identity.is_null() {
+        return;
+    }
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
-    let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
-        .to_str()
-        .expect("decoded wire identity");
+    let Ok(identity) = (unsafe { std::ffi::CStr::from_ptr(identity) }).to_str() else {
+        return;
+    };
     let caller = crate::actor_caller::HewCallerStamp::peer(peer);
     if request_id > 0 && source_node_id > 0 {
         // SAFETY: the reader pins its manager and frame throughout this call.
@@ -433,8 +436,9 @@ fn send_failure_reply(
             return;
         };
 
-        let mut reason_payload = vec![AskRejectionReasonCode::encode(reason)
-            .expect("remote ask rejection reason must use a supported rejection-reason code")];
+        let mut reason_payload =
+            vec![AskRejectionReasonCode::encode(reason)
+                .unwrap_or(AskRejectionReasonCode::Refused as u8)];
         if let Some(encoded) =
             failure.and_then(crate::failure_snapshot::FailureSnapshot::encode_wire)
         {
@@ -583,7 +587,7 @@ pub(super) fn drain_inbound_requests(inbound_active: Option<&Arc<AtomicUsize>>) 
     }
 }
 
-pub(super) fn stop_node_accept_thread(node: &mut HewNode) {
+pub(super) fn stop_node_accept_thread(node: &HewNode) {
     node.accept_stop.store(true, Ordering::Release);
     let handle = node.accept_thread.lock_or_recover().take();
     if let Some(handle) = handle {

@@ -1066,3 +1066,74 @@ impl Drop for SwimTimingEnv {
         });
     }
 }
+
+#[test]
+fn wave4a_remote_call_service_and_inbound_null_guards_fail_closed() {
+    let node_id = crate::node_identity::HewNodeId::from(test_node_id(1));
+    // SAFETY: tests explicit null-guard fail-closed paths; no pointers are dereferenced.
+    unsafe {
+        let mut peer_out: *mut c_void = ptr::null_mut();
+        assert_eq!(
+            super::service_api::hew_node_peer_new(ptr::null(), &raw mut peer_out),
+            hew_cabi::node::NodeFailure::Refused as i32
+        );
+        assert_eq!(
+            super::service_api::hew_node_peer_new(&raw const node_id, ptr::null_mut()),
+            hew_cabi::node::NodeFailure::Refused as i32
+        );
+
+        let call = super::service_api::hew_service_acquire_new(
+            ptr::null(),
+            crate::lifetime::local_handles::HewLocalPidId::INVALID,
+            ptr::null(),
+            0,
+            false,
+            100,
+            ptr::null(),
+        );
+        assert!(!call.is_null());
+        assert_eq!(super::remote_call::hew_remote_call_poll(call), 0);
+        assert_eq!(
+            super::remote_call::hew_remote_call_take(call, ptr::null_mut()),
+            AskError::Unauthorized as i32
+        );
+        super::remote_call::hew_remote_call_free(call);
+
+        assert_eq!(super::remote_call::hew_remote_call_poll(ptr::null_mut()), 0);
+        assert_eq!(
+            super::remote_call::hew_remote_call_take(ptr::null_mut(), ptr::null_mut()),
+            AskError::StaleRef as i32
+        );
+
+        let invalid_utf8 = [0xff_u8, 0x00];
+        let location = HewLocation::from(test_location(1, 2));
+        super::inbound::node_inbound_router(
+            location,
+            ptr::null(),
+            ptr::null_mut(),
+            0,
+            0,
+            0,
+            ptr::null_mut(),
+            node_id,
+            0,
+            0,
+            0,
+            crate::request_state::RequestKind::CallWait as u8,
+        );
+        super::inbound::node_inbound_router(
+            location,
+            invalid_utf8.as_ptr().cast(),
+            ptr::null_mut(),
+            0,
+            0,
+            0,
+            ptr::null_mut(),
+            node_id,
+            0,
+            0,
+            0,
+            crate::request_state::RequestKind::CallWait as u8,
+        );
+    }
+}

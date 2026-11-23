@@ -12,10 +12,6 @@
 //!
 //! The wheel struct is `Box`-allocated (opaque to callers).  Internal locking
 //! uses [`std::sync::Mutex`].
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::runtime_sync::Mutex;
 use crate::timer_deadline::Deadline;

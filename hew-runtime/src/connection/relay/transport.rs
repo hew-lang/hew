@@ -350,8 +350,8 @@ pub(crate) unsafe fn peer_spki(transport: *const HewTransport, conn: c_int) -> O
     if !unsafe { is_tls_transport(transport) } {
         return None;
     }
-    // SAFETY: the exact ops identity establishes this private driver type.
-    let driver = unsafe { &*(*transport).r#impl.cast::<Driver>() };
+    // SAFETY: the exact ops identity establishes this private driver type, or r#impl is null.
+    let driver = (unsafe { (*transport).r#impl.cast::<Driver>().as_ref() })?;
     if conn != driver.circuit.conn_id {
         return None;
     }
@@ -452,6 +452,20 @@ mod tests {
             assert_eq!(&output, b"live");
             crate::connection::hew_connmgr_free(manager);
             assert_eq!(endpoint.recv(&mut output), None);
+        }
+    }
+
+    #[cfg(feature = "quic")]
+    #[test]
+    fn wave4a_relay_peer_spki_null_impl_returns_none() {
+        let null_impl = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const TLS_OPS,
+            r#impl: std::ptr::null_mut(),
+        }));
+        // SAFETY: `null_impl` is a boxed `HewTransport` with `TLS_OPS` and null `r#impl`.
+        unsafe {
+            assert!(peer_spki(null_impl, 1).is_none());
+            let _ = Box::from_raw(null_impl);
         }
     }
 }

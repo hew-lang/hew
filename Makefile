@@ -1739,7 +1739,7 @@ endif
 # The filters select module test names. Arena uses the `cfg(miri)` std::alloc
 # implementation instead of mmap/VirtualAlloc.
 MIRI_TOOLCHAIN ?= nightly
-MIRI_ALLOWLIST := send_ptr:: rc:: arc:: arena:: bytes:: vecdeque:: vec:: cont:: mailbox:: reply_channel:: await_cancel:: read_slot:: string:: hashmap::
+MIRI_ALLOWLIST := send_ptr:: rc:: arc:: arena:: bytes:: vecdeque:: vec:: cont:: mailbox:: reply_channel:: await_cancel:: read_slot:: string:: hashmap:: blocking_pool:: link::
 miri:
 	CARGO_TARGET_DIR=$(RUNTIME_MIRI_TARGET_DIR) \
 	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \

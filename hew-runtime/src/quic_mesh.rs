@@ -1580,10 +1580,12 @@ pub unsafe extern "C" fn hew_transport_quic_mesh_free(transport: *mut HewTranspo
     }
     // SAFETY: transport checked non-null above and belongs to this free call.
     let t = unsafe { &*transport };
-    // SAFETY: t.ops points to the static QUIC_MESH_OPS vtable.
-    if let Some(destroy_fn) = unsafe { (*t.ops).destroy } {
-        // SAFETY: t.impl is the QuicMeshTransport pointer from the constructor.
-        unsafe { destroy_fn(t.r#impl) };
+    // SAFETY: t.ops points to the static QUIC_MESH_OPS vtable, or may be null.
+    if let Some(ops) = unsafe { t.ops.as_ref() } {
+        if let Some(destroy_fn) = ops.destroy {
+            // SAFETY: t.impl is the QuicMeshTransport pointer from the constructor.
+            unsafe { destroy_fn(t.r#impl) };
+        }
     }
     // SAFETY: reclaims the Box<HewTransport> allocated by the constructor.
     let _ = unsafe { Box::from_raw(transport) }; // ALLOCATOR-PAIRING: GlobalAlloc
@@ -1795,7 +1797,7 @@ pub unsafe extern "C" fn hew_quic_mesh_local_spki(
     // SAFETY: transport checked non-null; caller guarantees it is a live
     // HewTransport returned by hew_transport_quic_mesh_new.
     let t = unsafe { &*transport };
-    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) {
+    if !std::ptr::eq(t.ops, &raw const QUIC_MESH_OPS) || t.r#impl.is_null() {
         set_last_error("quic_mesh local_spki: transport is not quic-mesh");
         return -1;
     }
@@ -3283,5 +3285,34 @@ mod tests {
         // connection isn't torn down before A's accept_bi can observe the
         // silent peer.
         drop(conn_b);
+    }
+
+    #[test]
+    fn wave4a_quic_mesh_null_ops_and_null_impl_fail_closed() {
+        let null_ops = Box::into_raw(Box::new(HewTransport {
+            ops: std::ptr::null(),
+            r#impl: std::ptr::null_mut(),
+        }));
+        // SAFETY: `null_ops` is a live boxed `HewTransport` whose null `ops` must not be dereferenced.
+        unsafe {
+            assert_eq!(
+                hew_quic_mesh_local_spki(null_ops, std::ptr::null_mut(), 0),
+                -1
+            );
+            hew_transport_quic_mesh_free(null_ops);
+        }
+
+        let null_impl = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const QUIC_MESH_OPS,
+            r#impl: std::ptr::null_mut(),
+        }));
+        // SAFETY: `null_impl` has null `r#impl`; `hew_quic_mesh_local_spki` must fail closed before deref.
+        unsafe {
+            assert_eq!(
+                hew_quic_mesh_local_spki(null_impl, std::ptr::null_mut(), 0),
+                -1
+            );
+            let _ = Box::from_raw(null_impl);
+        }
     }
 }

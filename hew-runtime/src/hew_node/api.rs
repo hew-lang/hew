@@ -3,7 +3,7 @@
 use super::{
     hew_node_free, hew_node_lookup_location, hew_node_new, hew_node_register,
     hew_node_set_auth_snapshot, hew_node_start, hew_node_stop, hew_node_unregister,
-    normalize_transport_name, peer_transport_env_name, peer_transport_from_normalized, reply_table,
+    normalize_transport_name, peer_transport_env_name, peer_transport_from_normalized,
     transport_selection_from_env, with_current_node, with_current_node_read, HewNode,
     TransportSelection,
 };
@@ -80,7 +80,7 @@ unsafe fn node_connect_inner(node: *mut HewNode, addr: *const c_char) -> c_int {
         return NodeFailure::Refused as c_int;
     }
     // SAFETY: caller guarantees node pointer validity.
-    let node = unsafe { &mut *node };
+    let node = unsafe { &*node };
     if node.transport.is_null() || node.conn_mgr.is_null() {
         set_last_error("hew_node_connect: node is not started");
         return NodeFailure::Refused as c_int;
@@ -755,7 +755,9 @@ unsafe fn node_api_shutdown_inner() -> c_int {
             return None;
         }
         *guard = 0;
-        reply_table().fail_all();
+        if let Some(table) = super::reply_table_opt() {
+            table.fail_all();
+        }
         Some(ptr)
     }) else {
         return -1;

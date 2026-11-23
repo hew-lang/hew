@@ -19,10 +19,6 @@
 //! program carries on. A second termination signal while the runtime's
 //! graceful shutdown is draining ends the process at once, and a drain that
 //! times out prints the busy actors before the signal takes effect.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -241,15 +237,19 @@ mod unix {
     const SNAPSHOT_SIGNALS: [c_int; 1] = [libc::SIGQUIT];
 
     pub(super) unsafe fn install_handlers() {
-        let mut action: libc::sigaction = std::mem::zeroed();
+        // SAFETY: zeroed `sigaction` is populated before registration with `sigaction`.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction =
             handler as extern "C" fn(c_int, *mut libc::siginfo_t, *mut std::ffi::c_void) as usize;
         action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-        libc::sigemptyset(&raw mut action.sa_mask);
-        libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
-        libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
-        for signal in SNAPSHOT_SIGNALS {
-            libc::sigaction(signal, &raw const action, std::ptr::null_mut());
+        // SAFETY: caller installs handlers during runtime startup with valid pointers.
+        unsafe {
+            libc::sigemptyset(&raw mut action.sa_mask);
+            libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
+            for signal in SNAPSHOT_SIGNALS {
+                libc::sigaction(signal, &raw const action, std::ptr::null_mut());
+            }
         }
     }
 
@@ -353,15 +353,18 @@ mod unix {
     mod errno {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         unsafe fn location() -> *mut libc::c_int {
-            libc::__errno_location()
+            // SAFETY: thread-local errno pointer lookup is valid on any OS thread.
+            unsafe { libc::__errno_location() }
         }
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
         unsafe fn location() -> *mut libc::c_int {
-            libc::__error()
+            // SAFETY: thread-local errno pointer lookup is valid on any OS thread.
+            unsafe { libc::__error() }
         }
         #[cfg(any(target_os = "netbsd", target_os = "openbsd"))]
         unsafe fn location() -> *mut libc::c_int {
-            libc::__errno()
+            // SAFETY: thread-local errno pointer lookup is valid on any OS thread.
+            unsafe { libc::__errno() }
         }
 
         pub(super) fn get() -> libc::c_int {
@@ -422,6 +425,7 @@ mod windows {
     }
 
     pub(super) unsafe fn install_handler() {
-        SetConsoleCtrlHandler(Some(handler), 1);
+        // SAFETY: `handler` uses the system ABI expected by `SetConsoleCtrlHandler`.
+        unsafe { SetConsoleCtrlHandler(Some(handler), 1) };
     }
 }

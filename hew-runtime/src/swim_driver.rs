@@ -46,10 +46,6 @@
 //! a tick is mid-flight. The cluster methods the ticker calls all take `&self`
 //! and synchronize internally, so concurrent access from the connection reader
 //! threads is sound (no `&mut` aliasing).
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI-adjacent driver module; SAFETY documented at each call site."
-)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -319,11 +315,9 @@ pub(crate) fn driver_running_for_test(node: *mut HewNode) -> bool {
 /// call
 /// when no ticker is running (no-op). Safe to call multiple times.
 ///
-/// # Safety
-///
 /// `node` identifies a node whose ticker was started by [`start_swim_driver`].
 /// The pointer is used only as a registry key here; it is not dereferenced.
-pub(crate) unsafe fn stop_swim_driver(node: *mut HewNode) {
+pub(crate) fn stop_swim_driver(node: *mut HewNode) {
     // Take the handle out of the registry under the lock, then signal + join
     // outside the lock so a concurrent start for a *different* node is not
     // blocked on this join.
@@ -493,10 +487,7 @@ mod tests {
     /// Stopping a node with no running driver is a safe no-op.
     #[test]
     fn stop_without_start_is_noop() {
-        // SAFETY: a dangling, never-registered pointer is only used as a key.
-        unsafe {
-            stop_swim_driver(0xdead_0000 as *mut HewNode);
-        }
+        stop_swim_driver(0xdead_0000 as *mut HewNode);
     }
 
     /// start/stop is idempotent and tears the registry entry down.
@@ -531,8 +522,8 @@ mod tests {
         // SAFETY: same node pointer.
         assert!(unsafe { start_swim_driver(node) });
 
-        // SAFETY: stops + joins the ticker thread.
-        unsafe { stop_swim_driver(node) };
+        // Stops + joins the ticker thread.
+        stop_swim_driver(node);
 
         let gone = SWIM_DRIVERS.access(|slot| {
             slot.as_ref()
@@ -561,8 +552,7 @@ mod tests {
             );
         });
 
-        // SAFETY: the fabricated pointer is used only as a registry key.
-        unsafe { stop_swim_driver(node) };
+        stop_swim_driver(node);
 
         let error_ptr = crate::hew_last_error();
         assert!(

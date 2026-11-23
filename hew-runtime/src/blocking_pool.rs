@@ -12,10 +12,6 @@
 //! waits for every job except a running abandonable one; its thread is left
 //! to finish the call on its own, so exit never waits on a syscall nobody
 //! reads.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -274,15 +270,18 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     func: HewBlockingFn,
     arg: *mut c_void,
 ) -> i32 {
-    submit(
-        pool,
-        Task {
-            func,
-            arg,
-            abandonable: false,
-            inline_in_driver: true,
-        },
-    )
+    // SAFETY: caller upholds `hew_blocking_pool_submit` safety contract.
+    unsafe {
+        submit(
+            pool,
+            Task {
+                func,
+                arg,
+                abandonable: false,
+                inline_in_driver: true,
+            },
+        )
+    }
     .map_or(-1, |()| 0)
 }
 
@@ -297,15 +296,18 @@ pub(crate) unsafe fn submit_on_worker(
     func: HewBlockingFn,
     arg: *mut c_void,
 ) -> Result<(), PoolUnavailable> {
-    submit(
-        pool,
-        Task {
-            func,
-            arg,
-            abandonable: false,
-            inline_in_driver: false,
-        },
-    )
+    // SAFETY: caller upholds `submit_on_worker` safety contract.
+    unsafe {
+        submit(
+            pool,
+            Task {
+                func,
+                arg,
+                abandonable: false,
+                inline_in_driver: false,
+            },
+        )
+    }
 }
 
 /// Submit a job that stop may leave running: it owns every input, touches no
@@ -323,15 +325,18 @@ pub(crate) unsafe fn submit_abandonable(
     func: HewBlockingFn,
     arg: *mut c_void,
 ) -> i32 {
-    submit(
-        pool,
-        Task {
-            func,
-            arg,
-            abandonable: true,
-            inline_in_driver: true,
-        },
-    )
+    // SAFETY: caller upholds `submit_abandonable` safety contract.
+    unsafe {
+        submit(
+            pool,
+            Task {
+                func,
+                arg,
+                abandonable: true,
+                inline_in_driver: true,
+            },
+        )
+    }
     .map_or(-1, |()| 0)
 }
 

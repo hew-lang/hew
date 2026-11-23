@@ -40,10 +40,6 @@
 //! - [`hew_cluster_set_membership_callback`] — Register event callback with user data.
 //! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use crate::node_identity::{HewLocation, Location};
 use crate::phi_accrual::PhiAccrualDetector;
@@ -455,6 +451,25 @@ impl MembershipCallbackBinding {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct RegistryCallbackBinding {
+    callback: Option<HewRegistryGossipCallback>,
+    user_data_bits: usize,
+}
+
+impl RegistryCallbackBinding {
+    fn new(callback: Option<HewRegistryGossipCallback>, user_data: *mut c_void) -> Self {
+        Self {
+            callback,
+            user_data_bits: user_data as usize,
+        }
+    }
+
+    fn user_data(self) -> *mut c_void {
+        self.user_data_bits as *mut c_void
+    }
+}
+
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -484,13 +499,11 @@ pub struct HewCluster {
     /// SWIM driver thread reads it to stamp outbound PING/ACK frames.
     local_incarnation: AtomicU64,
     /// Membership change callback.
-    callback: Option<MemberChangeCallback>,
+    callback: Mutex<Option<MemberChangeCallback>>,
     /// Membership event callback binding.
     membership_callback_binding: Mutex<MembershipCallbackBinding>,
-    /// Registry gossip callback.
-    registry_callback: Option<HewRegistryGossipCallback>,
-    /// User data for [`HewRegistryGossipCallback`].
-    registry_callback_user_data: *mut c_void,
+    /// Registry gossip callback binding.
+    registry_callback_binding: Mutex<RegistryCallbackBinding>,
     /// Monotonic timestamp of last tick.
     ///
     /// Atomic so `tick` takes `&self` (the SWIM driver thread drives the
@@ -829,10 +842,9 @@ impl HewCluster {
             requested_probes: Mutex::new(Vec::new()),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: AtomicU64::new(1),
-            callback: None,
+            callback: Mutex::new(None),
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
-            registry_callback: None,
-            registry_callback_user_data: std::ptr::null_mut(),
+            registry_callback_binding: Mutex::new(RegistryCallbackBinding::default()),
             last_tick_ms: AtomicU64::new(0),
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
@@ -1654,7 +1666,8 @@ impl HewCluster {
 
     /// Notify the callback if registered.
     fn notify_callback(&self, node_id: u16, state: i32, incarnation: u64) {
-        if let Some(cb) = self.callback {
+        let cb = *self.callback.lock_or_recover();
+        if let Some(cb) = cb {
             // SAFETY: callback is a valid function pointer per caller contract.
             unsafe { cb(node_id, state, incarnation) };
         }
@@ -2393,7 +2406,8 @@ impl HewCluster {
 
     /// Process an inbound registry gossip event received from a peer.
     pub fn apply_registry_event(&self, name: &str, location: Location, is_add: bool) {
-        let Some(cb) = self.registry_callback else {
+        let binding = *self.registry_callback_binding.lock_or_recover();
+        let Some(cb) = binding.callback else {
             return;
         };
         let Ok(c_name) = std::ffi::CString::new(name) else {
@@ -2404,7 +2418,7 @@ impl HewCluster {
             c_name.as_ptr(),
             &raw const location,
             is_add,
-            self.registry_callback_user_data,
+            binding.user_data(),
         );
     }
 
@@ -2947,8 +2961,8 @@ pub unsafe extern "C" fn hew_cluster_set_callback(
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
-    cluster.callback = callback;
+    let cluster = unsafe { &*cluster };
+    *cluster.callback.lock_or_recover() = callback;
 }
 
 /// Register a callback for membership events with user data.
@@ -3032,9 +3046,9 @@ pub unsafe extern "C" fn hew_cluster_set_registry_callback(
         return;
     }
     // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
-    cluster.registry_callback = Some(callback);
-    cluster.registry_callback_user_data = user_data;
+    let cluster = unsafe { &*cluster };
+    *cluster.registry_callback_binding.lock_or_recover() =
+        RegistryCallbackBinding::new(Some(callback), user_data);
 }
 
 /// Queue a registry-add gossip event for dissemination.
@@ -5013,10 +5027,10 @@ mod tests {
             vec.push((s, location, is_add));
         }
 
-        let mut cluster = HewCluster::new(make_config(1));
+        let cluster = HewCluster::new(make_config(1));
         let mut collected: Vec<(String, Location, bool)> = Vec::new();
-        cluster.registry_callback = Some(collect_registry);
-        cluster.registry_callback_user_data = (&raw mut collected).cast();
+        *cluster.registry_callback_binding.lock_or_recover() =
+            RegistryCallbackBinding::new(Some(collect_registry), (&raw mut collected).cast());
 
         cluster.apply_registry_event("counter", test_location(0x42), true);
         cluster.apply_registry_event("timer", test_location(0x99), false);
@@ -5269,9 +5283,9 @@ mod tests {
         ) {
             panic!("callback should not be invoked for invalid name");
         }
-        let mut cluster = HewCluster::new(make_config(1));
-        cluster.registry_callback = Some(should_not_be_called);
-        cluster.registry_callback_user_data = std::ptr::null_mut();
+        let cluster = HewCluster::new(make_config(1));
+        *cluster.registry_callback_binding.lock_or_recover() =
+            RegistryCallbackBinding::new(Some(should_not_be_called), std::ptr::null_mut());
 
         // Name with interior null byte — CString::new fails, early return.
         cluster.apply_registry_event("bad\0name", test_location(42), true);
@@ -5896,5 +5910,68 @@ mod tests {
             None
         );
         assert_eq!(cluster.local_incarnation(), before);
+    }
+
+    #[test]
+    fn wave4a_cluster_callbacks_synchronize_concurrent_updates() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        static MEMBER_HITS: AtomicUsize = AtomicUsize::new(0);
+        static REGISTRY_HITS: AtomicUsize = AtomicUsize::new(0);
+        static DONE: AtomicBool = AtomicBool::new(false);
+
+        extern "C" fn on_member(_id: u16, _state: i32, _inc: u64) {
+            MEMBER_HITS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        extern "C" fn on_registry(
+            _name: *const c_char,
+            _loc: *const HewLocation,
+            _is_add: bool,
+            _user_data: *mut c_void,
+        ) {
+            REGISTRY_HITS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        MEMBER_HITS.store(0, Ordering::Relaxed);
+        REGISTRY_HITS.store(0, Ordering::Relaxed);
+        DONE.store(false, Ordering::Release);
+
+        let cluster = Arc::new(HewCluster::new(make_config(1)));
+        let cluster_addr = (&raw const *cluster).cast_mut() as usize;
+        let reader_cluster = Arc::clone(&cluster);
+        let setter = std::thread::spawn(move || {
+            let ptr = cluster_addr as *mut HewCluster;
+            for _ in 0..64 {
+                // SAFETY: `Arc<HewCluster>` outlives the joined setter thread.
+                unsafe {
+                    hew_cluster_set_callback(ptr, Some(on_member));
+                    hew_cluster_set_registry_callback(ptr, on_registry, std::ptr::null_mut());
+                    hew_cluster_set_callback(ptr, None);
+                }
+            }
+            DONE.store(true, Ordering::Release);
+        });
+
+        while !DONE.load(Ordering::Acquire) {
+            reader_cluster.notify_callback(2, MEMBER_ALIVE, 1);
+            reader_cluster.apply_registry_event("svc", test_location(7), true);
+        }
+        setter.join().unwrap();
+        // Leave callbacks callable once settled.
+        // SAFETY: `cluster` is live and uniquely owned here.
+        unsafe {
+            hew_cluster_set_callback((&raw const *cluster).cast_mut(), Some(on_member));
+            hew_cluster_set_registry_callback(
+                (&raw const *cluster).cast_mut(),
+                on_registry,
+                std::ptr::null_mut(),
+            );
+        }
+        cluster.notify_callback(2, MEMBER_ALIVE, 2);
+        cluster.apply_registry_event("svc", test_location(7), true);
+        assert!(MEMBER_HITS.load(Ordering::Relaxed) >= 1);
+        assert!(REGISTRY_HITS.load(Ordering::Relaxed) >= 1);
     }
 }

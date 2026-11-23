@@ -33,10 +33,6 @@
 //! Every `alloc` call rounds the current cursor up to the requested alignment using the
 //! standard power-of-two mask: `(cursor + align - 1) & !(align - 1)`.
 //! Requests with zero size, invalid alignment, or unrepresentable extents fail closed.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::os::raw::c_void;
 use std::ptr;

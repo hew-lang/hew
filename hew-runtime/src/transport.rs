@@ -6,10 +6,6 @@
 //!
 //! The TCP and Unix transports use length-prefixed (4-byte little-endian)
 //! framing for send/recv. Connections are stored in a fixed-size array.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{ErrorKind, Read, Write};
@@ -689,15 +685,22 @@ unsafe extern "C" fn tcp_send(
     data: *const c_void,
     len: usize,
 ) -> c_int {
-    cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
+    cabi_guard!(
+        impl_ptr.is_null() || data.is_null() || len > isize::MAX as usize,
+        -1
+    );
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let sock = match tcp.slots.get_conn(conn) {
         Ok(Some(sock)) => sock,
         Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
-    // SAFETY: data is valid for `len` bytes per caller contract.
-    let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
+    let slice = if len == 0 {
+        &[]
+    } else {
+        // SAFETY: data is valid for `len` bytes per caller contract.
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }
+    };
     let previous = sock.write_timeout().ok().flatten();
     let result = framed_send(&sock, slice);
     if connection_attempt_remaining().is_some() {
@@ -712,15 +715,22 @@ unsafe extern "C" fn tcp_recv(
     buf: *mut c_void,
     buf_size: usize,
 ) -> c_int {
-    cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
+    cabi_guard!(
+        impl_ptr.is_null() || buf.is_null() || buf_size > isize::MAX as usize,
+        -1
+    );
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let sock = match tcp.slots.get_conn(conn) {
         Ok(Some(sock)) => sock,
         Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
-    // SAFETY: buf is valid for buf_size bytes per caller contract.
-    let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
+    let slice = if buf_size == 0 {
+        &mut []
+    } else {
+        // SAFETY: buf is valid for buf_size bytes per caller contract.
+        unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) }
+    };
     let previous = sock.read_timeout().ok().flatten();
     let result = framed_recv(&sock, slice);
     if connection_attempt_remaining().is_some() {
@@ -3302,15 +3312,22 @@ mod unix_transport {
         data: *const c_void,
         len: usize,
     ) -> c_int {
-        cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
+        cabi_guard!(
+            impl_ptr.is_null() || data.is_null() || len > isize::MAX as usize,
+            -1
+        );
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let sock = match ut.slots.get_conn(conn) {
             Ok(Some(sock)) => sock,
             Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
-        // SAFETY: data is valid for `len` bytes per caller contract.
-        let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
+        let slice = if len == 0 {
+            &[]
+        } else {
+            // SAFETY: data is valid for `len` bytes per caller contract.
+            unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }
+        };
         framed_send(&sock, slice)
     }
 
@@ -3320,15 +3337,22 @@ mod unix_transport {
         buf: *mut c_void,
         buf_size: usize,
     ) -> c_int {
-        cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
+        cabi_guard!(
+            impl_ptr.is_null() || buf.is_null() || buf_size > isize::MAX as usize,
+            -1
+        );
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let sock = match ut.slots.get_conn(conn) {
             Ok(Some(sock)) => sock,
             Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
-        // SAFETY: buf is valid for buf_size bytes per caller contract.
-        let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
+        let slice = if buf_size == 0 {
+            &mut []
+        } else {
+            // SAFETY: buf is valid for buf_size bytes per caller contract.
+            unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) }
+        };
         framed_recv(&sock, slice)
     }
 
@@ -3410,5 +3434,41 @@ mod attempt_deadline_tests {
         attempt_socket_timeout(&socket, false).unwrap();
         assert_eq!(socket.read_timeout().unwrap(), None);
         assert_eq!(socket.write_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn wave4a_oversized_and_zero_lengths_fail_closed() {
+        // SAFETY: tests bounded/null/oversized guards through the live TCP transport implementation.
+        unsafe {
+            let t = hew_transport_tcp_new();
+            assert!(!t.is_null());
+            let impl_ptr = (*t).r#impl;
+            let byte = 0_u8;
+            let mut slot = 0_u8;
+            assert_eq!(tcp_send(impl_ptr, -1, (&raw const byte).cast(), 0), -1);
+            assert_eq!(
+                tcp_send(
+                    impl_ptr,
+                    -1,
+                    (&raw const byte).cast(),
+                    isize::MAX as usize + 1
+                ),
+                -1
+            );
+            assert_eq!(tcp_recv(impl_ptr, -1, (&raw mut slot).cast(), 0), -1);
+            assert_eq!(
+                tcp_recv(
+                    impl_ptr,
+                    -1,
+                    (&raw mut slot).cast(),
+                    isize::MAX as usize + 1
+                ),
+                -1
+            );
+            if let Some(destroy) = (*(*t).ops).destroy {
+                destroy(impl_ptr);
+            }
+            let _ = Box::from_raw(t);
+        }
     }
 }

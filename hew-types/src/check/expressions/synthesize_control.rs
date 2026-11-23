@@ -24,6 +24,103 @@ use hew_parser::ast::{Ident, Path};
 use std::collections::VecDeque;
 
 impl Checker {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "struct-variant checking threads the surface label, resolved nominal, and fields together"
+    )]
+    fn check_struct_variant_against_expected(
+        &mut self,
+        surface_name: &dyn std::fmt::Display,
+        variant_name: &str,
+        fields: &[(Ident, Spanned<Expr>)],
+        span: &Span,
+        expected_head: crate::TypeHead,
+        expected_args: &[Ty],
+        expected: &Ty,
+    ) -> Option<Ty> {
+        let expected_enum_name = expected_head.registry_key();
+        let td = self.lookup_type_def(expected_enum_name)?;
+        let VariantDef::Struct(variant_fields) = td.variants.get(variant_name).cloned()? else {
+            return None;
+        };
+        let type_params = td.type_params.clone();
+        // Only pre-seed when arity matches and there are type params to substitute.
+        if type_params.len() != expected_args.len() || type_params.is_empty() {
+            return None;
+        }
+        let mut type_arg_map: HashMap<crate::ParamHead, Ty> = type_params
+            .iter()
+            .zip(expected_args.iter())
+            .map(|(p, a)| (*p, a.clone()))
+            .collect();
+
+        for (field_name, (fexpr, fs)) in fields {
+            if let Some((_, declared_ty)) = variant_fields
+                .iter()
+                .find(|(n, _)| n == field_name.name.as_str())
+            {
+                let declared_ty = declared_ty.clone();
+                let field_expected = declared_ty.substitute_type_params_parallel(&type_arg_map);
+                let actual = self.check_against(fexpr, fs, &field_expected);
+                self.record_value_transfer(fexpr, fs);
+                // Bind any remaining unbound type params
+                for tp in &type_params {
+                    if !type_arg_map.contains_key(tp) && declared_ty == (Ty::param(*tp)) {
+                        type_arg_map.insert(*tp, actual.clone());
+                    }
+                }
+            } else {
+                let similar = crate::error::find_similar(
+                    field_name.name.as_str(),
+                    variant_fields.iter().map(|(n, _)| n.as_str()),
+                );
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!("no field `{field_name}` on variant `{surface_name}`"),
+                    similar,
+                );
+            }
+        }
+        let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
+        for (index, (declared, _)) in variant_fields.iter().enumerate() {
+            if !provided.contains(declared.as_str())
+                && !self.is_implicit_variant_field(expected_enum_name, variant_name, index)
+            {
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!("missing field `{declared}` in initializer of `{surface_name}`"),
+                );
+            }
+        }
+        // Emit unconditionally; see the struct coercion arm for the boundary-prune rationale.
+        let resolved_args: Vec<Ty> = type_params
+            .iter()
+            .map(|tp| {
+                type_arg_map
+                    .get(tp)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+            })
+            .collect();
+        self.record_concrete_record_init_type_args(span, &resolved_args);
+        // Machine bound enforcement on enum-variant ctor with expected enum:
+        // identical motivation to the plain-struct coercion arm; the enum name
+        // carrier IS the machine name when the expected type is a machine
+        // instantiation (`var m: Holder<File> = Holder::Active { … }`).
+        self.enforce_type_def_instantiation_bounds(expected_enum_name, &resolved_args, span);
+        self.record_variant_constructor_plan(
+            expected_enum_name,
+            variant_name,
+            expected,
+            fields,
+            span,
+        );
+        self.record_type(span, expected);
+        Some(expected.clone())
+    }
+
     /// `await` joins a task and nothing else. A plain call suspends the caller
     /// on its own, so `await` adds nothing there; every other operand is not a
     /// task and is refused with the move that replaces it.
@@ -600,19 +697,79 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                let qualified_name = format!("{owner}::{}", context.name);
-                let compatibility_expr = if let Some(record) = &context.record {
-                    Expr::StructInit {
-                        path: Path::single(Ident::new(&qualified_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
-                        fields: record.fields.clone(),
-                        field_labels: Vec::new(),
-                        type_args: None,
-                        base: record.base.clone(),
+                let actual = if let Some(record) = &context.record {
+                    if let Ty::Named {
+                        head: expected_head,
+                        args: expected_args,
+                    } = expected
+                    {
+                        let surface_name = format!("{owner}.{}", context.name);
+                        if let Some(checked) = self.check_struct_variant_against_expected(
+                            &surface_name,
+                            context.name.name.as_str(),
+                            &record.fields,
+                            span,
+                            *expected_head,
+                            expected_args,
+                            expected,
+                        ) {
+                            checked
+                        } else {
+                            let qualified_name = format!("{owner}::{}", context.name);
+                            let resolution = expected_head.nominal().map(|_| {
+                                super::super::scope::Resolution::Variant(*expected_head, 0)
+                            });
+                            let variant_path = Path::single(context.name, span.clone());
+                            let actual = self.check_struct_init(
+                                &qualified_name,
+                                resolution,
+                                &record.fields,
+                                None,
+                                record.base.as_deref(),
+                                super::synthesize_spawn_forms::StructInitSite {
+                                    path: &variant_path,
+                                    field_labels: &[],
+                                    span,
+                                },
+                            );
+                            let n = self.errors.len();
+                            self.expect_type(expected, &actual, span);
+                            if self.errors.len() > n {
+                                Ty::Error
+                            } else {
+                                actual
+                            }
+                        }
+                    } else {
+                        unreachable!("context_variant_expected_owner guarantees Ty::Named")
+                    }
+                } else if matches!(variant, VariantDef::Unit) {
+                    if let Ty::Named {
+                        head: expected_head,
+                        args: expected_args,
+                    } = expected
+                    {
+                        self.enforce_type_def_instantiation_bounds(
+                            expected_head.registry_key(),
+                            expected_args,
+                            span,
+                        );
+                        self.record_type(span, expected);
+                        expected.clone()
+                    } else {
+                        unreachable!("context_variant_expected_owner guarantees Ty::Named")
                     }
                 } else {
-                    Expr::Ident(Ident::new(&qualified_name))
+                    let qualified_name = format!("{owner}::{}", context.name);
+                    let actual = self.resolve_identifier_variant(&qualified_name, span);
+                    let n = self.errors.len();
+                    self.expect_type(expected, &actual, span);
+                    if self.errors.len() > n {
+                        Ty::Error
+                    } else {
+                        actual
+                    }
                 };
-                let actual = self.check_against(&compatibility_expr, span, expected);
                 self.record_context_variant_resolution(expected, context.name.name, span);
                 actual
             }
@@ -1361,23 +1518,21 @@ impl Checker {
                     args: expected_args,
                 },
             ) => {
-                let expected_enum_name = expected_head.registry_key();
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                    // Fail-closed: explicit type args on enum variant struct forms are not
-                                                    // yet supported in the check_against path.  The expected type already
-                                                    // provides the type args from the binding site, so there is no safe
-                                                    // way to reconcile conflicting annotations here for this slice.
+                // Fail-closed: explicit type args on enum variant struct forms are not
+                // yet supported in the check_against path.  The expected type already
+                // provides the type args from the binding site, so there is no safe
+                // way to reconcile conflicting annotations here for this slice.
                 if type_args.is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "enum variant struct initializer `{name}` cannot include explicit \
+                            "enum variant struct initializer `{named_path}` cannot include explicit \
                              type arguments when the surrounding expression provides the type"
                         ),
                     );
                 }
-                let short = name.rsplit("::").next().unwrap_or(name.as_str());
+                let short = named_path.last().map_or("", |ident| ident.name.as_str());
                 // Reject a mismatched qualified owner (e.g.
                 // `right.Status::Ready` when the expected nominal is
                 // `left.Status`). Alias and current-module lexical spellings
@@ -1386,117 +1541,23 @@ impl Checker {
                     head: *expected_head,
                     args: expected_args.clone(),
                 };
-                let prefix_ok = self.variant_surface_owner_matches(name, &expected_nominal);
+                let checked = (self.variant_path_owner_matches(named_path, &expected_nominal)
+                    && !short.is_empty())
+                .then(|| {
+                    self.check_struct_variant_against_expected(
+                        named_path,
+                        short,
+                        fields,
+                        span,
+                        *expected_head,
+                        expected_args,
+                        expected,
+                    )
+                })
+                .flatten();
 
-                let mut handled = false;
-                if prefix_ok {
-                    if let Some(td) = self.lookup_type_def(expected_enum_name) {
-                        let variant_def = td
-                            .variants
-                            .get(name.as_str())
-                            .or_else(|| td.variants.get(short))
-                            .cloned();
-                        if let Some(VariantDef::Struct(variant_fields)) = variant_def {
-                            let type_params = td.type_params.clone();
-                            // Only pre-seed when arity matches and there are
-                            // type params to substitute.
-                            if type_params.len() == expected_args.len() && !type_params.is_empty() {
-                                handled = true;
-                                // Clone early so we can mutably borrow `self`.
-                                let expected_args = expected_args.clone();
-                                let mut type_arg_map: HashMap<crate::ParamHead, Ty> = type_params
-                                    .iter()
-                                    .zip(expected_args.iter())
-                                    .map(|(p, a)| (*p, a.clone()))
-                                    .collect();
-
-                                for (field_name, (fexpr, fs)) in fields {
-                                    if let Some((_, declared_ty)) = variant_fields
-                                        .iter()
-                                        .find(|(n, _)| n == field_name.name.as_str())
-                                    {
-                                        let declared_ty = declared_ty.clone();
-                                        let field_expected = declared_ty
-                                            .substitute_type_params_parallel(&type_arg_map);
-                                        let actual = self.check_against(fexpr, fs, &field_expected);
-                                        self.record_value_transfer(fexpr, fs);
-                                        // Bind any remaining unbound type params
-                                        for tp in &type_params {
-                                            if !type_arg_map.contains_key(tp)
-                                                && declared_ty == (Ty::param(*tp))
-                                            {
-                                                type_arg_map.insert(*tp, actual.clone());
-                                            }
-                                        }
-                                    } else {
-                                        let similar = crate::error::find_similar(
-                                            field_name.name.as_str(),
-                                            variant_fields.iter().map(|(n, _)| n.as_str()),
-                                        );
-                                        self.report_error_with_suggestions(
-                                            TypeErrorKind::UndefinedField,
-                                            span,
-                                            format!("no field `{field_name}` on variant `{name}`"),
-                                            similar,
-                                        );
-                                    }
-                                }
-                                let provided: HashSet<&str> =
-                                    fields.iter().map(|(n, _)| n.name.as_str()).collect();
-                                for (index, (declared, _)) in variant_fields.iter().enumerate() {
-                                    if !provided.contains(declared.as_str())
-                                        && !self.is_implicit_variant_field(
-                                            expected_enum_name,
-                                            short,
-                                            index,
-                                        )
-                                    {
-                                        self.report_error(
-                                            TypeErrorKind::UndefinedField,
-                                            span,
-                                            format!(
-                                                "missing field `{declared}` in initializer of `{name}`"
-                                            ),
-                                        );
-                                    }
-                                }
-                                // Emit unconditionally; see the struct coercion
-                                // arm above for the boundary-prune rationale.
-                                let resolved_args: Vec<Ty> = type_params
-                                    .iter()
-                                    .map(|tp| {
-                                        type_arg_map
-                                            .get(tp)
-                                            .cloned()
-                                            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
-                                    })
-                                    .collect();
-                                self.record_concrete_record_init_type_args(span, &resolved_args);
-                                // Machine bound enforcement on enum-variant
-                                // ctor with expected enum: identical motivation
-                                // to the plain-struct coercion arm above; the
-                                // enum name carrier IS the machine name when
-                                // the expected type is a machine instantiation
-                                // (`var m: Holder<File> = Holder::Active { … }`).
-                                self.enforce_type_def_instantiation_bounds(
-                                    expected_enum_name,
-                                    &resolved_args,
-                                    span,
-                                );
-                                self.record_variant_constructor_plan(
-                                    expected_enum_name,
-                                    short,
-                                    expected,
-                                    fields,
-                                    span,
-                                );
-                                self.record_type(span, expected);
-                            }
-                        }
-                    }
-                }
-                if handled {
-                    expected.clone()
+                if let Some(resolved_expected) = checked {
+                    resolved_expected
                 } else {
                     // Variant not found in the expected enum, non-generic, or
                     // arity mismatch — fall back to synthesize + unify.

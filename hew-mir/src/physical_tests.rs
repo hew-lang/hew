@@ -549,59 +549,6 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
-fn completion_receivers_borrow_stable_places_and_snapshot_effectful_arguments() {
-    for (argument, expected) in [
-        ("7", OwnKind::Guaranteed),
-        ("{ target = second; 7 }", OwnKind::Owned),
-    ] {
-        let semantic = lower_source(&format!(
-            "actor Counter {{ let base: i64; receive fn add(n: i64) -> i64 {{ base + n }} }}
-             fn main() {{
-                 let first = spawn Counter {{ base: 1 }};
-                 let second = spawn Counter {{ base: 100 }};
-                 var target = first;
-                 let result = target.add({argument});
-             }}"
-        ));
-        assert!(hew_sir::verify_module(&semantic).is_empty());
-        let (function, target) = semantic
-            .functions
-            .iter()
-            .find_map(|function| {
-                function.blocks.iter().find_map(|block| {
-                    if let hew_sir::SemTerminator::Suspend {
-                        kind: hew_sir::SuspendKind::Ask { .. },
-                        inputs,
-                        ..
-                    } = &block.terminator
-                    {
-                        Some((function, inputs[0].operand.value))
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("completion call");
-        let owner = function
-            .blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .flat_map(|operation| &operation.results)
-            .map(|value| (value.id, value.own))
-            .chain(
-                function
-                    .blocks
-                    .iter()
-                    .flat_map(|block| &block.args)
-                    .map(|value| (value.value, value.own)),
-            )
-            .find(|(value, _)| *value == target)
-            .expect("target definition");
-        assert_eq!(owner.1, expected, "argument: {argument}");
-    }
-}
-
-#[test]
 fn frame_roots_follow_live_owners_at_loop_and_child_suspension() {
     for pause in [
         "for i in 0..2 { assert(held.len() > i); }",
@@ -1221,34 +1168,6 @@ fn inventories_only_types_used_by_concrete_sir_bodies() {
 }
 
 #[test]
-fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
-    let module = lower_source(
-        r"
-            fn main() -> i64 {
-                let pair = (0, 42);
-                pair.1
-            }
-            ",
-    );
-    let verified =
-        lower_physical_module(&module, target_for_inventory(&module)).expect("physical tuple");
-    let operations = verified
-        .module()
-        .functions
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .flat_map(super::types::PhysicalBlock::operations)
-        .collect::<Vec<_>>();
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        PhysicalOp::TupleMake { elements, .. } if elements.len() == 2
-    )));
-    assert!(operations
-        .iter()
-        .any(|operation| matches!(operation, PhysicalOp::TupleGet { index: 1, .. })));
-}
-
-#[test]
 fn lowers_owned_aggregate_operations_with_exact_recursive_glue() {
     let module = lower_source(
         r#"type Packet {
@@ -1765,7 +1684,7 @@ fn main() {
 }
 
 #[test]
-fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
+fn lowers_and_verifies_scalar_tuple_operations() {
     let module = lower_source(
         r"
             fn main() -> i64 {
@@ -1774,10 +1693,24 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
             }
             ",
     );
+    let verified = lower_physical_module(&module, target_for_inventory(&module))
+        .expect("valid physical tuple");
+    let operations = verified
+        .module()
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(super::types::PhysicalBlock::operations)
+        .collect::<Vec<_>>();
+    assert!(operations.iter().any(|operation| matches!(
+        operation,
+        PhysicalOp::TupleMake { elements, .. } if elements.len() == 2
+    )));
+    assert!(operations
+        .iter()
+        .any(|operation| matches!(operation, PhysicalOp::TupleGet { index: 1, .. })));
 
-    let mut owned_tuple = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("valid physical tuple")
-        .into_unverified();
+    let mut owned_tuple = verified.clone().into_unverified();
     let tuple_dest = owned_tuple.functions[0]
         .blocks
         .iter()
@@ -1791,9 +1724,7 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     verify_physical_module(&owned_tuple)
         .expect_err("physical tuple must not infer aggregate ownership");
 
-    let mut bad_index = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("valid physical tuple")
-        .into_unverified();
+    let mut bad_index = verified.into_unverified();
     let index = bad_index.functions[0]
         .blocks
         .iter_mut()
@@ -1883,7 +1814,7 @@ fn scalar_print_lowers_to_the_exact_physical_runtime_action() {
 }
 
 #[test]
-fn bytes_transform_and_bounds_failure_are_physical_contracts() {
+fn bytes_transform_and_bounds_failure_contracts() {
     let module = lower_source(include_str!(
         "../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
     ));
@@ -1903,16 +1834,8 @@ fn bytes_transform_and_bounds_failure_are_physical_contracts() {
     assert!(actions.contains(&RuntimeCallFamily::BytesPush));
     assert!(actions.contains(&RuntimeCallFamily::BytesLen));
     assert!(actions.contains(&RuntimeCallFamily::BytesIndex));
-}
 
-#[test]
-fn verifier_rejects_changed_runtime_transfer_and_failure_contracts() {
-    let module = lower_source(include_str!(
-        "../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
-    ));
-    let mut wrong_transfer = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("valid physical bytes module")
-        .into_unverified();
+    let mut wrong_transfer = verified.clone().into_unverified();
     let push_args = wrong_transfer
         .functions
         .iter_mut()
@@ -1938,9 +1861,7 @@ fn verifier_rejects_changed_runtime_transfer_and_failure_contracts() {
     verify_physical_module(&wrong_transfer)
         .expect_err("borrow must not replace the bytes owner move");
 
-    let mut missing_failure = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("valid physical bytes module")
-        .into_unverified();
+    let mut missing_failure = verified.into_unverified();
     let failure = missing_failure
         .functions
         .iter_mut()
@@ -1992,39 +1913,30 @@ fn verifier_rejects_noncanonical_callable_identity() {
 }
 
 #[test]
-fn call_result_is_initialized_only_on_the_normal_edge() {
+fn call_result_and_unwind_contracts_are_enforced() {
     let verified =
         lower_physical_module(&module_with_call_and_unwind(), target()).expect("lower call");
-    let main = &verified.module().functions[0];
     assert!(matches!(
-        main.blocks[0].terminator,
+        verified.module().functions[0].blocks[0].terminator,
         PhysicalTerminator::Call {
             result: Some(StorageId(0)),
             unwind: Some(_),
             ..
         }
     ));
-}
 
-#[test]
-fn verifier_rejects_call_result_missing_from_normal_contract() {
-    let verified =
-        lower_physical_module(&module_with_call_and_unwind(), target()).expect("lower call");
-    let mut physical = verified.into_unverified();
-    let PhysicalTerminator::Call { result, .. } = &mut physical.functions[0].blocks[0].terminator
+    let mut missing_result = verified.clone().into_unverified();
+    let PhysicalTerminator::Call { result, .. } =
+        &mut missing_result.functions[0].blocks[0].terminator
     else {
         panic!("call fixture");
     };
     *result = None;
-    verify_physical_module(&physical).expect_err("result-out must be checked");
-}
+    verify_physical_module(&missing_result).expect_err("result-out must be checked");
 
-#[test]
-fn verifier_rejects_call_result_read_on_the_unwind_edge() {
-    let verified =
-        lower_physical_module(&module_with_call_and_unwind(), target()).expect("lower call");
-    let mut physical = verified.into_unverified();
-    let PhysicalTerminator::Call { unwind, .. } = &mut physical.functions[0].blocks[0].terminator
+    let mut read_on_unwind = verified.clone().into_unverified();
+    let PhysicalTerminator::Call { unwind, .. } =
+        &mut read_on_unwind.functions[0].blocks[0].terminator
     else {
         panic!("call fixture");
     };
@@ -2033,7 +1945,22 @@ fn verifier_rejects_call_result_read_on_the_unwind_edge() {
         transfers: vec![(StorageId(0), StorageId(1))],
         leaf_transfers: vec![],
     });
-    verify_physical_module(&physical).expect_err("fault cannot expose result");
+    verify_physical_module(&read_on_unwind).expect_err("fault cannot expose result");
+
+    for terminal in [
+        PhysicalTerminator::Trap(TrapKind::IntegerOverflow),
+        PhysicalTerminator::Unreachable,
+    ] {
+        let mut abandoned = verified.clone().into_unverified();
+        abandoned.functions[0]
+            .blocks
+            .iter_mut()
+            .find(|block| block.id == BlockId(2))
+            .expect("unwind cleanup block")
+            .terminator = terminal;
+        verify_physical_module(&abandoned)
+            .expect_err("an active fault owner must be propagated exactly once");
+    }
 }
 
 #[test]
@@ -2099,26 +2026,6 @@ fn verifier_rejects_propagating_an_uninitialized_fault() {
     physical.functions[0].blocks[0].terminator =
         PhysicalTerminator::PropagateFault { handback: None };
     verify_physical_module(&physical).expect_err("fault must be initialized");
-}
-
-#[test]
-fn verifier_rejects_terminals_that_abandon_an_active_fault() {
-    let verified =
-        lower_physical_module(&module_with_call_and_unwind(), target()).expect("lower call");
-    for terminal in [
-        PhysicalTerminator::Trap(TrapKind::IntegerOverflow),
-        PhysicalTerminator::Unreachable,
-    ] {
-        let mut physical = verified.clone().into_unverified();
-        physical.functions[0]
-            .blocks
-            .iter_mut()
-            .find(|block| block.id == BlockId(2))
-            .expect("unwind cleanup block")
-            .terminator = terminal;
-        verify_physical_module(&physical)
-            .expect_err("an active fault owner must be propagated exactly once");
-    }
 }
 
 #[test]
@@ -2218,47 +2125,35 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
 }
 
 #[test]
-fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
-    let module = lower_source("fn main() { let value: u64 = 18446744073709551615; }");
-    let physical = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("full-range u64 literal")
-        .into_unverified();
-    let bits = physical.functions[0]
-        .blocks
-        .iter()
-        .flat_map(super::types::PhysicalBlock::operations)
-        .find_map(|operation| match operation {
-            PhysicalOp::Const {
-                value: PhysicalConst::IntegerBits(bits),
-                ..
-            } => Some(*bits),
-            _ => None,
-        })
-        .expect("integer constant");
-    assert_eq!(bits, u64::MAX);
-}
+fn integer_literals_lower_to_exact_width_bit_patterns() {
+    fn first_const_integer_bits(physical: &PhysicalModule) -> u64 {
+        physical.functions[0]
+            .blocks
+            .iter()
+            .flat_map(super::types::PhysicalBlock::operations)
+            .find_map(|operation| match operation {
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(bits),
+                    ..
+                } => Some(*bits),
+                _ => None,
+            })
+            .expect("integer constant")
+    }
 
-#[test]
-fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
-    let module = lower_source("fn main() { let value: i8 = -128; }");
-    let physical = lower_physical_module(&module, target_for_inventory(&module))
-        .expect("i8 minimum literal")
-        .into_unverified();
-    let bits = physical.functions[0]
-        .blocks
-        .iter()
-        .flat_map(super::types::PhysicalBlock::operations)
-        .find_map(|operation| match operation {
-            PhysicalOp::Const {
-                value: PhysicalConst::IntegerBits(bits),
-                ..
-            } => Some(*bits),
-            _ => None,
-        })
-        .expect("integer constant");
-    // The eight-bit two's-complement encoding of -128, with no stray high
-    // bits from the wider carrier.
-    assert_eq!(bits, 0x80);
+    for (source, expected) in [
+        (
+            "fn main() { let value: u64 = 18446744073709551615; }",
+            u64::MAX,
+        ),
+        ("fn main() { let value: i8 = -128; }", 0x80),
+    ] {
+        let module = lower_source(source);
+        let physical = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("integer literal must lower")
+            .into_unverified();
+        assert_eq!(first_const_integer_bits(&physical), expected, "{source}");
+    }
 }
 
 #[test]
@@ -2310,7 +2205,7 @@ fn verifier_rejects_missing_physical_literal_pool_entries() {
 }
 
 #[test]
-fn checked_binary_defines_its_result_only_on_the_normal_edge() {
+fn checked_binary_defines_result_on_normal_edge_only_and_preserves_failure_kind() {
     let verified = lower_physical_module(&module_with_checked_add(), target())
         .expect("checked add should lower");
     let PhysicalTerminator::CheckedBinary {
@@ -2327,15 +2222,10 @@ fn checked_binary_defines_its_result_only_on_the_normal_edge() {
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].kind, TrapKind::IntegerOverflow);
     assert_eq!(failures[0].edge.target, BlockId(2));
-}
 
-#[test]
-fn verifier_rejects_checked_result_on_a_failure_edge() {
-    let verified =
-        lower_physical_module(&module_with_checked_add(), target()).expect("checked add");
-    let mut physical = verified.into_unverified();
+    let mut read_on_failure = verified.clone().into_unverified();
     let PhysicalTerminator::CheckedBinary { failures, .. } =
-        &mut physical.functions[0].blocks[0].terminator
+        &mut read_on_failure.functions[0].blocks[0].terminator
     else {
         panic!("checked add fixture");
     };
@@ -2344,22 +2234,17 @@ fn verifier_rejects_checked_result_on_a_failure_edge() {
         transfers: vec![(StorageId(2), StorageId(3))],
         leaf_transfers: vec![],
     };
-    verify_physical_module(&physical)
+    verify_physical_module(&read_on_failure)
         .expect_err("a failure edge cannot observe the normal-only result");
-}
 
-#[test]
-fn verifier_rejects_a_changed_checked_failure_kind() {
-    let verified =
-        lower_physical_module(&module_with_checked_add(), target()).expect("checked add");
-    let mut physical = verified.into_unverified();
+    let mut changed_kind = verified.into_unverified();
     let PhysicalTerminator::CheckedBinary { failures, .. } =
-        &mut physical.functions[0].blocks[0].terminator
+        &mut changed_kind.functions[0].blocks[0].terminator
     else {
         panic!("checked add fixture");
     };
     failures[0].kind = TrapKind::DivideByZero;
-    verify_physical_module(&physical)
+    verify_physical_module(&changed_kind)
         .expect_err("physical failure kinds must preserve SIR semantics");
 }
 

@@ -14,10 +14,6 @@
 //! they require queue traversal or blocking.
 //!
 //! System messages use a separate lock-free MPSC queue.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 #[path = "mailbox_native.rs"]
 pub(crate) mod native;
@@ -30,7 +26,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
@@ -117,7 +113,21 @@ static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSw
     crate::lifetime::PoisonSafe::new(None);
 
 #[cfg(test)]
-static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+#[derive(Clone, Copy)]
+enum UserCountHookTarget {
+    Node(usize),
+    ReplyChannel(usize),
+}
+
+#[cfg(test)]
+type UserCountPublicationHook = (
+    UserCountHookTarget,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<UserCountPublicationHook>> =
     crate::lifetime::PoisonSafe::new(None);
 
 /// One-shot test seam after a blocked sender's readiness is deposited but
@@ -295,7 +305,31 @@ impl UserCountPublicationHookGuard {
         let release = std::sync::Arc::new(std::sync::Barrier::new(2));
         USER_COUNT_PUBLICATION_HOOK.access(|hook| {
             assert!(hook.is_none(), "user-count hook already installed");
-            *hook = Some((node.addr(), entered.clone(), release.clone()));
+            *hook = Some((
+                UserCountHookTarget::Node(node.addr()),
+                entered.clone(),
+                release.clone(),
+            ));
+        });
+        (Self, entered, release)
+    }
+
+    pub(crate) fn install_for_reply_channel(
+        reply_channel: *mut c_void,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        USER_COUNT_PUBLICATION_HOOK.access(|hook| {
+            assert!(hook.is_none(), "user-count hook already installed");
+            *hook = Some((
+                UserCountHookTarget::ReplyChannel(reply_channel.addr()),
+                entered.clone(),
+                release.clone(),
+            ));
         });
         (Self, entered, release)
     }
@@ -310,9 +344,15 @@ impl Drop for UserCountPublicationHookGuard {
 
 #[cfg(test)]
 fn run_user_count_publication_hook(node: *mut HewMsgNode) {
+    // SAFETY: producer owns `node` exclusively before queue publication.
+    let reply_channel = unsafe { (*node).reply_channel };
     let rendezvous = USER_COUNT_PUBLICATION_HOOK.access(|hook| {
         hook.as_ref().and_then(|(target, entered, release)| {
-            (*target == node.addr()).then(|| (entered.clone(), release.clone()))
+            let matched = match *target {
+                UserCountHookTarget::Node(addr) => addr == node.addr(),
+                UserCountHookTarget::ReplyChannel(addr) => addr == reply_channel.addr(),
+            };
+            matched.then(|| (entered.clone(), release.clone()))
         })
     });
     if let Some((entered, release)) = rendezvous {
@@ -567,6 +607,7 @@ pub unsafe extern "C" fn hew_msg_envelope_release(env: *mut HewMsgEnvelope) {
 /// owns a reference and must not be used to mutate or free the payload.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_envelope_payload_ptr(env: *mut HewMsgEnvelope) -> *mut c_void {
+    cabi_guard!(env.is_null(), ptr::null_mut());
     // SAFETY: a non-null C ABI argument must be a live envelope.
     unsafe { crate::cow_envelope::payload_ptr(env) }
 }
@@ -673,6 +714,7 @@ unsafe fn msg_node_alloc_with_trace(
         return ptr::null_mut();
     }
 
+    let data_size = if data.is_null() { 0 } else { data_size };
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
         ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
@@ -695,7 +737,7 @@ unsafe fn msg_node_alloc_with_trace(
         (*node).cancel_token_handle = 0;
 
         // Deep-copy message data for actor isolation.
-        if data_size > 0 && !data.is_null() {
+        if data_size > 0 {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
                 crate::mem::buf_free(node.cast());
@@ -872,8 +914,9 @@ unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTermina
     // its corruption fallback destroys an undecodable system node inline.
     // Terminal serialization must contain no destructor or callback edge.
     loop {
-        // SAFETY: terminal serialization provides the single consumer.
-        let node = unsafe { mailbox.sys_queue.try_dequeue() };
+        // SAFETY: terminal serialization provides the single consumer; yield
+        // and retry through any transient mid-link producer gap until Empty.
+        let node = unsafe { mailbox.sys_queue.dequeue_draining() };
         if node.is_null() {
             break;
         }
@@ -905,8 +948,9 @@ unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTermina
         }
     } else {
         loop {
-            // SAFETY: terminal serialization provides the single consumer.
-            let node = unsafe { mailbox.user_fast.try_dequeue() };
+            // SAFETY: terminal serialization provides the single consumer;
+            // yield and retry through any transient mid-link producer gap.
+            let node = unsafe { mailbox.user_fast.dequeue_draining() };
             if node.is_null() {
                 break;
             }
@@ -1203,8 +1247,8 @@ unsafe impl Sync for MpscQueue {}
 unsafe impl Send for MpscQueue {}
 
 #[derive(Debug, PartialEq, Eq)]
-enum DequeueState {
-    Success(*mut HewMsgNode),
+enum TryDequeueResult {
+    Node(*mut HewMsgNode),
     Empty,
     Inconsistent,
 }
@@ -1227,7 +1271,7 @@ impl MpscQueue {
         self.stub
     }
 
-    /// Build the [`DequeueState::Success`] handed back to the single consumer.
+    /// Build the [`TryDequeueResult::Node`] handed back to the single consumer.
     ///
     /// Every success return routes through here so the stub-escape invariant
     /// has exactly one statement instead of one per exit. The consumer
@@ -1242,12 +1286,12 @@ impl MpscQueue {
     /// consumer is the only party that re-enqueues it). The assertion exists to
     /// catch a future edit to that algorithm, not a condition reachable today.
     #[inline]
-    fn consumer_success(&self, node: *mut HewMsgNode) -> DequeueState {
+    fn consumer_success(&self, node: *mut HewMsgNode) -> TryDequeueResult {
         debug_assert!(
             node != self.stub_ptr(),
             "MPSC stable stub escaped to the consumer; freeing it would leave producers linking through freed memory"
         );
-        DequeueState::Success(node)
+        TryDequeueResult::Node(node)
     }
 
     /// Enqueue a node. Safe for concurrent producers.
@@ -1271,9 +1315,9 @@ impl MpscQueue {
         }
     }
 
-    /// Single-consumer dequeue step. Returns [`DequeueState::Inconsistent`]
+    /// Single-consumer dequeue step. Returns [`TryDequeueResult::Inconsistent`]
     /// when a producer has exchanged `head` but not yet linked `prev.next`.
-    unsafe fn try_dequeue_once(&self) -> DequeueState {
+    unsafe fn try_dequeue_once(&self) -> TryDequeueResult {
         // SAFETY: Single-consumer invariant grants exclusive access to `tail`.
         let tail = unsafe { *self.tail.get() };
         // SAFETY: `tail` is always the stub or a live queued node.
@@ -1282,7 +1326,10 @@ impl MpscQueue {
 
         if tail == stub {
             if next.is_null() {
-                return DequeueState::Empty;
+                if self.head.load(Ordering::Acquire) != stub {
+                    return TryDequeueResult::Inconsistent;
+                }
+                return TryDequeueResult::Empty;
             }
             // SAFETY: `next` is the first real node after the stable stub.
             unsafe { *self.tail.get() = next };
@@ -1300,7 +1347,7 @@ impl MpscQueue {
 
         let head = self.head.load(Ordering::Acquire);
         if tail != head {
-            return DequeueState::Inconsistent;
+            return TryDequeueResult::Inconsistent;
         }
 
         // Queue holds a single real node. Re-inject the stable stub so the
@@ -1319,11 +1366,11 @@ impl MpscQueue {
             return self.consumer_success(tail);
         }
 
-        DequeueState::Inconsistent
+        TryDequeueResult::Inconsistent
     }
 
     /// Helper after advancing past the stable stub.
-    unsafe fn pop_inner(&self, tail: *mut HewMsgNode) -> DequeueState {
+    unsafe fn pop_inner(&self, tail: *mut HewMsgNode) -> TryDequeueResult {
         // SAFETY: `tail` is the first real node after the stable stub.
         let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
@@ -1336,7 +1383,7 @@ impl MpscQueue {
 
         let head = self.head.load(Ordering::Acquire);
         if tail != head {
-            return DequeueState::Inconsistent;
+            return TryDequeueResult::Inconsistent;
         }
 
         let stub = self.stub_ptr();
@@ -1352,30 +1399,49 @@ impl MpscQueue {
             return self.consumer_success(tail);
         }
 
-        DequeueState::Inconsistent
+        TryDequeueResult::Inconsistent
     }
 
     /// Try to dequeue a node. **Single-consumer only.**
     ///
-    /// Returns a dequeued message node, or null if the queue appears empty.
-    /// If a producer is briefly mid-enqueue, spin a few times to avoid
-    /// reporting a false empty to the caller.
+    /// Spins briefly when a producer is mid-enqueue between `head.swap` and
+    /// `prev.next.store`, and returns [`TryDequeueResult::Inconsistent`]
+    /// instead of collapsing it to empty so draining callers can yield and
+    /// retry until the queue is genuinely [`TryDequeueResult::Empty`].
     ///
     /// # Safety
     ///
     /// Only one thread may call this at a time (single-consumer invariant).
-    unsafe fn try_dequeue(&self) -> *mut HewMsgNode {
+    unsafe fn try_dequeue(&self) -> TryDequeueResult {
         const SPIN_LIMIT: usize = 64;
         for _ in 0..SPIN_LIMIT {
             // SAFETY: try_dequeue owns the single-consumer contract for the
             // duration of this call and delegates one dequeue step.
             match unsafe { self.try_dequeue_once() } {
-                DequeueState::Success(node) => return node,
-                DequeueState::Empty => return ptr::null_mut(),
-                DequeueState::Inconsistent => std::hint::spin_loop(),
+                TryDequeueResult::Node(node) => return TryDequeueResult::Node(node),
+                TryDequeueResult::Empty => return TryDequeueResult::Empty,
+                TryDequeueResult::Inconsistent => std::hint::spin_loop(),
             }
         }
-        ptr::null_mut()
+        TryDequeueResult::Inconsistent
+    }
+
+    /// Dequeue one node for a terminal or teardown drain, yielding and
+    /// retrying whenever a producer is preempted between `head.swap` and
+    /// `prev.next.store`.
+    ///
+    /// # Safety
+    ///
+    /// Only one thread may call this at a time (single-consumer invariant).
+    unsafe fn dequeue_draining(&self) -> *mut HewMsgNode {
+        loop {
+            // SAFETY: caller upholds the single-consumer invariant.
+            match unsafe { self.try_dequeue() } {
+                TryDequeueResult::Node(node) => return node,
+                TryDequeueResult::Empty => return ptr::null_mut(),
+                TryDequeueResult::Inconsistent => std::thread::yield_now(),
+            }
+        }
     }
 
     /// Drain and free all remaining nodes (including the stable stub).
@@ -1387,8 +1453,8 @@ impl MpscQueue {
     unsafe fn drain_and_free(&self) {
         loop {
             // SAFETY: caller guarantees exclusive teardown access, so dequeue
-            // may consume until the queue is empty.
-            let node = unsafe { self.try_dequeue() };
+            // may yield through any transient mid-link gap until truly empty.
+            let node = unsafe { self.dequeue_draining() };
             if node.is_null() {
                 break;
             }
@@ -1496,13 +1562,15 @@ pub struct HewMailbox {
     pub(crate) capacity: i64,
     /// Policy applied when user-queue is at capacity.
     overflow: HewOverflowPolicy,
-    /// Optional exact key matcher used by [`HewOverflowPolicy::Coalesce`].
-    coalesce_match_fn: Option<HewCoalesceMatchFn>,
-    /// Fallback policy used when coalesce finds no matching key.
-    coalesce_fallback: HewOverflowPolicy,
+    /// Optional exact key matcher used by [`HewOverflowPolicy::Coalesce`],
+    /// type-erased in an atomic pointer so updates never alias `&mut`.
+    coalesce_match_fn: AtomicPtr<c_void>,
+    /// Fallback policy (`HewOverflowPolicy` discriminant) used when coalesce
+    /// finds no matching key.
+    coalesce_fallback: AtomicI32,
     /// Typed destructor copied into raw C ingress envelopes before
     /// dispatch can move their owned fields out.
-    message_drop_fn: Option<HewMessageDropFn>,
+    message_drop_fn: AtomicPtr<c_void>,
     /// Closed bit and number of producers inside admission. A single atomic
     /// makes close and the last accepted publication one ordering decision.
     admission: AtomicUsize,
@@ -1612,6 +1680,53 @@ impl HewMailbox {
         self.not_full.notify_all();
     }
 
+    fn load_coalesce_match_fn(&self) -> Option<HewCoalesceMatchFn> {
+        let raw = self.coalesce_match_fn.load(Ordering::Acquire);
+        if raw.is_null() {
+            None
+        } else {
+            // SAFETY: `coalesce_match_fn` only stores null or a valid
+            // `HewCoalesceMatchFn` function pointer via `store_coalesce_match_fn`.
+            Some(unsafe { std::mem::transmute::<*mut c_void, HewCoalesceMatchFn>(raw) })
+        }
+    }
+
+    fn store_coalesce_match_fn(&self, match_fn: Option<HewCoalesceMatchFn>) {
+        let raw = match_fn.map_or(ptr::null_mut(), |f| f as *mut c_void);
+        self.coalesce_match_fn.store(raw, Ordering::Release);
+    }
+
+    fn load_coalesce_fallback(&self) -> HewOverflowPolicy {
+        match self.coalesce_fallback.load(Ordering::Acquire) {
+            x if x == HewOverflowPolicy::Block as i32 => HewOverflowPolicy::Block,
+            x if x == HewOverflowPolicy::DropOld as i32 => HewOverflowPolicy::DropOld,
+            x if x == HewOverflowPolicy::Fail as i32 => HewOverflowPolicy::Fail,
+            _ => HewOverflowPolicy::DropNew,
+        }
+    }
+
+    fn store_coalesce_fallback(&self, policy: HewOverflowPolicy) {
+        let normalized = normalize_coalesce_fallback(policy);
+        self.coalesce_fallback
+            .store(normalized as i32, Ordering::Release);
+    }
+
+    fn load_message_drop_fn(&self) -> Option<HewMessageDropFn> {
+        let raw = self.message_drop_fn.load(Ordering::Acquire);
+        if raw.is_null() {
+            None
+        } else {
+            // SAFETY: `message_drop_fn` only stores null or a valid
+            // `HewMessageDropFn` function pointer via `store_message_drop_fn`.
+            Some(unsafe { std::mem::transmute::<*mut c_void, HewMessageDropFn>(raw) })
+        }
+    }
+
+    fn store_message_drop_fn(&self, drop_fn: Option<HewMessageDropFn>) {
+        let raw = drop_fn.map_or(ptr::null_mut(), |f| f as *mut c_void);
+        self.message_drop_fn.store(raw, Ordering::Release);
+    }
+
     /// Read-only accessor: `true` when the mailbox uses the mutex
     /// slow-path queue for user messages (rather than the lock-free
     /// MPSC queue).  Used by the Phase α aliased-send gate (now
@@ -1706,9 +1821,9 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         sys_count: AtomicUsize::new(0),
         capacity: -1,
         overflow: HewOverflowPolicy::DropNew,
-        coalesce_match_fn: None,
-        coalesce_fallback: HewOverflowPolicy::DropNew,
-        message_drop_fn: None,
+        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
+        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1751,9 +1866,9 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
         overflow: policy,
-        coalesce_match_fn: None,
-        coalesce_fallback: HewOverflowPolicy::DropNew,
-        message_drop_fn: None,
+        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
+        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1805,9 +1920,9 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         sys_count: AtomicUsize::new(0),
         capacity: cap,
         overflow: policy,
-        coalesce_match_fn: None,
-        coalesce_fallback: HewOverflowPolicy::DropNew,
-        message_drop_fn: None,
+        coalesce_match_fn: AtomicPtr::new(ptr::null_mut()),
+        coalesce_fallback: AtomicI32::new(HewOverflowPolicy::DropNew as i32),
+        message_drop_fn: AtomicPtr::new(ptr::null_mut()),
         admission: AtomicUsize::new(0),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminate_requested: std::sync::atomic::AtomicBool::new(false),
@@ -1820,37 +1935,56 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
     }))
 }
 
-/// Configure coalescing behaviour for a mailbox.
+/// Configure coalescing behaviour for a mailbox constructed with
+/// [`OverflowPolicy::Coalesce`].
+///
+/// Calls on a mailbox with another overflow policy leave `use_slow_path`,
+/// `overflow`, and the coalesce configuration unchanged (and set the last
+/// error when `match_fn` is `Some`).
 ///
 /// # Safety
 ///
-/// `mb` must be unpublished and valid. The matcher must be a pure,
-/// non-reentrant equality comparison of the typed key in both payloads.
+/// `mb` must be null (no-op) or a valid, live [`HewMailbox`] pointer.
+/// `match_fn`, when `Some`, must be a pure, non-reentrant equality comparison
+/// of the typed key in both payloads and remain valid for the mailbox's
+/// lifetime.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_set_coalesce_config(
     mb: *mut HewMailbox,
     match_fn: Option<HewCoalesceMatchFn>,
     fallback_policy: OverflowPolicy,
 ) {
-    // SAFETY: caller guarantees `mb` is valid.
-    let mb = unsafe { &mut *mb };
-    mb.coalesce_match_fn = match_fn;
-    mb.coalesce_fallback = normalize_coalesce_fallback(fallback_policy);
+    cabi_guard!(mb.is_null());
+    // SAFETY: caller guarantees `mb` is a valid, live mailbox pointer.
+    let mb = unsafe { &*mb };
+    if mb.overflow != HewOverflowPolicy::Coalesce {
+        if match_fn.is_some() {
+            set_last_error(
+                "hew_mailbox_set_coalesce_config: mailbox was not constructed with OverflowPolicy::Coalesce",
+            );
+        }
+        return;
+    }
+    mb.store_coalesce_match_fn(match_fn);
+    mb.store_coalesce_fallback(fallback_policy);
 }
 
 /// Register the typed destructor attached to subsequent raw C submissions.
 ///
 /// # Safety
 ///
-/// `mb` must be a valid mailbox pointer and `drop_fn`, when present, must match
-/// every user-message payload shape routed to this actor.
+/// `mb` must be null (no-op) or a valid, live [`HewMailbox`] pointer.
+/// `drop_fn`, when `Some`, must match every user-message payload shape routed to
+/// this actor and remain valid for the mailbox's lifetime.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_set_message_drop_fn(
     mb: *mut HewMailbox,
     drop_fn: Option<HewMessageDropFn>,
 ) {
-    // SAFETY: caller guarantees `mb` is valid.
-    unsafe { (*mb).message_drop_fn = drop_fn };
+    cabi_guard!(mb.is_null());
+    // SAFETY: caller guarantees `mb` is a valid, live mailbox pointer.
+    let mb = unsafe { &*mb };
+    mb.store_message_drop_fn(drop_fn);
 }
 
 unsafe fn consume_dropped_incoming(
@@ -1860,7 +1994,8 @@ unsafe fn consume_dropped_incoming(
     data_size: usize,
 ) {
     mb.record_loss(0);
-    if let Some(drop_fn) = mb.message_drop_fn {
+    let data_size = if data.is_null() { 0 } else { data_size };
+    if let Some(drop_fn) = mb.load_message_drop_fn() {
         // SAFETY: send_with_overflow's caller guarantees the payload bytes are
         // valid for the duration of the call. DropNew reports success, so the
         // runtime must discharge the prepared owner before returning.
@@ -1981,7 +2116,7 @@ unsafe fn send_with_overflow(
                 data_size,
                 reply_channel,
                 caller,
-                mb.message_drop_fn,
+                mb.load_message_drop_fn(),
             )
         };
         if node.is_null() {
@@ -2002,7 +2137,7 @@ unsafe fn send_with_overflow(
         let len = mb.count.load(Ordering::Acquire);
         if len >= mb.capacity {
             let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
-                normalize_coalesce_fallback(mb.coalesce_fallback)
+                normalize_coalesce_fallback(mb.load_coalesce_fallback())
             } else {
                 mb.overflow
             };
@@ -2062,7 +2197,7 @@ unsafe fn send_with_overflow(
                             data_size,
                             reply_channel,
                             caller,
-                            mb.message_drop_fn,
+                            mb.load_message_drop_fn(),
                         )
                     };
                     if node.is_null() {
@@ -2083,7 +2218,7 @@ unsafe fn send_with_overflow(
                             data_size,
                             reply_channel,
                             caller,
-                            mb.message_drop_fn,
+                            mb.load_message_drop_fn(),
                         )
                     };
                     if node.is_null() {
@@ -2118,7 +2253,7 @@ unsafe fn send_with_overflow(
                 data_size,
                 reply_channel,
                 caller,
-                mb.message_drop_fn,
+                mb.load_message_drop_fn(),
             )
         };
         if node.is_null() {
@@ -2140,7 +2275,7 @@ unsafe fn send_with_overflow(
             data_size,
             reply_channel,
             caller,
-            mb.message_drop_fn,
+            mb.load_message_drop_fn(),
         )
     };
     if node.is_null() {
@@ -2416,6 +2551,9 @@ impl NativeReservation<'_> {
                         (*self.victim).caller = (*node).caller;
                         (*self.victim).data = (*node).data;
                         (*self.victim).data_size = (*node).data_size;
+                        (*self.victim).trace_context = (*node).trace_context;
+                        (*self.victim).payload_class = (*node).payload_class;
+                        (*self.victim).cancel_token_handle = (*node).cancel_token_handle;
                         let old = std::mem::replace(&mut (*self.victim).envelope, (*node).envelope);
                         (*node).envelope = ptr::null_mut();
                         (*node).reply_channel = ptr::null_mut();
@@ -2518,28 +2656,29 @@ pub(crate) unsafe fn reserve_native_request(
                 return Err(SendOutcome::Failed);
             }
             let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
-                let same_key = mb.coalesce_match_fn.expect("checked coalesce matcher");
-                let victim = queue.user_queue.iter().copied().find(|node| {
-                    // SAFETY: the queue lock pins initialized payloads and the caller pins its envelope.
-                    !queue.reserved.contains(node)
-                        && unsafe {
-                            !(**node).obligated
-                                && (**node).msg_type == msg_type
-                                && !(**node).envelope.is_null()
-                                && same_key(
-                                    msg_type,
-                                    hew_msg_envelope_payload_ptr((**node).envelope),
-                                    hew_msg_envelope_payload_ptr(envelope),
-                                ) != 0
-                        }
-                });
-                if let Some(victim) = victim {
-                    queue.reserved.push(victim);
-                    reservation.victim = victim;
-                    reservation.coalesced = true;
-                    return Ok(reservation);
+                if let Some(same_key) = mb.load_coalesce_match_fn() {
+                    let victim = queue.user_queue.iter().copied().find(|node| {
+                        // SAFETY: the queue lock pins initialized payloads and the caller pins its envelope.
+                        !queue.reserved.contains(node)
+                            && unsafe {
+                                !(**node).obligated
+                                    && (**node).msg_type == msg_type
+                                    && !(**node).envelope.is_null()
+                                    && same_key(
+                                        msg_type,
+                                        hew_msg_envelope_payload_ptr((**node).envelope),
+                                        hew_msg_envelope_payload_ptr(envelope),
+                                    ) != 0
+                            }
+                    });
+                    if let Some(victim) = victim {
+                        queue.reserved.push(victim);
+                        reservation.victim = victim;
+                        reservation.coalesced = true;
+                        return Ok(reservation);
+                    }
                 }
-                normalize_coalesce_fallback(mb.coalesce_fallback)
+                normalize_coalesce_fallback(mb.load_coalesce_fallback())
             } else {
                 mb.overflow
             };
@@ -2653,6 +2792,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -2708,6 +2848,7 @@ pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     size: usize,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
+    cabi_guard!(mb.is_null(), SendOutcome::Closed);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb_ref = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -2767,7 +2908,7 @@ pub(crate) unsafe fn mailbox_await_send(
             size,
             ptr::null_mut(),
             crate::actor_caller::local_sender(),
-            mailbox.message_drop_fn,
+            mailbox.load_message_drop_fn(),
         )
     };
     if node.is_null() {
@@ -2860,7 +3001,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
             size,
             reply_channel,
             caller,
-            mailbox.message_drop_fn,
+            mailbox.load_message_drop_fn(),
         )
     };
     if node.is_null() {
@@ -2971,6 +3112,7 @@ pub unsafe extern "C" fn hew_mailbox_send_with_reply(
     size: usize,
     reply_channel: *mut c_void,
 ) -> i32 {
+    cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: forwards the live mailbox and unpublished message.
     unsafe {
         mailbox_send_with_reply(
@@ -2992,6 +3134,7 @@ unsafe fn mailbox_send_with_reply(
     reply_channel: *mut c_void,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> i32 {
+    cabi_guard!(mb.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -3028,6 +3171,7 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    cabi_guard!(mb.is_null(), HewError::ErrClosed as i32);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     // SAFETY: Caller guarantees `data` points to `size` readable bytes.
@@ -3068,6 +3212,7 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     data: *mut c_void,
     size: usize,
 ) {
+    cabi_guard!(mb.is_null());
     let Some(kind) = HewSysMsg::from_raw(sys_msg) else {
         set_last_error(format!(
             "hew_mailbox_send_sys: refusing system message with unknown kind {sys_msg}"
@@ -3098,6 +3243,7 @@ pub(crate) unsafe fn mailbox_send_sys_checked(
     data: *mut c_void,
     size: usize,
 ) -> bool {
+    cabi_guard!(mb.is_null(), false);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
 
@@ -3252,6 +3398,9 @@ pub(crate) unsafe fn mailbox_stop_requested(mb: *mut HewMailbox) -> bool {
 ///
 /// `mb` must be a valid mailbox pointer.
 pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
+    if mb.is_null() {
+        return;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     if mb.admission.fetch_or(ADMISSION_CLOSED, Ordering::AcqRel) & ADMISSION_CLOSED == 0 {
@@ -3284,6 +3433,9 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
 ///
 /// `mb` must be a valid mailbox pointer.
 pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailbox) -> bool {
+    if mb.is_null() {
+        return true;
+    }
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     mb.is_closed()
@@ -3295,6 +3447,9 @@ pub(crate) unsafe fn mailbox_is_closed(mb: *mut HewMailbox) -> bool {
 /// # Safety
 /// `mb` must be a valid mailbox pointer.
 pub(crate) unsafe fn mailbox_admissions_drained(mb: *mut HewMailbox) -> bool {
+    if mb.is_null() {
+        return true;
+    }
     // SAFETY: caller keeps the mailbox live.
     unsafe { &*mb }.admissions_drained()
 }
@@ -3313,6 +3468,7 @@ pub(crate) unsafe fn mailbox_admissions_drained(mb: *mut HewMailbox) -> bool {
 /// functions at a time (single-consumer invariant).
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMsgNode {
+    cabi_guard!(mb.is_null(), ptr::null_mut());
     // SAFETY: caller upholds the `mb`-valid + single-consumer contract.
     unsafe { mailbox_try_recv_with_origin(mb) }.node
 }
@@ -3344,38 +3500,53 @@ pub(crate) struct RecvNode {
 /// `mb` must be a valid mailbox pointer. Only one thread may call recv
 /// functions at a time (single-consumer invariant).
 pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNode {
+    if mb.is_null() {
+        return RecvNode {
+            node: ptr::null_mut(),
+            origin: Origin::User,
+        };
+    }
     // SAFETY: Caller guarantees `mb` is valid and single-consumer.
     let mb = unsafe { &*mb };
 
     // System messages have priority (lock-free dequeue).
     // SAFETY: single-consumer invariant satisfied by caller.
-    let sys_node = unsafe { mb.sys_queue.try_dequeue() };
-    if !sys_node.is_null() {
-        mb.sys_count.fetch_sub(1, Ordering::AcqRel);
-        MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
-        let raw = unsafe { (*sys_node).msg_type };
-        let Some(kind) = HewSysMsg::from_raw(raw) else {
-            // Fail-closed: a system-queue node whose kind does not decode is
-            // NOT downgraded to a user message (that would hand it to the
-            // application trampoline). Every runtime producer goes through the
-            // typed `mailbox_send_sys*`, and the C entry point validates, so
-            // reaching here means memory corruption. Drop it and report.
-            eprintln!(
-                "[mailbox] refusing system-queue node with undecodable kind {raw} \
-                 (mailbox {mb:p}); dropping"
-            );
-            // SAFETY: `sys_node` is exclusively owned here and not published.
-            unsafe { hew_msg_node_free(sys_node) };
+    match unsafe { mb.sys_queue.try_dequeue() } {
+        TryDequeueResult::Node(sys_node) => {
+            mb.sys_count.fetch_sub(1, Ordering::AcqRel);
+            MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
+            let raw = unsafe { (*sys_node).msg_type };
+            let Some(kind) = HewSysMsg::from_raw(raw) else {
+                // Fail-closed: a system-queue node whose kind does not decode is
+                // NOT downgraded to a user message (that would hand it to the
+                // application trampoline). Every runtime producer goes through the
+                // typed `mailbox_send_sys*`, and the C entry point validates, so
+                // reaching here means memory corruption. Drop it and report.
+                eprintln!(
+                    "[mailbox] refusing system-queue node with undecodable kind {raw} \
+                     (mailbox {mb:p}); dropping"
+                );
+                // SAFETY: `sys_node` is exclusively owned here and not published.
+                unsafe { hew_msg_node_free(sys_node) };
+                return RecvNode {
+                    node: ptr::null_mut(),
+                    origin: Origin::User,
+                };
+            };
+            return RecvNode {
+                node: sys_node,
+                origin: Origin::Sys(kind),
+            };
+        }
+        TryDequeueResult::Inconsistent => {
+            // A system signal is mid-link; do not bypass it with a user message.
             return RecvNode {
                 node: ptr::null_mut(),
                 origin: Origin::User,
             };
-        };
-        return RecvNode {
-            node: sys_node,
-            origin: Origin::Sys(kind),
-        };
+        }
+        TryDequeueResult::Empty => {}
     }
 
     // User messages: slow path uses mutex, fast path uses lock-free queue.
@@ -3419,8 +3590,7 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         }
     } else {
         // SAFETY: single-consumer invariant satisfied by caller.
-        let node = unsafe { mb.user_fast.try_dequeue() };
-        if !node.is_null() {
+        if let TryDequeueResult::Node(node) = unsafe { mb.user_fast.try_dequeue() } {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             mb.native_capacity.notify();
@@ -3444,12 +3614,12 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
 /// Same requirements as [`hew_mailbox_try_recv`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_try_recv_sys(mb: *mut HewMailbox) -> *mut HewMsgNode {
+    cabi_guard!(mb.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `mb` is valid and single-consumer.
     let mb = unsafe { &*mb };
 
     // SAFETY: single-consumer invariant satisfied by caller.
-    let node = unsafe { mb.sys_queue.try_dequeue() };
-    if !node.is_null() {
+    if let TryDequeueResult::Node(node) = unsafe { mb.sys_queue.try_dequeue() } {
         mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
         return node;
@@ -3471,6 +3641,7 @@ pub unsafe extern "C" fn hew_mailbox_try_recv_sys(mb: *mut HewMailbox) -> *mut H
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_has_user_messages(mb: *mut HewMailbox) -> i32 {
+    cabi_guard!(mb.is_null(), 0);
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
 
@@ -3496,6 +3667,7 @@ pub unsafe extern "C" fn hew_mailbox_has_user_messages(mb: *mut HewMailbox) -> i
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
+    cabi_guard!(mb.is_null(), 0);
     // SAFETY: Caller guarantees `mb` is valid.
     if unsafe { &*mb }.sys_count.load(Ordering::Acquire) > 0 {
         return 1;
@@ -3513,6 +3685,7 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_len(mb: *const HewMailbox) -> usize {
+    cabi_guard!(mb.is_null(), 0);
     // SAFETY: Caller guarantees `mb` is valid.
     let count = unsafe { &*mb }.count.load(Ordering::Acquire);
     usize::try_from(count).unwrap_or(0)
@@ -3525,6 +3698,7 @@ pub unsafe extern "C" fn hew_mailbox_len(mb: *const HewMailbox) -> usize {
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_sys_len(mb: *const HewMailbox) -> usize {
+    cabi_guard!(mb.is_null(), 0);
     // SAFETY: Caller guarantees `mb` is valid.
     unsafe { &*mb }.sys_count.load(Ordering::Acquire)
 }
@@ -3536,6 +3710,7 @@ pub unsafe extern "C" fn hew_mailbox_sys_len(mb: *const HewMailbox) -> usize {
 /// `mb` must be a valid mailbox pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_capacity(mb: *const HewMailbox) -> usize {
+    cabi_guard!(mb.is_null(), 0);
     // SAFETY: Caller guarantees `mb` is valid.
     let cap = unsafe { &*mb }.capacity;
     usize::try_from(cap).unwrap_or(0)
@@ -3587,8 +3762,9 @@ unsafe fn retire_pending_sys_lane(mailbox: &HewMailbox) -> usize {
     let mut retired = 0usize;
     loop {
         // SAFETY: teardown owns the mailbox exclusively, so this frame is the
-        // sole consumer for the duration of the drain.
-        let node = unsafe { mailbox.sys_queue.try_dequeue() };
+        // sole consumer for the duration of the drain; yield and retry through
+        // any transient mid-link producer gap.
+        let node = unsafe { mailbox.sys_queue.dequeue_draining() };
         if node.is_null() {
             break;
         }
@@ -4110,13 +4286,14 @@ mod tests {
                     let start = Arc::clone(&start);
                     let successes = Arc::clone(&successes);
                     let rejects = Arc::clone(&rejects);
-                    let mb_addr = mb.addr();
+                    let mb_send = crate::send_ptr::SendPtr::new(mb);
                     producers.push(thread::spawn(move || {
+                        let mb_send = mb_send;
                         let value = i32::try_from(producer).expect("producer fits i32");
                         start.wait();
                         // SAFETY: the owner joins every producer before free.
                         let rc = hew_mailbox_try_send(
-                            ptr::without_provenance_mut(mb_addr),
+                            mb_send.as_ptr(),
                             i32::try_from(producer).expect("producer fits i32"),
                             (&raw const value).cast_mut().cast(),
                             size_of::<i32>(),
@@ -4213,8 +4390,9 @@ mod tests {
                     let start = Arc::clone(&start);
                     let successes = Arc::clone(&successes);
                     let rejects = Arc::clone(&rejects);
-                    let mb_addr = mb.addr();
+                    let mb_send = crate::send_ptr::SendPtr::new(mb);
                     producers.push(thread::spawn(move || {
+                        let mb_send = mb_send;
                         let payload = alloc_test_payload(&[u8::try_from(producer).unwrap_or(0)]);
                         // SAFETY: this producer transfers its one refcount to
                         // the send state machine exactly once.
@@ -4223,7 +4401,7 @@ mod tests {
                         start.wait();
                         // SAFETY: mailbox outlives the joined producer.
                         let outcome = try_admit_native_request(
-                            &*ptr::without_provenance_mut::<HewMailbox>(mb_addr),
+                            &*mb_send.as_ptr(),
                             i32::try_from(producer).expect("producer fits i32"),
                             env,
                             ptr::null_mut(),
@@ -4502,11 +4680,13 @@ mod tests {
                 let channel = crate::reply_channel::hew_reply_channel_new();
                 crate::reply_channel::hew_reply_channel_retain(channel);
                 let (hook, copied, resume) = BlockPreWaitHookGuard::install(mb);
-                let mailbox_addr = mb.addr();
-                let channel_addr = channel.addr();
+                let mb_send = crate::send_ptr::SendPtr::new(mb);
+                let channel_send = crate::send_ptr::SendPtr::new(channel.cast::<c_void>());
                 let producer = std::thread::spawn(move || {
-                    let mb = ptr::without_provenance_mut(mailbox_addr);
-                    let channel = ptr::without_provenance_mut(channel_addr);
+                    let mb_send = mb_send;
+                    let channel_send = channel_send;
+                    let mb = mb_send.as_ptr();
+                    let channel = channel_send.as_ptr();
                     let payload = 42i32;
                     if ask {
                         mailbox_send_with_reply_cooperative(
@@ -4670,13 +4850,15 @@ mod tests {
             );
 
             let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
-            let mb_addr = mb.addr();
+            let mb_send_sender = crate::send_ptr::SendPtr::new(mb);
+            let mb_send_closer = crate::send_ptr::SendPtr::new(mb);
             let sender = std::thread::spawn(move || {
+                let mb_send_sender = mb_send_sender;
                 let value: i32 = 2;
                 // SAFETY: main keeps the mailbox live through this join and
                 // `value` remains readable for the duration of the call.
                 hew_mailbox_send(
-                    ptr::without_provenance_mut(mb_addr),
+                    mb_send_sender.as_ptr(),
                     1,
                     (&raw const value).cast_mut().cast(),
                     size_of::<i32>(),
@@ -4686,8 +4868,9 @@ mod tests {
             // Sender owns slow_path + block_wait and has rechecked closed=false.
             entered.wait();
             let closer = std::thread::spawn(move || {
+                let mb_send_closer = mb_send_closer;
                 // SAFETY: main keeps the mailbox live through this join.
-                mailbox_close(ptr::without_provenance_mut(mb_addr));
+                mailbox_close(mb_send_closer.as_ptr());
             });
 
             // Close publishes before it joins block_wait. Once observed here,
@@ -4730,14 +4913,15 @@ mod tests {
             );
 
             let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
-            let mb_addr = mb.addr();
             let (done_tx, done_rx) = std::sync::mpsc::channel();
             let mut workers = Vec::new();
             for value in [2_i32, 3_i32] {
                 let done_tx = done_tx.clone();
+                let mb_send = crate::send_ptr::SendPtr::new(mb);
                 workers.push(std::thread::spawn(move || {
+                    let mb_send = mb_send;
                     let result = hew_mailbox_send(
-                        ptr::without_provenance_mut(mb_addr),
+                        mb_send.as_ptr(),
                         value,
                         (&raw const value).cast_mut().cast(),
                         size_of::<i32>(),
@@ -4887,13 +5071,19 @@ mod tests {
             assert!(!node.is_null());
 
             let (hook, entered, release) = SysCountPublicationHookGuard::install(HewSysMsg::Exit);
-            let mb_addr = mb.addr();
-            let node_addr = node.addr();
+            let mb_send = crate::send_ptr::SendPtr::new(mb);
+            let node_send = crate::send_ptr::SendPtr::new(node);
             let producer = std::thread::spawn(move || {
-                let mb = ptr::with_exposed_provenance_mut::<HewMailbox>(mb_addr);
-                let node = ptr::with_exposed_provenance_mut::<HewMsgNode>(node_addr);
+                let mb_send = mb_send;
+                let node_send = node_send;
                 // SAFETY: mailbox and node outlive this joined producer.
-                unsafe { enqueue_sys_node_inner(&*mb, node, publish_count_first) };
+                unsafe {
+                    enqueue_sys_node_inner(
+                        &*mb_send.as_ptr(),
+                        node_send.as_ptr(),
+                        publish_count_first,
+                    );
+                };
             });
             entered.wait();
 
@@ -4982,13 +5172,19 @@ mod tests {
             assert!(!node.is_null());
 
             let (hook, entered, release) = UserCountPublicationHookGuard::install(node);
-            let mb_addr = mb.addr();
-            let node_addr = node.addr();
+            let mb_send = crate::send_ptr::SendPtr::new(mb);
+            let node_send = crate::send_ptr::SendPtr::new(node);
             let producer = std::thread::spawn(move || {
-                let mb = ptr::with_exposed_provenance_mut::<HewMailbox>(mb_addr);
-                let node = ptr::with_exposed_provenance_mut::<HewMsgNode>(node_addr);
+                let mb_send = mb_send;
+                let node_send = node_send;
                 // SAFETY: mailbox and node outlive this joined producer.
-                unsafe { enqueue_user_node_inner(&*mb, node, publish_count_first) };
+                unsafe {
+                    enqueue_user_node_inner(
+                        &*mb_send.as_ptr(),
+                        node_send.as_ptr(),
+                        publish_count_first,
+                    );
+                };
             });
             entered.wait();
 
@@ -5296,11 +5492,12 @@ mod tests {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
-        const PRODUCERS: usize = 8;
-        const PER_PRODUCER: usize = 4_000;
+        const PRODUCERS: usize = if cfg!(miri) { 2 } else { 8 };
+        const PER_PRODUCER: usize = if cfg!(miri) { 16 } else { 4_000 };
+        const ROUNDS: usize = if cfg!(miri) { 1 } else { 4 };
         const TOTAL: usize = PRODUCERS * PER_PRODUCER;
 
-        for _round in 0..4 {
+        for _round in 0..ROUNDS {
             let q = Arc::new(MpscQueue::new().expect("queue allocation should succeed"));
             let start = Arc::new(Barrier::new(PRODUCERS + 1));
             let mut handles = Vec::new();
@@ -5340,11 +5537,13 @@ mod tests {
             let mut consumed = 0;
             while consumed < TOTAL {
                 // SAFETY: single-consumer loop owns dequeue access.
-                let node = unsafe { q.try_dequeue() };
-                if node.is_null() {
-                    thread::yield_now();
-                    continue;
-                }
+                let node = match unsafe { q.try_dequeue() } {
+                    TryDequeueResult::Node(node) => node,
+                    TryDequeueResult::Empty | TryDequeueResult::Inconsistent => {
+                        thread::yield_now();
+                        continue;
+                    }
+                };
                 consumed += 1;
                 // SAFETY: the queue handed ownership of `node` to the consumer.
                 unsafe { hew_msg_node_free(node) };
@@ -5405,20 +5604,23 @@ mod tests {
             // SAFETY: this thread is the sole consumer.
             let received = unsafe { q.try_dequeue() };
             assert_eq!(
-                received, node,
+                received,
+                TryDequeueResult::Node(node),
                 "a message stamped like the stub must still be delivered"
             );
             assert_ne!(
-                received, stub,
+                received,
+                TryDequeueResult::Node(stub),
                 "disambiguation is by pointer identity, so the stub is not returned"
             );
-            // SAFETY: the queue handed ownership of `received` to the consumer.
-            unsafe { hew_msg_node_free(received) };
+            // SAFETY: the queue handed ownership of `node` to the consumer.
+            unsafe { hew_msg_node_free(node) };
 
             // SAFETY: this thread is the sole consumer.
             let drained = unsafe { q.try_dequeue() };
-            assert!(
-                drained.is_null(),
+            assert_eq!(
+                drained,
+                TryDequeueResult::Empty,
                 "queue must read empty once the message is consumed"
             );
         }
@@ -5460,8 +5662,9 @@ mod tests {
                 }
                 for _ in 0..burst {
                     // SAFETY: this thread is the sole consumer.
-                    let node = unsafe { q.try_dequeue() };
-                    assert!(!node.is_null(), "published node must be observable");
+                    let TryDequeueResult::Node(node) = (unsafe { q.try_dequeue() }) else {
+                        panic!("published node must be observable");
+                    };
                     assert_ne!(
                         node, stub,
                         "the stable stub must never be handed to a consumer"
@@ -5471,8 +5674,9 @@ mod tests {
                 }
                 // SAFETY: this thread is the sole consumer.
                 let drained = unsafe { q.try_dequeue() };
-                assert!(
-                    drained.is_null(),
+                assert_eq!(
+                    drained,
+                    TryDequeueResult::Empty,
                     "queue must read empty once the burst is consumed"
                 );
             }
@@ -6338,6 +6542,390 @@ mod tests {
             );
             hew_msg_node_free(node);
             assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 4);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_config_preserves_fast_path_and_concurrent_updates_stay_race_free() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        COALESCE_TEST_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: mailbox stays live until senders/receivers finish and join.
+        unsafe {
+            // Non-Coalesce bounded mailbox must keep `use_slow_path == false`.
+            let fast_mb = hew_mailbox_new_bounded(2);
+            assert!(!(*fast_mb).use_slow_path);
+            hew_mailbox_set_coalesce_config(fast_mb, None, HewOverflowPolicy::DropOld);
+            assert!(!(*fast_mb).use_slow_path);
+            assert_eq!((*fast_mb).overflow, HewOverflowPolicy::DropNew);
+
+            crate::hew_clear_error();
+            hew_mailbox_set_coalesce_config(
+                fast_mb,
+                Some(first_u64_same_key),
+                HewOverflowPolicy::DropOld,
+            );
+            assert!(!(*fast_mb).use_slow_path);
+            assert!(!crate::hew_last_error().is_null());
+            assert!(
+                (*fast_mb).load_coalesce_match_fn().is_none(),
+                "non-coalescing mailbox must ignore coalesce matcher configuration"
+            );
+            crate::hew_clear_error();
+            hew_mailbox_free(fast_mb);
+
+            // Coalesce mailbox updates matcher/drop_fn atomically across threads.
+            let mb = hew_mailbox_new_with_policy(4, HewOverflowPolicy::Coalesce);
+            assert!((*mb).use_slow_path);
+            let mb_send = crate::send_ptr::SendPtr::new(mb);
+            let updater = std::thread::spawn(move || {
+                let mb_send = mb_send;
+                let mb = mb_send.as_ptr();
+                for round in 0..32 {
+                    let matcher = if round % 2 == 0 {
+                        Some(first_u64_same_key as HewCoalesceMatchFn)
+                    } else {
+                        None
+                    };
+                    let drop_fn = if round % 2 == 0 {
+                        Some(message_test_drop_glue as HewMessageDropFn)
+                    } else {
+                        None
+                    };
+                    // SAFETY: main keeps `mb` live until `updater` joins.
+                    hew_mailbox_set_coalesce_config(mb, matcher, HewOverflowPolicy::DropNew);
+                    hew_mailbox_set_message_drop_fn(mb, drop_fn);
+                    std::thread::yield_now();
+                }
+            });
+            for i in 0..32_i32 {
+                let val = i;
+                let _ = hew_mailbox_try_send(
+                    mb,
+                    1,
+                    (&raw const val).cast_mut().cast(),
+                    size_of::<i32>(),
+                );
+                let node = hew_mailbox_try_recv(mb);
+                if !node.is_null() {
+                    hew_msg_node_free(node);
+                }
+            }
+            updater.join().expect("config updater panicked");
+            loop {
+                let node = hew_mailbox_try_recv(mb);
+                if node.is_null() {
+                    break;
+                }
+                hew_msg_node_free(node);
+            }
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_without_matcher_falls_back_gracefully_without_panic() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        COALESCE_TEST_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: mailbox and envelopes are uniquely owned by this test.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Coalesce);
+            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::DropNew);
+            assert!(matches!(
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(1),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender(),
+                ),
+                SendOutcome::Enqueued
+            ));
+            assert!(matches!(
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(1),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender(),
+                ),
+                SendOutcome::Dropped
+            ));
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 1);
+
+            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::Fail);
+            let third = keyed_envelope(2);
+            assert!(matches!(
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    third,
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender(),
+                ),
+                SendOutcome::Failed
+            ));
+            hew_msg_envelope_release(third);
+
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            hew_msg_node_free(node);
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 3);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn null_mailbox_entry_points_fail_closed() {
+        // SAFETY: every guarded FFI/crate entry point must handle null safely.
+        unsafe {
+            hew_mailbox_set_coalesce_config(ptr::null_mut(), None, HewOverflowPolicy::DropNew);
+            hew_mailbox_set_message_drop_fn(ptr::null_mut(), None);
+            assert_eq!(
+                hew_mailbox_send(ptr::null_mut(), 0, ptr::null_mut(), 0),
+                HewError::ErrActorStopped as i32
+            );
+            assert!(matches!(
+                hew_mailbox_send_fire_and_forget(
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    crate::actor_caller::local_sender(),
+                ),
+                SendOutcome::Closed
+            ));
+            assert_eq!(
+                hew_mailbox_send_with_reply(
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                ),
+                HewError::ErrActorStopped as i32
+            );
+            assert_eq!(
+                hew_mailbox_try_send(ptr::null_mut(), 0, ptr::null_mut(), 0),
+                HewError::ErrClosed as i32
+            );
+            hew_mailbox_send_sys(
+                ptr::null_mut(),
+                HewSysMsg::ChildStopped.as_i32(),
+                ptr::null_mut(),
+                0,
+            );
+            assert!(hew_mailbox_try_recv(ptr::null_mut()).is_null());
+            assert!(hew_mailbox_try_recv_sys(ptr::null_mut()).is_null());
+            assert_eq!(hew_mailbox_has_user_messages(ptr::null_mut()), 0);
+            assert_eq!(hew_mailbox_has_messages(ptr::null_mut()), 0);
+            assert_eq!(hew_mailbox_len(ptr::null()), 0);
+            assert_eq!(hew_mailbox_sys_len(ptr::null()), 0);
+            assert_eq!(hew_mailbox_capacity(ptr::null()), 0);
+        }
+    }
+
+    #[test]
+    fn terminal_drain_yields_and_retries_through_inconsistent_mpsc_producer() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: mailbox stays pinned until all worker threads join.
+        unsafe {
+            let mb = hew_mailbox_new();
+            let reply = crate::reply_channel::hew_reply_channel_new();
+            crate::reply_channel::hew_reply_channel_retain(reply);
+
+            let (user_hook, user_entered, user_release) =
+                MpscPostSwapPreLinkHookGuard::install(reply.cast());
+            let mb_send_user = crate::send_ptr::SendPtr::new(mb);
+            let reply_send = crate::send_ptr::SendPtr::new(reply.cast::<c_void>());
+            let user_producer = std::thread::spawn(move || {
+                let mb_send_user = mb_send_user;
+                let reply_send = reply_send;
+                assert_eq!(
+                    hew_mailbox_send_with_reply(
+                        mb_send_user.as_ptr(),
+                        5,
+                        ptr::null_mut(),
+                        0,
+                        reply_send.as_ptr(),
+                    ),
+                    HewError::Ok as i32
+                );
+            });
+
+            user_entered.wait();
+            assert_eq!(
+                (*mb).user_fast.try_dequeue(),
+                TryDequeueResult::Inconsistent,
+                "user fast queue must report Inconsistent during swap-to-link gap"
+            );
+
+            let reclaim_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reclaim_started_flag = reclaim_started.clone();
+            let mb_send_reclaim = crate::send_ptr::SendPtr::new(mb);
+            let reclaim_thread = std::thread::spawn(move || {
+                let mb_send_reclaim = mb_send_reclaim;
+                reclaim_started_flag.store(true, Ordering::Release);
+                mailbox_reclaim_queued_terminal(mb_send_reclaim.as_ptr());
+            });
+            while !reclaim_started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            for _ in 0..16 {
+                std::thread::yield_now();
+            }
+
+            user_release.wait();
+            user_producer.join().expect("user producer panicked");
+            reclaim_thread.join().expect("terminal reclaim panicked");
+            drop(user_hook);
+
+            assert_eq!(hew_mailbox_len(mb), 0);
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(reply),
+                crate::internal::types::HEW_REPLY_FAIL_ACTOR_STOPPED
+            );
+            crate::reply_channel::hew_reply_channel_free(reply);
+
+            // System lane: a stalled sys-queue producer must neither allow user
+            // queue bypass nor be skipped by terminal reclaim.
+            assert_eq!(
+                hew_mailbox_send(mb, 11, ptr::null_mut(), 0),
+                HewError::Ok as i32
+            );
+            let (sys_hook, sys_entered, sys_release) =
+                MpscPostSwapPreLinkHookGuard::install_system(HewSysMsg::DelayedRestart);
+            let mb_send_sys = crate::send_ptr::SendPtr::new(mb);
+            let sys_producer = std::thread::spawn(move || {
+                let mb_send_sys = mb_send_sys;
+                assert!(mailbox_send_sys_checked(
+                    mb_send_sys.as_ptr(),
+                    HewSysMsg::DelayedRestart,
+                    ptr::null_mut(),
+                    0,
+                ));
+            });
+
+            sys_entered.wait();
+            assert!(
+                mailbox_try_recv_with_origin(mb).node.is_null(),
+                "transient sys-queue gap must not return or bypass to a user node"
+            );
+            assert_eq!(hew_mailbox_len(mb), 1);
+
+            let sys_reclaim_started =
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let sys_reclaim_flag = sys_reclaim_started.clone();
+            let mb_send_sys_reclaim = crate::send_ptr::SendPtr::new(mb);
+            let sys_reclaim_thread = std::thread::spawn(move || {
+                let mb_send_sys_reclaim = mb_send_sys_reclaim;
+                sys_reclaim_flag.store(true, Ordering::Release);
+                mailbox_reclaim_queued_terminal(mb_send_sys_reclaim.as_ptr());
+            });
+            while !sys_reclaim_started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            for _ in 0..16 {
+                std::thread::yield_now();
+            }
+
+            sys_release.wait();
+            sys_producer.join().expect("sys producer panicked");
+            sys_reclaim_thread
+                .join()
+                .expect("sys terminal reclaim panicked");
+            drop(sys_hook);
+
+            assert_eq!(hew_mailbox_sys_len(mb), 0);
+            assert!(hew_mailbox_try_recv_sys(mb).is_null());
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_replacement_updates_metadata_and_null_data_normalizes_size() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        COALESCE_TEST_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: mailbox, nodes, and envelopes are uniquely owned by this test.
+        unsafe {
+            let null_node = msg_node_alloc_with_trace(
+                9,
+                ptr::null(),
+                64,
+                ptr::null_mut(),
+                HewTraceContext::default(),
+                crate::actor_caller::local_sender(),
+            );
+            assert!(!null_node.is_null());
+            assert!((*null_node).data.is_null());
+            assert_eq!((*null_node).data_size, 0);
+            hew_msg_node_free(null_node);
+
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Coalesce);
+            hew_mailbox_set_coalesce_config(
+                mb,
+                Some(first_u64_same_key),
+                HewOverflowPolicy::DropNew,
+            );
+            assert!(matches!(
+                try_admit_native_request(
+                    &*mb,
+                    3,
+                    keyed_envelope(7),
+                    ptr::null_mut(),
+                    false,
+                    crate::actor_caller::local_sender(),
+                ),
+                SendOutcome::Enqueued
+            ));
+
+            let reservation = reserve_native_request(
+                &*mb,
+                3,
+                keyed_envelope(7),
+                ptr::null_mut(),
+                false,
+                false,
+                crate::actor_caller::HewCallerStamp::actor(99),
+            )
+            .expect("coalesce reservation must succeed");
+
+            let replacement_trace = HewTraceContext {
+                trace_id_hi: 0x1111_2222_3333_4444,
+                trace_id_lo: 0x5555_6666_7777_8888,
+                span_id: 0x9999_AAAA_BBBB_CCCC,
+                parent_span_id: 0xDDDD_EEEE_FFFF_0001,
+                flags: 0x01,
+            };
+            (*reservation.node).trace_context = replacement_trace;
+            (*reservation.node).payload_class = 2;
+            (*reservation.node).cancel_token_handle = 0xDEAD_BEEF_CAFE_0001;
+
+            assert!(matches!(reservation.publish(), SendOutcome::Coalesced));
+
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            assert_eq!(
+                (*node).trace_context.trace_id_hi,
+                replacement_trace.trace_id_hi
+            );
+            assert_eq!(
+                (*node).trace_context.trace_id_lo,
+                replacement_trace.trace_id_lo
+            );
+            assert_eq!((*node).trace_context.span_id, replacement_trace.span_id);
+            assert_eq!(
+                (*node).trace_context.parent_span_id,
+                replacement_trace.parent_span_id
+            );
+            assert_eq!((*node).trace_context.flags, replacement_trace.flags);
+            assert_eq!((*node).payload_class, 2);
+            assert_eq!((*node).cancel_token_handle, 0xDEAD_BEEF_CAFE_0001);
+            hew_msg_node_free(node);
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 2);
             hew_mailbox_free(mb);
         }
     }

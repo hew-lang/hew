@@ -1207,7 +1207,7 @@ mod tests {
         assert!(crate::execution_context::current_context().is_null());
     }
 
-    unsafe extern "C" fn checked_resume(frame: *mut c_void) {
+    unsafe extern "C-unwind" fn checked_resume(frame: *mut c_void) {
         // SAFETY: the scheduler owns this live scratch frame and installs the
         // resumed actor's context before invoking its continuation.
         unsafe {
@@ -1286,7 +1286,7 @@ mod tests {
         assert!(crate::execution_context::current_context().is_null());
     }
 
-    unsafe extern "C" fn resume_checked_cleanup(frame: *mut c_void) {
+    unsafe extern "C-unwind" fn resume_checked_cleanup(frame: *mut c_void) {
         // SAFETY: the fixture's scheduler owns this scratch frame and installs
         // its actor context. The first cleanup poll deliberately stays pending.
         unsafe {

@@ -1871,7 +1871,7 @@ fn terminal_sender_rechecks_after_last_activation_drain() {
         unsafe { reply_channel::hew_reply_channel_retain(ch) };
 
         let (link_hook, link_entered, link_release) =
-            mailbox::MpscPostSwapPreLinkHookGuard::install(ch.cast());
+            mailbox::UserCountPublicationHookGuard::install_for_reply_channel(ch.cast());
 
         let submission = SendSubmission {
             actor,
@@ -1991,7 +1991,7 @@ fn delayed_system_link_uses_common_terminal_handoff() {
         assert!(unsafe { live_actors::track_actor(actor) });
 
         let (hook, entered, release) =
-            mailbox::MpscPostSwapPreLinkHookGuard::install_system(mailbox::HewSysMsg::Down);
+            mailbox::SysCountPublicationHookGuard::install(mailbox::HewSysMsg::Down);
         let actor_addr = actor.addr();
         let sender = std::thread::spawn(move || {
             let actor = ptr::with_exposed_provenance_mut::<HewActor>(actor_addr);

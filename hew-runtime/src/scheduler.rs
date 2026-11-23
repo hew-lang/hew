@@ -3783,7 +3783,7 @@ mod tests {
 
     #[test]
     fn resumed_checked_crash_preserves_message_identity_after_invocation_cleanup() {
-        unsafe extern "C" fn fail_after_resume(frame: *mut c_void) {
+        unsafe extern "C-unwind" fn fail_after_resume(frame: *mut c_void) {
             let context = crate::execution_context::current_context();
             // SAFETY: the test owns this active actor, invocation and scratch frame.
             unsafe {
@@ -4785,7 +4785,7 @@ mod tests {
     /// equivalent of the concurrent stop: the actor is `Running` at exactly the
     /// instant `hew_actor_stop` reads its state, which is the only interleaving
     /// in which the flag is taken.
-    unsafe extern "C" fn stop_during_resume_outline(_frame: *mut std::ffi::c_void) {
+    unsafe extern "C-unwind" fn stop_during_resume_outline(_frame: *mut std::ffi::c_void) {
         let actor = STOP_ON_RESUME_ACTOR.swap(ptr::null_mut(), Ordering::AcqRel);
         if !actor.is_null() {
             // SAFETY: the actor is live for the duration of the activation that

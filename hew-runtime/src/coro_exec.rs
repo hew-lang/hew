@@ -508,8 +508,8 @@ pub(crate) mod test_support {
     /// layout that `cont.rs` drives (the first two slots are the fn-ptrs).
     #[repr(C)]
     pub struct ScratchFrame {
-        pub resume: Option<unsafe extern "C" fn(*mut c_void)>,
-        pub destroy: Option<unsafe extern "C" fn(*mut c_void)>,
+        pub resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+        pub destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
         /// Resumes observed so far.
         pub resumes: AtomicU32,
         /// Resumes before the frame nulls its resume slot (reaches `done`).
@@ -530,7 +530,7 @@ pub(crate) mod test_support {
     /// The scratch resume outline: count the resume, touch `heap_guard`
     /// (so `MallocScribble` surfaces a UAF if destroy freed it concurrently),
     /// and on the final resume null the resume slot so `coro.done` flips.
-    unsafe extern "C" fn scratch_resume(frame: *mut c_void) {
+    unsafe extern "C-unwind" fn scratch_resume(frame: *mut c_void) {
         // SAFETY: `frame` is a live ScratchFrame the test owns.
         let f = unsafe { &*frame.cast::<ScratchFrame>() };
         let n = f.resumes.fetch_add(1, Ordering::AcqRel) + 1;
@@ -561,7 +561,7 @@ pub(crate) mod test_support {
     /// and records teardown in `destroyed`. The free is what lets
     /// `MallocScribble`/`MallocGuardEdges` surface a UAF if a concurrent
     /// resume is still reading through `heap_guard`.
-    unsafe extern "C" fn scratch_destroy(frame: *mut c_void) {
+    unsafe extern "C-unwind" fn scratch_destroy(frame: *mut c_void) {
         // SAFETY: `frame` is a live ScratchFrame the test owns; we are the
         // sole winner of the `… → Destroyed` CAS (FG1).
         let f = unsafe { &*frame.cast::<ScratchFrame>() };
@@ -675,7 +675,7 @@ pub(crate) mod test_support {
     /// production code does. Those handles use this outline so the mock also
     /// models `CoroSplit`'s final frame-free edge instead of leaking the outer
     /// `ScratchFrame` allocation.
-    unsafe extern "C" fn scratch_destroy_and_free(frame: *mut c_void) {
+    unsafe extern "C-unwind" fn scratch_destroy_and_free(frame: *mut c_void) {
         // SAFETY: `frame` is the live executor-owned ScratchFrame and this is
         // its sole destroy call under the executor's FG1 transition.
         unsafe { scratch_destroy(frame) };

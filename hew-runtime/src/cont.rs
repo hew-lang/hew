@@ -7,10 +7,6 @@
 //! Drivers serialize resume and destruction. Checked invocations cooperatively
 //! cancel and drain typed cleanup before destroying their completed frames.
 //! Actor dispatch crash-state escrow has its own scheduler-owned lifetime.
-#![allow(
-    unsafe_op_in_unsafe_fn,
-    reason = "FFI entry-point module; SAFETY documented at fn signature."
-)]
 
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::cell::{Cell, RefCell};
@@ -139,6 +135,34 @@ pub const CRASH_CLEANUP_ARM_FAILED: u64 = u64::MAX;
 type CrashCleanupThunk = unsafe extern "C-unwind" fn(*mut c_void);
 type StateCrashCleanupThunk = unsafe extern "C" fn(*mut c_void);
 
+/// Actor-state drop callback preserving the exact calling convention of its
+/// source without transmuting between `extern "C"` and `extern "C-unwind"`.
+enum StateDropCallback {
+    PlainC(StateCrashCleanupThunk),
+    #[cfg(test)]
+    CUnwind(CrashCleanupThunk),
+}
+
+/// Owned actor-state escrow buffer released automatically on drop unless taken
+/// for reuse or explicit snapshot teardown.
+#[derive(Default)]
+struct EscrowBuf {
+    ptr: *mut u8,
+    size: u64,
+    align: u64,
+}
+
+impl Drop for EscrowBuf {
+    fn drop(&mut self) {
+        let ptr = std::mem::replace(&mut self.ptr, ptr::null_mut());
+        if !ptr.is_null() {
+            // SAFETY: the escrow buffer was allocated with exactly this
+            // recorded size and alignment via `hew_alloc`.
+            unsafe { hew_dealloc(ptr, self.size, self.align) };
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum CrashCleanupRunState {
     #[default]
@@ -195,7 +219,7 @@ struct CrashCleanupRegistry {
     state_snapshot: *mut u8,
     state_size: u64,
     state_align: u64,
-    state_drop: Option<CrashCleanupThunk>,
+    state_drop: Option<StateDropCallback>,
     state_run_state: CrashCleanupRunState,
     /// A generated field replacement transaction has begun changing the
     /// escrow's ownership shape. Once true, even a host-only caught Rust unwind
@@ -209,9 +233,7 @@ struct CrashCleanupRegistry {
     state_finalizer_critical: bool,
     /// An escrow buffer from an earlier normal dispatch on this thread, free
     /// for reuse when the next state has the same size and alignment.
-    spare_snapshot: *mut u8,
-    spare_size: u64,
-    spare_align: u64,
+    spare_snapshot: EscrowBuf,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -256,20 +278,10 @@ impl Drop for SpareDispatchRegistry {
     fn drop(&mut self) {
         let spare = self.0.replace(ptr::null_mut());
         if !spare.is_null() {
-            // SAFETY: the slot exclusively owns a reset registry box.
-            let mut spare = unsafe { Box::from_raw(spare) };
-            // SAFETY: the spare escrow was allocated with its recorded layout.
-            unsafe { release_spare_snapshot(&mut spare) };
+            // SAFETY: the slot exclusively owns a reset registry box whose
+            // `EscrowBuf` drop releases any cached spare buffer.
+            drop(unsafe { Box::from_raw(spare) });
         }
-    }
-}
-
-/// Free a spare escrow buffer kept by a recycled registry.
-unsafe fn release_spare_snapshot(registry: &mut CrashCleanupRegistry) {
-    let spare = std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut());
-    if !spare.is_null() {
-        // SAFETY: the buffer was allocated with exactly this size/alignment.
-        unsafe { hew_dealloc(spare, registry.spare_size, registry.spare_align) };
     }
 }
 
@@ -293,15 +305,12 @@ fn take_dispatch_registry() -> Box<CrashCleanupRegistry> {
 /// Keep a normally discarded registry and its escrow buffer for reuse, or
 /// free them when this thread already holds a spare.
 fn recycle_dispatch_registry(mut registry: Box<CrashCleanupRegistry>) {
-    let spare_snapshot = registry.spare_snapshot;
-    let (spare_size, spare_align) = (registry.spare_size, registry.spare_align);
+    let spare_snapshot = std::mem::take(&mut registry.spare_snapshot);
     let entries = std::mem::take(&mut registry.entries);
     debug_assert!(entries.is_empty());
     *registry = CrashCleanupRegistry {
         entries,
         spare_snapshot,
-        spare_size,
-        spare_align,
         ..CrashCleanupRegistry::default()
     };
     let raw = Box::into_raw(registry);
@@ -316,10 +325,9 @@ fn recycle_dispatch_registry(mut registry: Box<CrashCleanupRegistry>) {
         })
         .unwrap_or(false);
     if !kept {
-        // SAFETY: the registry was not published to the slot; reclaim it.
-        let mut registry = unsafe { Box::from_raw(raw) };
-        // SAFETY: the spare escrow was allocated with its recorded layout.
-        unsafe { release_spare_snapshot(&mut registry) };
+        // SAFETY: the registry was not published to the slot; dropping it
+        // reclaims both the box and its cached `EscrowBuf`.
+        drop(unsafe { Box::from_raw(raw) });
     }
 }
 
@@ -577,10 +585,13 @@ unsafe fn free_dispatch_state_snapshot(registry: &mut CrashCleanupRegistry, run:
             // This catch remains defensive for a callback that can genuinely
             // cross C-unwind. Current generated state-drop thunks call plain-C
             // runtime symbols and therefore have process-fatal panic behavior.
-            faulted = run_quarantined_crash_cleanup(|| {
+            faulted = run_quarantined_crash_cleanup(|| match drop {
                 // SAFETY: the state snapshot and generated descriptor remain
                 // live for this detached registry's exclusive drain.
-                unsafe { drop(snapshot.cast()) };
+                StateDropCallback::PlainC(drop_fn) => unsafe { drop_fn(snapshot.cast()) },
+                #[cfg(test)]
+                // SAFETY: the test callback uses `C-unwind` matching its slot.
+                StateDropCallback::CUnwind(drop_fn) => unsafe { drop_fn(snapshot.cast()) },
             });
             registry.state_run_state = CrashCleanupRunState::Done;
         }
@@ -620,11 +631,11 @@ unsafe fn free_crash_cleanup_registry(
         // registry for this thread's next dispatch.
         let snapshot = std::mem::replace(&mut registry.state_snapshot, ptr::null_mut());
         if !snapshot.is_null() {
-            // SAFETY: any older spare was allocated with its recorded layout.
-            unsafe { release_spare_snapshot(&mut registry) };
-            registry.spare_snapshot = snapshot;
-            registry.spare_size = registry.state_size;
-            registry.spare_align = registry.state_align;
+            registry.spare_snapshot = EscrowBuf {
+                ptr: snapshot,
+                size: registry.state_size,
+                align: registry.state_align,
+            };
         }
         recycle_dispatch_registry(registry);
         return faulted;
@@ -633,8 +644,7 @@ unsafe fn free_crash_cleanup_registry(
     // SAFETY: detachment transferred sole ownership of the escrow allocation
     // and generated typed drop metadata to this drain.
     faulted |= unsafe { free_dispatch_state_snapshot(&mut registry, run_state) };
-    // SAFETY: a spare escrow carried by a recycled registry is unowned here.
-    unsafe { release_spare_snapshot(&mut registry) };
+    // Dropping `registry` releases any unowned `spare_snapshot` via `EscrowBuf::drop`.
     faulted
 }
 
@@ -958,56 +968,48 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
     let mut registry = take_dispatch_registry();
     if !state.is_null() && state_size != 0 {
         let Ok(state_size_u64) = u64::try_from(state_size) else {
+            recycle_dispatch_registry(registry);
             return false;
         };
-        registry.state_source = state.cast();
-        registry.state_size = state_size_u64;
-    }
-    if !state.is_null() && state_size != 0 && state_drop.is_some() {
-        let Ok(state_size_u64) = u64::try_from(state_size) else {
-            return false;
-        };
-        // Derive a conservative effective alignment from the live state
-        // allocation itself. Every valid LLVM actor-state layout's ABI
-        // alignment divides this address, so allocating the escrow at the
-        // address's largest power-of-two divisor is at least as aligned as the
-        // generated typed drop thunk requires. This avoids assuming that every
-        // actor state fits the coroutine frame's fixed 16-byte alignment.
-        let state_addr = state as usize;
-        let state_align = (1usize << state_addr.trailing_zeros()).min(MAX_STATE_ESCROW_ALIGN);
-        let Ok(state_align_u64) = u64::try_from(state_align) else {
-            return false;
-        };
-        let snapshot =
-            if registry.spare_size == state_size_u64 && registry.spare_align == state_align_u64 {
-                std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut())
+        if let Some(drop_cb) = state_drop {
+            // Derive a conservative effective alignment from the live state
+            // allocation itself. Every valid LLVM actor-state layout's ABI
+            // alignment divides this address, so allocating the escrow at the
+            // address's largest power-of-two divisor is at least as aligned as the
+            // generated typed drop thunk requires. This avoids assuming that every
+            // actor state fits the coroutine frame's fixed 16-byte alignment.
+            let state_addr = state as usize;
+            let state_align = (1usize << state_addr.trailing_zeros()).min(MAX_STATE_ESCROW_ALIGN);
+            let Ok(state_align_u64) = u64::try_from(state_align) else {
+                recycle_dispatch_registry(registry);
+                return false;
+            };
+            let snapshot = if registry.spare_snapshot.size == state_size_u64
+                && registry.spare_snapshot.align == state_align_u64
+            {
+                std::mem::replace(&mut registry.spare_snapshot.ptr, ptr::null_mut())
             } else {
                 ptr::null_mut()
             };
-        let snapshot = if snapshot.is_null() {
-            // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
-            unsafe { hew_alloc(state_size_u64, state_align_u64) }
-        } else {
-            snapshot
-        };
-        if snapshot.is_null() {
-            recycle_dispatch_registry(registry);
-            return false;
+            let snapshot = if snapshot.is_null() {
+                // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
+                unsafe { hew_alloc(state_size_u64, state_align_u64) }
+            } else {
+                snapshot
+            };
+            if snapshot.is_null() {
+                recycle_dispatch_registry(registry);
+                return false;
+            }
+            // SAFETY: caller guarantees the source range; snapshot is a distinct
+            // allocation of the exact same size.
+            unsafe { ptr::copy_nonoverlapping(state.cast::<u8>(), snapshot, state_size) };
+            registry.state_snapshot = snapshot;
+            registry.state_align = state_align_u64;
+            registry.state_drop = Some(StateDropCallback::PlainC(drop_cb));
         }
-        // SAFETY: caller guarantees the source range; snapshot is a distinct
-        // allocation of the exact same size.
-        unsafe { ptr::copy_nonoverlapping(state.cast::<u8>(), snapshot, state_size) };
-        registry.state_snapshot = snapshot;
-        registry.state_align = state_align_u64;
-        // Generated state drops are LLVM functions using the platform C
-        // calling convention. The callback pointer representation matches the
-        // runtime's C-unwind slot, but this does not manufacture containment:
-        // their plain-C runtime callees abort if a Rust panic reaches that ABI.
-        registry.state_drop = state_drop.map(|drop| {
-            // SAFETY: generated state thunks use the platform C calling
-            // convention; C-unwind has the same argument/result machine ABI.
-            unsafe { std::mem::transmute::<StateCrashCleanupThunk, CrashCleanupThunk>(drop) }
-        });
+        registry.state_source = state.cast();
+        registry.state_size = state_size_u64;
     }
     let registry = Box::into_raw(registry);
     DISPATCH_CRASH_CLEANUP_SCOPES.with(|scopes| scopes.borrow_mut().push(registry));
@@ -1115,36 +1117,38 @@ fn dispatch_state_snapshot_range(
     size: u64,
 ) -> Option<(*mut CrashCleanupRegistry, *mut u8, *mut u8, usize)> {
     let registry = active_dispatch_cleanup_registry()?;
-    // SAFETY: the active scheduler scope exclusively owns this registry.
-    let registry = unsafe { &mut *registry };
     let size = usize::try_from(size).ok()?;
     if field.is_null() || size == 0 {
         return None;
     }
-    let source_start = registry.state_source as usize;
+    // SAFETY: the active scheduler scope exclusively owns this registry;
+    // read its fields through the single raw pointer without creating an
+    // intermediate `&mut` reference that Stacked Borrows would invalidate on
+    // later raw reads.
+    let (state_source, state_size, state_snapshot) = unsafe {
+        (
+            (*registry).state_source,
+            (*registry).state_size,
+            (*registry).state_snapshot,
+        )
+    };
+    let source_start = state_source as usize;
     let field_start = field as usize;
     let offset = field_start.checked_sub(source_start)?;
-    let state_size = usize::try_from(registry.state_size).ok()?;
+    let state_size = usize::try_from(state_size).ok()?;
     if offset.checked_add(size)? > state_size {
         return None;
     }
     // SAFETY: the validated range lies in both equal-sized source/snapshot
     // allocations.
-    let snapshot = if registry.state_snapshot.is_null() {
+    let snapshot = if state_snapshot.is_null() {
         ptr::null_mut()
     } else {
         // SAFETY: offset + size was checked inside the escrow range above.
-        unsafe { registry.state_snapshot.add(offset) }
+        unsafe { state_snapshot.add(offset) }
     };
     // SAFETY: offset + size was checked within the live source range above.
-    Some(unsafe {
-        (
-            ptr::from_mut(registry),
-            registry.state_source.add(offset),
-            snapshot,
-            size,
-        )
-    })
+    Some(unsafe { (registry, state_source.add(offset), snapshot, size) })
 }
 
 unsafe fn reset_state_finalizer_critical(registry: *mut CrashCleanupRegistry) {
@@ -1306,35 +1310,36 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     if token == 0 || token == CRASH_CLEANUP_ARM_FAILED || replacement.is_null() {
         return false;
     }
-    let Some((state_registry, _source, snapshot, size)) =
-        dispatch_state_snapshot_range(field, size)
+    let Some((registry, _source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
     else {
         return false;
     };
     // SAFETY: range validation returned the exclusively active registry. A
     // transfer outside the begun replace phase is a compiler/runtime mismatch.
-    if unsafe { !(*state_registry).state_finalizer_critical } {
+    if unsafe { !(*registry).state_finalizer_critical } {
         return false;
     }
-    let Some(registry) = active_dispatch_cleanup_registry() else {
-        return false;
+    // Scope the shared borrow of `entries` so it ends before any mutation via
+    // `registry` (keeping one consistent raw-pointer derivation).
+    let entry_ptr = {
+        // SAFETY: the executing generated code exclusively owns its current
+        // registry and every member remains boxed until retirement/drain.
+        let entries = unsafe { &(*registry).entries };
+        entries.iter().copied().find(|entry| {
+            // SAFETY: registry membership keeps the stable entry live.
+            unsafe { (**entry).token == token }
+        })
     };
-    // SAFETY: the executing generated code exclusively owns its current
-    // registry and every member remains boxed until retirement/drain.
-    let entries = unsafe { &(*registry).entries };
-    let Some(&entry) = entries.iter().find(|entry| {
-        // SAFETY: registry membership keeps the stable entry live.
-        unsafe { (***entry).token == token }
-    }) else {
+    let Some(entry_ptr) = entry_ptr else {
         return false;
     };
     // SAFETY: membership above proves the stable entry remains live.
-    let entry = unsafe { &mut *entry };
-    if entry.owner_registry != registry
-        || !entry.active
-        || entry.slot != owner_source
-        || usize::try_from(entry.size).ok() != Some(size)
-    {
+    if unsafe {
+        (*entry_ptr).owner_registry != registry
+            || !(*entry_ptr).active
+            || (*entry_ptr).slot != owner_source
+            || usize::try_from((*entry_ptr).size).ok() != Some(size)
+    } {
         return false;
     }
 
@@ -1343,16 +1348,17 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     if !snapshot.is_null() {
         // SAFETY: range validation returned the active state registry, and all
         // source-token validation completed before this authority mutation.
-        unsafe { (*state_registry).state_mutation_began = true };
+        unsafe { (*registry).state_mutation_began = true };
         // SAFETY: caller guarantees the initialized replacement range;
         // dispatch_state_snapshot_range proved the destination range.
         unsafe { ptr::copy_nonoverlapping(replacement.cast::<u8>(), snapshot, size) };
     }
     // Commit lexical handoff only after the replacement bytes are prepared.
-    entry.active = false;
+    // SAFETY: membership above proves the stable entry remains live.
+    unsafe { (*entry_ptr).active = false };
     // Escrow now owns the replacement and the lexical source is inactive.
-    // SAFETY: state_registry remains exclusively active.
-    unsafe { reset_state_finalizer_critical(state_registry) };
+    // SAFETY: registry remains exclusively active.
+    unsafe { reset_state_finalizer_critical(registry) };
     true
 }
 
@@ -1508,6 +1514,37 @@ pub unsafe extern "C-unwind" fn hew_cont_destroy(handle: *mut c_void) {
 #[no_mangle]
 #[cfg(not(target_arch = "wasm32"))]
 pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
+    struct CompanionFreeGuard(*mut c_void);
+    impl Drop for CompanionFreeGuard {
+        fn drop(&mut self) {
+            // SAFETY: companion came from `hew_cont_frame_alloc` and all
+            // payload drops have already executed or unwound past this guard.
+            unsafe { hew_cont_frame_free(self.0) };
+        }
+    }
+
+    struct EnvFreeGuard(*mut c_void);
+    impl Drop for EnvFreeGuard {
+        fn drop(&mut self) {
+            // SAFETY: env came from `hew_cont_frame_alloc` (or is null).
+            unsafe { hew_cont_frame_free(self.0) };
+        }
+    }
+
+    struct ThunkDropGuard {
+        arg: *mut c_void,
+        thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    }
+    impl Drop for ThunkDropGuard {
+        fn drop(&mut self) {
+            if let Some(thunk) = self.thunk.take() {
+                // SAFETY: caller supplied this live `C-unwind` drop thunk for
+                // the associated allocation (`env` or `companion`).
+                unsafe { thunk(self.arg) };
+            }
+        }
+    }
+
     if companion.is_null() {
         return;
     }
@@ -1515,9 +1552,6 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     // written by the `MakeGenerator` codegen. `read` is aligned (the companion
     // is FRAME_ALIGN-aligned and the handle is the first field).
     let handle = unsafe { ptr::read(companion.cast::<*mut c_void>()) };
-    // SAFETY: handle is the generator's coro frame handle (or null); destroy is
-    // the single teardown owner and runs the cleanup outline.
-    unsafe { hew_cont_destroy(handle) };
     // The env pointer is the SECOND field — one pointer-width past the handle.
     // Use the target pointer width (4 bytes on wasm32, 8 on native) so the
     // offset matches the companion layout the codegen emits on this target.
@@ -1538,21 +1572,6 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
             env_thunk_slot.cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
         )
     };
-    if let Some(thunk) = env_thunk {
-        // SAFETY: the codegen-synthesised thunk expects this generator's env
-        // allocation and drops payload fields without freeing the allocation.
-        unsafe { thunk(env) };
-    }
-    // SAFETY: env came from hew_cont_frame_alloc (or is null); symmetric free.
-    unsafe { hew_cont_frame_free(env) };
-
-    // Typed-drop the `out` value IFF it is a live, un-consumed owned value.
-    // `pending` is the byte immediately after the four leading pointer fields
-    // and the `started` byte: offset `4 * ptr_width + 1`. The codegen lays the
-    // companion out so this byte holds 1 while an owned yielded value is live in
-    // `out` and 0 once a `.next()` has moved it out (or for a value the body
-    // never yielded). The `out_drop_thunk` is the FOURTH pointer field
-    // (offset `3 * ptr_width`), null when `Y` is `BitCopy` (nothing to drop).
     // SAFETY: offset 4*ptr_width+1 is within the companion (after handle, env,
     // thunk pointers and the `started` byte), so advancing the base lands at the
     // `pending` flag byte.
@@ -1560,31 +1579,38 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
     // SAFETY: pending_slot points at the in-bounds `pending` flag byte the
     // MakeGenerator codegen wrote; a single-byte `read` is sound.
     let pending = unsafe { ptr::read(pending_slot) };
-    if pending != 0 {
+    let out_thunk = if pending != 0 {
         // SAFETY: offset 3*ptr_width is the out-drop thunk pointer field, within
         // the four leading pointer fields the codegen always emits.
         let thunk_slot = unsafe { companion.cast::<u8>().add(ptr_width.saturating_mul(3)) };
         // SAFETY: the thunk field is a `void(ptr)` fn-ptr written by the
         // MakeGenerator codegen (or null). `read_unaligned` is sound regardless
         // of the byte-offset cast's static alignment (the field is pointer-aligned).
-        let thunk = unsafe {
+        unsafe {
             ptr::read_unaligned(
                 thunk_slot.cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
             )
-        };
-        if let Some(thunk) = thunk {
-            // SAFETY: the thunk is the codegen-synthesised per-`Y` out-drop
-            // thunk; it GEPs to the `out` field of THIS companion and runs the
-            // typed drop for the un-consumed owned value exactly once. The value
-            // is solely-owned (a moved-but-never-read yield), so this is the only
-            // drop edge — no double-free.
-            unsafe { thunk(companion) };
         }
-    }
+    } else {
+        None
+    };
 
-    // SAFETY: companion came from hew_cont_frame_alloc; this is its symmetric
-    // free (reads the allocation header hew_cont_frame_alloc stored).
-    unsafe { hew_cont_frame_free(companion) };
+    // Declare RAII guards in reverse teardown order so normal return and any
+    // unwind execute: env_thunk -> free(env) -> out_thunk -> free(companion).
+    let _companion_free_guard = CompanionFreeGuard(companion);
+    let _out_drop_guard = ThunkDropGuard {
+        arg: companion,
+        thunk: out_thunk,
+    };
+    let _env_free_guard = EnvFreeGuard(env);
+    let _env_drop_guard = ThunkDropGuard {
+        arg: env,
+        thunk: env_thunk,
+    };
+
+    // SAFETY: handle is the generator's coro frame handle (or null); destroy is
+    // the single teardown owner and runs the cleanup outline.
+    unsafe { hew_cont_destroy(handle) };
 }
 
 /// The prefix of LLVM switched-resume coroutine frames.
@@ -2182,6 +2208,10 @@ mod tests {
 
     #[test]
     #[cfg(any(unix, windows))]
+    #[cfg_attr(
+        miri,
+        ignore = "calls init_crash_handling() which installs sigaction and probes foreign hew_debug_has_debug_info"
+    )]
     fn nested_state_finalizer_completion_preserves_outer_depth() {
         crate::signal::init_crash_handling();
         crate::signal::init_worker_recovery(u32::MAX);
@@ -2243,6 +2273,10 @@ mod tests {
 
     #[test]
     #[cfg(any(unix, windows))]
+    #[cfg_attr(
+        miri,
+        ignore = "calls init_crash_handling() which installs sigaction and probes foreign hew_debug_has_debug_info"
+    )]
     fn sequential_state_finalizer_transactions_return_depth_to_zero() {
         crate::signal::init_crash_handling();
         crate::signal::init_worker_recovery(u32::MAX);
@@ -2359,7 +2393,8 @@ mod tests {
                 .expect("dispatch begin must publish its cleanup registry");
             // Substitute a genuinely unwind-capable Rust test callback. The
             // production field normally contains a generated plain-C thunk.
-            (*registry).state_drop = Some(record_u64_cleanup_then_panic);
+            (*registry).state_drop =
+                Some(StateDropCallback::CUnwind(record_u64_cleanup_then_panic));
             for slot in [
                 ptr::from_mut(&mut older).cast(),
                 ptr::from_mut(&mut newer).cast(),
@@ -2876,18 +2911,18 @@ mod tests {
     /// pending-path counter. A real thunk GEPs to the companion's `out` field and
     /// runs `Y`'s drop; the dispatch contract this pins is "called once iff pending".
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn pending_counting_thunk(_companion: *mut c_void) {
+    unsafe extern "C-unwind" fn pending_counting_thunk(_companion: *mut c_void) {
         PENDING_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Stand-in thunk for the consumed-path test (bumps a distinct counter).
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn consumed_counting_thunk(_companion: *mut c_void) {
+    unsafe extern "C-unwind" fn consumed_counting_thunk(_companion: *mut c_void) {
         CONSUMED_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C" fn env_counting_thunk(_env: *mut c_void) {
+    unsafe extern "C-unwind" fn env_counting_thunk(_env: *mut c_void) {
         ENV_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -2898,9 +2933,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     unsafe fn make_companion(
         pending: u8,
-        out_thunk: Option<unsafe extern "C" fn(*mut c_void)>,
+        out_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
         env: *mut c_void,
-        env_thunk: Option<unsafe extern "C" fn(*mut c_void)>,
+        env_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
     ) -> *mut c_void {
         let ptr_width = core::mem::size_of::<*mut c_void>();
         // Four pointers + two flag bytes is the only region the runtime reads;
@@ -2926,14 +2961,14 @@ mod tests {
                 companion
                     .cast::<u8>()
                     .add(ptr_width * 2)
-                    .cast::<Option<unsafe extern "C" fn(*mut c_void)>>(),
+                    .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
                 env_thunk,
             );
             ptr::write_unaligned(
                 companion
                     .cast::<u8>()
                     .add(ptr_width * 3)
-                    .cast::<Option<unsafe extern "C" fn(*mut c_void)>>(),
+                    .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
                 out_thunk,
             );
             ptr::write(companion.cast::<u8>().add(ptr_width * 4), 0u8);
@@ -3007,5 +3042,152 @@ mod tests {
             hew_gen_coro_destroy(companion);
         }
         assert_eq!(ENV_DROP_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static UNWIND_ENV_DROPS: AtomicU32 = AtomicU32::new(0);
+    #[cfg(not(target_arch = "wasm32"))]
+    static UNWIND_OUT_DROPS: AtomicU32 = AtomicU32::new(0);
+    #[cfg(not(target_arch = "wasm32"))]
+    static UNWIND_CORO_DESTROYS: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe extern "C-unwind" fn unwind_recording_env_thunk(_env: *mut c_void) {
+        UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe extern "C-unwind" fn unwind_recording_out_thunk(_companion: *mut c_void) {
+        UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe extern "C-unwind" fn panicking_coro_destroy(handle: *mut c_void) {
+        UNWIND_CORO_DESTROYS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: `handle` came from `hew_cont_frame_alloc` for this test fixture.
+        unsafe { hew_cont_frame_free(handle) };
+        panic!("simulated coroutine destroy unwind");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe extern "C-unwind" fn panicking_env_thunk(_env: *mut c_void) {
+        UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        panic!("simulated env drop unwind");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe extern "C-unwind" fn panicking_out_thunk(_companion: *mut c_void) {
+        UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
+        panic!("simulated out drop unwind");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn gen_coro_destroy_unwind_runs_remaining_destructors_and_frees() {
+        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        // 1. Coroutine destroy unwinds: env_thunk, out_thunk, env free, and
+        //    companion free must all still execute in RAII order.
+        UNWIND_CORO_DESTROYS.store(0, Ordering::SeqCst);
+        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: mock handle, env, and companion come from `hew_cont_frame_alloc`
+        // and are solely owned by `hew_gen_coro_destroy`.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let handle = hew_cont_frame_alloc(core::mem::size_of::<CoroFramePrefix>() as u64);
+            ptr::write(
+                handle.cast::<CoroFramePrefix>(),
+                CoroFramePrefix {
+                    resume: None,
+                    destroy: Some(panicking_coro_destroy),
+                },
+            );
+            let env = hew_cont_frame_alloc(8);
+            let companion = make_companion(
+                1,
+                Some(unwind_recording_out_thunk),
+                env,
+                Some(unwind_recording_env_thunk),
+            );
+            ptr::write(companion.cast::<*mut c_void>(), handle);
+            hew_gen_coro_destroy(companion);
+        }));
+        assert!(res.is_err());
+        assert_eq!(UNWIND_CORO_DESTROYS.load(Ordering::SeqCst), 1);
+        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+
+        // 2. Env thunk unwinds: out_thunk and both frame frees still run.
+        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let env = hew_cont_frame_alloc(8);
+            let companion = make_companion(
+                1,
+                Some(unwind_recording_out_thunk),
+                env,
+                Some(panicking_env_thunk),
+            );
+            hew_gen_coro_destroy(companion);
+        }));
+        assert!(res.is_err());
+        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+
+        // 3. Out thunk unwinds: env_thunk already ran and companion is still freed.
+        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let env = hew_cont_frame_alloc(8);
+            let companion = make_companion(
+                1,
+                Some(panicking_out_thunk),
+                env,
+                Some(unwind_recording_env_thunk),
+            );
+            hew_gen_coro_destroy(companion);
+        }));
+        assert!(res.is_err());
+        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn crash_cleanup_registry_drop_releases_spare_snapshot() {
+        // SAFETY: allocates a distinct escrow buffer paired with matching
+        // size/alignment inside `EscrowBuf`, whose `Drop` calls `hew_dealloc`.
+        let escrow_ptr = unsafe { hew_alloc(64, 16) };
+        assert!(!escrow_ptr.is_null());
+        let registry = CrashCleanupRegistry {
+            spare_snapshot: EscrowBuf {
+                ptr: escrow_ptr,
+                size: 64,
+                align: 16,
+            },
+            ..CrashCleanupRegistry::default()
+        };
+        drop(registry);
+
+        // Exercise thread-local spare caching and thread-exit cleanup after a
+        // normal dispatch scope, proving cached `spare_snapshot` neither leaks
+        // nor double-frees.
+        let handle = std::thread::spawn(|| {
+            let mut state: u64 = 0xCAFE_BABE;
+            // SAFETY: `state` stays live and aligned until `finish_dispatch_crash_cleanup`.
+            unsafe {
+                assert!(begin_dispatch_crash_cleanup(
+                    (&raw mut state).cast(),
+                    core::mem::size_of::<u64>(),
+                    Some(record_u64_state_cleanup),
+                ));
+                assert!(finish_dispatch_crash_cleanup());
+                assert!(begin_dispatch_crash_cleanup(ptr::null_mut(), 0, None));
+                assert!(finish_dispatch_crash_cleanup());
+            }
+        });
+        handle.join().expect("thread cleanup panicked");
     }
 }

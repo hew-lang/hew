@@ -873,6 +873,7 @@ impl LowerCtx<'_> {
                 }
             }
             Expr::Scope { body } => {
+                check_scope_target_gate(self, &span);
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
@@ -969,6 +970,7 @@ impl LowerCtx<'_> {
                 )
             }
             Expr::ScopeDeadline { duration, body } => {
+                check_scope_target_gate(self, &span);
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
@@ -1076,6 +1078,7 @@ impl LowerCtx<'_> {
             Expr::Race(branches) => self.lower_race(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor { params, body, .. } => {
+                check_lambda_actor_target_gate(self, &span);
                 self.lower_spawn_lambda_actor(params, body, &span)
             }
             Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),

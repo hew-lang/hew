@@ -75,6 +75,31 @@ actor WorkerActor {
 }
 
 #[test]
+fn target_coroutine_unsupported_rejects_scope_expr() {
+    let source = r"fn main() -> int {
+    scope {
+        let task = fork { 42 };
+        await task
+    }
+}
+";
+    let output = lower(source, TargetArch::Other);
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::TargetCoroutineUnsupported { ref construct, .. }
+                if construct == "scope expr"
+        )),
+        "Expected TargetCoroutineUnsupported for scope expr, got: {:?}",
+        output.diagnostics
+    );
+    assert!(
+        output.into_result().is_err(),
+        "into_result() should fail with unsupported target gate"
+    );
+}
+
+#[test]
 fn wasm32_target_lowers_supervisor_restart_program() {
     let source =
         include_str!("../../../tests/core-acceptance/cases/supervisor-restart-one-for-one.hew");

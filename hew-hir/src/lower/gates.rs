@@ -1,74 +1,77 @@
-//! Target and coroutine admission.
+//! Target architecture coroutine admission gates.
+//!
+//! Native workers (`X86_64`, `Aarch64`) and the WASI cooperative scheduler
+//! (`Wasm32`) share the checked actor, supervisor and task-scope ABI.
+//! `TargetArch::Other` has no runtime scheduler, so coroutine constructs fail
+//! closed through these single-authority helpers during item and expression
+//! lowering.
+
+use hew_parser::ast::Ident;
 
 use super::*;
 
-// ── Target architecture gates ────────────────────────────────────────────────
-
-/// Reject actor-runtime constructs on architectures without a runtime.
-/// Native workers and the WASI cooperative driver share the checked actor and
-/// supervisor ABI. The source-order pass repeats these checks after resetting
-/// diagnostics from its type pre-pass.
-pub(super) fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
+/// Reject an actor declaration on architectures without an actor runtime ABI.
+pub(super) fn check_actor_target_gate(ctx: &mut LowerCtx, actor_name: Ident, span: &Span) {
     if matches!(ctx.target_arch, TargetArch::Other) {
-        check_coroutine_gate(ctx, program);
+        ctx.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::TargetCoroutineUnsupported {
+                target_arch: format!("{:?}", ctx.target_arch),
+                construct: "actor decl".to_string(),
+            },
+            span.clone(),
+            format!("actor '{actor_name}' requires the actor runtime ABI (unsupported target)"),
+        ));
     }
 }
 
-/// Check actor/supervisor usage on an architecture without the runtime ABI.
-/// Called only for unsupported target architectures.
-pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
-    let target_name = match ctx.target_arch {
-        TargetArch::Wasm32 => "wasm32",
-        TargetArch::Other => "unsupported",
-        // x86_64/aarch64 shouldn't reach here (guarded by caller)
-        _ => "other",
-    };
-
-    for (item, span) in &program.items {
-        match item {
-            Item::Actor(actor_decl) => {
-                // Actors are admitted on wasm32: the cooperative scheduler
-                // (`hew-runtime/src/scheduler_wasm.rs`) provides the full
-                // actor ABI. Only reject for genuinely unsupported targets.
-                if matches!(ctx.target_arch, TargetArch::Other) {
-                    ctx.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TargetCoroutineUnsupported {
-                            target_arch: target_name.to_string(),
-                            construct: "actor decl".to_string(),
-                        },
-                        span.clone(),
-                        format!(
-                            "actor `{}` cannot be compiled for target `{}`: \
-                             the actor runtime ABI (scheduler, mailbox) is not \
-                             available on this target",
-                            actor_decl.name, target_name
-                        ),
-                    ));
-                }
-            }
-            Item::Supervisor(supervisor_decl) => {
-                // The unsupported target has no supervisor restart runtime.
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TargetCoroutineUnsupported {
-                        target_arch: target_name.to_string(),
-                        construct: "supervisor decl".to_string(),
-                    },
-                    span.clone(),
-                    format!(
-                        "supervisor `{}` cannot be compiled for target `{}`: \
-                         this target has no supervisor restart runtime",
-                        supervisor_decl.name, target_name
-                    ),
-                ));
-            }
-            // TODO: When `scope{}` and `fork` are surface syntax, add checks here
-            _ => {}
-        }
+/// Reject a supervisor declaration on architectures without supervisor restart
+/// machinery.
+pub(super) fn check_supervisor_target_gate(
+    ctx: &mut LowerCtx,
+    supervisor_name: Ident,
+    span: &Span,
+) {
+    if matches!(ctx.target_arch, TargetArch::Other) {
+        ctx.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::TargetCoroutineUnsupported {
+                target_arch: format!("{:?}", ctx.target_arch),
+                construct: "supervisor decl".to_string(),
+            },
+            span.clone(),
+            format!(
+                "supervisor '{supervisor_name}' requires supervisor restart machinery \
+                 (unsupported target)"
+            ),
+        ));
     }
+}
 
-    // TODO: Add checks for:
-    // - `scope{}` blocks (when they exist in surface AST)
-    // - `fork` statements (when they exist in surface AST)
-    // - `await` expressions (when they appear outside of existing actor/scope)
-    // For now, actors and supervisors are the only coroutine entry points.
+/// Reject a structured-concurrency `scope` block on architectures without a
+/// task scheduler.
+pub(super) fn check_scope_target_gate(ctx: &mut LowerCtx, span: &Span) {
+    if matches!(ctx.target_arch, TargetArch::Other) {
+        ctx.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::TargetCoroutineUnsupported {
+                target_arch: format!("{:?}", ctx.target_arch),
+                construct: "scope expr".to_string(),
+            },
+            span.clone(),
+            "structured concurrency `scope` requires the actor/task runtime ABI \
+             (unsupported target)",
+        ));
+    }
+}
+
+/// Reject a lambda actor spawn on architectures without an actor runtime ABI.
+pub(super) fn check_lambda_actor_target_gate(ctx: &mut LowerCtx, span: &Span) {
+    if matches!(ctx.target_arch, TargetArch::Other) {
+        ctx.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::TargetCoroutineUnsupported {
+                target_arch: format!("{:?}", ctx.target_arch),
+                construct: "lambda actor".to_string(),
+            },
+            span.clone(),
+            "lambda actor spawn requires the actor runtime ABI (unsupported target)",
+        ));
+    }
 }

@@ -41,7 +41,7 @@ pub fn hover(
 
     if let Some((word, word_span)) = &simple_word {
         if let Some(result) =
-            hover_param_at_offset(parse_result, type_output.sigs(), word, *word_span, offset)
+            hover_param_at_offset(parse_result, type_output, word, *word_span, offset)
         {
             return Some(result);
         }
@@ -185,13 +185,13 @@ fn fn_component_display(ty: &Ty) -> HoverTypeDisplay {
 
 fn hover_param_at_offset(
     parse_result: &ParseResult,
-    fn_sigs: hew_types::check::FnSigView<'_>,
+    type_output: &TypeCheckOutput,
     word: &str,
     word_span: OffsetSpan,
     offset: usize,
 ) -> Option<HoverResult> {
     for (item, _) in &parse_result.program.items {
-        if let Some(result) = hover_param_in_item(item, fn_sigs, word, word_span, offset) {
+        if let Some(result) = hover_param_in_item(item, type_output, word, word_span, offset) {
             return Some(result);
         }
     }
@@ -1247,11 +1247,12 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
 
 fn hover_param_in_item(
     item: &Item,
-    fn_sigs: hew_types::check::FnSigView<'_>,
+    type_output: &TypeCheckOutput,
     word: &str,
     word_span: OffsetSpan,
     offset: usize,
 ) -> Option<HoverResult> {
+    let fn_sigs = type_output.sigs();
     match item {
         Item::Function(function) => hover_param_in_decl(
             &function.fn_span,
@@ -1290,22 +1291,19 @@ fn hover_param_in_item(
             None
         }
         Item::Impl(impl_decl) => {
-            let TypeExpr::Named {
-                path: named_path, ..
-            } = &impl_decl.target_type.0
-            else {
-                return None;
-            };
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let root = type_output.defs.root_module();
             for method in &impl_decl.methods {
-                let key = format!("{name}::{}", method.name);
-                if let Some(result) = hover_param_in_method(
-                    method,
-                    fn_sigs.get(key.as_str()),
-                    word,
-                    word_span,
-                    offset,
-                ) {
+                let sig = type_output
+                    .defs
+                    .declarations()
+                    .find_map(|(occurrence, declaration)| {
+                        (occurrence.module() == root
+                            && occurrence.kind() == hew_types::DeclarationKind::ImplMethod
+                            && occurrence.span() == method.fn_span)
+                            .then_some(declaration)
+                    })
+                    .and_then(|declaration| fn_sigs.of(declaration));
+                if let Some(result) = hover_param_in_method(method, sig, word, word_span, offset) {
                     return Some(result);
                 }
             }
@@ -2696,6 +2694,120 @@ mod tests {
             word_hover.contents.contains("string"),
             "{}",
             word_hover.contents
+        );
+    }
+
+    #[test]
+    fn hover_param_in_specialised_impl_after_machine_resolves_checked_sig() {
+        let source = concat!(
+            "machine Gate {\n",
+            "    events {\n",
+            "        Toggle;\n",
+            "    }\n",
+            "    state Open;\n",
+            "    state Closed;\n",
+            "    on Toggle: Open => Closed;\n",
+            "    on Toggle: Closed => Open;\n",
+            "}\n",
+            "trait Describe {\n",
+            "    fn describe(self, item: i64) -> i64;\n",
+            "}\n",
+            "type Box<T> { value: T; }\n",
+            "impl Describe for Box<i64> {\n",
+            "    fn describe(self, item: i64) -> i64 { item + self.value }\n",
+            "}\n",
+            "impl Describe for Box<string> {\n",
+            "    fn describe(self, item: i64) -> i64 { item }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let first = source
+            .find("fn describe(self, item: i64) -> i64 { item +")
+            .unwrap()
+            + "fn describe(self, ".len();
+        let first_hover = hover(source, &pr, Some(&tc), first)
+            .expect("parameter hover inside first specialised impl must succeed");
+        assert!(
+            first_hover.contents.contains("item: i64"),
+            "{}",
+            first_hover.contents
+        );
+
+        let second = source
+            .rfind("fn describe(self, item: i64) -> i64 { item }")
+            .unwrap()
+            + "fn describe(self, ".len();
+        let second_hover = hover(source, &pr, Some(&tc), second)
+            .expect("parameter hover inside second specialised impl must succeed");
+        assert!(
+            second_hover.contents.contains("item: i64"),
+            "{}",
+            second_hover.contents
+        );
+    }
+
+    #[test]
+    fn hover_param_in_aliased_foreign_impl_resolves_checked_sig() {
+        let imported_src = "pub type Foo {\n    n: i64;\n}\n";
+        let root_src = concat!(
+            "import shapes as s;\n",
+            "trait Tagged {\n",
+            "    fn tag(self, suffix: string) -> string;\n",
+            "}\n",
+            "impl Tagged for s.Foo {\n",
+            "    fn tag(self, suffix: string) -> string { suffix }\n",
+            "}\n",
+            "fn main() {}\n",
+        );
+        let imported = hew_parser::parse(imported_src);
+        assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+        let mut root = hew_parser::parse(root_src);
+        assert!(root.errors.is_empty(), "{:?}", root.errors);
+
+        let imported_id = hew_parser::module::ModulePath::new(["shapes"]);
+        let root_id = hew_parser::module::ModulePath::root();
+        let imported_items: Vec<_> = imported.program.items.clone();
+        for (item, _) in &mut root.program.items {
+            if let Item::Import(import) = item {
+                if import.path.to_string() == "shapes" {
+                    import.resolved_items = Some(imported_items.clone().into());
+                }
+            }
+        }
+        let mut graph = hew_parser::module::ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(hew_parser::module::Module {
+                id: imported_id.clone(),
+                items: imported_items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .expect("add shapes module");
+        graph
+            .add_module(hew_parser::module::Module {
+                id: root_id.clone(),
+                items: root.program.items.clone(),
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .expect("add root module");
+        graph.topo_order = vec![imported_id, root_id];
+        root.program.module_graph = Some(graph);
+
+        let tc = type_check(&root);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = root_src.rfind("suffix: string").unwrap();
+        let result = hover(root_src, &root, Some(&tc), offset)
+            .expect("parameter hover inside aliased foreign impl must succeed");
+        assert!(
+            result.contents.contains("suffix: string"),
+            "{}",
+            result.contents
         );
     }
 }

@@ -345,6 +345,28 @@ type Required {
     host: string @1;
     tag: Option<string> @2;
 }
+
+#[wire]
+type WithSkip {
+    host: string @1;
+    #[serial(skip)]
+    cached: Option<string> @2;
+}
+
+#[wire]
+type OuterRequired {
+    inner: Required @1;
+}
+
+#[wire]
+type WithVecOpt {
+    tags: Vec<Option<string>> @1;
+}
+
+#[wire]
+type WithUnit {
+    empty: () @1;
+}
 ";
 
 fn toml_errors(body: &str) -> Vec<String> {
@@ -378,6 +400,45 @@ fn toml_refuses_values_it_cannot_represent() {
             .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT")),
         "{decode:?}"
     );
+    let nested_required =
+        toml_errors("let _r: Result<OuterRequired, wire.DecodeError> = toml.decode(\"\");");
+    assert!(
+        nested_required
+            .iter()
+            .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT") && m.contains("tag")),
+        "{nested_required:?}"
+    );
+    let vec_opt = toml_errors("let _r: Result<WithVecOpt, wire.DecodeError> = toml.decode(\"\");");
+    assert!(
+        vec_opt
+            .iter()
+            .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT")),
+        "{vec_opt:?}"
+    );
+    let unit_field = toml_errors("let _r: Result<WithUnit, wire.DecodeError> = toml.decode(\"\");");
+    assert!(
+        unit_field
+            .iter()
+            .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT")),
+        "{unit_field:?}"
+    );
+    let int_map =
+        toml_errors("let _r: Result<HashMap<i64, string>, wire.DecodeError> = toml.decode(\"\");");
+    assert!(
+        int_map
+            .iter()
+            .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT")),
+        "{int_map:?}"
+    );
+    let opt_map = toml_errors(
+        "let _r: Result<HashMap<string, Option<i64>>, wire.DecodeError> = toml.decode(\"\");",
+    );
+    assert!(
+        opt_map
+            .iter()
+            .any(|m| m.starts_with("E_FORMAT_CANNOT_REPRESENT")),
+        "{opt_map:?}"
+    );
 }
 
 #[test]
@@ -387,6 +448,9 @@ fn toml_admits_tables_and_optional_fields() {
         r#"let _t = toml.encode(Settings { host: "h", port: 1, tag: .None });"#,
         r#"let _t = toml.encode(Plain { a: 1, b: "x" });"#,
         "let _r: Result<Settings, wire.DecodeError> = toml.decode(\"\");",
+        r#"let _t = toml.encode(WithSkip { host: "h", cached: .Some("x") });"#,
+        "let _r: Result<WithSkip, wire.DecodeError> = toml.decode(\"\");",
+        "let _r: Result<HashMap<string, i64>, wire.DecodeError> = toml.decode(\"\");",
     ] {
         let errors = toml_errors(body);
         assert!(errors.is_empty(), "{body}: {errors:?}");

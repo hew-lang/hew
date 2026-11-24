@@ -1,0 +1,44 @@
+import std.encoding.toml;
+
+#[wire]
+type Endpoint {
+    host: string @1;
+    port: i64 @2;
+}
+
+#[wire]
+#[serial(case = "camelCase")]
+type Config {
+    primary: Endpoint @1;
+    replicas: Vec<Endpoint> @2;
+    service_name: string @3;
+    note: Option<string> @4 optional;
+    #[serial(skip)]
+    local_only: Option<string> @5;
+}
+
+fn main() {
+    let cfg = Config {
+        primary: Endpoint { host: "127.0.0.1", port: 8080 },
+        replicas: [Endpoint { host: "10.0.0.2", port: 8081 }],
+        service_name: "api",
+        note: .Some("ok"),
+        local_only: .Some("ignored"),
+    };
+    let text = toml.encode(cfg);
+    let roundtrip = toml.decode<Config>(text).expect("valid TOML");
+    assert(roundtrip.primary.host == "127.0.0.1");
+    assert(roundtrip.replicas.len() == 1);
+    assert(roundtrip.service_name == "api");
+    assert(roundtrip.note == .Some("ok"));
+    assert(roundtrip.local_only.is_none());
+
+    match toml.decode<Endpoint>("host = \"a\"\n") {
+        .Err(err) => match err {
+            .Missing { path } => assert(path == ".port"),
+            _ => panic("expected Missing"),
+        }
+        .Ok(_) => panic("expected Missing"),
+    }
+    println("toml-wire-ok");
+}

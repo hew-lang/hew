@@ -34,3 +34,34 @@ fn test_clamp_rejects_reversed_interval() {
         _ => panic("expected reversed bounds"),
     }
 }
+
+#[test]
+fn test_float_predicates_classify_normal_zero_infinite_and_nan() {
+    let nan = 0.0 / 0.0;
+    let pos_inf = 1.0 / 0.0;
+    let neg_inf = -1.0 / 0.0;
+    let subnormal = math.from_bits(1);
+
+    assert(math.is_nan(nan));
+    assert(!math.is_nan(0.0));
+    assert(!math.is_nan(-0.0));
+    assert(!math.is_nan(pos_inf));
+    assert(!math.is_nan(neg_inf));
+    assert(!math.is_nan(subnormal));
+
+    assert(math.is_infinite(pos_inf));
+    assert(math.is_infinite(neg_inf));
+    assert(!math.is_infinite(0.0));
+    assert(!math.is_infinite(-0.0));
+    assert(!math.is_infinite(nan));
+    assert(!math.is_infinite(1.0e308));
+
+    assert(math.is_finite(0.0));
+    assert(math.is_finite(-0.0));
+    assert(math.is_finite(42.5));
+    assert(math.is_finite(-1.0e308));
+    assert(math.is_finite(subnormal));
+    assert(!math.is_finite(pos_inf));
+    assert(!math.is_finite(neg_inf));
+    assert(!math.is_finite(nan));
+}

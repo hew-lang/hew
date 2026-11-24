@@ -18,6 +18,7 @@ fn main() {
     let tree = spawn Tree;
     let worker = tree.worker;
     let _ = worker.fail();
+    restarted(worker);
     println(match worker.fail() {
         .Err(.Dead) => "killed",
         _ => "unexpected",

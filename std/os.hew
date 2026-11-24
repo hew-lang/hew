@@ -50,6 +50,43 @@ pub fn args() -> Vec<string> {
     values
 }
 
+/// Return command-line arguments after the program name (`argv[1..]`).
+///
+/// Returns an empty `Vec` when no arguments follow the program name
+/// (`os.args().len() <= 1`).
+///
+/// # Examples
+///
+/// ```
+/// import std.os;
+///
+/// fn main() {
+///     let tail = os.args_tail();
+///     let all = os.args();
+///     if all.len() <= 1 {
+///         assert(tail.is_empty());
+///     } else {
+///         assert(tail.len() == all.len() - 1);
+///     }
+/// }
+/// ```
+pub fn args_tail() -> Vec<string> {
+    let count = unsafe {
+        hew_args_count() as i64
+    };
+    var values: Vec<string> = Vec.new();
+    if count <= 1 {
+        return values;
+    }
+    for index in 1..count {
+        let value = unsafe {
+            hew_args_get(index as i32)
+        };
+        values.push(value);
+    }
+    values
+}
+
 /// Get the value of an environment variable.
 ///
 /// Returns `None` if the variable is not set.

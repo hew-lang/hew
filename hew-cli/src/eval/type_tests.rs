@@ -47,6 +47,18 @@ fn eval_type_command_reports_type_errors_not_unknown() {
 }
 
 #[test]
+fn eval_type_command_infers_trailing_expression_of_block_body() {
+    let mut session = ReplSession::new();
+    let len_res = session.eval(":type let x = [1, 2]; x.len()");
+    assert!(!len_res.had_errors, "errors: {:?}", len_res.errors);
+    assert_eq!(len_res.output, "i64\n");
+
+    let unit_res = session.eval(":type let x = 1; println(x)");
+    assert!(!unit_res.had_errors, "errors: {:?}", unit_res.errors);
+    assert_eq!(unit_res.output, "()\n");
+}
+
+#[test]
 fn eval_generator_expression_displays_yield_and_return_types() {
     let mut session = ReplSession::new();
 

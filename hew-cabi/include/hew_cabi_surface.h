@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1795u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1796u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 25u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1795] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1796] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -3263,6 +3263,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1795] = {
      "{\"native\": \"fn hew_file_write_is_valid( *const HewWriteFile) -> "
      "bool\", \"wasm32-wasip1\": \"fn hew_file_write_is_valid( *const "
      "HewWriteFile) -> bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_float_to_fixed",
+     "{\"native\": \"fn hew_float_to_fixed( f64, i64) -> *mut HewString\", "
+     "\"wasm32-wasip1\": \"fn hew_float_to_fixed( f64, i64) -> *mut "
+     "HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_float_to_string",

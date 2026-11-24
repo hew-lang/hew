@@ -172,14 +172,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 965,
+      "budget_remaining": 964,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 18,
       "span": null,
-      "step_count": 35,
+      "step_count": 36,
       "type": "step.committed"
     },
     {
@@ -221,7 +221,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 959,
+    "budget_remaining": 957,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -243,7 +243,7 @@
     "stdout": [
       "42\n"
     ],
-    "step_count": 41,
+    "step_count": 43,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -251,7 +251,7 @@
     }
   },
   "fixture_id": "actor-pipeline",
-  "hew_version": "0.6.1",
+  "hew_version": "0.11.3",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

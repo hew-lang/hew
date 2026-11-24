@@ -17,6 +17,7 @@ fn main() {
     let tree = spawn WorkerTree;
     let worker = tree.worker;
     let _ = worker.fail();
+    restarted(worker);
     println(worker.work().expect("fresh incarnation"));
     stop(tree);
     stopped(tree);

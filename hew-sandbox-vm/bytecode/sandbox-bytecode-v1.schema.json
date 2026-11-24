@@ -8667,6 +8667,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "ActorErrorRestarting": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
             "ActorErrorRoutingFailed": {
               "format": "uint32",
               "maximum": 4294967295,
@@ -8836,6 +8842,12 @@
               "type": "integer"
             },
             "SendErrorPartition": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorRestarting": {
               "format": "uint32",
               "maximum": 4294967295,
               "minimum": 0,

@@ -16,6 +16,7 @@
       "name": "Doubler",
       "overflow": "block",
       "state_fields": [],
+      "state_type": 3,
       "stop": []
     },
     {
@@ -34,22 +35,52 @@
       "name": "Sink",
       "overflow": "block",
       "state_fields": [],
+      "state_type": 3,
       "stop": []
     }
   ],
   "aggregates": [
     {
       "fields": [
+        "kind",
+        "trap",
+        "message",
+        "site",
+        "trace"
+      ],
+      "id": 0,
+      "name": "CrashInfo"
+    },
+    {
+      "fields": [
+        "function",
+        "site",
+        "repeat"
+      ],
+      "id": 1,
+      "name": "std.failure.StackFrame"
+    },
+    {
+      "fields": [
+        "file",
+        "line",
+        "column"
+      ],
+      "id": 2,
+      "name": "SourceLocation"
+    },
+    {
+      "fields": [
         "reason",
         "message"
       ],
-      "id": 0,
+      "id": 3,
       "name": "SendFailure<Never>"
     }
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -102,6 +133,7 @@
             },
             "op": "call",
             "result": {
+              "managed_type": 10,
               "own": "owned",
               "value": 0
             },
@@ -182,6 +214,7 @@
           ],
           "params": [
             {
+              "managed_type": 10,
               "own": "owned",
               "value": 1
             }
@@ -197,6 +230,7 @@
             },
             "op": "call",
             "result": {
+              "managed_type": 11,
               "own": "owned",
               "value": 2
             },
@@ -243,16 +277,50 @@
               "value": 3
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 11,
+                  "own": "guaranteed",
+                  "value": 4
+                }
+              ],
               "dst": 4,
-              "op": "load.copy",
-              "own": "owned",
+              "op": "load.borrow",
+              "own": "guaranteed",
               "place": 1,
               "span": {
                 "end": 236,
                 "start": 236
               }
-            },
+            }
+          ],
+          "params": [
             {
+              "managed_type": 11,
+              "own": "owned",
+              "value": 3
+            }
+          ],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 14
+            },
+            "normal": {
+              "args": [
+                5
+              ],
+              "to": 13
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 10,
+                  "own": "owned",
+                  "value": 5
+                }
+              ],
               "dst": 5,
               "op": "load.copy",
               "own": "owned",
@@ -262,78 +330,9 @@
                 "start": 252
               }
             },
-            {
-              "dst": 6,
-              "op": "const.int",
-              "own": "none",
-              "span": {
-                "end": 258,
-                "start": 258
-              },
-              "ty": "i64",
-              "value": "21"
-            }
-          ],
-          "params": [
-            {
-              "own": "owned",
-              "value": 3
-            }
-          ],
-          "term": {
-            "cancel": {
-              "args": [],
-              "to": 14
-            },
-            "detail": {
-              "actor": 0,
-              "message": 0,
-              "policy": "wait",
-              "sealed": false
-            },
-            "error_shape": 1,
-            "inputs": [
-              {
-                "decision": "borrow",
-                "value": 4
-              },
-              {
-                "decision": "move",
-                "value": 5
-              },
-              {
-                "decision": "move",
-                "value": 6
-              }
-            ],
-            "kind": "Ask",
-            "op": "suspend",
-            "request_shapes": {
-              "failure": 0,
-              "message": null,
-              "reason": 3,
-              "request": null
-            },
-            "result": {
-              "own": "none",
-              "value": 7
-            },
-            "result_shape": 0,
-            "resumes": [
-              {
-                "args": [
-                  7
-                ],
-                "to": 13
-              }
-            ],
             "span": {
-              "end": 258,
-              "start": 258
-            },
-            "unwind": {
-              "args": [],
-              "to": 15
+              "end": 236,
+              "start": 236
             }
           }
         },
@@ -401,26 +400,88 @@
         },
         {
           "id": 13,
-          "ops": [],
+          "ops": [
+            {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 7
+                }
+              ],
+              "dst": 7,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 258,
+                "start": 258
+              },
+              "ty": "i64",
+              "value": "21"
+            }
+          ],
           "params": [
             {
-              "own": "none",
-              "value": 8
+              "managed_type": 10,
+              "own": "owned",
+              "value": 6
             }
           ],
           "term": {
-            "fault": {
+            "cancel": {
               "args": [],
               "to": 21
             },
-            "normal": {
-              "args": [],
-              "to": 20
+            "detail": {
+              "actor": 0,
+              "message": 0,
+              "policy": "wait",
+              "sealed": false
             },
-            "op": "cleanup.dispatch",
+            "error_shape": 1,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 4
+              },
+              {
+                "decision": "move",
+                "value": 6
+              },
+              {
+                "decision": "move",
+                "value": 7
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 3,
+              "message": null,
+              "reason": 8,
+              "request": null
+            },
+            "result": {
+              "managed_type": 15,
+              "own": "owned",
+              "value": 8
+            },
+            "result_shape": 0,
+            "resumes": [
+              {
+                "args": [
+                  8
+                ],
+                "to": 20
+              }
+            ],
             "span": {
               "end": 258,
               "start": 258
+            },
+            "unwind": {
+              "args": [],
+              "to": 22
             }
           }
         },
@@ -429,15 +490,16 @@
           "ops": [],
           "params": [],
           "term": {
-            "edge": {
+            "cleanup": {
               "args": [],
-              "to": 18
+              "to": 15
             },
-            "op": "goto",
+            "op": "checked_raise",
             "span": {
-              "end": 258,
-              "start": 258
-            }
+              "end": 236,
+              "start": 236
+            },
+            "trap": "heap_exceeded"
           }
         },
         {
@@ -451,8 +513,8 @@
             },
             "op": "goto",
             "span": {
-              "end": 258,
-              "start": 258
+              "end": 236,
+              "start": 236
             }
           }
         },
@@ -480,10 +542,10 @@
           "id": 17,
           "ops": [
             {
+              "borrow": 4,
               "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 4
+              "op": "end_borrow",
+              "span": null
             }
           ],
           "params": [],
@@ -526,33 +588,50 @@
           "id": 20,
           "ops": [
             {
+              "borrow": 4,
               "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 4
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "managed_type": 15,
+              "own": "owned",
+              "value": 9
+            }
+          ],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 26
+            },
+            "normal": {
+              "args": [],
+              "to": 25
+            },
+            "op": "cleanup.dispatch",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 21,
+          "ops": [
+            {
+              "borrow": 4,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 22
-            },
-            "op": "goto",
-            "span": {
-              "end": 236,
-              "start": 236
-            }
-          }
-        },
-        {
-          "id": 21,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 18
+              "to": 23
             },
             "op": "goto",
             "span": {
@@ -563,6 +642,140 @@
         },
         {
           "id": 22,
+          "ops": [
+            {
+              "borrow": 4,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 23
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 23,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 24
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 24,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 25,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 9
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 30
+            },
+            "op": "goto",
+            "span": {
+              "end": 236,
+              "start": 236
+            }
+          }
+        },
+        {
+          "id": 26,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 28
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 27,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 9
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 28,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 29
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 29,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 27
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 30,
           "ops": [
             {
               "dst": null,
@@ -595,10 +808,12 @@
       "places": [
         {
           "id": 0,
+          "managed_type": 10,
           "origin": "local"
         },
         {
           "id": 1,
+          "managed_type": 11,
           "origin": "local"
         }
       ]
@@ -660,6 +875,7 @@
               "request": null
             },
             "result": {
+              "managed_type": 10,
               "own": "owned",
               "value": 0
             },
@@ -732,6 +948,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 10,
               "own": "owned",
               "value": 1
             }
@@ -844,6 +1061,7 @@
               "request": null
             },
             "result": {
+              "managed_type": 11,
               "own": "owned",
               "value": 0
             },
@@ -916,6 +1134,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 11,
               "own": "owned",
               "value": 1
             }
@@ -1020,9 +1239,16 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 10,
+                  "own": "guaranteed",
+                  "value": 3
+                }
+              ],
               "dst": 3,
-              "op": "load.copy",
-              "own": "owned",
+              "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 135,
@@ -1030,6 +1256,13 @@
               }
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 4
+                }
+              ],
               "dst": 4,
               "op": "const.int",
               "own": "none",
@@ -1062,6 +1295,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 5
             },
@@ -1146,6 +1380,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 6
             }
@@ -1175,13 +1410,14 @@
             "kind": "Ask",
             "op": "suspend",
             "request_shapes": {
-              "failure": 0,
+              "failure": 3,
               "message": null,
-              "reason": 3,
+              "reason": 8,
               "request": null
             },
             "result": {
-              "own": "none",
+              "managed_type": 15,
+              "own": "owned",
               "value": 7
             },
             "result_shape": 0,
@@ -1240,10 +1476,10 @@
           "id": 10,
           "ops": [
             {
+              "borrow": 3,
               "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 3
+              "op": "end_borrow",
+              "span": null
             }
           ],
           "params": [],
@@ -1284,10 +1520,18 @@
         },
         {
           "id": 13,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [
             {
-              "own": "none",
+              "managed_type": 15,
+              "own": "owned",
               "value": 8
             }
           ],
@@ -1309,12 +1553,19 @@
         },
         {
           "id": 14,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 11
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -1325,12 +1576,19 @@
         },
         {
           "id": 15,
-          "ops": [],
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 11
+              "to": 5
             },
             "op": "goto",
             "span": {
@@ -1346,14 +1604,14 @@
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 3
+              "value": 8
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 18
+              "to": 21
             },
             "op": "goto",
             "span": {
@@ -1369,7 +1627,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 11
+              "to": 19
             },
             "op": "goto",
             "span": {
@@ -1380,6 +1638,52 @@
         },
         {
           "id": 18,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 8
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 19,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 20
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 20,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 18
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 21,
           "ops": [
             {
               "dst": null,
@@ -1404,14 +1708,17 @@
       "name": "__hew_actor_0_Doubler__process",
       "params": [
         {
+          "managed_type": 3,
           "own": "guaranteed",
           "value": 0
         },
         {
+          "managed_type": 10,
           "own": "owned",
           "value": 1
         },
         {
+          "managed_type": 0,
           "own": "none",
           "value": 2
         }
@@ -1419,6 +1726,7 @@
       "places": [
         {
           "id": 0,
+          "managed_type": 10,
           "origin": "local"
         }
       ]
@@ -1567,10 +1875,12 @@
       "name": "__hew_actor_1_Sink__collect",
       "params": [
         {
+          "managed_type": 3,
           "own": "guaranteed",
           "value": 0
         },
         {
+          "managed_type": 0,
           "own": "none",
           "value": 1
         }
@@ -1578,7 +1888,260 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "string",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 2,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    },
+    {
+      "fields": [],
+      "id": 3,
+      "kind": "aggregate",
+      "slot_bytes": "0"
+    },
+    {
+      "cases": [
+        [
+          6
+        ],
+        [
+          5
+        ],
+        [],
+        [
+          17
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 4,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "64",
+      "shape": 1,
+      "slot_bytes": "64"
+    },
+    {
+      "cases": [],
+      "id": 5,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 7,
+      "slot_bytes": "4"
+    },
+    {
+      "fields": [
+        19,
+        5
+      ],
+      "id": 6,
+      "kind": "aggregate",
+      "shape": 3,
+      "slot_bytes": "16"
+    },
+    {
+      "fields": [
+        1,
+        0,
+        0
+      ],
+      "id": 7,
+      "kind": "aggregate",
+      "shape": 2,
+      "slot_bytes": "24"
+    },
+    {
+      "fields": [
+        1,
+        12,
+        0
+      ],
+      "id": 8,
+      "kind": "aggregate",
+      "shape": 1,
+      "slot_bytes": "44"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 9,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 5,
+      "slot_bytes": "4"
+    },
+    {
+      "category": "actor",
+      "id": 10,
+      "kind": "handle",
+      "slot_bytes": "8"
+    },
+    {
+      "category": "actor",
+      "id": 11,
+      "kind": "handle",
+      "slot_bytes": "8"
+    },
+    {
+      "cases": [
+        [
+          7
+        ],
+        []
+      ],
+      "id": 12,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "28",
+      "shape": 3,
+      "slot_bytes": "28"
+    },
+    {
+      "cases": [
+        [
+          9
+        ],
+        []
+      ],
+      "id": 13,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "8",
+      "shape": 4,
+      "slot_bytes": "8"
+    },
+    {
+      "cases": [
+        [
+          16
+        ],
+        []
+      ],
+      "id": 14,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "12",
+      "shape": 2,
+      "slot_bytes": "12"
+    },
+    {
+      "cases": [
+        [
+          2
+        ],
+        [
+          4
+        ]
+      ],
+      "id": 15,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "68",
+      "shape": 0,
+      "slot_bytes": "68"
+    },
+    {
+      "element": 8,
+      "id": 16,
+      "kind": "vector",
+      "share_on_copy": false,
+      "slot_bytes": "8"
+    },
+    {
+      "fields": [
+        18,
+        13,
+        1,
+        12,
+        14
+      ],
+      "id": 17,
+      "kind": "aggregate",
+      "shape": 0,
+      "slot_bytes": "60"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 18,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "4",
+      "shape": 6,
+      "slot_bytes": "4"
+    },
+    {
+      "cases": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          0
+        ],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "id": 19,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "12",
+      "shape": 8,
+      "slot_bytes": "12"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],
@@ -1643,7 +2206,9 @@
           "name": "Refused"
         },
         {
-          "fields": [],
+          "fields": [
+            "0"
+          ],
           "name": "Trapped"
         },
         {
@@ -1673,6 +2238,14 @@
         {
           "fields": [],
           "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "MessageTooLarge"
+        },
+        {
+          "fields": [],
+          "name": "Restarting"
         }
       ],
       "id": 1,
@@ -1682,18 +2255,193 @@
         "ActorErrorDead": 4,
         "ActorErrorEncodeFailed": 8,
         "ActorErrorFailed": 1,
+        "ActorErrorMessageTooLarge": 11,
         "ActorErrorNodeNotRunning": 6,
         "ActorErrorPartition": 10,
         "ActorErrorRefused": 2,
         "ActorErrorRejected": 0,
+        "ActorErrorRestarting": 12,
         "ActorErrorRoutingFailed": 7,
         "ActorErrorTimedOut": 5,
         "ActorErrorTrapped": 3
       }
     },
     {
-      "cases": [],
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
       "id": 2,
+      "name": "Option<Vec<std.failure.StackFrame>>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 3,
+      "name": "Option<SourceLocation>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 4,
+      "name": "Option<std.failure.TrapKind>",
+      "runtime_tags": {
+        "OptionNone": 1,
+        "OptionSome": 0
+      }
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "HeapExceeded"
+        },
+        {
+          "fields": [],
+          "name": "IntegerOverflow"
+        },
+        {
+          "fields": [],
+          "name": "DivideByZero"
+        },
+        {
+          "fields": [],
+          "name": "SignedMinDivNegOne"
+        },
+        {
+          "fields": [],
+          "name": "ShiftOutOfRange"
+        },
+        {
+          "fields": [],
+          "name": "IndexOutOfBounds"
+        },
+        {
+          "fields": [],
+          "name": "ActorSendFailed"
+        },
+        {
+          "fields": [],
+          "name": "MachineDispatchUnreachable"
+        },
+        {
+          "fields": [],
+          "name": "ExhaustivenessFallthrough"
+        },
+        {
+          "fields": [],
+          "name": "ModuleInitRegexFailed"
+        },
+        {
+          "fields": [],
+          "name": "WireDecodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "JoinBranchFailed"
+        },
+        {
+          "fields": [],
+          "name": "UserPanic"
+        },
+        {
+          "fields": [],
+          "name": "ActorUnhandledFailure"
+        },
+        {
+          "fields": [],
+          "name": "ActorTimerOverdue"
+        },
+        {
+          "fields": [],
+          "name": "StackOverflow"
+        },
+        {
+          "fields": [],
+          "name": "Failed"
+        }
+      ],
+      "id": 5,
+      "name": "std.failure.TrapKind",
+      "runtime_tags": {}
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Fault"
+        },
+        {
+          "fields": [],
+          "name": "HeapExceeded"
+        },
+        {
+          "fields": [],
+          "name": "PartitionDetected"
+        },
+        {
+          "fields": [],
+          "name": "HandlerFailed"
+        },
+        {
+          "fields": [],
+          "name": "TimerOverdue"
+        },
+        {
+          "fields": [],
+          "name": "StackOverflow"
+        }
+      ],
+      "id": 6,
+      "name": "CrashKind",
+      "runtime_tags": {
+        "CrashKindFault": 0,
+        "CrashKindHandlerFailed": 3,
+        "CrashKindHeapExceeded": 1,
+        "CrashKindPartitionDetected": 2,
+        "CrashKindStackOverflow": 5,
+        "CrashKindTimerOverdue": 4
+      }
+    },
+    {
+      "cases": [],
+      "id": 7,
       "name": "Never",
       "runtime_tags": {}
     },
@@ -1752,9 +2500,17 @@
         {
           "fields": [],
           "name": "TimedOut"
+        },
+        {
+          "fields": [],
+          "name": "MessageTooLarge"
+        },
+        {
+          "fields": [],
+          "name": "Restarting"
         }
       ],
-      "id": 3,
+      "id": 8,
       "name": "SendError",
       "runtime_tags": {
         "SendErrorBackpressure": 7,
@@ -1764,7 +2520,9 @@
         "SendErrorFull": 0,
         "SendErrorInvalidMessage": 11,
         "SendErrorLocalShutdown": 4,
+        "SendErrorMessageTooLarge": 13,
         "SendErrorPartition": 2,
+        "SendErrorRestarting": 14,
         "SendErrorStaleRef": 3,
         "SendErrorTimedOut": 12,
         "SendErrorUnauthorized": 10,

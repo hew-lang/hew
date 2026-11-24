@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -45,6 +45,13 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.int",
               "own": "none",
@@ -56,6 +63,13 @@
               "value": "0"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.int",
               "own": "none",
@@ -83,7 +97,7 @@
                   "args": [],
                   "to": 8
                 },
-                "trap": "integer_overflow"
+                "trap": "signed_min_div_neg_one"
               }
             ],
             "lhs": 1,
@@ -95,6 +109,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 2
             },
@@ -159,6 +174,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 3
             }
@@ -220,7 +236,7 @@
               "end": 53,
               "start": 53
             },
-            "trap": "integer_overflow"
+            "trap": "signed_min_div_neg_one"
           }
         },
         {
@@ -292,7 +308,19 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

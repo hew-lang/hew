@@ -335,8 +335,30 @@ extern "C" {
     fn hew_toml_from_bool(val: i32) -> Value;
 }
 
-/// Encode any data value as a TOML document. Records encode as tables keyed by
-/// field name in declaration order.
+/// Encode any TOML-representable data value as a TOML document. Records encode
+/// as tables keyed by field name, with scalar fields emitted before nested
+/// tables and arrays of tables so the output is always valid TOML.
+///
+/// # Examples
+///
+/// ```
+/// import std.encoding.toml;
+///
+/// #[wire]
+/// type Server {
+///     host: string @1;
+///     port: i64 @2;
+///     label: Option<string> @3 optional;
+/// }
+///
+/// fn main() {
+///     let text = toml.encode(Server { host: "localhost", port: 8080, label: .None });
+///     let decoded = toml.decode<Server>(text).expect("valid TOML");
+///     assert(decoded.host == "localhost");
+///     assert(decoded.port == 8080);
+///     assert(decoded.label.is_none());
+/// }
+/// ```
 #[intrinsic("codec.toml.encode")]
 pub fn encode<T: Serializable>(value: T) -> string {}
 

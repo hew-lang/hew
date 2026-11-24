@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -43,8 +43,28 @@
         },
         {
           "id": 1,
-          "ops": [
-            {
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 7
+            },
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 6
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "owned",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.str",
               "own": "owned",
@@ -53,20 +73,7 @@
                 "start": 22
               },
               "str": 0
-            }
-          ],
-          "params": [],
-          "term": {
-            "assertion": null,
-            "cleanup": {
-              "args": [],
-              "to": 6
             },
-            "message": {
-              "decision": "borrow",
-              "value": 0
-            },
-            "op": "panic",
             "span": {
               "end": 22,
               "start": 22
@@ -124,11 +131,55 @@
         {
           "id": 6,
           "ops": [],
+          "params": [
+            {
+              "managed_type": 0,
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
+            "assertion": null,
+            "cleanup": {
+              "args": [],
+              "to": 9
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 1
+            },
+            "op": "panic",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 8
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 22,
+              "start": 22
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 8
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -138,13 +189,29 @@
           }
         },
         {
-          "id": 7,
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 10,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 0
+              "value": 1
             }
           ],
           "params": [],
@@ -158,26 +225,26 @@
           }
         },
         {
-          "id": 8,
+          "id": 11,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 9
+              "to": 12
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 9,
+          "id": 12,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 10
             },
             "op": "goto",
             "span": null
@@ -191,7 +258,19 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "string",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

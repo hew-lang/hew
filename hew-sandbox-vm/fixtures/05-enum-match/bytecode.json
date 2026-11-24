@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -45,6 +45,13 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.int",
               "own": "none",
@@ -56,6 +63,13 @@
               "value": "4"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.int",
               "own": "none",
@@ -67,6 +81,13 @@
               "value": "6"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 2
+                }
+              ],
               "dst": 2,
               "fields": [
                 0,
@@ -99,6 +120,7 @@
             },
             "op": "call",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 3
             },
@@ -165,6 +187,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 4
             }
@@ -293,6 +316,7 @@
                 },
                 "fields": [
                   {
+                    "managed_type": 0,
                     "own": "none",
                     "value": 1
                   }
@@ -309,10 +333,12 @@
                 },
                 "fields": [
                   {
+                    "managed_type": 0,
                     "own": "none",
                     "value": 3
                   },
                   {
+                    "managed_type": 0,
                     "own": "none",
                     "value": 5
                   }
@@ -382,6 +408,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 2
             }
@@ -406,6 +433,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 7
             },
@@ -422,10 +450,12 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 4
             },
             {
+              "managed_type": 0,
               "own": "none",
               "value": 6
             }
@@ -450,6 +480,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 12
             },
@@ -465,6 +496,13 @@
           "id": 8,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 9
+                }
+              ],
               "dst": 9,
               "op": "const.int",
               "own": "none",
@@ -478,6 +516,7 @@
           ],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 8
             }
@@ -502,6 +541,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 10
             },
@@ -551,6 +591,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 11
             }
@@ -607,6 +648,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 13
             }
@@ -663,6 +705,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 14
             }
@@ -701,6 +744,7 @@
       "name": "__hew_fn_area",
       "params": [
         {
+          "managed_type": 2,
           "own": "none",
           "value": 0
         }
@@ -708,7 +752,36 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    },
+    {
+      "cases": [
+        [
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "id": 2,
+      "indirect": false,
+      "kind": "variant",
+      "payload_bytes": "20",
+      "shape": 0,
+      "slot_bytes": "20"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

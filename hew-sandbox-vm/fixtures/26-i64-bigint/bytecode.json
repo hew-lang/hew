@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -45,6 +45,13 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.int",
               "own": "none",
@@ -56,6 +63,13 @@
               "value": "9007199254740993"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.int",
               "own": "none",
@@ -88,6 +102,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 2
             },
@@ -152,6 +167,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 3
             }
@@ -219,6 +235,13 @@
           "id": 9,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 4
+                }
+              ],
               "dst": 4,
               "op": "const.int",
               "own": "none",
@@ -231,6 +254,13 @@
             },
             {
               "binary_op": "Equal",
+              "definitions": [
+                {
+                  "managed_type": 1,
+                  "own": "none",
+                  "value": 5
+                }
+              ],
               "dst": 5,
               "lhs": 3,
               "op": "binary",
@@ -263,8 +293,28 @@
         },
         {
           "id": 10,
-          "ops": [
-            {
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 13
+            },
+            "normal": {
+              "args": [
+                6
+              ],
+              "to": 12
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "owned",
+                  "value": 6
+                }
+              ],
               "dst": 6,
               "op": "const.str",
               "own": "owned",
@@ -273,21 +323,51 @@
                 "start": 129
               },
               "str": 0
+            },
+            "span": {
+              "end": 129,
+              "start": 129
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 89,
+              "start": 89
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "owned",
+              "value": 7
             }
           ],
-          "params": [],
           "term": {
             "args": [
               {
                 "decision": "borrow",
-                "value": 6
+                "value": 7
               }
             ],
             "callbacks": [],
             "family": 1,
             "normal": {
               "args": [],
-              "to": 12
+              "to": 15
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -303,36 +383,53 @@
           }
         },
         {
-          "id": 11,
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 14
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 129,
+              "start": 129
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 14,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 4
             },
             "op": "goto",
             "span": {
-              "end": 89,
-              "start": 89
+              "end": 129,
+              "start": 129
             }
           }
         },
         {
-          "id": 12,
+          "id": 15,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 6
+              "value": 7
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 16
             },
             "op": "goto",
             "span": {
@@ -342,13 +439,13 @@
           }
         },
         {
-          "id": 13,
+          "id": 16,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 14
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -358,7 +455,7 @@
           }
         },
         {
-          "id": 14,
+          "id": 17,
           "ops": [],
           "params": [],
           "term": {
@@ -378,7 +475,29 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "1"
+    },
+    {
+      "id": 2,
+      "kind": "string",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 3,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

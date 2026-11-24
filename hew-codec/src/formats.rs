@@ -135,6 +135,44 @@ fn parse_toml(text: &str) -> Result<Value, DecodeError> {
         })
 }
 
+/// Whether `toml::to_string` emits `value` as a `[table]` or `[[array]]`
+/// section header (which TOML requires to follow all key-value pairs in the
+/// enclosing table).
+fn is_toml_table_like(value: &Value) -> bool {
+    match value {
+        Value::Map(_) => true,
+        Value::Seq(items) => {
+            !items.is_empty() && items.iter().all(|item| matches!(item, Value::Map(_)))
+        }
+        _ => false,
+    }
+}
+
+/// Recursively stably partition every table's entries so non-table values
+/// precede `[table]` and `[[array_of_tables]]` entries, preserving declaration
+/// order within each group so `toml::to_string` never fails with
+/// `ValueAfterTable`.
+fn prepare_toml_value(value: &Value) -> Value {
+    match value {
+        Value::Seq(items) => Value::Seq(items.iter().map(prepare_toml_value).collect()),
+        Value::Map(entries) => {
+            let mut values = Vec::with_capacity(entries.len());
+            let mut tables = Vec::new();
+            for (key, val) in entries {
+                let prepared = prepare_toml_value(val);
+                if is_toml_table_like(&prepared) {
+                    tables.push((key.clone(), prepared));
+                } else {
+                    values.push((key.clone(), prepared));
+                }
+            }
+            values.extend(tables);
+            Value::Map(values)
+        }
+        other => other.clone(),
+    }
+}
+
 /// Write a finished document. The sink never builds a value its format
 /// cannot hold; the checker refuses those types at the call site.
 pub(crate) fn write(format: Format, value: &Value) -> Vec<u8> {
@@ -144,7 +182,7 @@ pub(crate) fn write(format: Format, value: &Value) -> Vec<u8> {
             .and_then(|value| crate::yaml_value::encode(&value))
             .map(String::into_bytes)
             .map_err(|e| e.to_string()),
-        Format::Toml => toml::to_string(value)
+        Format::Toml => toml::to_string(&prepare_toml_value(value))
             .map(String::into_bytes)
             .map_err(|e| e.to_string()),
         Format::Msgpack => rmp_serde::to_vec(value).map_err(|e| e.to_string()),

@@ -1,7 +1,7 @@
-//! Integer formatting utilities.
+//! Numeric formatting utilities.
 //!
 //! Provides integer-to-string conversions for hexadecimal, binary, and octal
-//! bases.
+//! bases, and fixed-point decimal formatting for floating-point values.
 //!
 //! # Examples
 //!
@@ -12,7 +12,8 @@
 //!     println(fmt.to_hex(255));         // "ff"
 //!     println(fmt.to_binary(10));       // "1010"
 //!     println(fmt.to_octal(8));         // "10"
-//!     println("7".pad_left(3, '0'));  // "007"
+//!     println(fmt.fixed(3.14159, 2));   // "3.14"
+//!     println("7".pad_left(3, '0'));    // "007"
 //! }
 //! ```
 
@@ -140,6 +141,30 @@ pub fn to_octal(n: i64) -> string {
     result
 }
 
+/// Format a floating-point value in fixed-point decimal notation with
+/// `decimals` digits after the decimal point.
+///
+/// Negative `decimals` values are clamped to `0`; values above `325` are
+/// clamped to `325`. Finite values use IEEE 754 round-half-to-even and
+/// preserve `-0.0`. Non-finite values format as `"NaN"`, `"inf"`, or `"-inf"`.
+///
+/// # Examples
+///
+/// ```
+/// import std.fmt;
+///
+/// fn main() {
+///     assert(fmt.fixed(3.14159, 2) == "3.14");
+///     assert(fmt.fixed(42.0, 0) == "42");
+///     assert(fmt.fixed(-0.0, 2) == "-0.00");
+/// }
+/// ```
+pub fn fixed(value: f64, decimals: i64) -> string {
+    unsafe {
+        hew_float_to_fixed(value, decimals)
+    }
+}
+
 /// Map a digit value (0–15) to its lowercase hex character.
 fn hex_digit(d: i64) -> string {
     match d {
@@ -161,4 +186,9 @@ fn hex_digit(d: i64) -> string {
         15 => "f",
         _ => "?",
     }
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+extern "C" {
+    fn hew_float_to_fixed(value: f64, decimals: i64) -> string;
 }

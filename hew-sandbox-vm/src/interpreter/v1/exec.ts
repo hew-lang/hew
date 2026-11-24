@@ -284,6 +284,9 @@ interface SupervisorInstance {
   specs: SupervisorShape["children"];
   offsets: number[];
   recovering: Set<number>;
+  /// Slots belonging to an in-flight group restart; `restarted(role)` waits
+  /// until every member of the group has finished starting (matching native).
+  groupSettling: Set<number>;
   restartBusy: boolean;
   constructor: FrameContext | null;
   /// Crashes queued behind a busy restart, with the incarnation that crashed.
@@ -5957,11 +5960,6 @@ class ExecutorV1 {
         const [target, member, payload] = request.fields;
         if (member?.kind !== "i64" || payload?.kind !== "record")
           throw new Error("invalid message description");
-        const actor = this.actorFor(target!);
-        const handler = actor.layout.handlers.find(
-          (handler) => handler.message_id === Number(member.value),
-        );
-        if (!handler) throw new Error("submission names no actor handler");
         const shapes = term.submission_shapes;
         if (!shapes) throw new Error("submission lacks its result shapes");
         const accepted = (discarded: boolean) =>
@@ -5992,6 +5990,20 @@ class ExecutorV1 {
             this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         };
         const submit = () => {
+          const role = "id" in target! ? this.roles.get(target.id) : undefined;
+          if (role && this.roleRestarting(role)) {
+            finish(rejected("Restarting"));
+            return;
+          }
+          if (role && !this.roleValue(role)) {
+            finish(rejected("Dead"));
+            return;
+          }
+          const actor = this.actorFor(target!);
+          const handler = actor.layout.handlers.find(
+            (handler) => handler.message_id === Number(member.value),
+          );
+          if (!handler) throw new Error("submission names no actor handler");
           if (!actor.alive || actor.closing) {
             finish(rejected("Dead"));
             return;
@@ -6138,6 +6150,7 @@ class ExecutorV1 {
           ),
           offsets: layout.children.map((_child, index) => index),
           recovering: new Set(),
+          groupSettling: new Set(),
           restartBusy: true,
           constructor: null,
           pendingRestarts: [],
@@ -6437,6 +6450,37 @@ class ExecutorV1 {
         complete(null, reason, fault, undefined, actorFault);
       });
     };
+    const rejectSealed = (reason: RuntimeVariantRole) => {
+      if (
+        !shapes ||
+        shapes.failure === null ||
+        shapes.reason === null ||
+        shapes.message === null ||
+        shapes.request === null
+      )
+        throw new Error("rejected call lacks its checked request shapes");
+      const record = (shape: number, fields: VmValue[]): VmValue => ({
+        kind: "record",
+        typeId: this.aggregateName(shape),
+        shape,
+        fields,
+      });
+      const requestOwner: VmValue = {
+        kind: "record",
+        typeId: "",
+        fields: payload,
+      };
+      const request = record(shapes.request, [requestOwner]);
+      const message = record(shapes.message, [
+        target,
+        { kind: "i64", value: BigInt(protocol.message) },
+        request,
+      ]);
+      finish(
+        record(shapes.failure, [this.variant(shapes.reason, reason), message]),
+        "Rejected",
+      );
+    };
     const attempt = () => {
       if (settled || closing) return;
       if (deadline !== undefined && deadline <= this.trace.virtualTimeMs) {
@@ -6444,8 +6488,16 @@ class ExecutorV1 {
         return;
       }
       const role = "id" in target ? this.roles.get(target.id) : undefined;
-      if (role && this.rolePending(role)) {
-        role.waiting.push(attempt);
+      if (role && this.roleRestarting(role)) {
+        if (protocol.policy === "reject") {
+          rejectSealed("SendErrorRestarting");
+        } else {
+          reject("Restarting");
+        }
+        return;
+      }
+      if (role && !this.roleValue(role)) {
+        reject("Dead");
         return;
       }
       const actor = this.actorFor(target);
@@ -6465,38 +6517,7 @@ class ExecutorV1 {
         actor.mailbox.length >= actor.layout.mailbox_capacity;
       if (full) {
         if (protocol.policy === "reject") {
-          if (
-            !shapes ||
-            shapes.failure === null ||
-            shapes.reason === null ||
-            shapes.message === null ||
-            shapes.request === null
-          )
-            throw new Error("rejected call lacks its checked request shapes");
-          const record = (shape: number, fields: VmValue[]): VmValue => ({
-            kind: "record",
-            typeId: this.aggregateName(shape),
-            shape,
-            fields,
-          });
-          const owner: VmValue = {
-            kind: "record",
-            typeId: "",
-            fields: payload,
-          };
-          const request = record(shapes.request, [owner]);
-          const message = record(shapes.message, [
-            target,
-            { kind: "i64", value: BigInt(protocol.message) },
-            request,
-          ]);
-          finish(
-            record(shapes.failure, [
-              this.variant(shapes.reason, "SendErrorFull"),
-              message,
-            ]),
-            "Rejected",
-          );
+          rejectSealed("SendErrorFull");
         } else {
           actor.admission.push(attempt);
         }
@@ -7214,14 +7235,48 @@ class ExecutorV1 {
     const owner = this.roleOwner(role);
     return (
       !!owner?.alive &&
+      !owner.spent.has(role.child) &&
       (owner.recovering.has(role.child) || owner.children[role.child] === null)
     );
+  }
+
+  private roleRestarting(role: RoleSlot): boolean {
+    const parentRole = this.roles.get(role.ownerId);
+    if (parentRole && this.roleRestarting(parentRole)) return true;
+    const owner = this.roleOwner(role);
+    if (!owner) return false;
+    if (!owner.alive) {
+      return !!parentRole && this.rolePending(parentRole);
+    }
+    if (owner.spent.has(role.child)) return false;
+    const childValue = owner.children[role.child];
+    if (!owner.recovering.has(role.child) && childValue !== null) return false;
+    if (owner.restartTimers.has(role.child) || owner.restartBusy) return true;
+    const spec = owner.specs[role.child];
+    if (!spec || spec.restart === "temporary") return false;
+    const backoff = owner.backoffs[role.child];
+    const hasBackoff = !!backoff && backoff.initial > 0n;
+    if (!hasBackoff && !owner.supervisor) {
+      const now = this.trace.virtualTimeMs;
+      const recent = owner.restartTimes.filter(
+        (at) => now - at < owner.layout.window_secs * 1000,
+      ).length;
+      if (
+        owner.layout.max_restarts <= 0 ||
+        recent >= owner.layout.max_restarts
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private roleRestartPending(role: RoleSlot): boolean {
     const parent = this.roles.get(role.ownerId);
     if (parent && this.roleRestartPending(parent)) return true;
     if (this.rolePending(role)) return true;
+    const owner = this.roleOwner(role);
+    if (owner?.alive && owner.groupSettling.has(role.child)) return true;
     const value = this.roleValue(role) ?? role.latest;
     if (value?.kind === "actor") {
       const actor = this.actorFor(value);
@@ -7317,7 +7372,10 @@ class ExecutorV1 {
             (owner.layout.strategy === "rest_for_one" && index >= child) ||
             index === child),
       );
-    for (const index of affected) owner.recovering.add(index);
+    for (const index of affected) {
+      owner.recovering.add(index);
+      owner.groupSettling.add(index);
+    }
     this.trace.snapshot("supervisor.restart", {
       supervisor_id: owner.id,
       child,
@@ -7340,6 +7398,7 @@ class ExecutorV1 {
     const start = () => {
       if (!owner.alive) {
         owner.restartBusy = false;
+        owner.groupSettling.clear();
         this.wakeRoles();
         return;
       }
@@ -7359,6 +7418,7 @@ class ExecutorV1 {
           (pending) => !replaced(pending),
         );
         owner.restartBusy = false;
+        owner.groupSettling.clear();
         this.wakeRoles();
         const pending = owner.pendingRestarts.shift();
         if (pending) this.restartChild(owner, pending.child, pending.debts);
@@ -7379,6 +7439,7 @@ class ExecutorV1 {
         },
         () => {
           owner.restartBusy = false;
+          owner.groupSettling.clear();
           this.restartChild(owner, index, debts);
         },
       );
@@ -7932,6 +7993,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
       return "ActorErrorRefused";
     case "Dead":
       return "ActorErrorDead";
+    case "Restarting":
+      return "ActorErrorRestarting";
     case "TimedOut":
       return "ActorErrorTimedOut";
     case "NodeNotRunning":
@@ -7973,6 +8036,8 @@ function sendErrorRole(reason: string): RuntimeVariantRole {
       return "SendErrorBackpressure";
     case "Dead":
       return "SendErrorDead";
+    case "Restarting":
+      return "SendErrorRestarting";
     default:
       throw new Error(`unknown send error reason ${reason}`);
   }

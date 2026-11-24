@@ -72,6 +72,7 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
         Role::CallerTimer => super::package::RuntimeVariantRole::CallerTimer,
         Role::CallerNode => super::package::RuntimeVariantRole::CallerNode,
         Role::ActorErrorDead => super::package::RuntimeVariantRole::ActorErrorDead,
+        Role::ActorErrorRestarting => super::package::RuntimeVariantRole::ActorErrorRestarting,
         Role::ActorErrorTimedOut => super::package::RuntimeVariantRole::ActorErrorTimedOut,
         Role::ActorErrorNodeNotRunning => {
             super::package::RuntimeVariantRole::ActorErrorNodeNotRunning
@@ -98,6 +99,7 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
         }
         Role::SendErrorBackpressure => super::package::RuntimeVariantRole::SendErrorBackpressure,
         Role::SendErrorDead => super::package::RuntimeVariantRole::SendErrorDead,
+        Role::SendErrorRestarting => super::package::RuntimeVariantRole::SendErrorRestarting,
         Role::SendErrorUnauthorized => super::package::RuntimeVariantRole::SendErrorUnauthorized,
         Role::SendErrorInvalidMessage => {
             super::package::RuntimeVariantRole::SendErrorInvalidMessage

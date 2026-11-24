@@ -12,7 +12,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -54,6 +54,13 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.int",
               "own": "none",
@@ -65,6 +72,13 @@
               "value": "2"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.int",
               "own": "none",
@@ -76,6 +90,13 @@
               "value": "3"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 2
+                }
+              ],
               "dst": 2,
               "fields": [
                 0,
@@ -91,6 +112,13 @@
             },
             {
               "aggregate": 2,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 3
+                }
+              ],
               "dst": 3,
               "field": 0,
               "op": "aggregate.project_copy",
@@ -103,6 +131,13 @@
             },
             {
               "aggregate": 2,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 4
+                }
+              ],
               "dst": 4,
               "field": 1,
               "op": "aggregate.project_copy",
@@ -135,6 +170,7 @@
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
               "value": 5
             },
@@ -199,6 +235,7 @@
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
               "value": 6
             }
@@ -299,7 +336,29 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    },
+    {
+      "fields": [
+        0,
+        0
+      ],
+      "id": 2,
+      "kind": "aggregate",
+      "shape": 0,
+      "slot_bytes": "16"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

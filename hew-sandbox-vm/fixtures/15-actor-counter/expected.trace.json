@@ -122,7 +122,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 967,
+    "budget_remaining": 972,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -143,7 +143,7 @@
     "stdout": [
       "5\n"
     ],
-    "step_count": 33,
+    "step_count": 28,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -151,7 +151,7 @@
     }
   },
   "fixture_id": "actor-counter",
-  "hew_version": "0.6.1",
+  "hew_version": "0.11.3",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

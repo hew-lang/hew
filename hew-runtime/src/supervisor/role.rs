@@ -48,6 +48,14 @@ const fn child_slot_reason_name(reason: u8) -> &'static str {
     }
 }
 
+/// Whether a [`ChildSlotReason`] represents a transient restart state rather
+/// than a permanently dead slot.
+pub(crate) const fn child_slot_reason_is_restarting(reason: u8) -> bool {
+    reason == ChildSlotReason::Restarting as u8
+        || reason == ChildSlotReason::BackoffDelay as u8
+        || reason == ChildSlotReason::CircuitOpen as u8
+}
+
 /// Refuse an owner-scoped role ask closed, recording the classified slot
 /// state so a Dead slot is never conflated with a Transient one at the
 /// diagnostic surface (the tag semantics of the classified lookup ABIs —
@@ -63,9 +71,155 @@ fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
     // `hew_actor_ask_take_last_error`, and an unwritten slot misreports this
     // genuine refusal as `AskError::NoError` (dogfood F1, mechanism 2).
     if record_ask_error {
-        crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
+        let error = if child_slot_reason_is_restarting(reason) {
+            crate::internal::types::AskError::ActorRestarting
+        } else {
+            crate::internal::types::AskError::ActorStopped
+        };
+        crate::actor::record_ask_error(error);
     }
     crate::internal::types::HewError::ErrActorStopped as i32
+}
+
+/// Whether `slot` on `sup` is currently restarting (or its occupant has just
+/// ended and is eligible for restart before the supervisor dispatches its
+/// exit event).
+///
+/// # Safety
+///
+/// The caller must hold a supervisor pin keeping `sup` live.
+unsafe fn supervisor_child_slot_is_restarting(sup: *mut HewSupervisor, slot: u32) -> bool {
+    // SAFETY: caller holds a pin retaining `sup`.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
+    } {
+        return false;
+    }
+    // SAFETY: caller holds a pin retaining `sup` and its roster.
+    let guard = unsafe { &(*sup).roster }.lock_or_recover();
+    let s = &*guard;
+    // Re-check shutdown under `roster`.
+    // SAFETY: caller holds a pin retaining `sup`.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
+    } {
+        return false;
+    }
+    let i = slot as usize;
+    if i >= s.child_count {
+        return false;
+    }
+    let child = s.children.get(i).copied().unwrap_or(ptr::null_mut());
+    if child.is_null() {
+        return child_slot_reason_is_restarting(classify_null_child_slot(s, i).reason);
+    }
+    // The slot still points at the ending incarnation while its exit event
+    // is in flight to `supervisor_sys_dispatch`. Report restarting only when
+    // the child is eligible for a restart (or escalation to a live parent).
+    let spec = &s.child_specs[i];
+    if spec.spent || spec.restart_policy == RESTART_TEMPORARY {
+        return false;
+    }
+    // SAFETY: `roster` keeps the non-null child allocation live.
+    let actor = unsafe { &*child };
+    let state = actor.actor_state.load(Ordering::Acquire);
+    let crashed = state == HewActorState::Crashed as i32
+        || state == HewActorState::Crashing as i32
+        || actor.pending_external_trap_code.load(Ordering::Acquire) != 0;
+    if spec.restart_policy == RESTART_TRANSIENT && !crashed {
+        return false;
+    }
+    let native_action = actor
+        .native_completion
+        .as_ref()
+        .and_then(|c| c.crash_action());
+    // SAFETY: `parent` is immutable after child registration and `sup` is pinned.
+    let has_parent = unsafe { !(*sup).parent.is_null() };
+    match native_action {
+        Some(CRASH_ACTION_KILL) => return false,
+        Some(CRASH_ACTION_ESCALATE) => return has_parent,
+        _ => {}
+    }
+    // Without a backoff timer, a root supervisor whose restart budget is
+    // already exhausted will stop permanently rather than restart.
+    // SAFETY: `max_restarts` and `window_secs` are immutable while `sup` is live.
+    let (max_restarts, window_secs) = unsafe { ((*sup).max_restarts, (*sup).window_secs) };
+    if !spec.backoff.selected()
+        && !has_parent
+        && (max_restarts <= 0
+            || restart_within_window(window_secs, &s.restart_times) >= max_restarts)
+    {
+        return false;
+    }
+    true
+}
+
+/// Whether `token` names a supervised actor role that is currently restarting
+/// (including backoff delay, circuit-breaker cooldown, or an ancestor nested
+/// supervisor restart) rather than permanently dead.
+///
+/// Direct actor handles (not supervisor roles) always return `false`.
+pub(crate) fn actor_role_is_restarting(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> bool {
+    use crate::lifetime::local_handles::{
+        current_actor_role_owner_slot, pin_current_supervisor, SupervisorRoleKind,
+    };
+    let Some((owner, slot, kind)) = current_actor_role_owner_slot(token) else {
+        return false;
+    };
+    if kind != SupervisorRoleKind::Actor {
+        return false;
+    }
+    let mut root = owner;
+    let mut owner_path = Vec::new();
+    while let Some((parent, parent_slot, parent_kind)) = current_actor_role_owner_slot(root) {
+        if parent_kind != SupervisorRoleKind::Supervisor {
+            return false;
+        }
+        owner_path.push((root, parent_slot));
+        root = parent;
+    }
+    owner_path.reverse();
+    let Some(root_pin) = pin_current_supervisor(root) else {
+        return false;
+    };
+    let mut sup = root_pin.supervisor();
+    let mut owner_pins = Vec::with_capacity(owner_path.len());
+    let mut current_role = None;
+    for (role, parent_slot) in &owner_path {
+        // SAFETY: `root_pin` or the previous `owner_pin` retains `sup`.
+        let current = unsafe { hew_supervisor_nested_get(sup, *parent_slot) };
+        if !restart_wait_owner_is_current(current_role, sup) {
+            return true;
+        }
+        if current.tag == 1 {
+            return true;
+        }
+        if current.tag == 2 {
+            return current_role.is_some() && restart_wait_owner_ending(sup);
+        }
+        let Some(pin) = pin_current_supervisor(*role) else {
+            return true;
+        };
+        sup = pin.supervisor();
+        owner_pins.push(pin);
+        current_role = Some(*role);
+    }
+    if !restart_wait_owner_is_current(current_role, sup) {
+        return true;
+    }
+    // SAFETY: `root_pin` or the last `owner_pin` retains `sup`.
+    if unsafe { supervisor_child_slot_is_restarting(sup, slot) } {
+        return true;
+    }
+    // If a nested owner is shutting down (e.g. escalating), its live parent
+    // still owns the restart ruling.
+    !owner_path.is_empty() && restart_wait_owner_ending(sup)
 }
 
 /// Resolve the CURRENT incarnation of a stable-role slot to its actor ID
@@ -239,12 +393,23 @@ pub(crate) fn actor_role_export_metadata(
 /// (`with_actor_send_by_id` found the ID no longer live). Fail-closed and
 /// named: the ask enqueued nothing.
 #[cfg(not(target_arch = "wasm32"))]
-fn role_ask_refuse_retired(key: u32) -> i32 {
+fn role_ask_refuse_retired(token: crate::lifetime::local_handles::HewLocalPidId, key: u32) -> i32 {
     set_last_error(format!(
         "stable-role ask refused: child slot {key} incarnation retired during submission"
     ));
-    // Same TLS classification contract as `role_ask_refuse`.
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
+    // Nothing was admitted because `with_actor_send_by_identity` refused
+    // before enqueueing, so classify restarting vs dead from the live slot.
+    let restarting =
+        crate::lifetime::local_handles::pin_current_supervisor(token).is_some_and(|pin| {
+            // SAFETY: `pin` retains the supervisor for this slot check.
+            unsafe { supervisor_child_slot_is_restarting(pin.supervisor(), key) }
+        });
+    let error = if restarting {
+        crate::internal::types::AskError::ActorRestarting
+    } else {
+        crate::internal::types::AskError::ActorStopped
+    };
+    crate::actor::record_ask_error(error);
     crate::internal::types::HewError::ErrActorStopped as i32
 }
 
@@ -335,7 +500,7 @@ pub unsafe extern "C" fn hew_supervisor_role_ask_with_channel(
         // incarnation, so no wrong-actor enqueue can occur here.
         unsafe { crate::actor::ask_with_channel_pinned(pin.as_ptr(), msg_type, data, size, ch) }
     })
-    .unwrap_or_else(|| role_ask_refuse_retired(key))
+    .unwrap_or_else(|| role_ask_refuse_retired(token, key))
 }
 
 /// Blocking twin of [`hew_supervisor_role_ask_with_channel`] for callers with
@@ -370,7 +535,9 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
     size: usize,
 ) -> *mut c_void {
     let Ok((child_id, child_serial)) = role_resolve_current_child_id(token, key, true) else {
-        return crate::actor::actor_ask_null_actor_stopped();
+        // `role_resolve_current_child_id` already classified the refusal in TLS
+        // (`AskError::ActorRestarting` vs `AskError::ActorStopped`).
+        return ptr::null_mut();
     };
     #[cfg(test)]
     fire_role_ask_pinned_submit_hook();

@@ -1,0 +1,127 @@
+import std.restart;
+
+actor Worker {
+    var touched: i64 = 0;
+
+    receive fn ping() -> i64 {
+        1
+    }
+
+    receive fn echo(n: i64) -> i64 {
+        n
+    }
+
+    receive fn touch(v: i64) {
+        touched = touched + v;
+    }
+
+    receive fn get_touched() -> i64 {
+        touched
+    }
+
+    receive fn fail() {
+        panic("worker crashed");
+    }
+}
+
+supervisor BackoffTree {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    backoff: restart.exponential(initial: 100ms, maximum: 500ms);
+    child worker: Worker;
+}
+
+supervisor BudgetTree {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker;
+}
+
+fn main() {
+    let tree = spawn BackoffTree;
+    let worker = tree.worker;
+    assert(worker.ping().expect("initial live") == 1);
+
+    // Crash the child; backoff holds the role in the Restarting state.
+    match worker.fail() {
+        .Err(ActorError.Trapped(_)) => {}
+        _ => panic("expected Trapped on crash"),
+    }
+
+    // (a) Calling a supervised child while restarting returns ActorError.Restarting (not Dead).
+    match worker.ping() {
+        .Err(ActorError.Restarting) => println("bare:restarting"),
+        .Err(ActorError.Dead) => panic("restarting child must not report Dead"),
+        _ => panic("expected ActorError.Restarting on bare call"),
+    }
+
+    // policy(worker, on_full: .Wait) also reports ActorError.Restarting.
+    let wait_view = policy(worker, on_full: .Wait);
+    match wait_view.ping() {
+        .Err(ActorError.Restarting) => println("wait:restarting"),
+        _ => panic("expected ActorError.Restarting on Wait view"),
+    }
+
+    // (c) policy(worker, on_full: .Reject) surfaces SendError.Restarting with a retryable sealed request.
+    let reject_view = policy(worker, on_full: .Reject);
+    let sealed_call = match reject_view.echo(42) {
+        .Err(ActorError.Rejected(failure)) => {
+            assert(failure.reason == SendError.Restarting);
+            println("policy:rejected:restarting");
+            failure.message
+        }
+        _ => panic("expected Rejected(Restarting) on Reject policy"),
+    };
+
+    // mailbox(worker, on_full: .Reject) also surfaces SendError.Restarting with a retryable request.
+    let inbox = mailbox(worker, on_full: .Reject);
+    let sealed_send = match inbox.touch(7) {
+        .Err(ActorError.Rejected(failure)) => {
+            assert(failure.reason == SendError.Restarting);
+            println("mailbox:rejected:restarting");
+            failure.message
+        }
+        _ => panic("expected Rejected(Restarting) on mailbox"),
+    };
+
+    // Await recovery, then retry both unaccepted requests on the fresh incarnation.
+    restarted(worker);
+    assert(sealed_call.retry().expect("retried call succeeds") == 42);
+    assert(sealed_send.retry().expect("retried send succeeds") == Delivery.Accepted);
+    assert(worker.get_touched().expect("live after retry") == 7);
+    println("retried:ok");
+
+    // Stopping the supervisor makes the role permanently Dead.
+    stop(tree);
+    stopped(tree);
+    match worker.ping() {
+        .Err(ActorError.Dead) => println("stopped:dead"),
+        _ => panic("expected Dead after stop"),
+    }
+
+    // (b) After restart budget exhaustion, calls return ActorError.Dead (not Restarting).
+    let limited = spawn BudgetTree;
+    let limited_worker = limited.worker;
+    let _ = limited_worker.fail();
+    restarted(limited_worker);
+    assert(limited_worker.ping().expect("first restart recovered") == 1);
+
+    let _ = limited_worker.fail();
+    restarted(limited_worker);
+    match limited_worker.ping() {
+        .Err(ActorError.Dead) => println("budget:dead"),
+        .Err(ActorError.Restarting) => panic("budget-exhausted role must not report Restarting"),
+        _ => panic("expected Dead after budget exhaustion"),
+    }
+    match policy(limited_worker, on_full: .Reject).echo(9) {
+        .Err(ActorError.Dead) => println("budget:policy:dead"),
+        _ => panic("expected Dead on Reject policy after budget exhaustion"),
+    }
+    match mailbox(limited_worker, on_full: .Reject).touch(9) {
+        .Err(ActorError.Rejected(failure)) => {
+            assert(failure.reason == SendError.Dead);
+            println("budget:mailbox:dead");
+        }
+        _ => panic("expected Dead on mailbox after budget exhaustion"),
+    }
+}

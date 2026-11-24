@@ -63,7 +63,7 @@
     }
   },
   "fixture_id": "sandbox-reject-filesystem",
-  "hew_version": "0.6.2",
+  "hew_version": "0.11.3",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

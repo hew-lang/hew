@@ -284,6 +284,9 @@ pub enum SendError {
     TimedOut;
     /// The complete encoded message exceeds the destination route's capacity.
     MessageTooLarge;
+    /// The supervised destination role is restarting; nothing was accepted.
+    /// Callers may await `restarted(role)` and retry.
+    Restarting;
 }
 
 impl Display for SendError {
@@ -302,6 +305,7 @@ impl Display for SendError {
             SendError.VersionMismatch => "VersionMismatch: the peer rejected the send because protocol or schema versions differ",
             SendError.Backpressure => "Backpressure: the destination or route is applying flow control",
             SendError.Dead => "Dead: the destination actor accepts no more messages",
+            SendError.Restarting => "Restarting: the supervised destination role is restarting",
             SendError.WriteTimedOut(committed) => f"WriteTimedOut: the write deadline passed after {committed} bytes of the item",
         }
     }
@@ -367,9 +371,12 @@ impl Error for Never {}
 /// cannot fail. `Req` carries an unaccepted request when admission may reject it.
 /// Omitted parameters default to `Never`.
 ///
-/// Only `Rejected` is safely retryable: nothing was accepted, so the caller
-/// may make the same call again. Other variants do not return the request or
-/// establish whether its handler ran; repeating it may duplicate work.
+/// Only `Rejected` returns the sealed request for direct resubmission;
+/// `Restarting` also guarantees nothing was accepted, so callers may await
+/// `restarted(role)` and repeat the call (or use `policy(role, on_full: .Reject)`
+/// to receive `Rejected` with `SendError.Restarting` and retry the sealed
+/// request). Other variants do not establish whether the handler ran; repeating
+/// them may duplicate work.
 pub enum ActorError<E, Req> {
     /// Nothing was accepted. `failure.reason` explains why;
     /// `failure.message.retry()` or `.to(target)` consumes the sealed request.
@@ -400,6 +407,11 @@ pub enum ActorError<E, Req> {
     /// The complete encoded request or reply exceeds the route's capacity.
     /// A reply refusal may follow handler execution; it is not safe to retry.
     MessageTooLarge;
+    /// The supervised destination role is restarting; nothing was accepted.
+    /// Callers may await `restarted(role)` and retry. A
+    /// `policy(role, on_full: .Reject)` call reports `Rejected` with
+    /// `SendError.Restarting` instead and returns its sealed request.
+    Restarting;
 }
 
 impl<E: Display, Req> Display for ActorError<E, Req> {
@@ -410,6 +422,7 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
             ActorError.Refused => "Refused: an interceptor declined the delivery",
             ActorError.Trapped(_) => "Trapped: the handler faulted before replying",
             ActorError.Dead => "Dead: the destination actor is gone and will not come back",
+            ActorError.Restarting => "Restarting: the supervised destination role is restarting",
             ActorError.TimedOut => "TimedOut: the deadline elapsed before a reply arrived",
             ActorError.NodeNotRunning => "NodeNotRunning: the local node is not running or is shutting down",
             ActorError.RoutingFailed => "RoutingFailed: the destination node or actor could not be routed",

@@ -3,7 +3,7 @@
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -43,8 +43,28 @@
         },
         {
           "id": 1,
-          "ops": [
-            {
+          "ops": [],
+          "params": [],
+          "term": {
+            "failure": {
+              "args": [],
+              "to": 7
+            },
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 6
+            },
+            "op": "materialize",
+            "operation": {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "owned",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.str",
               "own": "owned",
@@ -53,33 +73,11 @@
                 "start": 24
               },
               "str": 0
-            }
-          ],
-          "params": [],
-          "term": {
-            "args": [
-              {
-                "decision": "borrow",
-                "value": 0
-              }
-            ],
-            "callbacks": [],
-            "family": 0,
-            "normal": {
-              "args": [],
-              "to": 6
             },
-            "op": "runtime.call",
-            "releases_contents": false,
-            "result": null,
-            "result_member_shapes": [],
-            "result_shape": null,
             "span": {
               "end": 24,
               "start": 24
-            },
-            "structural": null,
-            "unwind": null
+            }
           }
         },
         {
@@ -132,19 +130,65 @@
         },
         {
           "id": 6,
-          "ops": [
+          "ops": [],
+          "params": [
             {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 0
+              "managed_type": 0,
+              "own": "owned",
+              "value": 1
             }
           ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "callbacks": [],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 9
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": null,
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 24,
+              "start": 24
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 8
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 24,
+              "start": 24
+            },
+            "trap": "heap_exceeded"
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 4
             },
             "op": "goto",
             "span": {
@@ -154,7 +198,30 @@
           }
         },
         {
-          "id": 7,
+          "id": 9,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 24,
+              "start": 24
+            }
+          }
+        },
+        {
+          "id": 10,
           "ops": [],
           "params": [],
           "term": {
@@ -174,7 +241,19 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "string",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

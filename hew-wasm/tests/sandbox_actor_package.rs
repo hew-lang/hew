@@ -367,6 +367,112 @@ fn supervisor_backoff_cancellation_keeps_the_unrecovered_fault() {
 }
 
 #[test]
+fn supervised_restarting_role_reports_restarting_and_retries_after_recovery() {
+    let source = include_str!("../../tests/core-acceptance/cases/supervisor-restarting-error.hew");
+    let trace = execute_options(
+        source,
+        "ok",
+        r#"{"replay":{"virtual_clock":{"epoch_ms":0,"current_ms":0,"tick_ms":0}}}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(
+        stdout(&trace),
+        "bare:restarting\nwait:restarting\npolicy:rejected:restarting\nmailbox:rejected:restarting\nretried:ok\nstopped:dead\nbudget:dead\nbudget:policy:dead\nbudget:mailbox:dead\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+}
+
+#[test]
+fn fmt_fixed_and_math_predicates_match_native_edge_cases_in_sandbox() {
+    let trace = execute(
+        r#"import std.fmt;
+import std.math;
+
+fn main() {
+    assert(fmt.fixed(3.14159, 2) == "3.14");
+    assert(fmt.fixed(3.14159, 0) == "3");
+    assert(fmt.fixed(3.14159, -5) == "3");
+    assert(fmt.fixed(2.5, 0) == "2");
+    assert(fmt.fixed(3.5, 0) == "4");
+    assert(fmt.fixed(0.25, 1) == "0.2");
+    assert(fmt.fixed(0.75, 1) == "0.8");
+    assert(fmt.fixed(1.005, 2) == "1.00");
+    assert(fmt.fixed(-0.0, 2) == "-0.00");
+    assert(fmt.fixed(-0.0, 0) == "-0");
+    assert(fmt.fixed(-1.0e-20, 2) == "-0.00");
+    assert(fmt.fixed(0.0 / 0.0, 2) == "NaN");
+    assert(fmt.fixed(1.0 / 0.0, 2) == "inf");
+    assert(fmt.fixed(-1.0 / 0.0, 2) == "-inf");
+    assert(fmt.fixed(1.0e25, 2) == "10000000000000000905969664.00");
+    let capped = fmt.fixed(1.5, 500);
+    assert(capped.len() == 327);
+    assert(capped.starts_with("1.500000"));
+    let sub = fmt.fixed(math.from_bits(1), 325);
+    assert(sub.len() == 327);
+    assert(sub.ends_with("00049"));
+
+    assert(math.is_nan(0.0 / 0.0));
+    assert(!math.is_nan(1.0));
+    assert(math.is_infinite(1.0 / 0.0));
+    assert(math.is_infinite(-1.0 / 0.0));
+    assert(!math.is_infinite(1.0));
+    assert(math.is_finite(42.5));
+    assert(math.is_finite(-0.0));
+    assert(!math.is_finite(1.0 / 0.0));
+    assert(!math.is_finite(0.0 / 0.0));
+    println("fmt-math-sandbox-ok");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "fmt-math-sandbox-ok\n");
+}
+
+#[test]
+fn os_args_tail_drops_program_name_in_sandbox() {
+    let source = r"import std.os;
+
+fn main() {
+    let tail = os.args_tail();
+    println(tail.len());
+    for arg in tail {
+        println(arg);
+    }
+}
+";
+    let empty = execute_options(
+        source,
+        "ok",
+        r#"{"argv":[]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&empty), "0\n");
+
+    let prog_only = execute_options(
+        source,
+        "ok",
+        r#"{"argv":["myprog"]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&prog_only), "0\n");
+
+    let with_args = execute_options(
+        source,
+        "ok",
+        r#"{"argv":["myprog","--flag","hello"]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&with_args), "2\n--flag\nhello\n");
+}
+
+#[test]
+fn toml_wire_decode_roundtrips_tables_before_scalars_in_sandbox() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/toml-wire-decode.hew"
+    ));
+    assert_eq!(stdout(&trace), "toml-wire-ok\n");
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {
@@ -394,6 +500,7 @@ fn main() {
         .Err(_) => -1,
     });
     let _ = role.fail();
+    restarted(role);
     println(match role.bump() {
         .Ok(n) => n,
         .Err(_) => -1,

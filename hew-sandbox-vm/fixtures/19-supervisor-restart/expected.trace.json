@@ -254,14 +254,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 954,
+      "budget_remaining": 951,
       "id": "actor:a2",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 26,
       "span": null,
-      "step_count": 46,
+      "step_count": 49,
       "type": "step.committed"
     },
     {
@@ -295,14 +295,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 950,
+      "budget_remaining": 947,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 30,
       "span": null,
-      "step_count": 50,
+      "step_count": 53,
       "type": "step.committed"
     },
     {
@@ -343,7 +343,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 932,
+    "budget_remaining": 929,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -370,7 +370,7 @@
     "stdout": [
       "done\n"
     ],
-    "step_count": 68,
+    "step_count": 71,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -378,7 +378,7 @@
     }
   },
   "fixture_id": "supervisor-restart",
-  "hew_version": "0.10.0-rc1",
+  "hew_version": "0.11.3",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

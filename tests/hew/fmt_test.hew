@@ -4,6 +4,7 @@
 //! are all pure, allocation-only functions with no I/O or handles.
 
 import std.fmt;
+import std.math;
 
 // ── to_hex ────────────────────────────────────────────────────────────
 #[test]
@@ -106,4 +107,48 @@ fn test_zero_padded_hex_byte_representation() {
     assert((fmt.to_hex(10)).pad_left(2, '0') == "0a");
     // to_hex(255) = "ff"; already 2 digits
     assert((fmt.to_hex(255)).pad_left(2, '0') == "ff");
+}
+
+// ── fixed ─────────────────────────────────────────────────────────────
+#[test]
+fn test_fixed_standard_formatting() {
+    assert(fmt.fixed(3.14159, 2) == "3.14");
+    assert(fmt.fixed(3.14159, 4) == "3.1416");
+    assert(fmt.fixed(-42.5, 1) == "-42.5");
+    assert(fmt.fixed(7.0, 3) == "7.000");
+    assert(fmt.fixed(42.0, 0) == "42");
+}
+
+#[test]
+fn test_fixed_round_half_to_even_and_binary_representation() {
+    assert(fmt.fixed(2.5, 0) == "2");
+    assert(fmt.fixed(3.5, 0) == "4");
+    assert(fmt.fixed(0.25, 1) == "0.2");
+    assert(fmt.fixed(0.75, 1) == "0.8");
+    // 1.005 in IEEE 754 binary64 is slightly less than 1.005.
+    assert(fmt.fixed(1.005, 2) == "1.00");
+}
+
+#[test]
+fn test_fixed_edge_cases_clamping_signed_zero_and_non_finite() {
+    // Negative precision clamps to 0.
+    assert(fmt.fixed(3.14159, -3) == "3");
+    // Large precision clamps to 325.
+    let capped = fmt.fixed(1.5, 500);
+    assert(capped.len() == 327);
+    assert(capped.starts_with("1.500000"));
+    // Negative zero and tiny negative values retain their sign.
+    assert(fmt.fixed(-0.0, 2) == "-0.00");
+    assert(fmt.fixed(-0.0, 0) == "-0");
+    assert(fmt.fixed(-1.0e-20, 2) == "-0.00");
+    // Non-finite values.
+    assert(fmt.fixed(0.0 / 0.0, 2) == "NaN");
+    assert(fmt.fixed(1.0 / 0.0, 2) == "inf");
+    assert(fmt.fixed(-1.0 / 0.0, 2) == "-inf");
+    // Large floats stay in fixed notation without scientific exponent.
+    assert(fmt.fixed(1.0e25, 2) == "10000000000000000905969664.00");
+    // Smallest positive subnormal (5e-324).
+    let sub = fmt.fixed(math.from_bits(1), 325);
+    assert(sub.len() == 327);
+    assert(sub.ends_with("00049"));
 }

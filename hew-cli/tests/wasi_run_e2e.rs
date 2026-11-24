@@ -531,6 +531,11 @@ mod supervised_actor_lifecycle {
     fn actor_periodic_handlers() {
         assert_native_wasi_cases(&["actor-periodic-handlers"]);
     }
+
+    #[test]
+    fn toml_wire_decode() {
+        assert_native_wasi_cases(&["toml-wire-decode"]);
+    }
 }
 
 /// Signed division and remainder of the minimum by -1 trap with

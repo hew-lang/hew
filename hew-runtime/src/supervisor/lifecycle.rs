@@ -3269,48 +3269,108 @@ mod tests {
         }
     }
 
-    /// Mechanism-2 regression (dogfood F1): a synchronous stable-role refusal
-    /// must classify itself in the TLS ask-error slot, because the suspending
-    /// with-channel caller binds its `Err` kind from
-    /// `hew_actor_ask_take_last_error`. Before the fix the refusal returned
-    /// its `HewError` code with the slot unwritten, so the failure surfaced
-    /// as `Err(AskError::NoError)` — the enum's own "not an error" sentinel.
+    /// Mechanism-2 regression (dogfood F1) + transient-restart classification:
+    /// a synchronous stable-role refusal must classify itself in the TLS
+    /// ask-error slot as `AskError::ActorRestarting` when the slot is
+    /// transiently unavailable (`Restarting`, `BackoffDelay`, `CircuitOpen`),
+    /// and as `AskError::ActorStopped` when permanently unavailable
+    /// (`BudgetExhausted`, `UnknownSlot`, `SupervisorShutdown`), across both
+    /// the with-channel and blocking entry points.
     #[test]
-    fn role_ask_refusal_records_actor_stopped_ask_error() {
+    fn role_ask_refusal_classifies_restarting_vs_stopped_ask_error() {
         let _rt = crate::runtime_test_guard();
-        // SAFETY: test owns the tree; nulls the slot to model the restart
-        // window, then restores it for teardown.
+        // SAFETY: test owns the tree; manipulates slot state under `roster`
+        // to exercise every `ChildSlotReason`, then restores it for teardown.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             let supervisor_token = (*sup).local_pid_id;
             store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
-            // Drain any stale value so the assertion reads THIS refusal's write.
             let _ = crate::actor::hew_actor_ask_take_last_error();
             let ch = crate::reply_channel::hew_reply_channel_new();
-            let status = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
+            let probe_channel = |key: u32| -> (i32, i32) {
+                let status = hew_supervisor_role_ask_with_channel(
+                    supervisor_token,
+                    key,
+                    7,
+                    ptr::null_mut(),
+                    0,
+                    ch.cast(),
+                );
+                (status, crate::actor::hew_actor_ask_take_last_error())
+            };
+
+            // 1. Restarting -> AskError::ActorRestarting (channel + blocking).
+            let (status, err) = probe_channel(0);
             assert_eq!(
                 status,
                 crate::internal::types::HewError::ErrActorStopped as i32,
                 "a mid-restart slot must refuse closed"
             );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
-                crate::internal::types::AskError::ActorStopped as i32,
-                "the refusal must record a real AskError kind, never leave the \
-                 slot at None (which misreports the failure as no-error)"
+                err,
+                crate::internal::types::AskError::ActorRestarting as i32,
+                "a restarting slot must record AskError::ActorRestarting"
             );
-            crate::reply_channel::hew_reply_channel_free(ch);
+            let reply = hew_supervisor_role_ask(supervisor_token, 0, 7, ptr::null_mut(), 0);
+            assert!(reply.is_null());
+            assert_eq!(
+                crate::actor::hew_actor_ask_take_last_error(),
+                crate::internal::types::AskError::ActorRestarting as i32,
+                "blocking role ask on restarting slot must preserve AskError::ActorRestarting"
+            );
 
+            // 2. BackoffDelay -> AskError::ActorRestarting.
+            (*sup).roster.lock_or_recover().child_specs[0]
+                .backoff
+                .next_restart_time_ns = monotonic_time_ns().saturating_add(60_000_000_000);
+            assert_eq!(
+                probe_channel(0).1,
+                crate::internal::types::AskError::ActorRestarting as i32,
+                "BackoffDelay must record AskError::ActorRestarting"
+            );
+
+            // 3. CircuitOpen -> AskError::ActorRestarting.
+            {
+                let mut guard = (*sup).roster.lock_or_recover();
+                guard.child_specs[0].backoff.next_restart_time_ns = 0;
+                guard.child_specs[0].circuit_breaker.state = 1;
+            }
+            assert_eq!(
+                probe_channel(0).1,
+                crate::internal::types::AskError::ActorRestarting as i32,
+                "CircuitOpen must record AskError::ActorRestarting"
+            );
+
+            // 4. BudgetExhausted (spent) -> AskError::ActorStopped.
+            {
+                let mut guard = (*sup).roster.lock_or_recover();
+                guard.child_specs[0].circuit_breaker.state = 0;
+                guard.child_specs[0].spent = true;
+            }
+            assert_eq!(
+                probe_channel(0).1,
+                crate::internal::types::AskError::ActorStopped as i32,
+                "BudgetExhausted must record AskError::ActorStopped"
+            );
+
+            // 5. UnknownSlot -> AskError::ActorStopped.
+            assert_eq!(
+                probe_channel(99).1,
+                crate::internal::types::AskError::ActorStopped as i32,
+                "UnknownSlot must record AskError::ActorStopped"
+            );
+
+            // 6. Restore slot, stop supervisor -> SupervisorShutdown -> AskError::ActorStopped.
+            (*sup).roster.lock_or_recover().child_specs[0].spent = false;
             store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
+            assert_eq!(
+                probe_channel(0).1,
+                crate::internal::types::AskError::ActorStopped as i32,
+                "SupervisorShutdown must record AskError::ActorStopped"
+            );
+            crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
 

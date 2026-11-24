@@ -28,6 +28,7 @@ fn main() -> i64 {
             ActorError.Failed(_) => 2,
             ActorError.Trapped(_) => 3,
             ActorError.Dead => 4,
+            ActorError.Restarting => 14,
             ActorError.TimedOut => 5,
             ActorError.NodeNotRunning => 6,
             ActorError.RoutingFailed => 8,

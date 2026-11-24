@@ -3338,3 +3338,93 @@ fn eval_aot_timeout_stops_worker_and_allows_next_submission() {
         "expected exactly one worker timeout and no error from the next submission"
     );
 }
+
+#[test]
+fn eval_inline_block_body_auto_wraps_and_prints_trailing_expr() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "let x = [1, 2]; x.len()"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+
+    // A block body whose trailing expression has unit type must not print `()`.
+    let unit_output = Command::new(hew_binary())
+        .args(["eval", "let x = 7; println(x)"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        unit_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&unit_output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&unit_output.stdout), "7\n");
+}
+
+#[test]
+fn eval_inline_block_body_json_returns_ok_output() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "let x = [1, 2]; x.len()"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(v["status"], "ok", "unexpected JSON: {v}");
+    assert_eq!(v["stdout"], "2\n", "unexpected stdout: {v}");
+}
+
+#[test]
+fn eval_inline_block_body_preserves_diagnostic_spans() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", r#"let x = 1; x + "bad""#])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "expected type error");
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains(r#"1 | let x = 1; x + "bad""#),
+        "diagnostic should point at the verbatim user input: {stderr}"
+    );
+    assert!(
+        !stderr.contains("__repl_type_query") && !stderr.contains("println({"),
+        "diagnostic must not leak synthetic wrapper code: {stderr}"
+    );
+}
+
+#[test]
+fn eval_wasm_inline_block_body_succeeds() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", "let x = [1, 2]; x.len()"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+}

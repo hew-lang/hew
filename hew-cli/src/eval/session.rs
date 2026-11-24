@@ -178,26 +178,40 @@ impl Session {
                 source.push_str("fn main() {\n    ");
                 let trimmed = input.trim();
                 let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
+                let wrap_block = classify::parses_as_block_body(trimmed);
                 if auto_print_expressions {
                     // Wrap the expression for auto-printing via the
                     // type-generic `println()` builtin.
-                    source.push_str("println(");
+                    if wrap_block {
+                        source.push_str("println({\n");
+                    } else {
+                        source.push_str("println(");
+                    }
                     let input_start = source.len();
                     source.push_str(trimmed);
                     let input_end = source.len();
-                    source.push_str(");\n}\n");
+                    if wrap_block {
+                        source.push_str("\n    });\n}\n");
+                    } else {
+                        source.push_str(");\n}\n");
+                    }
                     diagnostic_view = Some(SyntheticDiagnosticView {
                         source: trimmed.to_string(),
                         input_span: input_start..input_end,
                     });
                 } else {
+                    if wrap_block {
+                        source.push_str("{\n");
+                    }
                     let input_start = source.len();
                     source.push_str(trimmed);
                     let input_end = source.len();
                     // Same as the statement wrapper: no synthetic `;` after a
                     // block-shaped expression (`if`/`match` ending in `}`) —
                     // it would draw an "unnecessary semicolon" warning.
-                    if trimmed.ends_with('}') {
+                    if wrap_block {
+                        source.push_str("\n    }\n}\n");
+                    } else if trimmed.ends_with('}') {
                         source.push_str("\n}\n");
                     } else {
                         source.push_str(";\n}\n");
@@ -241,11 +255,19 @@ impl Session {
         }
         source.push_str("fn main() {\n");
         let trimmed = expr.trim().strip_suffix(';').unwrap_or(expr.trim());
+        let wrap_block = classify::parses_as_block_body(trimmed);
         source.push_str("    let __repl_type_query = ");
+        if wrap_block {
+            source.push_str("{\n");
+        }
         let input_start = source.len();
         source.push_str(trimmed);
         let input_end = source.len();
-        source.push_str(";\n");
+        if wrap_block {
+            source.push_str("\n    };\n");
+        } else {
+            source.push_str(";\n");
+        }
         source.push_str("}\n");
         SyntheticProgram {
             source,
@@ -576,6 +598,43 @@ mod tests {
         let source = session.build_type_query("give_int()");
         assert!(source.contains("let __repl_type_query = give_int();"));
         assert!(source.contains("fn give_int()"));
+    }
+
+    #[test]
+    fn block_body_inputs_wrap_in_block_with_exact_diagnostic_span() {
+        let session = Session::new();
+        let input = "let x = [1, 2]; x.len()";
+
+        let prog = session.build_program(input);
+        assert_eq!(prog.kind, InputKind::Expression);
+        assert!(prog
+            .source
+            .contains("println({\nlet x = [1, 2]; x.len()\n    });"));
+        let view = prog.diagnostic_view.expect("diagnostic view");
+        assert_eq!(view.source, input);
+        assert_eq!(&prog.source[view.input_span], input);
+
+        let no_print = session.build_program_with_kind_and_auto_print(
+            "let x = 1; println(x)",
+            InputKind::Expression,
+            false,
+        );
+        assert!(no_print
+            .source
+            .contains("{\nlet x = 1; println(x)\n    }\n}\n"));
+        let no_print_view = no_print.diagnostic_view.expect("diagnostic view");
+        assert_eq!(
+            &no_print.source[no_print_view.input_span],
+            "let x = 1; println(x)"
+        );
+
+        let query = session.build_type_query_program(input);
+        assert!(query
+            .source
+            .contains("let __repl_type_query = {\nlet x = [1, 2]; x.len()\n    };\n"));
+        let query_view = query.diagnostic_view.expect("type query diagnostic view");
+        assert_eq!(query_view.source, input);
+        assert_eq!(&query.source[query_view.input_span], input);
     }
 
     #[test]

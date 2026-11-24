@@ -196,6 +196,23 @@ fn parses_as_statement(input: &str) -> bool {
     function.body.trailing_expr.is_none() && !function.body.stmts.is_empty()
 }
 
+/// True if `input` parses as one or more statements followed by a trailing
+/// expression inside a block (for example, `let x = [1, 2]; x.len()`).
+#[must_use]
+pub fn parses_as_block_body(input: &str) -> bool {
+    let source = format!("fn main() {{\n{input}\n}}\n");
+    let parse_result = hew_parser::parse(&source);
+    if !parse_result.errors.is_empty() || parse_result.program.items.len() != 1 {
+        return false;
+    }
+
+    let Some((Item::Function(function), _)) = parse_result.program.items.first() else {
+        return false;
+    };
+
+    !function.body.stmts.is_empty() && function.body.trailing_expr.is_some()
+}
+
 fn parses_as_expression(input: &str) -> bool {
     let source = format!("fn main() {{\n    let __hew_eval_probe = {input};\n}}\n");
     let parse_result = hew_parser::parse(&source);
@@ -203,7 +220,10 @@ fn parses_as_expression(input: &str) -> bool {
 }
 
 fn parses_in_any_context(input: &str) -> bool {
-    parses_as_item(input) || parses_as_statement(input) || parses_as_expression(input)
+    parses_as_item(input)
+        || parses_as_statement(input)
+        || parses_as_block_body(input)
+        || parses_as_expression(input)
 }
 
 fn parses_with_continuation(input: &str) -> bool {
@@ -355,6 +375,25 @@ mod tests {
     #[test]
     fn expression_probe_accepts_block_expressions() {
         assert!(parses_as_expression("{ let x = 1; x + 2 }"));
+    }
+
+    #[test]
+    fn block_body_probe_recognizes_stmts_plus_trailing_expr() {
+        assert!(parses_as_block_body("let x = [1, 2]; x.len()"));
+        assert!(parses_as_block_body("let x = 1;\nlet y = 2;\nx + y"));
+        assert_eq!(classify("let x = [1, 2]; x.len()"), InputKind::Expression);
+        assert_eq!(
+            input_completeness("let x = [1, 2]; x.len()"),
+            InputCompleteness::Complete
+        );
+        assert_eq!(
+            input_completeness("let x = 1; x +"),
+            InputCompleteness::Incomplete
+        );
+        // Bare expressions, explicit block expressions, and pure statements are not block bodies.
+        assert!(!parses_as_block_body("1 + 2"));
+        assert!(!parses_as_block_body("{ let x = 1; x + 2 }"));
+        assert!(!parses_as_block_body("let x = 1;"));
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub(crate) fn stub_actor() -> HewActor {
         suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
         suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
         runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-        runtime: ptr::null(),
+        runtime: crate::platform::executor::RuntimeHandle::null(),
         send_pin_count: AtomicU32::new(0),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: 1,

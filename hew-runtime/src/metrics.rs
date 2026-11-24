@@ -175,24 +175,11 @@ impl MetricsState {
     }
 }
 
-/// The single metric state for the WASM cooperative runtime, which has no
-/// `RuntimeInner`. Mirrors the other ungated subsystems (`registry`) that keep
-/// a module static on wasm while the native build resolves a per-runtime field.
-#[cfg(target_arch = "wasm32")]
-static WASM_METRICS: MetricsState = MetricsState::new();
-
 /// Resolve this thread's metric state: the current runtime's `metrics` field on
 /// native, the single cooperative-runtime state on wasm.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn metrics_state() -> &'static MetricsState {
-    &crate::runtime::rt_current().metrics
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn metrics_state() -> &'static MetricsState {
-    &WASM_METRICS
+    crate::platform::executor::current_metrics()
 }
 
 /// Resolve this thread's metric state without panicking when no runtime is
@@ -200,21 +187,9 @@ fn metrics_state() -> &'static MetricsState {
 /// `self_metrics`, `session_reset_metrics`), which a host may call before a
 /// runtime exists or after teardown: with no runtime there are no per-runtime
 /// metrics to read or clear, so those callers treat `None` as "empty".
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn metrics_state_opt() -> Option<&'static MetricsState> {
-    crate::runtime::rt_current_opt().map(|rt| &rt.metrics)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature mirrors the native arm, which is genuinely fallible; the \
-              single cooperative-runtime state is always present on wasm"
-)]
-fn metrics_state_opt() -> Option<&'static MetricsState> {
-    Some(&WASM_METRICS)
+    crate::platform::executor::current_metrics_opt()
 }
 
 /// Run `f` with exclusive access to the (lazily-initialised) registry interior.

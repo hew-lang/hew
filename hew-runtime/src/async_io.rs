@@ -14,8 +14,6 @@
 
 use std::io;
 use std::ptr;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use hew_cabi::string::{string_from_str, HewString};
@@ -38,10 +36,10 @@ mod file_wasi;
 pub mod library;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
-mod offload;
-mod sink;
+pub(crate) mod offload;
+pub(crate) mod sink;
 pub use sink::hew_async_sink_finish;
-mod stdin;
+pub(crate) mod stdin;
 #[cfg(not(target_arch = "wasm32"))]
 pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,19 +79,6 @@ pub(crate) struct IoFailure {
 }
 
 impl IoFailure {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn managed(status: i32) -> Self {
-        Self {
-            kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
-            errno: libc::ENOMEM,
-            message: "stream result exceeds managed heap limit".into(),
-            trap: Some(if status == hew_cabi::managed::HEAP_EXCEEDED {
-                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
-            } else {
-                crate::internal::types::HEW_TRAP_USER_PANIC
-            }),
-        }
-    }
     pub(crate) fn from_io(operation: &str, error: &io::Error) -> Self {
         Self {
             kind: crate::stream_error::io_error_kind_tag(error.kind()),
@@ -101,34 +86,6 @@ impl IoFailure {
             // using nonzero errno, including portable errors without an OS code.
             errno: error.raw_os_error().unwrap_or(libc::EIO),
             message: format!("{operation}: {error}"),
-            trap: None,
-        }
-    }
-
-    /// The failure a blocking stream backing left in the stream error slot,
-    /// keeping its kind so a sink can classify it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_recorded() -> Option<Self> {
-        let kind = crate::stream_error::take_last_error_kind();
-        let errno = crate::stream_error::take_last_errno();
-        crate::stream_error::take_last_error().map(|message| Self {
-            kind,
-            errno: if errno == 0 { libc::EIO } else { errno },
-            message,
-            trap: None,
-        })
-    }
-
-    /// New root work that a termination request refused.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn shutting_down(operation: &str) -> Self {
-        let errno = crate::stream_error::CANCELLED_ERRNO;
-        Self {
-            kind: crate::stream_error::io_error_kind_tag(
-                io::Error::from_raw_os_error(errno).kind(),
-            ),
-            errno,
-            message: crate::shutdown::refusal_message(operation),
             trap: None,
         }
     }
@@ -144,16 +101,44 @@ impl IoFailure {
     }
 }
 
-/// An accepted socket remains owned by its operation until a successful take.
-/// Cancellation after readiness and completion after cancellation both drop it.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct AcceptedConnection(pub(crate) i32);
+impl IoFailure {
+    fn managed(status: i32) -> Self {
+        Self {
+            kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
+            errno: libc::ENOMEM,
+            message: "stream result exceeds managed heap limit".into(),
+            trap: Some(if status == hew_cabi::managed::HEAP_EXCEEDED {
+                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+            } else {
+                crate::internal::types::HEW_TRAP_USER_PANIC
+            }),
+        }
+    }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for AcceptedConnection {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            crate::transport::tcp_close_orphan_conn(self.0);
+    /// The failure a blocking stream backing left in the stream error slot,
+    /// keeping its kind so a sink can classify it.
+    pub(crate) fn take_recorded() -> Option<Self> {
+        let kind = crate::stream_error::take_last_error_kind();
+        let errno = crate::stream_error::take_last_errno();
+        crate::stream_error::take_last_error().map(|message| Self {
+            kind,
+            errno: if errno == 0 { libc::EIO } else { errno },
+            message,
+            trap: None,
+        })
+    }
+
+    /// New root work that a termination request refused.
+    pub(crate) fn shutting_down(operation: &str) -> Self {
+        let errno = crate::stream_error::CANCELLED_ERRNO;
+        Self {
+            kind: crate::stream_error::io_error_kind_tag(
+                io::Error::from_raw_os_error(errno).kind(),
+            ),
+            errno,
+            message: crate::shutdown::refusal_message(operation),
+            trap: None,
         }
     }
 }
@@ -216,75 +201,16 @@ impl State {
 pub struct HewAsyncIo {
     state: Mutex<State>,
     #[cfg(not(target_arch = "wasm32"))]
-    stream_content: Mutex<Option<content::ReadOwnership>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    sink_finish: Mutex<Option<sink::Finish>>,
-    /// The socket, action and readiness flag of a readiness operation.
-    #[cfg(not(target_arch = "wasm32"))]
-    net: Option<net::NetOp>,
+    pub(crate) native: native::NativeFields,
     cleanup: Mutex<Cleanup>,
-    #[cfg(not(target_arch = "wasm32"))]
-    socket_cancel: Option<Arc<library::SocketCancellation>>,
     #[cfg(windows)]
     file_cancel: file::FileCancellation,
-    #[cfg(not(target_arch = "wasm32"))]
-    deadline: Mutex<Option<deadline::Deadline>>,
-    /// The running pool job producing the result, told when its caller gives up.
-    #[cfg(not(target_arch = "wasm32"))]
-    detach: Mutex<Option<crate::blocking_pool::Detach>>,
 }
 
 #[derive(Default)]
 struct Cleanup {
     producers: usize,
     waker: Option<OwnedWaker>,
-}
-
-/// A producer lease covers queued work and every in-flight readiness snapshot.
-/// Its last release proves no producer can still touch borrowed resources.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct IoProducer(Arc<HewAsyncIo>);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl IoProducer {
-    pub(crate) fn new(operation: Arc<HewAsyncIo>) -> Self {
-        operation.cleanup.lock_or_recover().producers += 1;
-        Self(operation)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Clone for IoProducer {
-    fn clone(&self) -> Self {
-        Self::new(Arc::clone(&self.0))
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::ops::Deref for IoProducer {
-    type Target = HewAsyncIo;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for IoProducer {
-    fn drop(&mut self) {
-        let waker = {
-            let mut cleanup = self.cleanup.lock_or_recover();
-            cleanup.producers -= 1;
-            if cleanup.producers == 0 {
-                cleanup.waker.take()
-            } else {
-                None
-            }
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
-    }
 }
 
 impl std::fmt::Debug for HewAsyncIo {
@@ -295,32 +221,15 @@ impl std::fmt::Debug for HewAsyncIo {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HewAsyncIo {
     /// # Safety
     /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
-    #[cfg(not(target_arch = "wasm32"))]
     unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
         // SAFETY: the caller lends the descriptor through construction.
         unsafe { Self::with_net(waker, None, None) }
     }
 
-    /// # Safety
-    /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
-    #[cfg(target_arch = "wasm32")]
-    unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
-        // SAFETY: the caller lends a live descriptor for this call, or null.
-        let owned = unsafe {
-            waker
-                .as_ref()
-                .map(|waker| Arc::new(OwnedWaker::retain(waker)))
-        };
-        Arc::new(Self {
-            state: Mutex::new(State::Pending(owned)),
-            cleanup: Mutex::new(Cleanup::default()),
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::option_option,
         reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
@@ -338,13 +247,15 @@ impl HewAsyncIo {
         };
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
-            stream_content: Mutex::new(stream_owner.map(content::ReadOwnership::new)),
-            net,
-            sink_finish: Mutex::new(None),
-            socket_cancel: None,
+            native: native::NativeFields {
+                stream_content: Mutex::new(stream_owner.map(content::ReadOwnership::new)),
+                net,
+                sink_finish: Mutex::new(None),
+                socket_cancel: None,
+                deadline: Mutex::new(None),
+                detach: Mutex::new(None),
+            },
             cleanup: Mutex::new(Cleanup::default()),
-            deadline: Mutex::new(None),
-            detach: Mutex::new(None),
             #[cfg(windows)]
             file_cancel: file::FileCancellation::default(),
         })
@@ -352,9 +263,9 @@ impl HewAsyncIo {
 
     /// Record the reactor's readiness report and wake the owning task, whose
     /// next status poll performs the syscall. Runs on the reactor thread.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn signal_ready(&self) {
-        let Some(net) = &self.net else {
+        use std::sync::atomic::Ordering;
+        let Some(net) = &self.native.net else {
             return;
         };
         net.ready.store(true, Ordering::SeqCst);
@@ -371,12 +282,12 @@ impl HewAsyncIo {
     ///
     /// # Safety
     /// `operation` is a live creator-owned reference.
-    #[cfg(not(target_arch = "wasm32"))]
     unsafe fn advance_if_ready(operation: *const Self) {
+        use std::sync::atomic::Ordering;
         // SAFETY: the caller lends a live reference.
         let this = unsafe { &*operation };
         this.advance_finish();
-        let Some(net) = &this.net else {
+        let Some(net) = &this.native.net else {
             return;
         };
         if net.ready.swap(false, Ordering::SeqCst) && this.is_pending() {
@@ -390,10 +301,9 @@ impl HewAsyncIo {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn advance_finish(&self) -> bool {
         let (result, drained) = {
-            let mut finish = self.sink_finish.lock_or_recover();
+            let mut finish = self.native.sink_finish.lock_or_recover();
             let result = finish.as_mut().and_then(sink::Finish::poll);
             if result.is_some() {
                 finish.take();
@@ -409,12 +319,11 @@ impl HewAsyncIo {
     /// Register the pool job now producing this result, so a caller that
     /// gives up releases the job's thread from the pool's cap. Runs on the
     /// job's thread.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn produced_by(&self, detach: crate::blocking_pool::Detach) {
         let state = self.state.lock_or_recover();
         if matches!(*state, State::Pending(_)) {
             // Cancellation changes the state under this lock, then takes this.
-            *self.detach.lock_or_recover() = Some(detach);
+            *self.native.detach.lock_or_recover() = Some(detach);
         } else {
             drop(state);
             detach.detach();
@@ -423,16 +332,134 @@ impl HewAsyncIo {
 
     /// Whether this wait holds shutdown's drain open while it is parked: every
     /// wait except a process root's, which resumes on its own thread.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn holds_drain(&self) -> bool {
-        self.net.as_ref().is_none_or(|net| net.holds_drain)
+        self.native.net.as_ref().is_none_or(|net| net.holds_drain)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_pending(&self) -> bool {
         matches!(*self.state.lock_or_recover(), State::Pending(_))
     }
 
+    pub(crate) fn cancel_and_wake(&self) -> bool {
+        self.cancel_with_notification(true)
+    }
+
+    #[inline]
+    fn prepare_publication(
+        &self,
+        result: Result<IoValue, IoFailure>,
+    ) -> (Option<Result<IoValue, IoFailure>>, bool) {
+        self.prepare_content_publication(result)
+    }
+
+    #[inline]
+    fn finish_publication(&self, managed: bool) {
+        self.finish_content_publication(managed);
+    }
+
+    #[inline]
+    fn finish_completion_hooks(&self) {
+        self.clear_deadline();
+    }
+
+    #[inline]
+    fn forget_net_slot(&self) {
+        if let Some(net) = &self.native.net {
+            net.slot.forget(self);
+        }
+    }
+
+    fn cancel_native_hooks(&self, won: bool) {
+        self.clear_deadline();
+        if won {
+            if let Some(finish) = self.native.sink_finish.lock_or_recover().as_mut() {
+                finish.cancel();
+            }
+            if let Some(cancel) = &self.native.socket_cancel {
+                cancel.cancel();
+            }
+        }
+        self.forget_net_slot();
+        if let Some(detach) = self.native.detach.lock_or_recover().take() {
+            detach.detach();
+        }
+    }
+
+    fn finish_sink_on_cleanup(&self, ready: i32) {
+        if ready == 1 && !self.is_pending() {
+            if let Some(failure) = self.native.net.as_ref().and_then(net::NetOp::finish_sink) {
+                let mut state = self.state.lock_or_recover();
+                if matches!(*state, State::Ready(Ok(_))) {
+                    *state = State::Ready(Err(failure));
+                }
+            }
+        }
+    }
+
+    fn restore_write_committed(&self, error: &IoFailure) {
+        crate::stream_error::set_last_write_committed(
+            if error.kind == crate::stream_error::IO_ERROR_KIND_TIMED_OUT {
+                committed(self)
+            } else {
+                0
+            },
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl HewAsyncIo {
+    /// # Safety
+    /// A non-null descriptor obeys the shared `HewWaker` lifetime contract.
+    unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
+        // SAFETY: the caller lends a live descriptor for this call, or null.
+        let owned = unsafe {
+            waker
+                .as_ref()
+                .map(|waker| Arc::new(OwnedWaker::retain(waker)))
+        };
+        Arc::new(Self {
+            state: Mutex::new(State::Pending(owned)),
+            cleanup: Mutex::new(Cleanup::default()),
+        })
+    }
+
+    #[inline]
+    fn prepare_publication(
+        &self,
+        result: Result<IoValue, IoFailure>,
+    ) -> (Option<Result<IoValue, IoFailure>>, bool) {
+        (Some(result), false)
+    }
+
+    #[inline]
+    fn finish_publication(&self, _managed: bool) {}
+
+    #[inline]
+    fn finish_completion_hooks(&self) {}
+
+    #[inline]
+    fn forget_net_slot(&self) {}
+
+    #[inline]
+    unsafe fn advance_if_ready(_operation: *const Self) {}
+
+    #[inline]
+    fn advance_finish(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn cancel_native_hooks(&self, _won: bool) {}
+
+    #[inline]
+    fn finish_sink_on_cleanup(&self, _ready: i32) {}
+
+    #[inline]
+    fn restore_write_committed(&self, _error: &IoFailure) {}
+}
+
+impl HewAsyncIo {
     pub(crate) fn complete(&self, result: Result<IoValue, IoFailure>) {
         let result = match result {
             Ok(IoValue::Bytes(bytes)) if u32::try_from(bytes.len()).is_err() => {
@@ -443,10 +470,7 @@ impl HewAsyncIo {
             }
             other => other,
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let (result, managed_publication) = self.prepare_content_publication(result);
-        #[cfg(target_arch = "wasm32")]
-        let result = Some(result);
+        let (result, managed_publication) = self.prepare_publication(result);
         let (waker, discarded) = {
             let mut state = self.state.lock_or_recover();
             match (matches!(*state, State::Pending(_)), result) {
@@ -465,28 +489,18 @@ impl HewAsyncIo {
             }
         };
         drop(discarded);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.finish_content_publication(managed_publication);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.clear_deadline();
+        self.finish_publication(managed_publication);
+        self.finish_completion_hooks();
         if let Some(waker) = waker {
             waker.wake();
         }
         // Withdraw after the wake, so shutdown's idle probe never sees neither
         // a waiter nor a runnable task.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(net) = &self.net {
-            net.slot.forget(self);
-        }
+        self.forget_net_slot();
     }
 
     fn cancel(&self) -> bool {
         self.cancel_with_notification(false)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn cancel_and_wake(&self) -> bool {
-        self.cancel_with_notification(true)
     }
 
     fn cancel_with_notification(&self, notify: bool) -> bool {
@@ -503,24 +517,7 @@ impl HewAsyncIo {
             }
         };
         drop(discarded);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.clear_deadline();
-            if won {
-                if let Some(finish) = self.sink_finish.lock_or_recover().as_mut() {
-                    finish.cancel();
-                }
-                if let Some(cancel) = &self.socket_cancel {
-                    cancel.cancel();
-                }
-            }
-            if let Some(net) = &self.net {
-                net.slot.forget(self);
-            }
-            if let Some(detach) = self.detach.lock_or_recover().take() {
-                detach.detach();
-            }
-        }
+        self.cancel_native_hooks(won);
         #[cfg(windows)]
         if won {
             self.file_cancel.cancel();
@@ -561,7 +558,6 @@ pub unsafe extern "C" fn hew_async_io_status(operation: *const HewAsyncIo) -> i3
     }
     // SAFETY: validity is the caller's contract.
     unsafe {
-        #[cfg(not(target_arch = "wasm32"))]
         HewAsyncIo::advance_if_ready(operation);
         (*operation).state.lock_or_recover().status() as i32
     }
@@ -586,7 +582,6 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
     let Some(operation) = (unsafe { operation.as_ref() }) else {
         return 1;
     };
-    #[cfg(not(target_arch = "wasm32"))]
     if !operation.advance_finish() {
         return 0;
     }
@@ -604,15 +599,7 @@ pub unsafe extern "C" fn hew_async_io_cleanup_status(
         }
     };
     drop(previous);
-    #[cfg(not(target_arch = "wasm32"))]
-    if ready == 1 && !operation.is_pending() {
-        if let Some(failure) = operation.net.as_ref().and_then(net::NetOp::finish_sink) {
-            let mut state = operation.state.lock_or_recover();
-            if matches!(*state, State::Ready(Ok(_))) {
-                *state = State::Ready(Err(failure));
-            }
-        }
-    }
+    operation.finish_sink_on_cleanup(ready);
     #[cfg(windows)]
     if ready == 0
         && matches!(*operation.state.lock_or_recover(), State::Cancelled)
@@ -707,218 +694,293 @@ pub unsafe extern "C" fn hew_async_io_take_bytes(
 /// status: 1 with an item, 2 at end of stream, 3 on failure, 0 while pending.
 /// A wait the shutdown sweep cancelled, or one refused because shutdown closed
 /// listener admission, ends the stream.
-///
-/// # Safety
-/// `operation` is the live result of an accept or readable submission.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn take_watch_item(
-    operation: *const HewAsyncIo,
-    item: impl FnOnce(IoValue) -> Option<Vec<u8>>,
-) -> (i32, Option<Vec<u8>>) {
-    if operation.is_null() {
-        return (3, None);
-    }
-    // SAFETY: the caller lends a live operation reference.
-    unsafe { HewAsyncIo::advance_if_ready(operation) };
-    // SAFETY: as above.
-    let operation = unsafe { &*operation };
-    let mut state = operation.state.lock_or_recover();
-    match &*state {
-        State::Pending(_) => return (0, None),
-        State::Cancelled => return (2, None),
-        State::Ready(Err(failure)) if failure.errno == crate::stream_error::CANCELLED_ERRNO => {
-            return (2, None)
-        }
-        State::Ready(Ok(_)) => {}
-        _ => return (3, None),
-    }
-    let State::Ready(Ok(value)) = std::mem::replace(&mut *state, State::Taken) else {
-        unreachable!("checked under the same lock");
-    };
-    match item(value) {
-        Some(item) => (1, Some(item)),
-        None => (3, None),
-    }
-}
+mod native {
+    use std::sync::{Arc, Mutex};
 
-/// Take an accepted connection as a `size`-byte handle item; the stream's
-/// consumer becomes its owner.
-///
-/// # Safety
-/// `operation` is the live result of an accept submission.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn take_accepted_item(
-    operation: *const HewAsyncIo,
-    size: usize,
-) -> (i32, Option<Vec<u8>>) {
-    // SAFETY: forwards the caller's contract.
-    unsafe {
-        take_watch_item(operation, |value| {
-            let IoValue::Connection(mut connection) = value else {
-                return None;
+    use super::{content, deadline, library, net, sink, HewAsyncIo, IoValue, State};
+    use crate::util::MutexExt;
+
+    pub(crate) struct NativeFields {
+        pub(super) stream_content: Mutex<Option<content::ReadOwnership>>,
+        pub(crate) sink_finish: Mutex<Option<sink::Finish>>,
+        /// The socket, action and readiness flag of a readiness operation.
+        pub(super) net: Option<net::NetOp>,
+        pub(super) socket_cancel: Option<Arc<library::SocketCancellation>>,
+        pub(super) deadline: Mutex<Option<deadline::Deadline>>,
+        /// The running pool job producing the result, told when its caller gives up.
+        pub(super) detach: Mutex<Option<crate::blocking_pool::Detach>>,
+    }
+
+    /// An accepted socket remains owned by its operation until a successful take.
+    /// Cancellation after readiness and completion after cancellation both drop it.
+    pub(crate) struct AcceptedConnection(pub(crate) i32);
+
+    impl Drop for AcceptedConnection {
+        fn drop(&mut self) {
+            if self.0 >= 0 {
+                crate::transport::tcp_close_orphan_conn(self.0);
+            }
+        }
+    }
+
+    /// A producer lease covers queued work and every in-flight readiness snapshot.
+    /// Its last release proves no producer can still touch borrowed resources.
+    pub(crate) struct IoProducer(Arc<HewAsyncIo>);
+
+    impl IoProducer {
+        pub(crate) fn new(operation: Arc<HewAsyncIo>) -> Self {
+            operation.cleanup.lock_or_recover().producers += 1;
+            Self(operation)
+        }
+    }
+
+    impl Clone for IoProducer {
+        fn clone(&self) -> Self {
+            Self::new(Arc::clone(&self.0))
+        }
+    }
+
+    impl std::ops::Deref for IoProducer {
+        type Target = HewAsyncIo;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for IoProducer {
+        fn drop(&mut self) {
+            let waker = {
+                let mut cleanup = self.cleanup.lock_or_recover();
+                cleanup.producers -= 1;
+                if cleanup.producers == 0 {
+                    cleanup.waker.take()
+                } else {
+                    None
+                }
             };
-            Some(connection_item(
-                std::mem::replace(&mut connection.0, -1),
-                size,
-            ))
-        })
-    }
-}
-
-/// A connection handle as a `size`-byte item: the slot image of the
-/// receiver's `Connection`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn connection_item(handle: i32, size: usize) -> Vec<u8> {
-    match size {
-        4 => handle.to_ne_bytes().to_vec(),
-        _ => i64::from(handle).to_ne_bytes().to_vec(),
-    }
-}
-
-/// Take a completed readiness wait as one `()` item.
-///
-/// # Safety
-/// `operation` is the live result of a readable submission.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn take_readiness_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
-    // SAFETY: forwards the caller's contract.
-    unsafe {
-        take_watch_item(operation, |value| {
-            matches!(value, IoValue::Count(_)).then(Vec::new)
-        })
-    }
-}
-
-/// Take one content-backed stream result without conflating an empty item
-/// with EOF. The operation retains an untaken result through cancellation.
-///
-/// # Safety
-/// `operation` is the live result of a stream-read submission.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
-    if operation.is_null() {
-        return (3, None);
-    }
-    // SAFETY: the caller lends a live operation reference.
-    unsafe { HewAsyncIo::advance_if_ready(operation) };
-    // SAFETY: as above.
-    let operation = unsafe { &*operation };
-    let mut state = operation.state.lock_or_recover();
-    if matches!(*state, State::Pending(_)) {
-        return (0, None);
-    }
-    if !matches!(
-        *state,
-        State::Ready(Ok(IoValue::StreamItem(_) | IoValue::Bytes(_)))
-    ) {
-        return (3, None);
-    }
-    let item = match std::mem::replace(&mut *state, State::Taken) {
-        State::Ready(Ok(IoValue::StreamItem(item))) => item,
-        State::Ready(Ok(IoValue::Bytes(bytes))) => (!bytes.is_empty()).then_some(bytes),
-        _ => unreachable!(),
-    };
-    (if item.is_some() { 1 } else { 2 }, item)
-}
-
-/// Move one already-accounted content result to its native read operation.
-/// # Safety
-/// The operation is a retained typed stream read and the caller excludes concurrent takes.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn take_managed_stream_item(
-    operation: *const HewAsyncIo,
-) -> (i32, Option<Arc<content::Content>>) {
-    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
-    unsafe { HewAsyncIo::advance_if_ready(operation) };
-    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
-    let operation = unsafe { &*operation };
-    let mut state = operation.state.lock_or_recover();
-    if matches!(*state, State::Pending(_) | State::Unpublished { .. }) {
-        return (0, None);
-    }
-    if !matches!(*state, State::Ready(Ok(IoValue::ManagedStreamItem(_)))) {
-        return (3, None);
-    }
-    let State::Ready(Ok(IoValue::ManagedStreamItem(item))) =
-        std::mem::replace(&mut *state, State::Taken)
-    else {
-        unreachable!()
-    };
-    (if item.is_some() { 1 } else { 2 }, item)
-}
-
-/// Retain the authored fault category of a failed managed result publication.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn failure_trap(operation: *const HewAsyncIo) -> Option<i32> {
-    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
-    let operation = unsafe { &*operation };
-    match &*operation.state.lock_or_recover() {
-        State::Ready(Err(failure)) => failure.trap,
-        _ => None,
-    }
-}
-
-/// The diagnostic a failed operation carries, for the caller's trap report.
-///
-/// # Safety
-/// `operation` is null or a live operation reference.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<String> {
-    // SAFETY: the caller lends a live operation reference, or null.
-    let operation = unsafe { operation.as_ref() }?;
-    match &*operation.state.lock_or_recover() {
-        State::Ready(Err(failure)) => Some(failure.message.clone()),
-        State::Cancelled => Some(operation.net.as_ref().map_or_else(
-            || "I/O wait cancelled".to_string(),
-            |net| format!("wait on {} cancelled", net.slot.describe()),
-        )),
-        _ => None,
-    }
-}
-
-/// How a failed socket write ended.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WriteFailure {
-    /// The peer reset or closed the connection.
-    Closed,
-    /// The write deadline passed; this many bytes of the item reached the OS.
-    TimedOut(i64),
-    /// Any other failure, which traps.
-    Other,
-}
-
-/// Classify a failed write operation for its sink's typed result.
-///
-/// # Safety
-/// `operation` is a live operation reference whose status is `Error`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn write_failure(operation: *const HewAsyncIo) -> WriteFailure {
-    // SAFETY: the caller lends a live operation reference.
-    let operation = unsafe { &*operation };
-    let state = operation.state.lock_or_recover();
-    let State::Ready(Err(failure)) = &*state else {
-        return WriteFailure::Other;
-    };
-    match failure.kind {
-        crate::stream_error::IO_ERROR_KIND_CONNECTION_CLOSED => WriteFailure::Closed,
-        crate::stream_error::IO_ERROR_KIND_TIMED_OUT => {
-            WriteFailure::TimedOut(committed(operation))
+            if let Some(waker) = waker {
+                waker.wake();
+            }
         }
-        _ => WriteFailure::Other,
+    }
+
+    /// Poll a readiness operation and take a non-stream item if ready.
+    ///
+    /// # Safety
+    /// `operation` is the live result of an accept or readable submission.
+    unsafe fn take_watch_item(
+        operation: *const HewAsyncIo,
+        item: impl FnOnce(IoValue) -> Option<Vec<u8>>,
+    ) -> (i32, Option<Vec<u8>>) {
+        if operation.is_null() {
+            return (3, None);
+        }
+        // SAFETY: the caller lends a live operation reference.
+        unsafe { HewAsyncIo::advance_if_ready(operation) };
+        // SAFETY: as above.
+        let operation = unsafe { &*operation };
+        let mut state = operation.state.lock_or_recover();
+        match &*state {
+            State::Pending(_) => return (0, None),
+            State::Cancelled => return (2, None),
+            State::Ready(Err(failure)) if failure.errno == crate::stream_error::CANCELLED_ERRNO => {
+                return (2, None)
+            }
+            State::Ready(Ok(_)) => {}
+            _ => return (3, None),
+        }
+        let State::Ready(Ok(value)) = std::mem::replace(&mut *state, State::Taken) else {
+            unreachable!("checked under the same lock");
+        };
+        match item(value) {
+            Some(item) => (1, Some(item)),
+            None => (3, None),
+        }
+    }
+
+    /// Take an accepted connection as a `size`-byte handle item; the stream's
+    /// consumer becomes its owner.
+    ///
+    /// # Safety
+    /// `operation` is the live result of an accept submission.
+    pub(crate) unsafe fn take_accepted_item(
+        operation: *const HewAsyncIo,
+        size: usize,
+    ) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: forwards the caller's contract.
+        unsafe {
+            take_watch_item(operation, |value| {
+                let IoValue::Connection(mut connection) = value else {
+                    return None;
+                };
+                Some(connection_item(
+                    std::mem::replace(&mut connection.0, -1),
+                    size,
+                ))
+            })
+        }
+    }
+
+    /// A connection handle as a `size`-byte item: the slot image of the
+    /// receiver's `Connection`.
+    pub(crate) fn connection_item(handle: i32, size: usize) -> Vec<u8> {
+        match size {
+            4 => handle.to_ne_bytes().to_vec(),
+            _ => i64::from(handle).to_ne_bytes().to_vec(),
+        }
+    }
+
+    /// Take a completed readiness wait as one `()` item.
+    ///
+    /// # Safety
+    /// `operation` is the live result of a readable submission.
+    pub(crate) unsafe fn take_readiness_item(
+        operation: *const HewAsyncIo,
+    ) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: forwards the caller's contract.
+        unsafe {
+            take_watch_item(operation, |value| {
+                matches!(value, IoValue::Count(_)).then(Vec::new)
+            })
+        }
+    }
+
+    /// Take one content-backed stream result without conflating an empty item
+    /// with EOF. The operation retains an untaken result through cancellation.
+    ///
+    /// # Safety
+    /// `operation` is the live result of a stream-read submission.
+    pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Option<Vec<u8>>) {
+        if operation.is_null() {
+            return (3, None);
+        }
+        // SAFETY: the caller lends a live operation reference.
+        unsafe { HewAsyncIo::advance_if_ready(operation) };
+        // SAFETY: as above.
+        let operation = unsafe { &*operation };
+        let mut state = operation.state.lock_or_recover();
+        if matches!(*state, State::Pending(_)) {
+            return (0, None);
+        }
+        if !matches!(
+            *state,
+            State::Ready(Ok(IoValue::StreamItem(_) | IoValue::Bytes(_)))
+        ) {
+            return (3, None);
+        }
+        let item = match std::mem::replace(&mut *state, State::Taken) {
+            State::Ready(Ok(IoValue::StreamItem(item))) => item,
+            State::Ready(Ok(IoValue::Bytes(bytes))) => (!bytes.is_empty()).then_some(bytes),
+            _ => unreachable!(),
+        };
+        (if item.is_some() { 1 } else { 2 }, item)
+    }
+
+    /// Move one already-accounted content result to its native read operation.
+    /// # Safety
+    /// The operation is a retained typed stream read and the caller excludes concurrent takes.
+    pub(crate) unsafe fn take_managed_stream_item(
+        operation: *const HewAsyncIo,
+    ) -> (i32, Option<Arc<content::Content>>) {
+        // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
+        unsafe { HewAsyncIo::advance_if_ready(operation) };
+        // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
+        let operation = unsafe { &*operation };
+        let mut state = operation.state.lock_or_recover();
+        if matches!(*state, State::Pending(_) | State::Unpublished { .. }) {
+            return (0, None);
+        }
+        if !matches!(*state, State::Ready(Ok(IoValue::ManagedStreamItem(_)))) {
+            return (3, None);
+        }
+        let State::Ready(Ok(IoValue::ManagedStreamItem(item))) =
+            std::mem::replace(&mut *state, State::Taken)
+        else {
+            unreachable!()
+        };
+        (if item.is_some() { 1 } else { 2 }, item)
+    }
+
+    /// Retain the authored fault category of a failed managed result publication.
+    pub(crate) unsafe fn failure_trap(operation: *const HewAsyncIo) -> Option<i32> {
+        // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
+        let operation = unsafe { &*operation };
+        match &*operation.state.lock_or_recover() {
+            State::Ready(Err(failure)) => failure.trap,
+            _ => None,
+        }
+    }
+
+    /// The diagnostic a failed operation carries, for the caller's trap report.
+    ///
+    /// # Safety
+    /// `operation` is null or a live operation reference.
+    pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<String> {
+        // SAFETY: the caller lends a live operation reference, or null.
+        let operation = unsafe { operation.as_ref() }?;
+        match &*operation.state.lock_or_recover() {
+            State::Ready(Err(failure)) => Some(failure.message.clone()),
+            State::Cancelled => Some(operation.native.net.as_ref().map_or_else(
+                || "I/O wait cancelled".to_string(),
+                |net| format!("wait on {} cancelled", net.slot.describe()),
+            )),
+            _ => None,
+        }
+    }
+
+    /// How a failed socket write ended.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum WriteFailure {
+        /// The peer reset or closed the connection.
+        Closed,
+        /// The write deadline passed; this many bytes of the item reached the OS.
+        TimedOut(i64),
+        /// Any other failure, which traps.
+        Other,
+    }
+
+    /// Classify a failed write operation for its sink's typed result.
+    ///
+    /// # Safety
+    /// `operation` is a live operation reference whose status is `Error`.
+    pub(crate) unsafe fn write_failure(operation: *const HewAsyncIo) -> WriteFailure {
+        // SAFETY: the caller lends a live operation reference.
+        let operation = unsafe { &*operation };
+        let state = operation.state.lock_or_recover();
+        let State::Ready(Err(failure)) = &*state else {
+            return WriteFailure::Other;
+        };
+        match failure.kind {
+            crate::stream_error::IO_ERROR_KIND_CONNECTION_CLOSED => WriteFailure::Closed,
+            crate::stream_error::IO_ERROR_KIND_TIMED_OUT => {
+                WriteFailure::TimedOut(committed(operation))
+            }
+            _ => WriteFailure::Other,
+        }
+    }
+
+    /// Bytes of a write's item that reached the OS, or 0 for any other operation.
+    pub(super) fn committed(operation: &HewAsyncIo) -> i64 {
+        let written = operation
+            .native
+            .net
+            .as_ref()
+            .and_then(net::NetOp::written)
+            .unwrap_or(0);
+        i64::try_from(written).unwrap_or(i64::MAX)
     }
 }
 
-/// Bytes of a write's item that reached the OS, or 0 for any other operation.
 #[cfg(not(target_arch = "wasm32"))]
-fn committed(operation: &HewAsyncIo) -> i64 {
-    let written = operation
-        .net
-        .as_ref()
-        .and_then(net::NetOp::written)
-        .unwrap_or(0);
-    i64::try_from(written).unwrap_or(i64::MAX)
-}
+use native::committed;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::{
+    connection_item, failure_message, failure_trap, take_accepted_item, take_managed_stream_item,
+    take_readiness_item, take_stream_item, write_failure, AcceptedConnection, IoProducer,
+    WriteFailure,
+};
 
 /// Transfer a count from a completed write. The output is untouched on failure.
 ///
@@ -1049,14 +1111,7 @@ pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo
     let state = operation.state.lock_or_recover();
     match &*state {
         State::Ready(Err(error)) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::stream_error::set_last_write_committed(
-                if error.kind == crate::stream_error::IO_ERROR_KIND_TIMED_OUT {
-                    committed(operation)
-                } else {
-                    0
-                },
-            );
+            operation.restore_write_committed(error);
             crate::stream_error::set_last_error_with_errno_and_kind(
                 error.message.clone(),
                 error.errno,

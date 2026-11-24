@@ -45,15 +45,9 @@ use hew_cabi::string::{
     string_as_bytes, string_as_str, string_from_utf8, string_release, HewString,
 };
 use std::collections::VecDeque;
-#[cfg(not(target_arch = "wasm32"))]
-use std::ffi::c_int;
 use std::ffi::c_void;
 use std::fs;
-#[cfg(all(not(target_arch = "wasm32"), any(windows, test)))]
-use std::io::Write;
 use std::io::{BufReader, Read};
-#[cfg(not(target_arch = "wasm32"))]
-use std::net::TcpStream;
 use std::ptr;
 use std::sync::Arc;
 
@@ -65,8 +59,6 @@ pub use crate::stream_error::{
     hew_stream_has_error, hew_stream_last_error, io_error_kind_tag, set_last_error,
     set_last_error_with_errno, set_last_error_with_errno_and_kind, take_last_error,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use hew_cabi::sink::into_nonblocking_sink_ptr;
 pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink, TrySendResult};
 
 // hew_stream_last_error / hew_stream_last_errno are defined in crate::stream_error
@@ -106,14 +98,11 @@ type Item = Vec<u8>;
 /// How `select` observes a content stream without taking an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectReadiness {
-    /// The next read never waits indefinitely: a regular file or an in-memory
-    /// stream.
+    /// The next read never waits indefinitely: a regular file, an in-memory
+    /// stream, or a native reactor-managed handle that arms a readiness watch.
     Ready,
     /// Drive the existing checked producer until it publishes an owned yield.
     Generator,
-    /// Ready when the reactor handle signals its selected direction.
-    #[cfg(not(target_arch = "wasm32"))]
-    Reactor(i32),
     /// This stream cannot report readiness without taking an item; the reason
     /// a selection over it refuses.
     Unsupported(&'static str),
@@ -160,6 +149,21 @@ trait StreamBacking: Send + std::fmt::Debug {
     /// How a selection observes this backing; see [`SelectReadiness`].
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Unsupported("select cannot observe this stream yet")
+    }
+
+    /// Arm any reactor watch required to observe readiness of this backing.
+    ///
+    /// # Safety
+    /// When the backing arms a reactor watch, `waker` must remain a live
+    /// borrowed wake descriptor until the returned watch is released.
+    unsafe fn arm_select_readiness(
+        &self,
+        _waker: *const crate::wake::HewWaker,
+    ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+        match self.select_readiness() {
+            SelectReadiness::Ready | SelectReadiness::Generator => Ok(ptr::null()),
+            SelectReadiness::Unsupported(reason) => Err(reason),
+        }
     }
 
     /// Return the next item, or `None` on EOF. Blocks until an item is available.
@@ -262,6 +266,24 @@ impl HewStream {
             SelectReadiness::Ready
         } else {
             self.inner.select_readiness()
+        }
+    }
+
+    /// Arm any reactor watch required to observe readiness of this content
+    /// stream without taking an item.
+    ///
+    /// # Safety
+    /// When the backing arms a reactor watch, `waker` must remain a live
+    /// borrowed wake descriptor until the returned watch is released.
+    pub(crate) unsafe fn arm_select_readiness(
+        &self,
+        waker: *const crate::wake::HewWaker,
+    ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+        if self.exhausted() {
+            Ok(ptr::null())
+        } else {
+            // SAFETY: forwarded from caller contract.
+            unsafe { self.inner.arm_select_readiness(waker) }
         }
     }
 
@@ -443,116 +465,6 @@ impl StreamBacking for FileReadStream {
     }
 }
 
-// ── TCP read backing ──────────────────────────────────────────────────────────
-//
-// A `StreamBacking` that reads from a cloned `TcpStream` handle.  Created
-// exclusively by `hew_tcp_stream_from_conn` — never directly by user code.
-//
-// Thread-safety: the struct is `Send` (TcpStream is Send). It is NOT `Sync`;
-// at most one reader exists at any point.
-//
-// Blocking behaviour: `next` blocks until data arrives, the peer closes,
-// or the OS returns an error.  If the caller wants a deadline, they call
-// `conn.set_read_timeout(ms)` on the `Connection` before calling
-// `into_stream_sink` — the timeout is inherited by the clone.
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct TcpStreamBacking {
-    connection: i32,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl TcpStreamBacking {
-    fn new(stream: TcpStream) -> Self {
-        Self {
-            connection: crate::transport::tcp_register_owned_stream(stream),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for TcpStreamBacking {
-    fn drop(&mut self) {
-        crate::transport::tcp_release_conn(self.connection);
-    }
-}
-
-/// TCP read backing size, matching `hew_tcp_read`'s buffer (transport.rs:1216).
-#[cfg(not(target_arch = "wasm32"))]
-const TCP_BACKING_BUF_SIZE: usize = 8192;
-
-#[cfg(not(target_arch = "wasm32"))]
-impl StreamBacking for TcpStreamBacking {
-    fn native_read(&self) -> Option<NativeRead> {
-        Some(NativeRead::Content(self.connection))
-    }
-
-    fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Reactor(self.connection)
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        if crate::runtime::rt_current_opt().is_some() {
-            return native::blocking_tcp_read(self.connection);
-        }
-        let mut stream = crate::transport::tcp_clone_stream(self.connection)?;
-        let mut buf = [0u8; TCP_BACKING_BUF_SIZE];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => {
-                    // Peer closed the connection — clean EOF.
-                    return None;
-                }
-                Ok(n) => return Some(buf[..n].to_vec()),
-                Err(e) => {
-                    // Record the error kind in the transport counters.
-                    crate::transport::record_tcp_error_kind(e.kind());
-
-                    if e.kind() == std::io::ErrorKind::Interrupted {
-                        // POSIX EINTR: the read was interrupted by a signal.
-                        // Retry immediately — EINTR is fully recoverable and
-                        // must not be surfaced as a stream error or pause.
-                    } else {
-                        // EAGAIN / EWOULDBLOCK: socket is non-blocking or a
-                        // read timeout fired with no data available.  Set a
-                        // distinct errno so callers can call
-                        // hew_stream_last_errno() to distinguish this pause
-                        // from clean EOF (where errno stays 0).
-                        // WouldBlock maps to EAGAIN; TimedOut to ETIMEDOUT.
-                        // Persistent errors use the raw OS errno.
-                        let (msg, raw) = match e.kind() {
-                            std::io::ErrorKind::WouldBlock => {
-                                (format!("TCP read would block: {e}"), libc::EAGAIN)
-                            }
-                            std::io::ErrorKind::TimedOut => {
-                                (format!("TCP read timed out: {e}"), libc::ETIMEDOUT)
-                            }
-                            _ => (
-                                format!("TCP read error: {e}"),
-                                e.raw_os_error().unwrap_or(0),
-                            ),
-                        };
-                        set_last_error_with_errno(msg, raw);
-                        return None;
-                    }
-                }
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        // Dropping this backing releases its transport entry and socket clone.
-        // Closing the readable half does not shut down the paired write half.
-    }
-
-    fn is_closed(&self) -> bool {
-        // TCP streams can't know they're at EOF without attempting a read.
-        // This matches FileReadStream's posture.
-        false
-    }
-}
-
 // ── Vec backing (drain) ────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -720,616 +632,776 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tcp_sink_write_pending(backing: &mut TcpStreamBacking, data: &[u8]) -> bool {
-    native::blocking_tcp_write(backing.connection, data);
-    !hew_stream_has_error()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn try_write_handle(handle: i32, data: &[u8]) -> std::io::Result<usize> {
-    let slot = crate::reactor::lookup(handle)
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
-    slot.ensure_nonblocking()?;
-    let channel = slot
-        .bytes()
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
-    let count = channel.write(data)?;
-    if channel.is_tcp() {
-        crate::transport::count_written(count);
-    }
-    Ok(count)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tcp_sink_try_write(backing: &mut TcpStreamBacking, data: &[u8]) -> std::io::Result<usize> {
-    try_write_handle(backing.connection, data)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tcp_sink_flush(_backing: &mut TcpStreamBacking) {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tcp_sink_close(backing: &mut TcpStreamBacking) {
-    if let Some(stream) = crate::transport::tcp_clone_stream(backing.connection) {
-        if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
-            // A reset peer can retire the TCP connection before its sink is
-            // released. There is then no connected write half left to finish.
-            if error.kind() != std::io::ErrorKind::NotConnected {
-                set_last_error(format!("TCP sink shutdown failed: {error}"));
-            }
-        }
-    }
-}
-
-// ── Child process pipes ──────────────────────────────────────────────────────
-//
-// The parent's end of a child's stdin, stdout or stderr pipe. On Unix it is a
-// reactor slot like a socket: reads and writes wait on readiness, and a read
-// end is a select source. Windows output pipes retain one bounded overlapped
-// read in the reactor; stdin writes use the blocking pool.
-
-/// A pipe end or child exit watch registered on the reactor. Dropping it
-/// closes the descriptor once no operation still holds the slot.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct ReactorPipe {
-    handle: c_int,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl ReactorPipe {
-    fn new(object: crate::reactor::IoObject) -> Self {
-        Self {
-            handle: crate::reactor::register(object),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for ReactorPipe {
-    fn drop(&mut self) {
-        drop(crate::reactor::unregister(self.handle));
-    }
-}
-
-/// Child pipes are created by a running Hew program; their synchronous
-/// entries wait on the reactor through the runtime.
-#[cfg(not(target_arch = "wasm32"))]
-fn pipe_without_runtime() -> bool {
-    if crate::runtime::rt_current_opt().is_some() {
-        return false;
-    }
-    set_last_error("child process pipe I/O requires a running Hew runtime".into());
-    true
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl StreamBacking for ReactorPipe {
-    fn native_read(&self) -> Option<NativeRead> {
-        Some(NativeRead::Content(self.handle))
-    }
-
-    fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Reactor(self.handle)
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        if pipe_without_runtime() {
-            return None;
-        }
-        native::blocking_tcp_read(self.handle)
-    }
-
-    fn close(&mut self) {
-        drop(crate::reactor::unregister(self.handle));
-    }
-
-    fn is_closed(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(unix)]
-fn reactor_pipe_write_pending(pipe: &mut ReactorPipe, data: &[u8]) -> bool {
-    native::blocking_tcp_write(pipe.handle, data);
-    !hew_stream_has_error()
-}
-
-#[cfg(unix)]
-fn reactor_pipe_try_write(pipe: &mut ReactorPipe, data: &[u8]) -> std::io::Result<usize> {
-    try_write_handle(pipe.handle, data)
-}
-
-#[cfg(unix)]
-fn reactor_pipe_flush(_pipe: &mut ReactorPipe) {}
-
-/// Finishing the sink closes the descriptor so the child reads end of input,
-/// even while an abandoned operation still holds the slot.
-#[cfg(unix)]
-fn reactor_pipe_close(pipe: &mut ReactorPipe) {
-    drop(crate::reactor::unregister(pipe.handle));
-}
-
-/// A pipe end read or written by blocking calls on the blocking pool.
-#[cfg(windows)]
-#[derive(Debug)]
-struct BlockingPipe {
-    pipe: Option<fs::File>,
-    mode_error: Option<std::io::Error>,
-}
-
-#[cfg(windows)]
-fn record_pipe_error(operation: &str, error: &std::io::Error) {
-    set_last_error_with_errno_and_kind(
-        format!("{operation}: {error}"),
-        error.raw_os_error().unwrap_or(libc::EIO),
-        io_error_kind_tag(error.kind()),
-    );
-}
-
-#[cfg(windows)]
-fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
-    if let Some(error) = &pipe.mode_error {
-        record_pipe_error("restore child process pipe wait mode", error);
-        return;
-    }
-    let Some(file) = pipe.pipe.as_mut() else {
-        record_pipe_error(
-            "write child process pipe",
-            &std::io::Error::from(std::io::ErrorKind::BrokenPipe),
-        );
-        return;
+mod native_backings {
+    use super::{
+        hew_stream_has_error, into_stream_ptr, native, set_last_error, set_last_error_with_errno,
+        ChannelStream, HewStream, HewStreamPair, Item, NativeRead, SelectReadiness, StreamBacking,
+        VecStream,
     };
-    let mut remaining = data;
-    while !remaining.is_empty() {
-        match file.write(remaining) {
-            Ok(0) => {
-                record_pipe_error(
-                    "write child process pipe",
-                    &std::io::ErrorKind::WriteZero.into(),
-                );
-                return;
-            }
-            Ok(count) => remaining = &remaining[count..],
-            Err(error) => {
-                record_pipe_error("write child process pipe", &error);
-                return;
+    #[cfg(windows)]
+    use super::{io_error_kind_tag, set_last_error_with_errno_and_kind};
+    pub(super) use hew_cabi::sink::into_nonblocking_sink_ptr;
+    use std::collections::VecDeque;
+    use std::ffi::c_int;
+    #[cfg(windows)]
+    use std::ffi::c_void;
+    use std::fs;
+    use std::io::Read;
+    #[cfg(windows)]
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::ptr;
+    use std::sync::Arc;
+
+    // ── TCP read backing ──────────────────────────────────────────────────────
+    //
+    // A `StreamBacking` that reads from a cloned `TcpStream` handle. Created
+    // exclusively by `hew_tcp_stream_from_conn` — never directly by user code.
+    //
+    // Thread-safety: the struct is `Send` (TcpStream is Send). It is NOT `Sync`;
+    // at most one reader exists at any point.
+    //
+    // Blocking behaviour: `next` blocks until data arrives, the peer closes,
+    // or the OS returns an error. If the caller wants a deadline, they call
+    // `conn.set_read_timeout(ms)` on the `Connection` before calling
+    // `into_stream_sink` — the timeout is inherited by the clone.
+
+    #[derive(Debug)]
+    pub(super) struct TcpStreamBacking {
+        pub(super) connection: i32,
+    }
+
+    impl TcpStreamBacking {
+        pub(super) fn new(stream: TcpStream) -> Self {
+            Self {
+                connection: crate::transport::tcp_register_owned_stream(stream),
             }
         }
     }
-}
 
-#[cfg(windows)]
-fn blocking_pipe_write_pending(pipe: &mut BlockingPipe, data: &[u8]) -> bool {
-    blocking_pipe_write(pipe, data);
-    !hew_stream_has_error()
-}
+    impl Drop for TcpStreamBacking {
+        fn drop(&mut self) {
+            crate::transport::tcp_release_conn(self.connection);
+        }
+    }
 
-#[cfg(windows)]
-fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Result<usize> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
-    use windows_sys::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
-    if let Some(error) = &pipe.mode_error {
-        return Err(error.raw_os_error().map_or_else(
-            || std::io::Error::new(error.kind(), error.to_string()),
-            std::io::Error::from_raw_os_error,
-        ));
-    }
-    let file = pipe
-        .pipe
-        .as_mut()
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
-    let handle = file.as_raw_handle();
-    // SAFETY: this exclusive loan owns the pipe's write handle and mode.
-    if unsafe { SetNamedPipeHandleState(handle, &PIPE_NOWAIT, ptr::null(), ptr::null()) } == 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(
-            if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) {
-                std::io::ErrorKind::WouldBlock.into()
-            } else {
-                error
-            },
-        );
-    }
-    let mut attempt = data.len();
-    let result = loop {
-        match file.write(&data[..attempt]) {
-            Ok(0) if attempt > 1 => attempt /= 2,
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) => {
-                if attempt > 1 {
-                    attempt /= 2;
-                } else {
-                    break Err(std::io::ErrorKind::WouldBlock.into());
+    /// TCP read backing size, matching `hew_tcp_read`'s buffer (transport.rs:1216).
+    const TCP_BACKING_BUF_SIZE: usize = 8192;
+
+    impl StreamBacking for TcpStreamBacking {
+        fn native_read(&self) -> Option<NativeRead> {
+            Some(NativeRead::Content(self.connection))
+        }
+
+        fn select_readiness(&self) -> SelectReadiness {
+            SelectReadiness::Ready
+        }
+
+        unsafe fn arm_select_readiness(
+            &self,
+            waker: *const crate::wake::HewWaker,
+        ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+            // SAFETY: `self.connection` is retained by this stream backing and
+            // `waker` is borrowed live for the returned watch lifetime.
+            Ok(unsafe { crate::async_io::start_readiness_watch(self.connection, waker) })
+        }
+
+        fn next(&mut self) -> Option<Item> {
+            if crate::runtime::rt_current_opt().is_some() {
+                return native::blocking_tcp_read(self.connection);
+            }
+            let mut stream = crate::transport::tcp_clone_stream(self.connection)?;
+            let mut buf = [0u8; TCP_BACKING_BUF_SIZE];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => {
+                        // Peer closed the connection — clean EOF.
+                        return None;
+                    }
+                    Ok(n) => return Some(buf[..n].to_vec()),
+                    Err(e) => {
+                        // Record the error kind in the transport counters.
+                        crate::transport::record_tcp_error_kind(e.kind());
+
+                        if e.kind() == std::io::ErrorKind::Interrupted {
+                            // POSIX EINTR: the read was interrupted by a signal.
+                            // Retry immediately — EINTR is fully recoverable and
+                            // must not be surfaced as a stream error or pause.
+                        } else {
+                            // EAGAIN / EWOULDBLOCK: socket is non-blocking or a
+                            // read timeout fired with no data available. Set a
+                            // distinct errno so callers can call
+                            // hew_stream_last_errno() to distinguish this pause
+                            // from clean EOF (where errno stays 0).
+                            // WouldBlock maps to EAGAIN; TimedOut to ETIMEDOUT.
+                            // Persistent errors use the raw OS errno.
+                            let (msg, raw) = match e.kind() {
+                                std::io::ErrorKind::WouldBlock => {
+                                    (format!("TCP read would block: {e}"), libc::EAGAIN)
+                                }
+                                std::io::ErrorKind::TimedOut => {
+                                    (format!("TCP read timed out: {e}"), libc::ETIMEDOUT)
+                                }
+                                _ => (
+                                    format!("TCP read error: {e}"),
+                                    e.raw_os_error().unwrap_or(0),
+                                ),
+                            };
+                            set_last_error_with_errno(msg, raw);
+                            return None;
+                        }
+                    }
                 }
             }
-            result => break result,
         }
-    };
-    // SAFETY: restore the ordinary write contract before releasing the loan.
-    if unsafe { SetNamedPipeHandleState(handle, &PIPE_WAIT, ptr::null(), ptr::null()) } == 0 {
-        let error = std::io::Error::last_os_error();
-        let errno = error.raw_os_error();
-        pipe.mode_error = Some(error);
-        if !matches!(result, Ok(count) if count > 0) {
-            return Err(errno.map_or_else(
-                || std::io::Error::other("failed to restore child process pipe wait mode"),
+
+        fn close(&mut self) {
+            // Dropping this backing releases its transport entry and socket clone.
+            // Closing the readable half does not shut down the paired write half.
+        }
+
+        fn is_closed(&self) -> bool {
+            // TCP streams can't know they're at EOF without attempting a read.
+            // This matches FileReadStream's posture.
+            false
+        }
+    }
+
+    pub(super) fn tcp_sink_write_pending(backing: &mut TcpStreamBacking, data: &[u8]) -> bool {
+        native::blocking_tcp_write(backing.connection, data);
+        !hew_stream_has_error()
+    }
+
+    fn try_write_handle(handle: i32, data: &[u8]) -> std::io::Result<usize> {
+        let slot = crate::reactor::lookup(handle)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
+        slot.ensure_nonblocking()?;
+        let channel = slot
+            .bytes()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))?;
+        let count = channel.write(data)?;
+        if channel.is_tcp() {
+            crate::transport::count_written(count);
+        }
+        Ok(count)
+    }
+
+    pub(super) fn tcp_sink_try_write(
+        backing: &mut TcpStreamBacking,
+        data: &[u8],
+    ) -> std::io::Result<usize> {
+        try_write_handle(backing.connection, data)
+    }
+
+    pub(super) fn tcp_sink_flush(_backing: &mut TcpStreamBacking) {}
+
+    pub(super) fn tcp_sink_close(backing: &mut TcpStreamBacking) {
+        if let Some(stream) = crate::transport::tcp_clone_stream(backing.connection) {
+            if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
+                // A reset peer can retire the TCP connection before its sink is
+                // released. There is then no connected write half left to finish.
+                if error.kind() != std::io::ErrorKind::NotConnected {
+                    set_last_error(format!("TCP sink shutdown failed: {error}"));
+                }
+            }
+        }
+    }
+
+    // ── Child process pipes ──────────────────────────────────────────────────
+    //
+    // The parent's end of a child's stdin, stdout or stderr pipe. On Unix it is a
+    // reactor slot like a socket: reads and writes wait on readiness, and a read
+    // end is a select source. Windows output pipes retain one bounded overlapped
+    // read in the reactor; stdin writes use the blocking pool.
+
+    /// A pipe end or child exit watch registered on the reactor. Dropping it
+    /// closes the descriptor once no operation still holds the slot.
+    #[derive(Debug)]
+    struct ReactorPipe {
+        handle: c_int,
+    }
+
+    impl ReactorPipe {
+        fn new(object: crate::reactor::IoObject) -> Self {
+            Self {
+                handle: crate::reactor::register(object),
+            }
+        }
+    }
+
+    impl Drop for ReactorPipe {
+        fn drop(&mut self) {
+            drop(crate::reactor::unregister(self.handle));
+        }
+    }
+
+    /// Child pipes are created by a running Hew program; their synchronous
+    /// entries wait on the reactor through the runtime.
+    fn pipe_without_runtime() -> bool {
+        if crate::runtime::rt_current_opt().is_some() {
+            return false;
+        }
+        set_last_error("child process pipe I/O requires a running Hew runtime".into());
+        true
+    }
+
+    impl StreamBacking for ReactorPipe {
+        fn native_read(&self) -> Option<NativeRead> {
+            Some(NativeRead::Content(self.handle))
+        }
+
+        fn select_readiness(&self) -> SelectReadiness {
+            SelectReadiness::Ready
+        }
+
+        unsafe fn arm_select_readiness(
+            &self,
+            waker: *const crate::wake::HewWaker,
+        ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+            // SAFETY: `self.handle` is retained by this stream backing and
+            // `waker` is borrowed live for the returned watch lifetime.
+            Ok(unsafe { crate::async_io::start_readiness_watch(self.handle, waker) })
+        }
+
+        fn next(&mut self) -> Option<Item> {
+            if pipe_without_runtime() {
+                return None;
+            }
+            native::blocking_tcp_read(self.handle)
+        }
+
+        fn close(&mut self) {
+            drop(crate::reactor::unregister(self.handle));
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    #[cfg(unix)]
+    fn reactor_pipe_write_pending(pipe: &mut ReactorPipe, data: &[u8]) -> bool {
+        native::blocking_tcp_write(pipe.handle, data);
+        !hew_stream_has_error()
+    }
+
+    #[cfg(unix)]
+    fn reactor_pipe_try_write(pipe: &mut ReactorPipe, data: &[u8]) -> std::io::Result<usize> {
+        try_write_handle(pipe.handle, data)
+    }
+
+    #[cfg(unix)]
+    fn reactor_pipe_flush(_pipe: &mut ReactorPipe) {}
+
+    /// Finishing the sink closes the descriptor so the child reads end of input,
+    /// even while an abandoned operation still holds the slot.
+    #[cfg(unix)]
+    fn reactor_pipe_close(pipe: &mut ReactorPipe) {
+        drop(crate::reactor::unregister(pipe.handle));
+    }
+
+    /// A pipe end read or written by blocking calls on the blocking pool.
+    #[cfg(windows)]
+    #[derive(Debug)]
+    struct BlockingPipe {
+        pipe: Option<fs::File>,
+        mode_error: Option<std::io::Error>,
+    }
+
+    #[cfg(windows)]
+    fn record_pipe_error(operation: &str, error: &std::io::Error) {
+        set_last_error_with_errno_and_kind(
+            format!("{operation}: {error}"),
+            error.raw_os_error().unwrap_or(libc::EIO),
+            io_error_kind_tag(error.kind()),
+        );
+    }
+
+    #[cfg(windows)]
+    fn blocking_pipe_write(pipe: &mut BlockingPipe, data: &[u8]) {
+        if let Some(error) = &pipe.mode_error {
+            record_pipe_error("restore child process pipe wait mode", error);
+            return;
+        }
+        let Some(file) = pipe.pipe.as_mut() else {
+            record_pipe_error(
+                "write child process pipe",
+                &std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+            );
+            return;
+        };
+        let mut remaining = data;
+        while !remaining.is_empty() {
+            match file.write(remaining) {
+                Ok(0) => {
+                    record_pipe_error(
+                        "write child process pipe",
+                        &std::io::ErrorKind::WriteZero.into(),
+                    );
+                    return;
+                }
+                Ok(count) => remaining = &remaining[count..],
+                Err(error) => {
+                    record_pipe_error("write child process pipe", &error);
+                    return;
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn blocking_pipe_write_pending(pipe: &mut BlockingPipe, data: &[u8]) -> bool {
+        blocking_pipe_write(pipe, data);
+        !hew_stream_has_error()
+    }
+
+    #[cfg(windows)]
+    fn blocking_pipe_try_write(pipe: &mut BlockingPipe, data: &[u8]) -> std::io::Result<usize> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+        use windows_sys::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_WAIT};
+        if let Some(error) = &pipe.mode_error {
+            return Err(error.raw_os_error().map_or_else(
+                || std::io::Error::new(error.kind(), error.to_string()),
                 std::io::Error::from_raw_os_error,
             ));
         }
-    }
-    result
-}
-
-#[cfg(windows)]
-fn blocking_pipe_flush(_pipe: &mut BlockingPipe) {}
-
-#[cfg(windows)]
-fn blocking_pipe_close(pipe: &mut BlockingPipe) {
-    if let Some(error) = &pipe.mode_error {
-        record_pipe_error("restore child process pipe wait mode", error);
-    }
-    pipe.pipe = None;
-}
-
-/// Give the parent's read end of a child pipe a `Stream<bytes>` owner.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
-    #[cfg(unix)]
-    let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
-    #[cfg(windows)]
-    let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(
-        crate::process::windows_pipe::WindowsPipe::new(pipe),
-    )));
-    Box::into_raw(Box::new(HewStreamPair {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        sink: ptr::null_mut(),
-        stream,
-    }))
-}
-
-/// Give the parent's write end of a child pipe a `Sink<bytes>` owner.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
-    #[cfg(unix)]
-    let sink = {
-        let backing = ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe));
-        let handle = backing.handle;
-        let sink = into_nonblocking_sink_ptr(
-            backing,
-            reactor_pipe_write_pending,
-            reactor_pipe_try_write,
-            reactor_pipe_flush,
-            reactor_pipe_close,
-        );
-        // SAFETY: the new sink backing owns this handle until close or drop.
-        unsafe { (*sink).set_native_connection(handle) };
-        sink
-    };
-    #[cfg(windows)]
-    let sink = {
-        use std::os::windows::io::AsRawHandle;
-        let handle = pipe.as_raw_handle() as usize;
-        let sink = into_nonblocking_sink_ptr(
-            BlockingPipe {
-                pipe: Some(pipe),
-                mode_error: None,
-            },
-            blocking_pipe_write_pending,
-            blocking_pipe_try_write,
-            blocking_pipe_flush,
-            blocking_pipe_close,
-        );
-        // SAFETY: the new backing owns this pipe identity until close.
-        unsafe { (*sink).set_native_pipe_handle(handle) };
-        sink
-    };
-    Box::into_raw(Box::new(HewStreamPair {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        sink,
-        stream: ptr::null_mut(),
-    }))
-}
-
-/// A stream with no items that ends once a child process exits: reading it
-/// is how `Child.wait` parks. On Unix it waits on the reactor like a pipe.
-#[cfg(unix)]
-pub(crate) fn child_exit_stream(watch: crate::process::ExitWatch) -> *mut HewStreamPair {
-    stream_only(into_stream_ptr(ReactorPipe::new(
-        crate::reactor::IoObject::ChildExit(watch),
-    )))
-}
-
-/// A stream with no items that ends once the process behind `process` exits.
-/// The system thread pool's wait reports the exit by finishing the stream's
-/// queue, so a reader parks on the queue and holds no thread.
-#[cfg(windows)]
-pub(crate) fn child_exit_stream(
-    process: std::os::windows::io::OwnedHandle,
-) -> std::io::Result<*mut HewStreamPair> {
-    let backing = ExitWait::register(process)?;
-    let core = Arc::clone(&backing.core);
-    let stream = into_stream_ptr(backing);
-    // SAFETY: stream was just allocated by into_stream_ptr.
-    unsafe { (*stream).channel = Some(core) };
-    Ok(stream_only(stream))
-}
-
-/// A listener's accepted connections, one per receive. The stream owns the
-/// listener and closes it when the stream closes. A receive after shutdown
-/// closes listener admission is the end of the stream.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct IncomingConnections {
-    listener: i32,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for IncomingConnections {
-    fn drop(&mut self) {
-        let _ = crate::transport::hew_tcp_listener_close(self.listener);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl StreamBacking for IncomingConnections {
-    fn native_read(&self) -> Option<NativeRead> {
-        Some(NativeRead::Accept(self.listener))
-    }
-
-    fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Reactor(self.listener)
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        set_last_error("a listener's incoming stream is received natively".into());
-        None
-    }
-
-    /// Accept a connection already waiting, without waiting for one.
-    fn try_next(&mut self, layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        let slot = crate::reactor::lookup(self.listener)?;
-        match crate::async_io::accept_now(&slot) {
-            Ok(Some(connection)) => Some(crate::async_io::connection_item(connection, layout.size)),
-            Ok(None) => None,
-            Err(error) => {
-                set_last_error(format!("accept TCP connection: {error}"));
-                None
+        let file = pipe
+            .pipe
+            .as_mut()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        let handle = file.as_raw_handle();
+        // SAFETY: this exclusive loan owns the pipe's write handle and mode.
+        if unsafe { SetNamedPipeHandleState(handle, &PIPE_NOWAIT, ptr::null(), ptr::null()) } == 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(
+                if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) {
+                    std::io::ErrorKind::WouldBlock.into()
+                } else {
+                    error
+                },
+            );
+        }
+        let mut attempt = data.len();
+        let result = loop {
+            match file.write(&data[..attempt]) {
+                Ok(0) if attempt > 1 => attempt /= 2,
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed()) => {
+                    if attempt > 1 {
+                        attempt /= 2;
+                    } else {
+                        break Err(std::io::ErrorKind::WouldBlock.into());
+                    }
+                }
+                result => break result,
+            }
+        };
+        // SAFETY: restore the ordinary write contract before releasing the loan.
+        if unsafe { SetNamedPipeHandleState(handle, &PIPE_WAIT, ptr::null(), ptr::null()) } == 0 {
+            let error = std::io::Error::last_os_error();
+            let errno = error.raw_os_error();
+            pipe.mode_error = Some(error);
+            if !matches!(result, Ok(count) if count > 0) {
+                return Err(errno.map_or_else(
+                    || std::io::Error::other("failed to restore child process pipe wait mode"),
+                    std::io::Error::from_raw_os_error,
+                ));
             }
         }
+        result
     }
 
-    fn close(&mut self) {}
+    #[cfg(windows)]
+    fn blocking_pipe_flush(_pipe: &mut BlockingPipe) {}
 
-    fn is_closed(&self) -> bool {
-        false
-    }
-}
-
-/// Give a listener's accepted connections a `Stream<Connection>` owner.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn incoming_stream(listener: i32) -> *mut HewStreamPair {
-    stream_only(into_stream_ptr(IncomingConnections { listener }))
-}
-
-/// Readiness of a descriptor the program owns: each receive waits until a
-/// read or write can make progress and yields `()`. The stream watches its own
-/// duplicate of the descriptor and closes only that, so the program's
-/// descriptor may close first and other watches of it stay independent.
-#[cfg(unix)]
-#[derive(Debug)]
-struct DescriptorReadiness {
-    handle: c_int,
-}
-
-#[cfg(unix)]
-impl Drop for DescriptorReadiness {
-    fn drop(&mut self) {
-        drop(crate::reactor::unregister(self.handle));
-    }
-}
-
-#[cfg(unix)]
-impl StreamBacking for DescriptorReadiness {
-    fn native_read(&self) -> Option<NativeRead> {
-        Some(NativeRead::Readiness(self.handle))
-    }
-
-    fn select_readiness(&self) -> SelectReadiness {
-        SelectReadiness::Reactor(self.handle)
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        set_last_error("a descriptor readiness stream is received natively".into());
-        None
-    }
-
-    /// `()` when the selected direction would not wait now.
-    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        crate::reactor::lookup(self.handle)
-            .is_some_and(|slot| slot.watch_ready())
-            .then(Vec::new)
-    }
-
-    fn close(&mut self) {}
-
-    fn is_closed(&self) -> bool {
-        false
-    }
-}
-
-/// Own one close-on-exec duplicate for the lifetime of this readiness stream.
-#[cfg(unix)]
-pub(crate) fn readiness_stream(
-    fd: std::os::fd::OwnedFd,
-    direction: crate::reactor::Direction,
-) -> *mut HewStreamPair {
-    stream_only(into_stream_ptr(DescriptorReadiness {
-        handle: crate::reactor::register(crate::reactor::IoObject::Foreign(fd, direction)),
-    }))
-}
-
-/// One `os.shutdown_signal()` subscription: a queue the signal dispatcher
-/// feeds with `()` requests. Closing it withdraws the subscription.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct ShutdownSignal {
-    core: Arc<crate::channel_core::ChannelCore>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl StreamBacking for ShutdownSignal {
-    fn next(&mut self) -> Option<Item> {
-        self.core.blocking_recv()
-    }
-
-    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        self.core.try_recv()
-    }
-
-    fn close(&mut self) {
-        crate::shutdown_signal::unsubscribe(&self.core);
-        self.core.close_stream();
-    }
-
-    fn is_closed(&self) -> bool {
-        false
-    }
-}
-
-/// Give a shutdown-signal subscription its `Stream<()>` owner.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn shutdown_signal_stream(
-    core: Arc<crate::channel_core::ChannelCore>,
-) -> *mut HewStreamPair {
-    let stream = into_stream_ptr(ShutdownSignal {
-        core: Arc::clone(&core),
-    });
-    // SAFETY: stream was just allocated by into_stream_ptr.
-    unsafe { (*stream).channel = Some(core) };
-    stream_only(stream)
-}
-
-/// Give an externally owned channel producer its ordinary readable stream.
-/// The caller owns the producer end and must finish it to publish EOF.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn notification_stream(
-    core: Arc<crate::channel_core::ChannelCore>,
-) -> *mut HewStreamPair {
-    let stream = into_stream_ptr(ChannelStream {
-        core: Arc::clone(&core),
-    });
-    // SAFETY: the fresh stream owns this same channel's unique consumer.
-    unsafe { (*stream).channel = Some(core) };
-    stream_only(stream)
-}
-
-/// A stream that has already ended: the child was reaped before the wait.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn ended_stream() -> *mut HewStreamPair {
-    stream_only(into_stream_ptr(VecStream {
-        items: VecDeque::new(),
-    }))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn stream_only(stream: *mut HewStream) -> *mut HewStreamPair {
-    Box::into_raw(Box::new(HewStreamPair {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        sink: ptr::null_mut(),
-        stream,
-    }))
-}
-
-/// A registered wait for one process handle. Its callback finishes the
-/// stream's queue; dropping it withdraws the wait, waiting out a callback
-/// already running, before the handle closes.
-#[cfg(windows)]
-#[derive(Debug)]
-struct ExitWait {
-    core: Arc<crate::channel_core::ChannelCore>,
-    /// The registration; the callback's context is one `core` reference.
-    wait: windows_sys::Win32::Foundation::HANDLE,
-    _process: std::os::windows::io::OwnedHandle,
-}
-
-// SAFETY: the wait handle is used only to unregister it, from any thread.
-#[cfg(windows)]
-unsafe impl Send for ExitWait {}
-
-#[cfg(windows)]
-unsafe extern "system" fn exit_wait_fired(context: *mut c_void, _timed_out: bool) {
-    // SAFETY: the registration holds this core reference until unregistered.
-    unsafe { &*context.cast::<crate::channel_core::ChannelCore>() }.close_sink();
-}
-
-#[cfg(windows)]
-impl ExitWait {
-    fn register(process: std::os::windows::io::OwnedHandle) -> std::io::Result<Self> {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::Threading::{
-            RegisterWaitForSingleObject, INFINITE, WT_EXECUTEONLYONCE,
-        };
-        let core = Arc::new(crate::channel_core::ChannelCore::new(1));
-        let context = Arc::into_raw(Arc::clone(&core));
-        let mut wait = ptr::null_mut();
-        // SAFETY: the process handle and the context outlive the
-        // registration, which `Drop` withdraws before releasing either.
-        let registered = unsafe {
-            RegisterWaitForSingleObject(
-                &raw mut wait,
-                process.as_raw_handle(),
-                Some(exit_wait_fired),
-                context.cast(),
-                INFINITE,
-                WT_EXECUTEONLYONCE,
-            )
-        };
-        if registered == 0 {
-            let error = std::io::Error::last_os_error();
-            // SAFETY: the failed registration did not take the context.
-            drop(unsafe { Arc::from_raw(context) });
-            return Err(error);
+    #[cfg(windows)]
+    fn blocking_pipe_close(pipe: &mut BlockingPipe) {
+        if let Some(error) = &pipe.mode_error {
+            record_pipe_error("restore child process pipe wait mode", error);
         }
-        Ok(Self {
-            core,
-            wait,
-            _process: process,
-        })
+        pipe.pipe = None;
+    }
+
+    /// Give the parent's read end of a child pipe a `Stream<bytes>` owner.
+    pub(crate) fn child_pipe_stream(pipe: fs::File) -> *mut HewStreamPair {
+        #[cfg(unix)]
+        let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe)));
+        #[cfg(windows)]
+        let stream = into_stream_ptr(ReactorPipe::new(crate::reactor::IoObject::Pipe(
+            crate::process::windows_pipe::WindowsPipe::new(pipe),
+        )));
+        Box::into_raw(Box::new(HewStreamPair {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            sink: ptr::null_mut(),
+            stream,
+        }))
+    }
+
+    /// Give the parent's write end of a child pipe a `Sink<bytes>` owner.
+    pub(crate) fn child_pipe_sink(pipe: fs::File) -> *mut HewStreamPair {
+        #[cfg(unix)]
+        let sink = {
+            let backing = ReactorPipe::new(crate::reactor::IoObject::Pipe(pipe));
+            let handle = backing.handle;
+            let sink = into_nonblocking_sink_ptr(
+                backing,
+                reactor_pipe_write_pending,
+                reactor_pipe_try_write,
+                reactor_pipe_flush,
+                reactor_pipe_close,
+            );
+            // SAFETY: the new sink backing owns this handle until close or drop.
+            unsafe { (*sink).set_native_connection(handle) };
+            sink
+        };
+        #[cfg(windows)]
+        let sink = {
+            use std::os::windows::io::AsRawHandle;
+            let handle = pipe.as_raw_handle() as usize;
+            let sink = into_nonblocking_sink_ptr(
+                BlockingPipe {
+                    pipe: Some(pipe),
+                    mode_error: None,
+                },
+                blocking_pipe_write_pending,
+                blocking_pipe_try_write,
+                blocking_pipe_flush,
+                blocking_pipe_close,
+            );
+            // SAFETY: the new backing owns this pipe identity until close.
+            unsafe { (*sink).set_native_pipe_handle(handle) };
+            sink
+        };
+        Box::into_raw(Box::new(HewStreamPair {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            sink,
+            stream: ptr::null_mut(),
+        }))
+    }
+
+    /// A stream with no items that ends once a child process exits: reading it
+    /// is how `Child.wait` parks. On Unix it waits on the reactor like a pipe.
+    #[cfg(unix)]
+    pub(crate) fn child_exit_stream(watch: crate::process::ExitWatch) -> *mut HewStreamPair {
+        stream_only(into_stream_ptr(ReactorPipe::new(
+            crate::reactor::IoObject::ChildExit(watch),
+        )))
+    }
+
+    /// A stream with no items that ends once the process behind `process` exits.
+    /// The system thread pool's wait reports the exit by finishing the stream's
+    /// queue, so a reader parks on the queue and holds no thread.
+    #[cfg(windows)]
+    pub(crate) fn child_exit_stream(
+        process: std::os::windows::io::OwnedHandle,
+    ) -> std::io::Result<*mut HewStreamPair> {
+        let backing = ExitWait::register(process)?;
+        let core = Arc::clone(&backing.core);
+        let stream = into_stream_ptr(backing);
+        // SAFETY: stream was just allocated by into_stream_ptr.
+        unsafe { (*stream).channel = Some(core) };
+        Ok(stream_only(stream))
+    }
+
+    /// A listener's accepted connections, one per receive. The stream owns the
+    /// listener and closes it when the stream closes. A receive after shutdown
+    /// closes listener admission is the end of the stream.
+    #[derive(Debug)]
+    struct IncomingConnections {
+        listener: i32,
+    }
+
+    impl Drop for IncomingConnections {
+        fn drop(&mut self) {
+            let _ = crate::transport::hew_tcp_listener_close(self.listener);
+        }
+    }
+
+    impl StreamBacking for IncomingConnections {
+        fn native_read(&self) -> Option<NativeRead> {
+            Some(NativeRead::Accept(self.listener))
+        }
+
+        fn select_readiness(&self) -> SelectReadiness {
+            SelectReadiness::Ready
+        }
+
+        unsafe fn arm_select_readiness(
+            &self,
+            waker: *const crate::wake::HewWaker,
+        ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+            // SAFETY: `self.listener` is retained by this stream backing and
+            // `waker` is borrowed live for the returned watch lifetime.
+            Ok(unsafe { crate::async_io::start_readiness_watch(self.listener, waker) })
+        }
+
+        fn next(&mut self) -> Option<Item> {
+            set_last_error("a listener's incoming stream is received natively".into());
+            None
+        }
+
+        /// Accept a connection already waiting, without waiting for one.
+        fn try_next(&mut self, layout: &crate::vec::HewValueLayout) -> Option<Item> {
+            let slot = crate::reactor::lookup(self.listener)?;
+            match crate::async_io::accept_now(&slot) {
+                Ok(Some(connection)) => {
+                    Some(crate::async_io::connection_item(connection, layout.size))
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    set_last_error(format!("accept TCP connection: {error}"));
+                    None
+                }
+            }
+        }
+
+        fn close(&mut self) {}
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    /// Give a listener's accepted connections a `Stream<Connection>` owner.
+    pub(crate) fn incoming_stream(listener: i32) -> *mut HewStreamPair {
+        stream_only(into_stream_ptr(IncomingConnections { listener }))
+    }
+
+    /// Readiness of a descriptor the program owns: each receive waits until a
+    /// read or write can make progress and yields `()`. The stream watches its own
+    /// duplicate of the descriptor and closes only that, so the program's
+    /// descriptor may close first and other watches of it stay independent.
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct DescriptorReadiness {
+        handle: c_int,
+    }
+
+    #[cfg(unix)]
+    impl Drop for DescriptorReadiness {
+        fn drop(&mut self) {
+            drop(crate::reactor::unregister(self.handle));
+        }
+    }
+
+    #[cfg(unix)]
+    impl StreamBacking for DescriptorReadiness {
+        fn native_read(&self) -> Option<NativeRead> {
+            Some(NativeRead::Readiness(self.handle))
+        }
+
+        fn select_readiness(&self) -> SelectReadiness {
+            SelectReadiness::Ready
+        }
+
+        unsafe fn arm_select_readiness(
+            &self,
+            waker: *const crate::wake::HewWaker,
+        ) -> Result<*const crate::async_io::HewAsyncIo, &'static str> {
+            // SAFETY: `self.handle` is retained by this stream backing and
+            // `waker` is borrowed live for the returned watch lifetime.
+            Ok(unsafe { crate::async_io::start_readiness_watch(self.handle, waker) })
+        }
+
+        fn next(&mut self) -> Option<Item> {
+            set_last_error("a descriptor readiness stream is received natively".into());
+            None
+        }
+
+        /// `()` when the selected direction would not wait now.
+        fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
+            crate::reactor::lookup(self.handle)
+                .is_some_and(|slot| slot.watch_ready())
+                .then(Vec::new)
+        }
+
+        fn close(&mut self) {}
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    /// Own one close-on-exec duplicate for the lifetime of this readiness stream.
+    #[cfg(unix)]
+    pub(crate) fn readiness_stream(
+        fd: std::os::fd::OwnedFd,
+        direction: crate::reactor::Direction,
+    ) -> *mut HewStreamPair {
+        stream_only(into_stream_ptr(DescriptorReadiness {
+            handle: crate::reactor::register(crate::reactor::IoObject::Foreign(fd, direction)),
+        }))
+    }
+
+    /// One `os.shutdown_signal()` subscription: a queue the signal dispatcher
+    /// feeds with `()` requests. Closing it withdraws the subscription.
+    #[derive(Debug)]
+    struct ShutdownSignal {
+        core: Arc<crate::channel_core::ChannelCore>,
+    }
+
+    impl StreamBacking for ShutdownSignal {
+        fn next(&mut self) -> Option<Item> {
+            self.core.blocking_recv()
+        }
+
+        fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
+            self.core.try_recv()
+        }
+
+        fn close(&mut self) {
+            crate::shutdown_signal::unsubscribe(&self.core);
+            self.core.close_stream();
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    /// Give a shutdown-signal subscription its `Stream<()>` owner.
+    pub(crate) fn shutdown_signal_stream(
+        core: Arc<crate::channel_core::ChannelCore>,
+    ) -> *mut HewStreamPair {
+        let stream = into_stream_ptr(ShutdownSignal {
+            core: Arc::clone(&core),
+        });
+        // SAFETY: stream was just allocated by into_stream_ptr.
+        unsafe { (*stream).channel = Some(core) };
+        stream_only(stream)
+    }
+
+    /// Give an externally owned channel producer its ordinary readable stream.
+    /// The caller owns the producer end and must finish it to publish EOF.
+    pub(crate) fn notification_stream(
+        core: Arc<crate::channel_core::ChannelCore>,
+    ) -> *mut HewStreamPair {
+        let stream = into_stream_ptr(ChannelStream {
+            core: Arc::clone(&core),
+        });
+        // SAFETY: the fresh stream owns this same channel's unique consumer.
+        unsafe { (*stream).channel = Some(core) };
+        stream_only(stream)
+    }
+
+    /// A stream that has already ended: the child was reaped before the wait.
+    pub(crate) fn ended_stream() -> *mut HewStreamPair {
+        stream_only(into_stream_ptr(VecStream {
+            items: VecDeque::new(),
+        }))
+    }
+
+    fn stream_only(stream: *mut HewStream) -> *mut HewStreamPair {
+        Box::into_raw(Box::new(HewStreamPair {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            sink: ptr::null_mut(),
+            stream,
+        }))
+    }
+
+    /// A registered wait for one process handle. Its callback finishes the
+    /// stream's queue; dropping it withdraws the wait, waiting out a callback
+    /// already running, before the handle closes.
+    #[cfg(windows)]
+    #[derive(Debug)]
+    struct ExitWait {
+        core: Arc<crate::channel_core::ChannelCore>,
+        /// The registration; the callback's context is one `core` reference.
+        wait: windows_sys::Win32::Foundation::HANDLE,
+        _process: std::os::windows::io::OwnedHandle,
+    }
+
+    // SAFETY: the wait handle is used only to unregister it, from any thread.
+    #[cfg(windows)]
+    unsafe impl Send for ExitWait {}
+
+    #[cfg(windows)]
+    unsafe extern "system" fn exit_wait_fired(context: *mut c_void, _timed_out: bool) {
+        // SAFETY: the registration holds this core reference until unregistered.
+        unsafe { &*context.cast::<crate::channel_core::ChannelCore>() }.close_sink();
+    }
+
+    #[cfg(windows)]
+    impl ExitWait {
+        fn register(process: std::os::windows::io::OwnedHandle) -> std::io::Result<Self> {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Threading::{
+                RegisterWaitForSingleObject, INFINITE, WT_EXECUTEONLYONCE,
+            };
+            let core = Arc::new(crate::channel_core::ChannelCore::new(1));
+            let context = Arc::into_raw(Arc::clone(&core));
+            let mut wait = ptr::null_mut();
+            // SAFETY: the process handle and the context outlive the
+            // registration, which `Drop` withdraws before releasing either.
+            let registered = unsafe {
+                RegisterWaitForSingleObject(
+                    &raw mut wait,
+                    process.as_raw_handle(),
+                    Some(exit_wait_fired),
+                    context.cast(),
+                    INFINITE,
+                    WT_EXECUTEONLYONCE,
+                )
+            };
+            if registered == 0 {
+                let error = std::io::Error::last_os_error();
+                // SAFETY: the failed registration did not take the context.
+                drop(unsafe { Arc::from_raw(context) });
+                return Err(error);
+            }
+            Ok(Self {
+                core,
+                wait,
+                _process: process,
+            })
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for ExitWait {
+        fn drop(&mut self) {
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            use windows_sys::Win32::System::Threading::UnregisterWaitEx;
+            // SAFETY: the registration is live; INVALID_HANDLE_VALUE waits for a
+            // running callback, so none can touch the context afterwards.
+            unsafe { UnregisterWaitEx(self.wait, INVALID_HANDLE_VALUE) };
+            // SAFETY: the registration's context reference, now unused.
+            drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.core)) });
+        }
+    }
+
+    #[cfg(windows)]
+    impl StreamBacking for ExitWait {
+        fn next(&mut self) -> Option<Item> {
+            self.core.blocking_recv()
+        }
+
+        fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
+            self.core.try_recv()
+        }
+
+        fn close(&mut self) {
+            self.core.close_stream();
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
     }
 }
 
-#[cfg(windows)]
-impl Drop for ExitWait {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-        use windows_sys::Win32::System::Threading::UnregisterWaitEx;
-        // SAFETY: the registration is live; INVALID_HANDLE_VALUE waits for a
-        // running callback, so none can touch the context afterwards.
-        unsafe { UnregisterWaitEx(self.wait, INVALID_HANDLE_VALUE) };
-        // SAFETY: the registration's context reference, now unused.
-        drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.core)) });
-    }
-}
-
-#[cfg(windows)]
-impl StreamBacking for ExitWait {
-    fn next(&mut self) -> Option<Item> {
-        self.core.blocking_recv()
-    }
-
-    fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        self.core.try_recv()
-    }
-
-    fn close(&mut self) {
-        self.core.close_stream();
-    }
-
-    fn is_closed(&self) -> bool {
-        false
-    }
-}
+#[cfg(unix)]
+pub(crate) use native_backings::readiness_stream;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native_backings::{
+    child_exit_stream, child_pipe_sink, child_pipe_stream, ended_stream, incoming_stream,
+    notification_stream, shutdown_signal_stream,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use native_backings::{
+    into_nonblocking_sink_ptr, tcp_sink_close, tcp_sink_flush, tcp_sink_try_write,
+    tcp_sink_write_pending, TcpStreamBacking,
+};
 
 /// Bridge a live TCP connection into a `(Stream<bytes>, Sink<bytes>)` pair.
 ///
@@ -1366,7 +1438,7 @@ impl StreamBacking for ExitWait {
 /// resolves at link time, but every call returns `null` without side-effects.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStreamPair {
+pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: std::ffi::c_int) -> *mut HewStreamPair {
     use crate::transport::{
         tcp_clone_stream_outcome, tcp_full_close_conn, tcp_release_conn, CloneOutcome,
     };
@@ -3974,288 +4046,285 @@ mod tests {
         }
     }
 
-    // ── TcpStreamBacking unit tests ──────────────────────────────────────
-
-    #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    fn tcp_stream_backing_reads_bytes_until_peer_closes() {
+    mod native_tests {
+        use super::*;
         use std::io::Write;
-        use std::net::{TcpListener, TcpStream};
 
-        // Bind on OS-assigned port to avoid conflicts in parallel test runs.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
+        // ── TcpStreamBacking unit tests ──────────────────────────────────
 
-        let payload = b"hello from peer";
+        #[test]
+        fn tcp_stream_backing_reads_bytes_until_peer_closes() {
+            use std::net::{TcpListener, TcpStream};
 
-        // Peer thread: write payload then close.
-        let t = std::thread::spawn(move || {
-            let mut peer = TcpStream::connect(addr).unwrap();
-            peer.write_all(payload).unwrap();
-            // peer drops here, closing the connection (EOF to the reader).
-        });
+            // Bind on OS-assigned port to avoid conflicts in parallel test runs.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
 
-        let (accepted, _) = listener.accept().unwrap();
-        let mut backing = TcpStreamBacking::new(accepted);
+            let payload = b"hello from peer";
 
-        // Read all items until EOF.
-        let mut collected = Vec::new();
-        while let Some(chunk) = backing.next() {
-            collected.extend_from_slice(&chunk);
-        }
+            // Peer thread: write payload then close.
+            let t = std::thread::spawn(move || {
+                let mut peer = TcpStream::connect(addr).unwrap();
+                peer.write_all(payload).unwrap();
+                // peer drops here, closing the connection (EOF to the reader).
+            });
 
-        t.join().unwrap();
+            let (accepted, _) = listener.accept().unwrap();
+            let mut backing = TcpStreamBacking::new(accepted);
 
-        assert_eq!(collected, payload);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn tcp_stream_backing_records_error_on_reset() {
-        use std::net::{TcpListener, TcpStream};
-        #[cfg(unix)]
-        use std::os::unix::io::AsRawFd;
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        // The peer must not reset until the listener has accepted the
-        // connection. On the BSDs a RST that arrives before `accept()` removes
-        // the half-open connection from the queue and makes `accept()` return
-        // ECONNABORTED (os error 53); with only one peer connecting, a retry
-        // would then block forever on an empty queue. Linux instead returns the
-        // RST-marked connection and surfaces the reset on the first read. Gating
-        // the reset on an explicit "accepted" signal removes that race and
-        // exercises the same accepted-then-reset read path on every platform.
-        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel::<()>();
-
-        // Peer thread: connect, wait until accepted, set SO_LINGER=0, drop → RST.
-        let t = std::thread::spawn(move || {
-            let peer = TcpStream::connect(addr).unwrap();
-            // Hold the connection open until the listener side has accepted it.
-            accepted_rx.recv().unwrap();
-            // Force RST on close by setting SO_LINGER with l_onoff=1, l_linger=0.
-            #[cfg(unix)]
-            // SAFETY: setsockopt is called with a valid fd and a stack-allocated
-            // linger struct whose address and size are correct for SO_LINGER.
-            unsafe {
-                let fd = peer.as_raw_fd();
-                let linger = libc::linger {
-                    l_onoff: 1,
-                    l_linger: 0,
-                };
-                libc::setsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_LINGER,
-                    std::ptr::addr_of!(linger).cast::<libc::c_void>(),
-                    // socklen_t is u32; sizeof(linger) is always <= 8 bytes, safe to cast.
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "sizeof(linger) fits in u32"
-                    )]
-                    {
-                        std::mem::size_of::<libc::linger>() as libc::socklen_t
-                    },
-                );
+            // Read all items until EOF.
+            let mut collected = Vec::new();
+            while let Some(chunk) = backing.next() {
+                collected.extend_from_slice(&chunk);
             }
-            drop(peer);
-        });
 
-        let (accepted, _) = listener.accept().unwrap();
-        // The connection is established; tell the peer it may reset now.
-        accepted_tx.send(()).unwrap();
-        // join() guarantees the peer thread has set SO_LINGER=0 and dropped its
-        // socket — the RST (or FIN) is sent before we read. No sleep needed: the
-        // synchronization is the join, and `backing.next()` below is a BLOCKING
-        // read that returns only once the reset/EOF is observed. A wall-clock
-        // "give the RST time to arrive" sleep is a jitter window, not a wait.
-        t.join().unwrap();
+            t.join().unwrap();
 
-        let mut backing = TcpStreamBacking::new(accepted);
-        // RST produces either ConnectionReset or Ok(0) EOF — either way None.
-        // The read blocks until that event arrives (the deterministic wait).
-        let result = backing.next();
-        assert!(
-            result.is_none(),
-            "backing.next() must return None on RST/EOF, got {result:?}"
-        );
-    }
-
-    // ── hew_tcp_stream_from_conn factory tests ───────────────────────────
-
-    /// Register a real TCP connection via the runtime's own connect/accept
-    /// path so `TCP_API_STATE` holds the handle, then call the factory.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn make_loopback_conn() -> (c_int, std::net::TcpStream) {
-        use std::net::TcpListener;
-
-        // Bind a listener on an OS-assigned port.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
-
-        // hew_tcp_connect registers the client-side conn in TCP_API_STATE.
-        // SAFETY: addr is a valid NUL-terminated C string.
-        let conn_handle = unsafe { crate::transport::hew_tcp_connect(addr.as_ptr()) };
-        assert!(conn_handle > 0, "hew_tcp_connect failed");
-
-        let (peer, _) = listener.accept().unwrap();
-        (conn_handle, peer)
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn factory_returns_pair_for_valid_conn() {
-        // `hew_tcp_connect` (in `make_loopback_conn`) offloads the resolve onto
-        // the current runtime's blocking pool, so a runtime must be installed.
-        let _guard = crate::runtime_test_guard();
-        let (conn_handle, _peer) = make_loopback_conn();
-
-        // SAFETY: conn_handle is a valid registered connection.
-        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
-        assert!(
-            !pair.is_null(),
-            "factory must return non-null for valid conn"
-        );
-
-        // Both halves must be extractable.
-        // SAFETY: pair is valid.
-        let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
-        assert!(!stream_ptr.is_null());
-
-        // SAFETY: pair still valid (stream extraction nulls the stream slot, sink is still there).
-        let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
-        assert!(!sink_ptr.is_null());
-
-        // SAFETY: cleanup.
-        unsafe {
-            hew_stream_close(stream_ptr);
-            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
-            hew_stream_pair_free(pair);
+            assert_eq!(collected, payload);
         }
-    }
 
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn tcp_sink_shutdown_publishes_eof_while_read_half_remains_live() {
-        use std::io::Read as _;
-        use std::time::Duration;
+        #[test]
+        fn tcp_stream_backing_records_error_on_reset() {
+            use std::net::{TcpListener, TcpStream};
+            #[cfg(unix)]
+            use std::os::unix::io::AsRawFd;
 
-        let _guard = crate::runtime_test_guard();
-        let (conn_handle, mut peer) = make_loopback_conn();
-        peer.set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("set peer read timeout");
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
 
-        // SAFETY: conn_handle and the returned pair are live runtime handles.
-        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
-        assert!(!pair.is_null());
-        // SAFETY: each extraction consumes one pointer slot in the pair.
-        let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
-        // SAFETY: the sink slot remains live and has not been extracted yet.
-        let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
-        assert!(!stream_ptr.is_null() && !sink_ptr.is_null());
+            // The peer must not reset until the listener has accepted the
+            // connection. On the BSDs a RST that arrives before `accept()` removes
+            // the half-open connection from the queue and makes `accept()` return
+            // ECONNABORTED (os error 53); with only one peer connecting, a retry
+            // would then block forever on an empty queue. Linux instead returns the
+            // RST-marked connection and surfaces the reset on the first read. Gating
+            // the reset on an explicit "accepted" signal removes that race and
+            // exercises the same accepted-then-reset read path on every platform.
+            let (accepted_tx, accepted_rx) = std::sync::mpsc::channel::<()>();
 
-        // SAFETY: sink_ptr is live and remains wrapper-owned after shutdown.
-        unsafe { hew_sink_finish(sink_ptr) };
-        let mut byte = [0u8; 1];
-        assert_eq!(
-            peer.read(&mut byte).expect("peer observes sink shutdown"),
-            0,
-            "TCP sink shutdown must publish EOF without waiting for the read half"
-        );
+            // Peer thread: connect, wait until accepted, set SO_LINGER=0, drop → RST.
+            let t = std::thread::spawn(move || {
+                let peer = TcpStream::connect(addr).unwrap();
+                // Hold the connection open until the listener side has accepted it.
+                accepted_rx.recv().unwrap();
+                // Force RST on close by setting SO_LINGER with l_onoff=1, l_linger=0.
+                #[cfg(unix)]
+                // SAFETY: setsockopt is called with a valid fd and a stack-allocated
+                // linger struct whose address and size are correct for SO_LINGER.
+                unsafe {
+                    let fd = peer.as_raw_fd();
+                    let linger = libc::linger {
+                        l_onoff: 1,
+                        l_linger: 0,
+                    };
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_LINGER,
+                        std::ptr::addr_of!(linger).cast::<libc::c_void>(),
+                        // socklen_t is u32; sizeof(linger) is always <= 8 bytes, safe to cast.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "sizeof(linger) fits in u32"
+                        )]
+                        {
+                            std::mem::size_of::<libc::linger>() as libc::socklen_t
+                        },
+                    );
+                }
+                drop(peer);
+            });
 
-        // SAFETY: the wrappers and pair are still singly owned here.
-        unsafe {
-            hew_stream_close(stream_ptr);
-            hew_sink_close(sink_ptr);
-            hew_stream_pair_free(pair);
+            let (accepted, _) = listener.accept().unwrap();
+            // The connection is established; tell the peer it may reset now.
+            accepted_tx.send(()).unwrap();
+            // join() guarantees the peer thread has set SO_LINGER=0 and dropped its
+            // socket — the RST (or FIN) is sent before we read. No sleep needed: the
+            // synchronization is the join, and `backing.next()` below is a BLOCKING
+            // read that returns only once the reset/EOF is observed. A wall-clock
+            // "give the RST time to arrive" sleep is a jitter window, not a wait.
+            t.join().unwrap();
+
+            let mut backing = TcpStreamBacking::new(accepted);
+            // RST produces either ConnectionReset or Ok(0) EOF — either way None.
+            // The read blocks until that event arrives (the deterministic wait).
+            let result = backing.next();
+            assert!(
+                result.is_none(),
+                "backing.next() must return None on RST/EOF, got {result:?}"
+            );
         }
-    }
 
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn tcp_bridge_restores_blocking_reads_after_nonblocking_accept_mode() {
-        use std::time::Duration;
+        // ── hew_tcp_stream_from_conn factory tests ───────────────────────
 
-        let _guard = crate::runtime_test_guard();
-        let _reactor = native::TestReactor::new();
-        let (conn_handle, mut peer) = make_loopback_conn();
-        crate::reactor::lookup(conn_handle)
-            .expect("live test connection")
-            .ensure_nonblocking()
-            .expect("test connection enters the reactor's nonblocking mode");
+        /// Register a real TCP connection via the runtime's own connect/accept
+        /// path so `TCP_API_STATE` holds the handle, then call the factory.
+        fn make_loopback_conn() -> (std::ffi::c_int, std::net::TcpStream) {
+            use std::net::TcpListener;
 
-        // SAFETY: conn_handle and the returned pair are live runtime handles.
-        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
-        assert!(!pair.is_null());
-        // SAFETY: the factory transfers the pair's sole allocation to the test.
-        let mut pair = unsafe { Box::from_raw(pair) };
-        // SAFETY: extraction consumes the stream slot in the pair.
-        let stream_ptr = unsafe { hew_stream_pair_stream(&raw mut *pair) };
-        assert!(!stream_ptr.is_null());
-        // SAFETY: extraction transferred the stream's sole allocation.
-        let mut stream = unsafe { Box::from_raw(stream_ptr) };
+            // Bind a listener on an OS-assigned port.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
 
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(25));
-            peer.write_all(b"ready").expect("delayed peer write");
-        });
-        let mut size = 0usize;
-        // SAFETY: stream is live and size is writable.
-        let data = unsafe { hew_stream_next_sized(&raw mut *stream, &raw mut size) };
-        // SAFETY: the returned bytes use the runtime buffer allocator; freeing
-        // before assertions also releases them if the writer or size is wrong.
-        unsafe { crate::mem::buf_free(data) };
-        writer.join().expect("delayed writer joins");
-        assert!(!data.is_null(), "WouldBlock must not masquerade as EOF");
-        assert_eq!(size, 5);
-    }
+            // hew_tcp_connect registers the client-side conn in TCP_API_STATE.
+            // SAFETY: addr is a valid NUL-terminated C string.
+            let conn_handle = unsafe { crate::transport::hew_tcp_connect(addr.as_ptr()) };
+            assert!(conn_handle > 0, "hew_tcp_connect failed");
 
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn factory_null_for_invalid_conn() {
-        use hew_cabi::sink::hew_stream_last_errno;
+            let (peer, _) = listener.accept().unwrap();
+            (conn_handle, peer)
+        }
 
-        // Clear any prior errno.
-        let _ = hew_stream_last_errno();
+        #[test]
+        fn factory_returns_pair_for_valid_conn() {
+            // `hew_tcp_connect` (in `make_loopback_conn`) offloads the resolve onto
+            // the current runtime's blocking pool, so a runtime must be installed.
+            let _guard = crate::runtime_test_guard();
+            let (conn_handle, _peer) = make_loopback_conn();
 
-        // SAFETY: -1 is never a valid registered handle.
-        let pair = unsafe { hew_tcp_stream_from_conn(-1) };
-        assert!(
-            pair.is_null(),
-            "factory must return null for invalid handle"
-        );
-        assert_eq!(
-            hew_stream_last_errno(),
-            9, // EBADF
-            "factory must set EBADF errno for invalid handle"
-        );
-    }
+            // SAFETY: conn_handle is a valid registered connection.
+            let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+            assert!(
+                !pair.is_null(),
+                "factory must return non-null for valid conn"
+            );
 
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn factory_consumes_original_conn_handle() {
-        // See `factory_returns_pair_for_valid_conn`: the connect offload needs a
-        // runtime-owned blocking pool.
-        let _guard = crate::runtime_test_guard();
-        let (conn_handle, _peer) = make_loopback_conn();
+            // Both halves must be extractable.
+            // SAFETY: pair is valid.
+            let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
+            assert!(!stream_ptr.is_null());
 
-        // SAFETY: conn_handle is valid.
-        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
-        assert!(!pair.is_null());
+            // SAFETY: pair still valid (stream extraction nulls the stream slot, sink is still there).
+            let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
+            assert!(!sink_ptr.is_null());
 
-        // After the factory consumes the handle, a second call with the same
-        // handle must return null (the entry is gone from TCP_API_STATE).
-        // SAFETY: conn_handle is no longer valid (consumed above).
-        let pair2 = unsafe { hew_tcp_stream_from_conn(conn_handle) };
-        assert!(
-            pair2.is_null(),
-            "factory must return null when conn handle is already consumed"
-        );
+            // SAFETY: cleanup.
+            unsafe {
+                hew_stream_close(stream_ptr);
+                drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
+                hew_stream_pair_free(pair);
+            }
+        }
 
-        // SAFETY: cleanup pair1.
-        unsafe { hew_stream_pair_free(pair) };
+        #[test]
+        fn tcp_sink_shutdown_publishes_eof_while_read_half_remains_live() {
+            use std::io::Read as _;
+            use std::time::Duration;
+
+            let _guard = crate::runtime_test_guard();
+            let (conn_handle, mut peer) = make_loopback_conn();
+            peer.set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set peer read timeout");
+
+            // SAFETY: conn_handle and the returned pair are live runtime handles.
+            let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+            assert!(!pair.is_null());
+            // SAFETY: each extraction consumes one pointer slot in the pair.
+            let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
+            // SAFETY: the sink slot remains live and has not been extracted yet.
+            let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
+            assert!(!stream_ptr.is_null() && !sink_ptr.is_null());
+
+            // SAFETY: sink_ptr is live and remains wrapper-owned after shutdown.
+            unsafe { hew_sink_finish(sink_ptr) };
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                peer.read(&mut byte).expect("peer observes sink shutdown"),
+                0,
+                "TCP sink shutdown must publish EOF without waiting for the read half"
+            );
+
+            // SAFETY: the wrappers and pair are still singly owned here.
+            unsafe {
+                hew_stream_close(stream_ptr);
+                hew_sink_close(sink_ptr);
+                hew_stream_pair_free(pair);
+            }
+        }
+
+        #[test]
+        fn tcp_bridge_restores_blocking_reads_after_nonblocking_accept_mode() {
+            use std::time::Duration;
+
+            let _guard = crate::runtime_test_guard();
+            let _reactor = native::TestReactor::new();
+            let (conn_handle, mut peer) = make_loopback_conn();
+            crate::reactor::lookup(conn_handle)
+                .expect("live test connection")
+                .ensure_nonblocking()
+                .expect("test connection enters the reactor's nonblocking mode");
+
+            // SAFETY: conn_handle and the returned pair are live runtime handles.
+            let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+            assert!(!pair.is_null());
+            // SAFETY: the factory transfers the pair's sole allocation to the test.
+            let mut pair = unsafe { Box::from_raw(pair) };
+            // SAFETY: extraction consumes the stream slot in the pair.
+            let stream_ptr = unsafe { hew_stream_pair_stream(&raw mut *pair) };
+            assert!(!stream_ptr.is_null());
+            // SAFETY: extraction transferred the stream's sole allocation.
+            let mut stream = unsafe { Box::from_raw(stream_ptr) };
+
+            let writer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(25));
+                peer.write_all(b"ready").expect("delayed peer write");
+            });
+            let mut size = 0usize;
+            // SAFETY: stream is live and size is writable.
+            let data = unsafe { hew_stream_next_sized(&raw mut *stream, &raw mut size) };
+            // SAFETY: the returned bytes use the runtime buffer allocator; freeing
+            // before assertions also releases them if the writer or size is wrong.
+            unsafe { crate::mem::buf_free(data) };
+            writer.join().expect("delayed writer joins");
+            assert!(!data.is_null(), "WouldBlock must not masquerade as EOF");
+            assert_eq!(size, 5);
+        }
+
+        #[test]
+        fn factory_null_for_invalid_conn() {
+            use hew_cabi::sink::hew_stream_last_errno;
+
+            // Clear any prior errno.
+            let _ = hew_stream_last_errno();
+
+            // SAFETY: -1 is never a valid registered handle.
+            let pair = unsafe { hew_tcp_stream_from_conn(-1) };
+            assert!(
+                pair.is_null(),
+                "factory must return null for invalid handle"
+            );
+            assert_eq!(
+                hew_stream_last_errno(),
+                9, // EBADF
+                "factory must set EBADF errno for invalid handle"
+            );
+        }
+
+        #[test]
+        fn factory_consumes_original_conn_handle() {
+            // See `factory_returns_pair_for_valid_conn`: the connect offload needs a
+            // runtime-owned blocking pool.
+            let _guard = crate::runtime_test_guard();
+            let (conn_handle, _peer) = make_loopback_conn();
+
+            // SAFETY: conn_handle is valid.
+            let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+            assert!(!pair.is_null());
+
+            // After the factory consumes the handle, a second call with the same
+            // handle must return null (the entry is gone from TCP_API_STATE).
+            // SAFETY: conn_handle is no longer valid (consumed above).
+            let pair2 = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+            assert!(
+                pair2.is_null(),
+                "factory must return null when conn handle is already consumed"
+            );
+
+            // SAFETY: cleanup pair1.
+            unsafe { hew_stream_pair_free(pair) };
+        }
     }
 
     // ── String recv (hew_stream_next / hew_stream_pop_string) ──────────────

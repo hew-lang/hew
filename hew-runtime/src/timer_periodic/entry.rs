@@ -99,11 +99,7 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     // stall, so the ticker cannot spin through overdue intervals.
     //
     // Send a zero-payload message to the actor's dispatch function.
-    #[cfg(target_arch = "wasm32")]
-    let admit = crate::driver::guest_ingress_open();
-    #[cfg(not(target_arch = "wasm32"))]
-    let admit = true;
-    if admit {
+    if crate::platform::clock::admit_periodic_tick() {
         // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
         // on our in_flight guard and won't free the actor until we clear it.
         unsafe {

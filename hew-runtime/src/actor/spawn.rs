@@ -295,8 +295,7 @@ fn build_spawned_actor(
         // runtime is single-runtime by construction and has no `rt_current`,
         // so it stamps `DEFAULT` directly.
         runtime_id: owning_runtime_id(),
-        #[cfg(not(target_arch = "wasm32"))]
-        runtime: crate::runtime::rt_current() as *const crate::runtime::RuntimeInner,
+        runtime: crate::platform::executor::RuntimeHandle::current(),
         send_pin_count: AtomicU32::new(0),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: identity.serial,
@@ -311,90 +310,55 @@ fn build_spawned_actor(
 }
 
 unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
-    // The local-PID control table lives on the runtime instance, which is a
-    // native authority; `hew_local_pid_*` is gated off wasm32, so nothing there
-    // resolves a token and the actor publishes its liveness directly.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
-        let runtime_id = unsafe { (*raw).runtime_id };
-        // SAFETY: native spawn stamps this non-null owner from the same runtime
-        // read as `runtime_id`; the owner outlives actor construction and routes.
-        let owner = unsafe { &*(*raw).runtime };
-        let publication = match crate::lifetime::local_handles::begin_actor_publication_in(
-            &owner.local_handles,
-        ) {
-            Ok(publication) => publication,
-            Err(error) => {
+    // SAFETY: caller guarantees `raw` is initialized with `runtime_id` and `runtime`.
+    let (runtime_id, runtime) = unsafe { ((*raw).runtime_id, (*raw).runtime) };
+    // SAFETY: `runtime` points to the live owning runtime for the duration of spawn.
+    let published = unsafe {
+        crate::platform::executor::with_actor_runtime_handles(runtime, |handles| {
+            let Some(handles) = handles else {
+                crate::set_last_error("hew_actor_spawn: runtime handle authority unavailable");
+                return false;
+            };
+            let publication = match handles.begin_publication() {
+                Ok(publication) => publication,
+                Err(error) => {
+                    crate::set_last_error(format!(
+                        "hew_actor_spawn: local handle publication failed: {error:?}"
+                    ));
+                    return false;
+                }
+            };
+            let token = match publication.register_actor(runtime_id, actor_id) {
+                Ok(token) => token,
+                Err(error) => {
+                    crate::set_last_error(format!(
+                        "hew_actor_spawn: local handle allocation failed: {error:?}"
+                    ));
+                    return false;
+                }
+            };
+            // Initialise the complete semantic identity before publishing liveness.
+            // SAFETY: raw is owned by this unpublished spawn and fully initialised.
+            (*raw).local_pid_id = token;
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            run_spawn_publication_hook();
+            // SAFETY: caller guarantees raw is valid and fully initialised.
+            if !live_actors::track_actor(raw) {
+                let retired = publication.retire_actor(token, actor_id);
+                debug_assert_eq!(
+                    retired,
+                    crate::lifetime::local_handles::RetireActorResult::Retired
+                );
                 crate::set_last_error(format!(
-                    "hew_actor_spawn: local handle publication failed: {error:?}"
+                    "hew_actor_spawn: actor identity collision: {actor_id}"
                 ));
                 return false;
             }
-        };
-        let token = match publication.register_actor(runtime_id, actor_id) {
-            Ok(token) => token,
-            Err(error) => {
-                crate::set_last_error(format!(
-                    "hew_actor_spawn: local handle allocation failed: {error:?}"
-                ));
-                return false;
-            }
-        };
-        // Initialise the complete semantic identity before publishing liveness.
-        // SAFETY: raw is owned by this unpublished spawn and fully initialised.
-        unsafe { (*raw).local_pid_id = token };
-        #[cfg(test)]
-        run_spawn_publication_hook();
-        // SAFETY: caller guarantees raw is valid and fully initialised.
-        if !unsafe { live_actors::track_actor(raw) } {
-            let retired = publication.retire_actor(token, actor_id);
-            debug_assert_eq!(
-                retired,
-                crate::lifetime::local_handles::RetireActorResult::Retired
-            );
-            crate::set_last_error(format!(
-                "hew_actor_spawn: actor identity collision: {actor_id}"
-            ));
-            return false;
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
-        let runtime_id = unsafe { (*raw).runtime_id };
-        let publication = match crate::lifetime::local_handles::begin_current_actor_publication() {
-            Ok(publication) => publication,
-            Err(error) => {
-                crate::set_last_error(format!(
-                    "hew_actor_spawn: local handle publication failed: {error:?}"
-                ));
-                return false;
-            }
-        };
-        let token = match publication.register_actor(runtime_id, actor_id) {
-            Ok(token) => token,
-            Err(error) => {
-                crate::set_last_error(format!(
-                    "hew_actor_spawn: local handle allocation failed: {error:?}"
-                ));
-                return false;
-            }
-        };
-        // SAFETY: raw is owned by this unpublished spawn and fully initialised.
-        unsafe { (*raw).local_pid_id = token };
-        // SAFETY: caller guarantees raw is valid and fully initialised.
-        if !unsafe { live_actors::track_actor(raw) } {
-            let retired = publication.retire_actor(token, actor_id);
-            debug_assert_eq!(
-                retired,
-                crate::lifetime::local_handles::RetireActorResult::Retired
-            );
-            crate::set_last_error(format!(
-                "hew_actor_spawn: actor identity collision: {actor_id}"
-            ));
-            return false;
-        }
+            true
+        })
+    };
+    if !published {
+        return false;
     }
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
@@ -831,8 +795,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         }
         return crate::lifetime::local_handles::HewLocalPidId::INVALID;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+    let Ok(_ingress) = crate::platform::executor::admit_external_work() else {
         // SAFETY: publication was refused; the caller drains transferred state.
         unsafe {
             release_rejected_native_state(
@@ -1209,11 +1172,10 @@ unsafe fn submit_native_request(
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
-    #[cfg(not(target_arch = "wasm32"))]
     let _ingress = if terminal {
         None
     } else {
-        match crate::shutdown::admit_external_work() {
+        match crate::platform::executor::admit_external_work() {
             Ok(permit) => Some(permit),
             // The destination is alive; the runtime refuses new root work.
             Err(()) => return mailbox::SendOutcome::ShuttingDown,

@@ -33,8 +33,6 @@ use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Once;
 use std::sync::{LazyLock, Mutex};
 
 // ── Trace context ──────────────────────────────────────────────────────
@@ -436,11 +434,6 @@ fn with_trace_store<R>(f: impl FnOnce(&mut TraceStore) -> R) -> R {
 /// pretending that the runtime process restarted.
 static PRODUCER_INSTANCE_ID: LazyLock<TraceStreamId> = LazyLock::new(new_stream_id);
 
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn producer_instance_id() -> String {
-    PRODUCER_INSTANCE_ID.to_string()
-}
-
 #[derive(Debug, Clone, Copy)]
 struct InternalCursor {
     stream_id: TraceStreamId,
@@ -469,24 +462,29 @@ thread_local! {
     static REMOTE_SOURCE_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Scoped marker for a local mailbox submission originating from a remote
-/// transport frame. It carries no fabricated remote identity; it only prevents
-/// the producer from mislabelling the missing source as an external local send.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) struct RemoteTraceSourceGuard;
+mod remote_trace_source {
+    use super::REMOTE_SOURCE_DEPTH;
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
-impl Drop for RemoteTraceSourceGuard {
-    fn drop(&mut self) {
-        REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    /// Scoped marker for a local mailbox submission originating from a remote
+    /// transport frame. It carries no fabricated remote identity; it only prevents
+    /// the producer from mislabelling the missing source as an external local send.
+    pub(crate) struct RemoteTraceSourceGuard;
+
+    impl Drop for RemoteTraceSourceGuard {
+        fn drop(&mut self) {
+            REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        }
+    }
+
+    pub(crate) fn enter_remote_trace_source() -> RemoteTraceSourceGuard {
+        REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        RemoteTraceSourceGuard
     }
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) fn enter_remote_trace_source() -> RemoteTraceSourceGuard {
-    REMOTE_SOURCE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
-    RemoteTraceSourceGuard
-}
+pub(crate) use remote_trace_source::enter_remote_trace_source;
 
 fn remote_trace_source_active() -> bool {
     REMOTE_SOURCE_DEPTH.with(|depth| depth.get() != 0)
@@ -508,26 +506,6 @@ fn remote_trace_source_active() -> bool {
 //       would be lower-contention, but requires ABI/struct changes.
 static IO_SPAN_TABLE: LazyLock<Mutex<HashMap<c_int, HewTraceContext>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Stash the `HewTraceContext` of an accepted connection by `conn_id`.
-///
-/// Only called when `TRACING_ENABLED` is true.  No-op if tracing is later
-/// disabled — the entry will be evicted on connection close.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
-    IO_SPAN_TABLE.lock_or_recover().insert(conn_id, ctx);
-}
-
-/// Evict any stashed context for `conn_id` on connection close.
-///
-/// Safe to call even when no entry exists (eviction is idempotent).
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn io_span_evict(conn_id: c_int) {
-    IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-const TRACE_OWNS_EXECUTION_CONTEXT: u32 = 1 << 31;
 
 fn trace_context() -> Option<HewTraceContext> {
     let ctx = crate::execution_context::require_current_context();
@@ -573,27 +551,15 @@ fn next_random_id() -> u64 {
 }
 
 fn new_stream_id() -> TraceStreamId {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use rand::RngExt as _;
-        let mut rng = rand::rng();
-        let mut id = TraceStreamId {
-            hi: rng.random(),
-            lo: rng.random(),
-        };
-        if id.hi == 0 && id.lo == 0 {
-            id.lo = 1;
-        }
-        id
+    if let Some((hi, lo)) = crate::platform::entropy::random_u64_pair() {
+        let lo = if hi == 0 && lo == 0 { 1 } else { lo };
+        return TraceStreamId { hi, lo };
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // The native Observe server is unavailable on wasm32. Keep the internal
-        // tracing module buildable there without adding a browser entropy ABI.
-        TraceStreamId {
-            hi: next_random_id(),
-            lo: next_random_id(),
-        }
+    // Keep the internal tracing module buildable on targets with no OS/WASI
+    // entropy backend without adding a browser entropy ABI.
+    TraceStreamId {
+        hi: next_random_id(),
+        lo: next_random_id(),
     }
 }
 
@@ -690,11 +656,6 @@ pub fn trace_snapshot(
     limit: usize,
 ) -> Result<TraceSnapshot, TraceSnapshotError> {
     trace_snapshot_inner(expected_stream_id, after, limit.min(256))
-}
-
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn trace_stream_is_current(stream_id: TraceStreamId) -> bool {
-    with_trace_store(|store| store.stream_id == stream_id)
 }
 
 fn trace_snapshot_inner(
@@ -939,15 +900,10 @@ fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
     };
     let subject_id = subject_kind.map(|_| event.actor_id);
     let subject_actor_id = (subject_kind == Some("actor")).then_some(event.actor_id);
-    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-    let identity =
-        subject_actor_id.and_then(crate::profiler::actor_registry::capture_actor_identity);
-    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-    let (spawn_serial, dispatch) = identity.map_or((None, 0), |(identity, dispatch)| {
-        (identity.spawn_serial, dispatch)
-    });
-    #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
-    let (spawn_serial, dispatch) = (None, 0);
+    let (spawn_serial, dispatch) = subject_actor_id.map_or(
+        (None, 0),
+        crate::platform::host_io::capture_trace_actor_identity,
+    );
     record_event_with_attribution(
         generation,
         event,
@@ -1489,171 +1445,198 @@ pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
     );
 }
 
-/// Record a single I/O-level event using an explicit `HewTraceContext`.
-///
-/// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
-/// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
 #[cfg(not(target_arch = "wasm32"))]
-fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
-    let Some(generation) = recording_generation() else {
-        return;
+mod native {
+    use super::{
+        c_int, hew_trace_reset, monotonic_ns, next_random_id, record_event_for_generation,
+        recording_generation, HewTraceContext, HewTraceEvent, MutexExt, Ordering, IO_SPAN_TABLE,
+        SPAN_END, SPAN_IO_ACCEPT, SPAN_IO_RECV, TRACING_ENABLED,
     };
-    record_event_for_generation(
-        generation,
-        HewTraceEvent {
-            trace_id_hi: ctx.trace_id_hi,
-            trace_id_lo: ctx.trace_id_lo,
-            span_id: ctx.span_id,
-            parent_span_id: ctx.parent_span_id,
-            actor_id: 0,
-            event_type,
-            msg_type: 0,
-            timestamp_ns: monotonic_ns(),
-        },
-    );
-}
+    #[cfg(feature = "profiler")]
+    use super::{with_trace_store, TraceStreamId, PRODUCER_INSTANCE_ID};
+    use std::sync::Once;
 
-/// Called at `hew_connmgr_add` when a TCP connection is accepted.
-///
-/// Creates a new root I/O span, emits `SPAN_IO_ACCEPT` begin and end events
-/// (accept is synchronous — the span collapses to an instant), then stashes
-/// the context by `conn_id` so `reader_loop` can parent per-envelope
-/// `SPAN_IO_RECV` spans under this accept span.
-///
-/// Fast path: returns immediately (no allocation) when tracing is disabled.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn io_accept_span_begin(conn_id: c_int) {
-    if !TRACING_ENABLED.load(Ordering::Acquire) {
-        return;
-    }
-    let ctx = HewTraceContext {
-        trace_id_hi: next_random_id(),
-        trace_id_lo: next_random_id(),
-        span_id: next_random_id(),
-        parent_span_id: 0,
-        flags: 1, // sampled
-    };
-    record_io_event(&ctx, SPAN_IO_ACCEPT);
-    // Accept is synchronous: immediately emit the end so the span is closed.
-    record_io_event(&ctx, SPAN_END);
-    // Stash so reader_loop can parent io_recv spans under this accept span.
-    io_span_stash(conn_id, ctx);
-}
+    const TRACE_OWNS_EXECUTION_CONTEXT: u32 = 1 << 31;
 
-/// Called in `reader_loop` before `router_fn` is invoked for a decoded envelope.
-///
-/// Looks up the accept span for `conn_id`, creates a child `SPAN_IO_RECV`
-/// span, emits its `SPAN_IO_RECV` begin event, and sets the canonical trace
-/// lane so that `msg_node_alloc` captures this span as the parent for
-/// the subsequent actor-dispatch span.
-///
-/// Returns the prior trace context so the caller can restore it after
-/// `router_fn` returns.  If tracing is disabled, returns `None` (caller
-/// skips tracing entirely).
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
-    if !TRACING_ENABLED.load(Ordering::Acquire) {
-        return None;
+    #[cfg(feature = "profiler")]
+    pub(crate) fn producer_instance_id() -> String {
+        PRODUCER_INSTANCE_ID.to_string()
     }
 
-    // Look up the accept span context.  NOT consumed — many envelopes arrive
-    // per connection, each parented under the same accept span.
-    //
-    // INTENTIONAL DEFAULT (not fail-open): a missing entry yields the all-zero
-    // context, but the child-span construction immediately below treats a zero
-    // trace id as "no parent" and MINTS a fresh root via `next_random_id`
-    // (mirroring `io_accept_span_begin`). So the span is never an orphan with
-    // zero ids — it becomes a new trace root.
-    //   WHY  — tracing can be enabled mid-connection, after the accept span
-    //          for `conn_id` was already emitted/evicted; the recv still
-    //          deserves a valid (root) span rather than being dropped.
-    //   WHEN — revisit if accept-span stashing becomes guaranteed-before-recv
-    //          (e.g. tracing can only toggle at startup), making the miss a bug.
-    //   WHAT — promote to fail-closed (skip + count) once the miss is provably
-    //          a producer error rather than a benign late-enable.
-    let parent_ctx = IO_SPAN_TABLE
-        .lock_or_recover()
-        .get(&conn_id)
-        .copied()
-        .unwrap_or_default();
+    #[cfg(feature = "profiler")]
+    pub(crate) fn trace_stream_is_current(stream_id: TraceStreamId) -> bool {
+        with_trace_store(|store| store.stream_id == stream_id)
+    }
 
-    // Build the io_recv span as a child of the accept span.
-    let recv_ctx = HewTraceContext {
-        trace_id_hi: if parent_ctx.trace_id_hi != 0 {
-            parent_ctx.trace_id_hi
+    /// Stash the `HewTraceContext` of an accepted connection by `conn_id`.
+    ///
+    /// Only called when `TRACING_ENABLED` is true. No-op if tracing is later
+    /// disabled — the entry will be evicted on connection close.
+    pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
+        IO_SPAN_TABLE.lock_or_recover().insert(conn_id, ctx);
+    }
+
+    /// Evict any stashed context for `conn_id` on connection close.
+    ///
+    /// Safe to call even when no entry exists (eviction is idempotent).
+    pub(crate) fn io_span_evict(conn_id: c_int) {
+        IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
+    }
+
+    /// Record a single I/O-level event using an explicit `HewTraceContext`.
+    ///
+    /// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
+    /// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
+    fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
+        let Some(generation) = recording_generation() else {
+            return;
+        };
+        record_event_for_generation(
+            generation,
+            HewTraceEvent {
+                trace_id_hi: ctx.trace_id_hi,
+                trace_id_lo: ctx.trace_id_lo,
+                span_id: ctx.span_id,
+                parent_span_id: ctx.parent_span_id,
+                actor_id: 0,
+                event_type,
+                msg_type: 0,
+                timestamp_ns: monotonic_ns(),
+            },
+        );
+    }
+
+    /// Called at `hew_connmgr_add` when a TCP connection is accepted.
+    ///
+    /// Fast path: returns immediately (no allocation) when tracing is disabled.
+    pub(crate) fn io_accept_span_begin(conn_id: c_int) {
+        if !TRACING_ENABLED.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = HewTraceContext {
+            trace_id_hi: next_random_id(),
+            trace_id_lo: next_random_id(),
+            span_id: next_random_id(),
+            parent_span_id: 0,
+            flags: 1, // sampled
+        };
+        record_io_event(&ctx, SPAN_IO_ACCEPT);
+        // Accept is synchronous: immediately emit the end so the span is closed.
+        record_io_event(&ctx, SPAN_END);
+        // Stash so reader_loop can parent io_recv spans under this accept span.
+        io_span_stash(conn_id, ctx);
+    }
+
+    /// Called in `reader_loop` before `router_fn` is invoked for a decoded envelope.
+    ///
+    /// Returns the prior trace context so the caller can restore it after
+    /// `router_fn` returns, or `None` when tracing is disabled.
+    pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
+        if !TRACING_ENABLED.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let parent_ctx = IO_SPAN_TABLE
+            .lock_or_recover()
+            .get(&conn_id)
+            .copied()
+            .unwrap_or_default();
+
+        // Build the io_recv span as a child of the accept span.
+        let recv_ctx = HewTraceContext {
+            trace_id_hi: if parent_ctx.trace_id_hi != 0 {
+                parent_ctx.trace_id_hi
+            } else {
+                next_random_id()
+            },
+            trace_id_lo: if parent_ctx.trace_id_lo != 0 {
+                parent_ctx.trace_id_lo
+            } else {
+                next_random_id()
+            },
+            span_id: next_random_id(),
+            parent_span_id: parent_ctx.span_id,
+            flags: 1, // sampled
+        };
+
+        record_io_event(&recv_ctx, SPAN_IO_RECV);
+
+        let current = crate::execution_context::current_context();
+        if current.is_null() {
+            let mut boxed = Box::new(crate::execution_context::HewExecutionContext {
+                trace: recv_ctx,
+                flags: TRACE_OWNS_EXECUTION_CONTEXT,
+                prev_context: current,
+                ..crate::execution_context::HewExecutionContext::default()
+            });
+            let raw = (&raw mut *boxed).cast::<crate::execution_context::HewExecutionContext>();
+            let installed_prev = crate::execution_context::set_current_context(raw);
+            debug_assert_eq!(installed_prev, current);
+            let _ = Box::into_raw(boxed); // ALLOCATOR-PAIRING: GlobalAlloc
+            Some(HewTraceContext::default())
         } else {
-            next_random_id()
-        },
-        trace_id_lo: if parent_ctx.trace_id_lo != 0 {
-            parent_ctx.trace_id_lo
-        } else {
-            next_random_id()
-        },
-        span_id: next_random_id(),
-        parent_span_id: parent_ctx.span_id,
-        flags: 1, // sampled
-    };
+            // SAFETY: current is the installed canonical context for this thread.
+            let saved = unsafe { (*current).trace };
+            // SAFETY: current is non-null and mutable through the TLS boundary.
+            unsafe {
+                (*current).trace = recv_ctx;
+            }
+            Some(saved)
+        }
+    }
 
-    record_io_event(&recv_ctx, SPAN_IO_RECV);
-
-    let current = crate::execution_context::current_context();
-    if current.is_null() {
-        let mut boxed = Box::new(crate::execution_context::HewExecutionContext {
-            trace: recv_ctx,
-            flags: TRACE_OWNS_EXECUTION_CONTEXT,
-            prev_context: current,
-            ..crate::execution_context::HewExecutionContext::default()
-        });
-        let raw = (&raw mut *boxed).cast::<crate::execution_context::HewExecutionContext>();
-        let installed_prev = crate::execution_context::set_current_context(raw);
-        debug_assert_eq!(installed_prev, current);
-        let _ = Box::into_raw(boxed); // ALLOCATOR-PAIRING: GlobalAlloc
-        Some(HewTraceContext::default())
-    } else {
+    /// Called in `reader_loop` after `router_fn` returns.
+    ///
+    /// Emits `SPAN_END` for the current `io_recv` span and restores `saved_ctx`.
+    pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
+        let current = crate::execution_context::require_current_context();
+        if current.is_null() {
+            return;
+        }
         // SAFETY: current is the installed canonical context for this thread.
-        let saved = unsafe { (*current).trace };
+        let recv_ctx = unsafe { (*current).trace };
+        record_io_event(&recv_ctx, SPAN_END);
         // SAFETY: current is non-null and mutable through the TLS boundary.
-        unsafe {
-            (*current).trace = recv_ctx;
+        let owns_context = unsafe { (*current).flags & TRACE_OWNS_EXECUTION_CONTEXT != 0 };
+        if owns_context {
+            // SAFETY: contexts tagged with TRACE_OWNS_EXECUTION_CONTEXT were
+            // allocated by io_recv_span_begin and are restored/dropped here.
+            let prev = unsafe { (*current).prev_context };
+            let restored = crate::execution_context::set_current_context(prev);
+            debug_assert_eq!(restored, current);
+            // SAFETY: current came from Box::into_raw in io_recv_span_begin.
+            unsafe {
+                drop(Box::from_raw(current)); // ALLOCATOR-PAIRING: GlobalAlloc
+            }
+        } else {
+            // SAFETY: current is non-null and mutable through the TLS boundary.
+            unsafe {
+                (*current).trace = saved_ctx;
+            }
         }
-        Some(saved)
+    }
+
+    /// Register `hew_trace_reset` as a session reset hook.
+    pub(crate) fn register_trace_reset_hook() {
+        fn trace_reset_hook() {
+            hew_trace_reset();
+        }
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            crate::session::register_reset_hook(trace_reset_hook);
+        });
     }
 }
 
-/// Called in `reader_loop` after `router_fn` returns.
-///
-/// Emits `SPAN_END` for the current `io_recv` span and restores `saved_ctx`.
-///
-/// `saved_ctx` must be the value returned by the matching `io_recv_span_begin`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native::io_span_stash;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
-    // Emit SPAN_END using the current (recv) context that was installed in begin.
-    let current = crate::execution_context::require_current_context();
-    if current.is_null() {
-        return;
-    }
-    // SAFETY: current is the installed canonical context for this thread.
-    let recv_ctx = unsafe { (*current).trace };
-    record_io_event(&recv_ctx, SPAN_END);
-    // SAFETY: current is non-null and mutable through the TLS boundary.
-    let owns_context = unsafe { (*current).flags & TRACE_OWNS_EXECUTION_CONTEXT != 0 };
-    if owns_context {
-        // SAFETY: contexts tagged with TRACE_OWNS_EXECUTION_CONTEXT were
-        // allocated by io_recv_span_begin and are restored/dropped here.
-        let prev = unsafe { (*current).prev_context };
-        let restored = crate::execution_context::set_current_context(prev);
-        debug_assert_eq!(restored, current);
-        // SAFETY: current came from Box::into_raw in io_recv_span_begin.
-        unsafe {
-            drop(Box::from_raw(current)); // ALLOCATOR-PAIRING: GlobalAlloc
-        }
-    } else {
-        // SAFETY: current is non-null and mutable through the TLS boundary.
-        unsafe {
-            (*current).trace = saved_ctx;
-        }
-    }
-}
+pub(crate) use native::{
+    io_accept_span_begin, io_recv_span_begin, io_recv_span_end, io_span_evict,
+    register_trace_reset_hook,
+};
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) use native::{producer_instance_id, trace_stream_is_current};
 
 /// Enable or disable tracing globally.
 ///
@@ -1723,25 +1706,6 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
     with_trace_store(TraceStore::begin_new_stream);
-}
-
-/// Register `hew_trace_reset` as a session reset hook.
-///
-/// Safe to call multiple times; the registration is guarded by a `Once` so
-/// the hook is added to the registry exactly once per process lifetime.
-/// Called from `scheduler::hew_sched_init` so trace events are cleared on
-/// every `session_reset()`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_trace_reset_hook() {
-    // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
-    // the ResetHook type alias.
-    fn trace_reset_hook() {
-        hew_trace_reset();
-    }
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        crate::session::register_reset_hook(trace_reset_hook);
-    });
 }
 
 /// Reset all tracing state (disable + clear events + reset context + clear I/O span table).

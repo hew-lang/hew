@@ -4,8 +4,6 @@
 //! (one-for-one, one-for-all, rest-for-one) and sliding-window restart
 //! tracking. Mirrors the C implementation in `hew-codegen/runtime/src/supervisor.c`.
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
@@ -19,8 +17,6 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewSy
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::scheduler;
 use crate::set_last_error;
 use crate::timer_wheel::{
     hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerEntry, HewTimerWheel,
@@ -1154,8 +1150,7 @@ unsafe impl Send for SupervisorRoster {}
 /// Supervisor managing a set of child actors.
 pub struct HewSupervisor {
     /// Runtime authority that owns this allocation's stable handle control.
-    #[cfg(not(target_arch = "wasm32"))]
-    runtime: *const crate::runtime::RuntimeInner,
+    runtime: crate::platform::executor::RuntimeHandle,
     /// Exact local-handle authority retained until supervisor teardown drains.
     handles: *const crate::lifetime::local_handles::LocalHandles,
     /// Direct stable identity for this exact supervisor allocation.
@@ -1438,162 +1433,215 @@ struct ClosedSupervisorAccess {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-type SupervisorTestHook = Option<Arc<dyn Fn() + Send + Sync>>;
+mod native_test_hooks {
+    use super::*;
+    use std::cell::Cell;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static SUPERVISOR_ACCESS_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static SUPERVISOR_CLOSE_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static SUPERVISOR_TEARDOWN_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static RESTART_SPEC_SNAPSHOT_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static DYNAMIC_CHILD_RESERVED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static RESTART_TIMER_RELEASED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
-    std::sync::OnceLock::new();
+    type SupervisorTestHook = Option<Arc<dyn Fn() + Send + Sync>>;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-struct SupervisorTestHookGuard(&'static std::sync::OnceLock<Mutex<SupervisorTestHook>>);
+    static SUPERVISOR_ACCESS_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
+    static SUPERVISOR_CLOSE_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
+    static SUPERVISOR_TEARDOWN_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
+    static RESTART_SPEC_SNAPSHOT_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
+    static DYNAMIC_CHILD_RESERVED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
+    static RESTART_TIMER_RELEASED_HOOK: std::sync::OnceLock<Mutex<SupervisorTestHook>> =
+        std::sync::OnceLock::new();
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for SupervisorTestHookGuard {
-    fn drop(&mut self) {
-        *self.0.get_or_init(|| Mutex::new(None)).lock_or_recover() = None;
+    pub(super) struct SupervisorTestHookGuard(
+        &'static std::sync::OnceLock<Mutex<SupervisorTestHook>>,
+    );
+
+    impl Drop for SupervisorTestHookGuard {
+        fn drop(&mut self) {
+            *self.0.get_or_init(|| Mutex::new(None)).lock_or_recover() = None;
+        }
+    }
+
+    pub(super) fn install_supervisor_access_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *SUPERVISOR_ACCESS_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&SUPERVISOR_ACCESS_HOOK)
+    }
+
+    pub(super) fn install_supervisor_close_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *SUPERVISOR_CLOSE_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&SUPERVISOR_CLOSE_HOOK)
+    }
+
+    pub(super) fn install_supervisor_teardown_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *SUPERVISOR_TEARDOWN_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&SUPERVISOR_TEARDOWN_HOOK)
+    }
+
+    pub(super) fn install_restart_spec_snapshot_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *RESTART_SPEC_SNAPSHOT_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&RESTART_SPEC_SNAPSHOT_HOOK)
+    }
+
+    pub(super) fn install_dynamic_child_reserved_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *DYNAMIC_CHILD_RESERVED_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&DYNAMIC_CHILD_RESERVED_HOOK)
+    }
+
+    pub(super) fn install_restart_timer_released_hook_for_test(
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> SupervisorTestHookGuard {
+        *RESTART_TIMER_RELEASED_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover() = Some(hook);
+        SupervisorTestHookGuard(&RESTART_TIMER_RELEASED_HOOK)
+    }
+
+    pub(super) fn run_supervisor_access_hook_for_test() {
+        if let Some(hook) = SUPERVISOR_ACCESS_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    pub(super) fn run_supervisor_close_hook_for_test() {
+        if let Some(hook) = SUPERVISOR_CLOSE_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    pub(super) fn run_supervisor_teardown_hook_for_test() {
+        if let Some(hook) = SUPERVISOR_TEARDOWN_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    pub(super) fn run_restart_spec_snapshot_hook_for_test() {
+        if let Some(hook) = RESTART_SPEC_SNAPSHOT_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    pub(super) fn run_dynamic_child_reserved_hook_for_test() {
+        if let Some(hook) = DYNAMIC_CHILD_RESERVED_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    pub(super) fn run_restart_timer_released_hook_for_test() {
+        if let Some(hook) = RESTART_TIMER_RELEASED_HOOK
+            .get_or_init(|| Mutex::new(None))
+            .lock_or_recover()
+            .clone()
+        {
+            hook();
+        }
+    }
+
+    thread_local! {
+        pub(super) static FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
+        pub(super) static FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn take_fail_next_supervisor_access_close() -> bool {
+        FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false))
+    }
+
+    pub(super) fn should_fail_owned_deferred_supervisor_spawn() -> bool {
+        FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(Cell::get)
+    }
+
+    /// Test-only: make the next delayed-restart arm refuse, as a failed timer
+    /// thread spawn does. Process-global, unlike the thread-local hooks above: the
+    /// arm runs on the scheduler worker that dispatched the crash.
+    pub(super) static FAIL_DELAYED_RESTART_ARM: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn should_fail_delayed_restart_arm() -> bool {
+        FAIL_DELAYED_RESTART_ARM.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(any(not(test), target_arch = "wasm32"))]
+mod native_test_hooks {
+    #[inline]
+    pub(super) fn run_supervisor_access_hook_for_test() {}
+    #[inline]
+    pub(super) fn run_supervisor_close_hook_for_test() {}
+    #[inline]
+    pub(super) fn run_supervisor_teardown_hook_for_test() {}
+    #[inline]
+    pub(super) fn run_restart_spec_snapshot_hook_for_test() {}
+    #[inline]
+    pub(super) fn run_dynamic_child_reserved_hook_for_test() {}
+    #[inline]
+    pub(super) fn run_restart_timer_released_hook_for_test() {}
+    #[inline]
+    pub(super) fn take_fail_next_supervisor_access_close() -> bool {
+        false
+    }
+    #[inline]
+    pub(super) fn should_fail_owned_deferred_supervisor_spawn() -> bool {
+        false
+    }
+    #[inline]
+    pub(super) fn should_fail_delayed_restart_arm() -> bool {
+        false
     }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_supervisor_access_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *SUPERVISOR_ACCESS_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&SUPERVISOR_ACCESS_HOOK)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_supervisor_close_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *SUPERVISOR_CLOSE_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&SUPERVISOR_CLOSE_HOOK)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_supervisor_teardown_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *SUPERVISOR_TEARDOWN_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&SUPERVISOR_TEARDOWN_HOOK)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_restart_spec_snapshot_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *RESTART_SPEC_SNAPSHOT_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&RESTART_SPEC_SNAPSHOT_HOOK)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_dynamic_child_reserved_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *DYNAMIC_CHILD_RESERVED_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&DYNAMIC_CHILD_RESERVED_HOOK)
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_restart_timer_released_hook_for_test(
-    hook: Arc<dyn Fn() + Send + Sync>,
-) -> SupervisorTestHookGuard {
-    *RESTART_TIMER_RELEASED_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover() = Some(hook);
-    SupervisorTestHookGuard(&RESTART_TIMER_RELEASED_HOOK)
-}
-
-fn run_supervisor_access_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = SUPERVISOR_ACCESS_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
-
-fn run_supervisor_close_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = SUPERVISOR_CLOSE_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
-
-fn run_supervisor_teardown_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = SUPERVISOR_TEARDOWN_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
-
-fn run_restart_spec_snapshot_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = RESTART_SPEC_SNAPSHOT_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
-
-fn run_dynamic_child_reserved_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = DYNAMIC_CHILD_RESERVED_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
-
-fn run_restart_timer_released_hook_for_test() {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if let Some(hook) = RESTART_TIMER_RELEASED_HOOK
-        .get_or_init(|| Mutex::new(None))
-        .lock_or_recover()
-        .clone()
-    {
-        hook();
-    }
-}
+use native_test_hooks::{
+    install_dynamic_child_reserved_hook_for_test, install_restart_spec_snapshot_hook_for_test,
+    install_restart_timer_released_hook_for_test, install_supervisor_access_hook_for_test,
+    install_supervisor_close_hook_for_test, install_supervisor_teardown_hook_for_test,
+    SupervisorTestHookGuard, FAIL_DELAYED_RESTART_ARM, FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE,
+    FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN,
+};
+use native_test_hooks::{
+    run_dynamic_child_reserved_hook_for_test, run_restart_spec_snapshot_hook_for_test,
+    run_restart_timer_released_hook_for_test, run_supervisor_access_hook_for_test,
+    run_supervisor_close_hook_for_test, run_supervisor_teardown_hook_for_test,
+    should_fail_delayed_restart_arm, should_fail_owned_deferred_supervisor_spawn,
+    take_fail_next_supervisor_access_close,
+};
 
 /// Close admission immediately; the teardown claim retains allocation ownership
 /// while its suspended constructor releases pins before their final drain.
@@ -1626,8 +1674,7 @@ unsafe fn close_supervisor_access(
     sup: *mut HewSupervisor,
     timeout: Duration,
 ) -> Option<ClosedSupervisorAccess> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
+    if take_fail_next_supervisor_access_close() {
         return None;
     }
     // SAFETY: the caller retains the allocation through admission closure/drain.
@@ -1990,12 +2037,10 @@ struct DeferredFree(*mut HewActor);
 unsafe impl Send for DeferredFree {}
 
 /// Wrapper to stop an exhausted child supervisor off the scheduler thread.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug)]
 struct DeferredSupervisorStop(*mut HewSupervisor);
 // SAFETY: ownership is transferred to the background thread after the parent
 // replaces its slot with a fresh child supervisor.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Send for DeferredSupervisorStop {}
 
 // ---------------------------------------------------------------------------
@@ -2406,7 +2451,6 @@ fn schedule_delayed_restart(
     // and its lease). Process-global rather than thread-local because this runs
     // on whichever scheduler worker dispatched the crash, not on the test's
     // thread.
-    #[cfg(all(test, not(target_arch = "wasm32")))]
     if should_fail_delayed_restart_arm() {
         return false;
     }
@@ -2577,19 +2621,16 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> Faul
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn stop_owned_deferred_supervisor(
     deferred: DeferredSupervisorStop,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 ) {
     // SAFETY: the claimed supervisor and its owning runtime remain live until
     // this teardown lease is released; leave that runtime before releasing it.
-    #[cfg(not(target_arch = "wasm32"))]
-    let context = unsafe { crate::runtime::enter(&*(*deferred.0).runtime) };
+    let context = unsafe { crate::platform::executor::enter_runtime((*deferred.0).runtime) };
     // SAFETY: teardown ownership was claimed by the caller before this thread
     // was spawned, so this background thread is the unique destructor.
     unsafe { stop_supervisor_owned(deferred.0, &teardown) };
-    #[cfg(not(target_arch = "wasm32"))]
     drop(context);
     drop(teardown);
 }
@@ -2602,42 +2643,13 @@ fn spawn_owned_deferred_supervisor_stop(
         return true;
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
     if should_fail_owned_deferred_supervisor_spawn() {
         return false;
     }
 
-    if cfg!(target_arch = "wasm32") || crate::driver::active() {
-        crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
-            supervisor: sup,
-            root_unregistered: false,
-            teardown,
-        });
-        return true;
-    }
-    #[cfg(target_arch = "wasm32")]
-    unreachable!("WASI supervisor teardown always uses the driver");
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let sup_addr = sup as usize;
-        if let Ok(handle) = std::thread::Builder::new()
-            .name("deferred-sup-stop".into())
-            .spawn(move || {
-                stop_owned_deferred_supervisor(
-                    DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
-                    teardown,
-                );
-            })
-        {
-            // Register the teardown thread so `cleanup_all_actors` joins it
-            // before sweeping the actors this thread still dereferences.
-            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
-            true
-        } else {
-            eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
-            false
-        }
-    }
+    crate::platform::executor::schedule_deferred_supervisor_stop(sup, teardown, |sup, teardown| {
+        stop_owned_deferred_supervisor(DeferredSupervisorStop(sup), teardown);
+    })
 }
 
 /// Free a batch of stopped siblings on a background thread during a restart and
@@ -2653,35 +2665,7 @@ fn spawn_deferred_restart_free(deferred: Vec<DeferredFree>) {
     if deferred.is_empty() {
         return;
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::driver::publish_actor_free(deferred.into_iter().map(|actor| actor.0).collect());
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        match std::thread::Builder::new()
-            .name("deferred-free".into())
-            .spawn(move || {
-                for d in deferred {
-                    // SAFETY: actor was stopped; supervisor no longer references it.
-                    // Explicit provenance plus the actor's one-shot
-                    // `state_drop_consumed` bit decide typed-drop authority. A
-                    // stopped fresh sibling did not consume crash escrow, a
-                    // sibling that did is already marked, and a shallow-template
-                    // borrower never owned it; the common path handles all three.
-                    unsafe { actor::hew_actor_free(d.0) };
-                }
-            }) {
-            Ok(handle) => {
-                // Register the teardown thread so `cleanup_all_actors` joins it
-                // before sweeping the actors this thread still dereferences.
-                crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
-            }
-            Err(_) => {
-                eprintln!("hew: warning: failed to spawn deferred-free thread");
-            }
-        }
-    }
+    crate::platform::executor::defer_actor_free(deferred.into_iter().map(|d| d.0).collect());
 }
 
 fn current_actor_supervisor(current: *mut HewActor) -> *mut HewSupervisor {
@@ -2750,28 +2734,6 @@ fn retain_child_completion(
     {
         roster.retiring_children.push(completion);
     }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-thread_local! {
-    static FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN: Cell<bool> = const { Cell::new(false) };
-    static FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn should_fail_owned_deferred_supervisor_spawn() -> bool {
-    FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(Cell::get)
-}
-
-/// Test-only: make the next delayed-restart arm refuse, as a failed timer
-/// thread spawn does. Process-global, unlike the thread-local hooks above: the
-/// arm runs on the scheduler worker that dispatched the crash.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static FAIL_DELAYED_RESTART_ARM: AtomicBool = AtomicBool::new(false);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn should_fail_delayed_restart_arm() -> bool {
-    FAIL_DELAYED_RESTART_ARM.load(Ordering::Acquire)
 }
 
 mod child;

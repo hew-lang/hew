@@ -71,7 +71,7 @@ pub(crate) struct OffloadEnv {
 unsafe impl Send for OffloadEnv {}
 
 impl OffloadEnv {
-    fn run(&mut self) {
+    pub(crate) fn run(&mut self) {
         // SAFETY: the compiler generated `run` for this environment's layout.
         unsafe { (self.run)(self.env) };
         self.result_live = true;
@@ -102,25 +102,6 @@ impl Drop for OffloadEnv {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn run_offload_job(context: *mut std::ffi::c_void) {
-    use super::IoProducer;
-    // SAFETY: a successful submit transfers this unique Box to one callback.
-    let (operation, mut env) =
-        *unsafe { Box::from_raw(context.cast::<(IoProducer, OffloadEnv)>()) };
-    if !operation.is_pending() {
-        // Cancelled before it started: only the arguments are released.
-        return;
-    }
-    if let Some(detach) = crate::blocking_pool::Detach::current() {
-        operation.produced_by(detach);
-    }
-    // A C call cannot unwind: a panic inside it aborts the process.
-    env.run();
-    crate::blocking_pool::job_finishing();
-    operation.complete(Ok(IoValue::Offload(env)));
-}
-
 /// Run an `#[offload]` extern call without blocking the calling worker.
 ///
 /// `env` came from `hew_alloc(size, align)` and holds the call's owned
@@ -147,7 +128,7 @@ pub unsafe extern "C" fn hew_async_offload(
 ) -> *const HewAsyncIo {
     let layout =
         Layout::from_size_align(size.max(1), align).expect("compiler-laid offload environment");
-    let mut env = OffloadEnv {
+    let env = OffloadEnv {
         env,
         layout,
         run,
@@ -157,23 +138,12 @@ pub unsafe extern "C" fn hew_async_offload(
     };
     // SAFETY: the start entrypoint lends the waker for this call.
     let operation = unsafe { HewAsyncIo::new(waker) };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(pool) = crate::blocking_pool::shared_blocking_pool_opt() {
-        let job = Box::new((super::IoProducer::new(Arc::clone(&operation)), env));
-        // SAFETY: the pool is installed; the job is owned until its callback.
-        // It owns its arguments and finishing it touches only the job, so
-        // runtime exit leaves a call whose caller gave up running.
-        match unsafe { crate::blocking_pool::submit_abandonable_owned(pool, run_offload_job, job) }
-        {
-            Ok(()) => return Arc::into_raw(operation),
-            Err(job) => drop(job),
+    match crate::platform::host_io::try_submit_offload_job(&operation, env) {
+        Ok(()) | Err(None) => return Arc::into_raw(operation),
+        Err(Some(mut env)) => {
+            env.run();
+            operation.complete(Ok(IoValue::Offload(env)));
         }
-        operation.complete(Err(super::IoFailure::invalid(
-            "offload blocking pool could not accept work",
-        )));
-        return Arc::into_raw(operation);
     }
-    env.run();
-    operation.complete(Ok(IoValue::Offload(env)));
     Arc::into_raw(operation)
 }

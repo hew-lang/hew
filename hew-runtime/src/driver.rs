@@ -284,17 +284,12 @@ static READY: Mutex<ReadyList> = Mutex::new(ReadyList {
     random: None,
 });
 
-/// Signalled when a host reactor thread publishes while the driver waits.
-#[cfg(not(target_arch = "wasm32"))]
-static HOST_PUBLISHED: std::sync::Condvar = std::sync::Condvar::new();
-
 /// Picks taken so far.
 static STEPS: AtomicU64 = AtomicU64::new(0);
 
 fn publish(participant: Participant) {
     READY.lock_or_recover().entries.push_back(participant);
-    #[cfg(not(target_arch = "wasm32"))]
-    HOST_PUBLISHED.notify_one();
+    crate::platform::clock::notify_driver_host_published();
 }
 
 /// Accept a runnable actor from [`crate::resume`].
@@ -320,19 +315,25 @@ pub(crate) fn publish_supervisor_stop(stop: crate::supervisor::QueuedSupervisorS
     publish(Participant::SupervisorStop(stop));
 }
 
-/// Deliver a host termination request on the process thread.
+/// Host termination admission helpers for the cooperative driver.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn publish_shutdown() {
-    publish(Participant::Shutdown);
+mod native_shutdown {
+    use super::{publish, MutexExt, Participant, READY};
+
+    pub(crate) fn publish_shutdown() {
+        publish(Participant::Shutdown);
+    }
+
+    pub(crate) fn discard_shutdown_requests() {
+        READY
+            .lock_or_recover()
+            .entries
+            .retain(|entry| !matches!(entry, Participant::Shutdown));
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn discard_shutdown_requests() {
-    READY
-        .lock_or_recover()
-        .entries
-        .retain(|entry| !matches!(entry, Participant::Shutdown));
-}
+pub(crate) use native_shutdown::{discard_shutdown_requests, publish_shutdown};
 
 /// Whether any participant is waiting to run.
 pub(crate) fn has_queued_work() -> bool {
@@ -340,14 +341,7 @@ pub(crate) fn has_queued_work() -> bool {
 }
 
 fn host_work_in_flight() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        !crate::reactor::drain_is_idle()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        false
-    }
+    crate::platform::clock::host_driver_work_in_flight()
 }
 
 /// Take the next participant under the configured schedule.
@@ -481,18 +475,14 @@ pub(crate) fn step() {
     fail("deadlock: nothing is runnable and no timer can come due");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn wait_for_host() {
     let ready = READY.lock_or_recover();
     if ready.entries.is_empty() {
         // Bounded so a reactor completion that publishes nothing is
         // re-examined promptly.
-        let _ = HOST_PUBLISHED.wait_timeout(ready, std::time::Duration::from_millis(10));
+        crate::platform::clock::wait_driver_for_host(ready, std::time::Duration::from_millis(10));
     }
 }
-
-#[cfg(target_arch = "wasm32")]
-fn wait_for_host() {}
 
 /// Run every ready participant and every timer due now, without moving the
 /// clock, until neither has anything left.
@@ -625,7 +615,6 @@ pub(crate) fn drain_poll(interval: std::time::Duration, idle: bool) {
         return;
     }
     if host_work_in_flight() {
-        #[cfg(not(target_arch = "wasm32"))]
         wait_for_host();
     } else if !idle && active_config().virtual_clock {
         advance_simulated_clock(interval);

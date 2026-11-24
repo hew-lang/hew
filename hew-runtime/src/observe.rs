@@ -5,47 +5,25 @@
 //! are sharded by worker to avoid cache-line contention when enabled.
 
 use std::cell::Cell;
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
 
 use crate::actor::HEW_MAX_WORKERS;
 use crate::lifetime::PoisonSafe;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::util::CondvarExt;
 use crate::util::MutexExt;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 const SHARD_COUNT: usize = HEW_MAX_WORKERS + 1;
-const OBSERVE_BARRIER_OK: i64 = 0;
-// The two failure codes of the `hew_observe_barrier` runtime call. They are read
-// only inside that function's `#[cfg(not(target_arch = "wasm32"))]` body, while
-// this module is compiled for every target — so wasm32, whose `hew_observe_barrier`
-// is a documented no-op returning `OBSERVE_BARRIER_OK`, is the only build with no
-// reader. They are the fail-closed half of a shipping surface: `std/observe.hew`
-// declares the call, `hew-types` maps `RuntimeCall::ObserveBarrier` to the symbol,
-// and `hew-codegen-rs` emits its i64 signature.
-#[cfg(not(target_arch = "wasm32"))]
-const OBSERVE_BARRIER_ERR_WORKER_CONTEXT: i64 = -1;
-#[cfg(not(target_arch = "wasm32"))]
-const OBSERVE_BARRIER_ERR_TIMEOUT: i64 = -2;
-#[cfg(not(target_arch = "wasm32"))]
-const OBSERVE_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const OBSERVE_BARRIER_OK: i64 = 0;
 
 thread_local! {
     static WORKER_SHARD: Cell<usize> = const { Cell::new(0) };
 }
 
 static HOT_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(not(target_arch = "wasm32"))]
-static SHARDS_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 // Keep the counters written by one worker together, away from other workers'
 // cache lines. Heap accounting is hot enough that packed atomic arrays cause
@@ -90,14 +68,6 @@ static SUPERVISOR_GIVEUPS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// [`crate::failure_kinds::CRASH_SERIES`].
 static CRASHES_BY_KIND: crate::lifetime::PoisonSafe<Vec<((&'static str, String), u64)>> =
     crate::lifetime::PoisonSafe::new(Vec::new());
-/// The message type each worker shard is dispatching, for failure records and
-/// the hang snapshot. Zero when the shard is between turns.
-static TURN_MSG_TYPE: [std::sync::atomic::AtomicI32; SHARD_COUNT] =
-    [const { std::sync::atomic::AtomicI32::new(0) }; SHARD_COUNT];
-/// The actor each worker shard is dispatching, or zero.
-static TURN_ACTOR: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
-/// The dispatch function of each shard's actor, the handler registry's key.
-static TURN_DISPATCH: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
 static ACTORS_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ARENA_RESETS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -105,86 +75,8 @@ static IO_HANDLES_LIVE: AtomicU64 = AtomicU64::new(0);
 static POOL_THREADS: AtomicU64 = AtomicU64::new(0);
 static POOL_SATURATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-// Counts domain blocks, not references or pointers. Weak-only headers remain
-// allocated; unlike session counters this gauge is cleared only by final free.
-// Rows are keyed by the payload's immutable label address so the allocation
-// path neither decodes nor copies the label. A label stays readable while its
-// row is non-zero: every counted header retains the code that owns it.
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-static RC_LIVE_BY_LABEL: PoisonSafe<BTreeMap<usize, u64>> = PoisonSafe::new(BTreeMap::new());
-
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_rc_allocation(label: *const std::ffi::c_char) {
-    RC_LIVE_BY_LABEL.access(|counts| *counts.entry(label as usize).or_default() += 1);
-}
-
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_rc_free(label: *const std::ffi::c_char) {
-    RC_LIVE_BY_LABEL.access(|counts| {
-        let count = counts
-            .get_mut(&(label as usize))
-            .expect("allocated Rc label is registered");
-        *count -= 1;
-        if *count == 0 {
-            counts.remove(&(label as usize));
-        }
-    });
-}
-
-/// Live Rc blocks by payload type name, merging labels that render alike.
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn rc_live_by_type() -> Vec<hew_observe_protocol::RcSurvivorType> {
-    let mut by_name = BTreeMap::<String, u64>::new();
-    RC_LIVE_BY_LABEL.access(|counts| {
-        for (&label, &count) in counts.iter() {
-            // SAFETY: a non-zero row's headers retain this NUL-terminated label,
-            // and the lock orders this read before the final free's removal.
-            let name = unsafe { std::ffi::CStr::from_ptr(label as *const std::ffi::c_char) };
-            *by_name
-                .entry(name.to_string_lossy().into_owned())
-                .or_default() += count;
-        }
-    });
-    by_name
-        .into_iter()
-        .map(|(type_name, count)| hew_observe_protocol::RcSurvivorType { type_name, count })
-        .collect()
-}
-
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
     PoisonSafe::new(None);
-
-static NEXT_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
-static PUBLISHED_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
-static DISPATCH_COMPLETION_WATERMARK: AtomicU64 = AtomicU64::new(0);
-static DISPATCH_BARRIER_WAITERS: AtomicU64 = AtomicU64::new(0);
-static DISPATCH_ACTIVE_TICKETS: [AtomicU64; SHARD_COUNT] =
-    [const { AtomicU64::new(0) }; SHARD_COUNT];
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static DISPATCH_BARRIER_MUTEX_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
-
-static DISPATCH_BARRIER: DispatchBarrier = DispatchBarrier {
-    lock: Mutex::new(()),
-    cond: Condvar::new(),
-};
-
-struct DispatchBarrier {
-    lock: Mutex<()>,
-    cond: Condvar,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ObserveDispatchTicket(u64);
-
-#[cfg(not(target_arch = "wasm32"))]
-struct DispatchBarrierWaiter;
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for DispatchBarrierWaiter {
-    fn drop(&mut self) {
-        DISPATCH_BARRIER_WAITERS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AttributedTurn {
@@ -224,27 +116,6 @@ pub struct RuntimeHookSnapshot {
     pub pool_saturations_total: u64,
 }
 
-/// Configure the hot observe tier from `HEW_OBSERVE`.
-///
-/// Accepted true values are `1`, `true`, `yes`, `on`, and `hot`. Empty/unset
-/// leaves the tier disabled. This is called during scheduler initialization.
-//
-// KEEP(wasm32): called from `scheduler::hew_sched_init`. `pub mod scheduler` is
-// `#[cfg(not(target_arch = "wasm32"))]` in lib.rs while `pub mod observe` is
-// ungated, so the caller vanishes on wasm32 (which ships `scheduler_wasm`) and
-// only there. Live on macOS, Linux, FreeBSD and Windows.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn configure_from_env() {
-    // A profiled run (`HEW_PPROF`, set by `hew run --profile` and `hew debug`)
-    // defaults to the hot tier; `HEW_OBSERVE` still decides when set.
-    let enabled = match std::env::var("HEW_OBSERVE") {
-        Ok(value) => matches!(value.as_str(), "1" | "true" | "yes" | "on" | "hot"),
-        Err(_) => std::env::var_os("HEW_PPROF").is_some(),
-    };
-    HOT_TIER_ENABLED.store(enabled, Ordering::Release);
-    crate::fault::configure_from_env();
-}
-
 #[must_use]
 pub fn observe_hot_tier_enabled() -> bool {
     HOT_TIER_ENABLED.load(Ordering::Acquire)
@@ -254,37 +125,6 @@ pub fn set_hot_tier_enabled(enabled: bool) {
     HOT_TIER_ENABLED.store(enabled, Ordering::Release);
 }
 
-/// Pin the calling thread to its own counter shard.
-///
-/// KEEP(wasm32): the caller is `scheduler::worker_loop`, which every thread
-/// spawned by `hew_sched_init` runs; lib.rs declares `pub mod scheduler` under
-/// `#[cfg(not(target_arch = "wasm32"))]` while `pub mod observe` is
-/// unconditional, so only a wasm32 build sees no caller.
-///
-/// This is a correctness seam, not only a contention one: `current_shard`
-/// indexes `DISPATCH_ACTIVE_TICKETS` in `observe_dispatch_begin` and
-/// `clear_active_dispatch_ticket`. With every worker left on shard 0 they would
-/// overwrite each other's in-flight tickets, `computed_dispatch_watermark`
-/// would advance past live dispatches, and `hew_observe_barrier` could return
-/// OK while work is still running. The profiling allocator relies on the same
-/// exclusivity: a worker shard's counters are written only by that worker.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn set_current_worker_shard(worker_id: usize) {
-    let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
-    SHARDS_IN_USE.fetch_max(shard + 1, Ordering::Relaxed);
-    WORKER_SHARD.with(|slot| slot.set(shard));
-}
-
-/// One past the highest shard any thread has been pinned to; shards at or
-/// above it have never been written, so readers can stop summing there.
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn shards_in_use() -> usize {
-    SHARDS_IN_USE.load(Ordering::Relaxed)
-}
-
-// `current_shard`/`shard_add` carry no target gate and no `profiler` gate:
-// `record_actor_turn` reaches them on every target whenever the hot tier is on,
-// so they need no allow of their own — they die only if that recorder does.
 #[inline]
 pub(crate) fn current_shard() -> usize {
     WORKER_SHARD.with(Cell::get)
@@ -301,47 +141,118 @@ fn shard_sum(shards: &[AtomicU64; SHARD_COUNT]) -> u64 {
         .sum()
 }
 
-// Reached unconditionally from `reset_live_safe_counters`, whose own KEEP note
-// explains why that entry point is native-only; no allow of its own is needed.
-#[cfg(not(target_arch = "wasm32"))]
-fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
-    for counter in shards {
-        counter.store(0, Ordering::Relaxed);
-    }
-}
-
-// The heap-counter writers are driven exclusively by the profiling global
-// allocator (`profiler::allocator`), which only exists under the `profiler`
-// feature. The shards themselves stay unconditional so the always-present
-// `hot_counters_snapshot` reader returns 0 in non-profiler builds.
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_heap_alloc(size: u64) {
-    if observe_hot_tier_enabled() {
-        let counters = &HEAP_COUNTERS[current_shard()];
-        counters.allocations.fetch_add(1, Ordering::Relaxed);
-        counters.allocated.fetch_add(size, Ordering::Relaxed);
-    }
-}
-
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_heap_free(size: u64) {
-    if observe_hot_tier_enabled() {
-        let counters = &HEAP_COUNTERS[current_shard()];
-        counters.frees.fetch_add(1, Ordering::Relaxed);
-        counters.freed.fetch_add(size, Ordering::Relaxed);
-    }
-}
-
-// KEEP(wasm32): called from the native scheduler's actor dispatch path
-// (`scheduler.rs`), which lib.rs gates behind `#[cfg(not(target_arch =
-// "wasm32"))]`; this module is ungated, so wasm32 sees a definition with no
-// caller. Deleting it breaks every native build.
 pub(crate) fn record_actor_turn(duration_ns: u64) {
     if observe_hot_tier_enabled() {
         shard_add(&ACTOR_TURNS_TOTAL, 1);
         shard_add(&ACTOR_TURN_DURATION_NS_TOTAL, duration_ns);
     }
 }
+
+#[cfg(test)]
+pub(crate) fn coroutine_frame_bytes_live_for_test() -> u64 {
+    COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)
+}
+
+pub(crate) fn record_coroutine_frame_alloc(frame_bytes: u64) {
+    COROUTINES_LIVE.fetch_add(1, Ordering::Relaxed);
+    COROUTINES_FRAME_BYTES_LIVE.fetch_add(frame_bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn record_coroutine_frame_free(frame_bytes: u64) {
+    COROUTINES_LIVE.fetch_sub(1, Ordering::Relaxed);
+    COROUTINES_FRAME_BYTES_LIVE.fetch_sub(frame_bytes, Ordering::Relaxed);
+}
+
+pub(crate) fn record_coroutine_suspend() {
+    COROUTINES_SUSPENDS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    COROUTINES_SUSPENDED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_coroutine_resume() {
+    COROUTINES_RESUMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    let _ = COROUTINES_SUSPENDED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        value.checked_sub(1)
+    });
+}
+
+/// Count one actor crash under its kind and actor type.
+pub(crate) fn record_actor_crash(kind: &str, actor_type: &str) {
+    ACTORS_CRASHES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    let kind = crate::failure_kinds::TRAP_KIND_LABEL_VALUES
+        .iter()
+        .copied()
+        .find(|known| *known == kind)
+        .unwrap_or(crate::failure_kinds::KIND_UNKNOWNFAULT);
+    CRASHES_BY_KIND.access(|counts| {
+        match counts
+            .iter_mut()
+            .find(|((k, t), _)| *k == kind && t == actor_type)
+        {
+            Some((_, count)) => *count += 1,
+            None => counts.push(((kind, actor_type.to_owned()), 1)),
+        }
+    });
+}
+
+/// Count a supervisor giving up on a child.
+pub(crate) fn record_supervisor_giveup() {
+    SUPERVISOR_GIVEUPS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The calling thread's worker index plus one; zero off the worker pool.
+#[must_use]
+pub(crate) fn current_worker_id() -> u32 {
+    u32::try_from(current_shard()).unwrap_or(u32::MAX)
+}
+
+pub(crate) fn record_actor_restart() {
+    ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_arena_reset() {
+    ARENA_RESETS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "C" fn hew_observe_hot_tier_enabled() -> i32 {
+    i32::from(observe_hot_tier_enabled())
+}
+
+/// Wait until in-flight observe attribution settles (no-op on `wasm32`).
+#[no_mangle]
+pub extern "C" fn hew_observe_barrier() -> i64 {
+    crate::platform::host_io::observe_barrier()
+}
+
+/// The message type each worker shard is dispatching, for failure records and
+/// the hang snapshot. Zero when the shard is between turns.
+static TURN_MSG_TYPE: [std::sync::atomic::AtomicI32; SHARD_COUNT] =
+    [const { std::sync::atomic::AtomicI32::new(0) }; SHARD_COUNT];
+/// The actor each worker shard is dispatching, or zero.
+static TURN_ACTOR: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
+/// The dispatch function of each shard's actor, the handler registry's key.
+static TURN_DISPATCH: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
+
+static NEXT_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
+static PUBLISHED_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
+static DISPATCH_BARRIER_WAITERS: AtomicU64 = AtomicU64::new(0);
+static DISPATCH_ACTIVE_TICKETS: [AtomicU64; SHARD_COUNT] =
+    [const { AtomicU64::new(0) }; SHARD_COUNT];
+#[cfg(test)]
+static DISPATCH_BARRIER_MUTEX_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
+
+static DISPATCH_BARRIER: DispatchBarrier = DispatchBarrier {
+    lock: Mutex::new(()),
+    cond: Condvar::new(),
+};
+
+struct DispatchBarrier {
+    lock: Mutex<()>,
+    cond: Condvar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObserveDispatchTicket(u64);
 
 fn dispatch_barrier_lock() -> std::sync::MutexGuard<'static, ()> {
     #[cfg(test)]
@@ -361,35 +272,6 @@ fn publish_dispatch_begin(ticket: u64) {
     {
         std::hint::spin_loop();
     }
-}
-
-fn computed_dispatch_watermark() -> u64 {
-    let published_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
-    DISPATCH_ACTIVE_TICKETS
-        .iter()
-        .filter_map(|slot| {
-            let ticket = slot.load(Ordering::SeqCst);
-            (ticket != 0 && ticket <= published_ticket).then_some(ticket)
-        })
-        .min()
-        .map_or(published_ticket, |ticket| ticket.saturating_sub(1))
-}
-
-fn publish_dispatch_watermark() -> u64 {
-    let watermark = computed_dispatch_watermark();
-    let mut current = DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire);
-    while watermark > current {
-        match DISPATCH_COMPLETION_WATERMARK.compare_exchange(
-            current,
-            watermark,
-            Ordering::Release,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => return watermark,
-            Err(actual) => current = actual,
-        }
-    }
-    current
 }
 
 pub(crate) fn observe_dispatch_begin(
@@ -438,9 +320,6 @@ fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
 fn observe_dispatch_close(ticket: ObserveDispatchTicket) {
     clear_active_dispatch_ticket(ticket);
 
-    // Pair slot clearing and the waiter check with registration and scanning
-    // below. Their sequential order rules out both sides missing each other:
-    // either the scan sees this close or the closer sees a registered waiter.
     if DISPATCH_BARRIER_WAITERS.load(Ordering::SeqCst) > 0 {
         let _guard = dispatch_barrier_lock();
         DISPATCH_BARRIER.cond.notify_all();
@@ -453,243 +332,6 @@ pub(crate) fn observe_dispatch_attributed(ticket: ObserveDispatchTicket) {
 
 pub(crate) fn observe_dispatch_abandon(ticket: ObserveDispatchTicket) {
     observe_dispatch_close(ticket);
-}
-
-// The recorders below carry `KEEP(wasm32)`: each has live callers on every
-// native target, and each of those caller modules — `scheduler`, `reactor`,
-// `crash`, `supervisor`, `arena`, `blocking_pool` — is declared
-// `#[cfg(not(target_arch = "wasm32"))]` in lib.rs, while `pub mod observe` is
-// declared unconditionally. On wasm32 the definitions therefore compile with
-// zero callers (that build ships `scheduler_wasm`/`arena_wasm` and has no
-// reactor, crash handler or blocking pool); on native, deleting any of them is
-// an immediate compile error. The allow is per-symbol and wasm32-only so a
-// genuinely-unused recorder still warns on the primary target.
-
-// KEEP(wasm32): scheduler.rs park path.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_scheduler_park() {
-    SCHEDULER_PARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): scheduler.rs unpark path.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_scheduler_unpark() {
-    SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(crate) fn coroutine_frame_bytes_live_for_test() -> u64 {
-    COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)
-}
-
-pub(crate) fn record_coroutine_frame_alloc(frame_bytes: u64) {
-    COROUTINES_LIVE.fetch_add(1, Ordering::Relaxed);
-    COROUTINES_FRAME_BYTES_LIVE.fetch_add(frame_bytes, Ordering::Relaxed);
-}
-
-pub(crate) fn record_coroutine_frame_free(frame_bytes: u64) {
-    COROUTINES_LIVE.fetch_sub(1, Ordering::Relaxed);
-    COROUTINES_FRAME_BYTES_LIVE.fetch_sub(frame_bytes, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): scheduler.rs coroutine suspend path.
-pub(crate) fn record_coroutine_suspend() {
-    COROUTINES_SUSPENDS_TOTAL.fetch_add(1, Ordering::Relaxed);
-    COROUTINES_SUSPENDED.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): scheduler.rs coroutine resume path.
-pub(crate) fn record_coroutine_resume() {
-    COROUTINES_RESUMES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    let _ = COROUTINES_SUSPENDED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
-}
-
-// KEEP(wasm32): reactor.rs registration path.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_reactor_registration() {
-    REACTOR_REGISTRATIONS_LIVE.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): reactor.rs deregistration path.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_reactor_unregistration(count: u64) {
-    let _ =
-        REACTOR_REGISTRATIONS_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            Some(value.saturating_sub(count))
-        });
-}
-
-// KEEP(wasm32): reactor.rs readiness dispatch.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_reactor_ready_event() {
-    REACTOR_READY_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): reactor.rs slot table.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_io_handle_opened() {
-    IO_HANDLES_LIVE.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): reactor.rs slot table.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_io_handle_closed() {
-    let _ = IO_HANDLES_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
-}
-
-// KEEP(wasm32): blocking_pool.rs thread accounting.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_pool_threads(threads: usize) {
-    POOL_THREADS.store(threads as u64, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): blocking_pool.rs admission.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_pool_saturation() {
-    POOL_SATURATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Count one actor crash under its kind and actor type.
-pub(crate) fn record_actor_crash(kind: &str, actor_type: &str) {
-    ACTORS_CRASHES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    let kind = crate::failure_kinds::TRAP_KIND_LABEL_VALUES
-        .iter()
-        .copied()
-        .find(|known| *known == kind)
-        .unwrap_or(crate::failure_kinds::KIND_UNKNOWNFAULT);
-    CRASHES_BY_KIND.access(|counts| {
-        match counts
-            .iter_mut()
-            .find(|((k, t), _)| *k == kind && t == actor_type)
-        {
-            Some((_, count)) => *count += 1,
-            None => counts.push(((kind, actor_type.to_owned()), 1)),
-        }
-    });
-}
-
-/// Count a supervisor giving up on a child.
-pub(crate) fn record_supervisor_giveup() {
-    SUPERVISOR_GIVEUPS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The calling thread's worker index plus one; zero off the worker pool.
-#[must_use]
-pub(crate) fn current_worker_id() -> u32 {
-    u32::try_from(current_shard()).unwrap_or(u32::MAX)
-}
-
-/// One worker shard's turn in progress.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BusyWorker {
-    /// Worker index plus one; zero for threads off the pool.
-    pub worker_id: usize,
-    pub actor_id: u64,
-    pub dispatch: usize,
-    pub msg_type: i32,
-}
-
-/// What every worker shard is dispatching now.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub(crate) fn busy_workers() -> Vec<BusyWorker> {
-    (0..SHARD_COUNT)
-        .filter_map(|shard| {
-            let actor_id = TURN_ACTOR[shard].load(Ordering::Relaxed);
-            (actor_id != 0).then(|| BusyWorker {
-                worker_id: shard,
-                actor_id,
-                dispatch: usize::try_from(TURN_DISPATCH[shard].load(Ordering::Relaxed))
-                    .unwrap_or(0),
-                msg_type: TURN_MSG_TYPE[shard].load(Ordering::Relaxed),
-            })
-        })
-        .collect()
-}
-
-// KEEP(wasm32): supervisor.rs restart path.
-pub(crate) fn record_actor_restart() {
-    ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): arena.rs reset path.
-pub(crate) fn record_arena_reset() {
-    ARENA_RESETS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): blocking_pool.rs job entry.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_blocking_start() {
-    THREADS_BLOCKING_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-// KEEP(wasm32): blocking_pool.rs job exit.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_blocking_finish() {
-    let _ = THREADS_BLOCKING_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
-}
-
-#[no_mangle]
-pub extern "C" fn hew_observe_hot_tier_enabled() -> i32 {
-    i32::from(observe_hot_tier_enabled())
-}
-
-/// Wait until all native actor dispatches that started before this call have
-/// reached their observe attribution point.
-///
-/// Returns 0 on success, -1 when called from inside an actor dispatch (which
-/// would deadlock with `HEW_WORKERS=1`), and -2 after the bounded 30-second
-/// internal timeout. A process root task that has suspended runs under a task
-/// context with no actor; it is not a dispatch and may wait here.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub extern "C" fn hew_observe_barrier() -> i64 {
-    if crate::execution_context::current_context_is_actor_dispatch() {
-        crate::set_last_error("observe.barrier: cannot wait from inside an actor dispatch");
-        return OBSERVE_BARRIER_ERR_WORKER_CONTEXT;
-    }
-
-    let target_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
-    if DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) >= target_ticket {
-        return OBSERVE_BARRIER_OK;
-    }
-
-    let deadline = Instant::now() + OBSERVE_BARRIER_TIMEOUT;
-    let mut guard = dispatch_barrier_lock();
-    DISPATCH_BARRIER_WAITERS.fetch_add(1, Ordering::SeqCst);
-    let _waiter = DispatchBarrierWaiter;
-
-    // Completion is derived only when observed. Ordinary dispatch closes clear
-    // their authoritative slot without scanning every possible worker.
-    while publish_dispatch_watermark() < target_ticket {
-        let now = Instant::now();
-        if now >= deadline {
-            crate::set_last_error("observe.barrier: timed out after 30 seconds");
-            return OBSERVE_BARRIER_ERR_TIMEOUT;
-        }
-        let remaining = deadline.saturating_duration_since(now);
-        let (next_guard, _) = DISPATCH_BARRIER
-            .cond
-            .wait_timeout_or_recover(guard, remaining);
-        guard = next_guard;
-    }
-
-    OBSERVE_BARRIER_OK
-}
-
-/// WASM currently has no scheduler attribution probe path; keep the observe
-/// surface target-neutral like `series`/`scrape` and make the barrier a no-op.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_observe_barrier() -> i64 {
-    OBSERVE_BARRIER_OK
 }
 
 #[no_mangle]
@@ -797,76 +439,6 @@ pub fn runtime_hook_snapshot() -> RuntimeHookSnapshot {
     }
 }
 
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-fn heap_live_bytes() -> u64 {
-    crate::profiler::allocator::hew_memory_bytes_live()
-}
-
-#[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
-fn heap_live_bytes() -> u64 {
-    0
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scheduler_workers() -> u64 {
-    crate::scheduler::hew_sched_metrics_worker_count()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn scheduler_workers() -> u64 {
-    1
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scheduler_runnable_actors() -> u64 {
-    crate::scheduler::hew_sched_metrics_runnable_actors()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn scheduler_runnable_actors() -> u64 {
-    0
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scheduler_runnable_coroutines() -> u64 {
-    crate::scheduler::hew_sched_metrics_runnable_coroutines()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn scheduler_runnable_coroutines() -> u64 {
-    0
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scheduler_queue_depth() -> u64 {
-    crate::scheduler::hew_sched_metrics_queue_depth()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn scheduler_queue_depth() -> u64 {
-    0
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn scheduler_steals_total() -> u64 {
-    crate::scheduler::hew_sched_metrics_steals()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn scheduler_steals_total() -> u64 {
-    0
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn actors_live() -> u64 {
-    crate::profiler::actor_registry::snapshot_all().len() as u64
-}
-
-#[cfg(target_arch = "wasm32")]
-fn actors_live() -> u64 {
-    0
-}
-
 fn heap_counter_sum(field: impl Fn(&HeapCounters) -> &AtomicU64) -> u64 {
     HEAP_COUNTERS
         .iter()
@@ -878,19 +450,12 @@ fn heap_counter_sum(field: impl Fn(&HeapCounters) -> &AtomicU64) -> u64 {
 pub fn read_u64(name: &str) -> Option<u64> {
     match name {
         "observe.hot_enabled" => Some(u64::from(observe_hot_tier_enabled())),
-        "heap.live_bytes" => Some(heap_live_bytes()),
         "heap.allocated_total" => Some(heap_counter_sum(|counters| &counters.allocated)),
         "heap.freed_total" => Some(heap_counter_sum(|counters| &counters.freed)),
         "heap.allocations_total" => Some(heap_counter_sum(|counters| &counters.allocations)),
         "heap.frees_total" => Some(heap_counter_sum(|counters| &counters.frees)),
-        "scheduler.workers" => Some(scheduler_workers()),
-        "scheduler.runnable_actors" => Some(scheduler_runnable_actors()),
-        "scheduler.runnable_coroutines" => Some(scheduler_runnable_coroutines()),
-        "scheduler.queue_depth" => Some(scheduler_queue_depth()),
-        "scheduler.steals_total" => Some(scheduler_steals_total()),
         "scheduler.parks_total" => Some(crate::observe::scheduler_parks_total()),
         "scheduler.unparks_total" => Some(crate::observe::scheduler_unparks_total()),
-        "actors.live" => Some(actors_live()),
         "actors.turns_total" => Some(shard_sum(&ACTOR_TURNS_TOTAL)),
         "actors.turn_duration_ns_total" => Some(shard_sum(&ACTOR_TURN_DURATION_NS_TOTAL)),
         "actors.attributed_turns_total" => Some(attributed_turns_totals().turns_total),
@@ -900,12 +465,6 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "actors.crashes_total" => Some(ACTORS_CRASHES_TOTAL.load(Ordering::Relaxed)),
         "actors.restarts_total" => Some(ACTORS_RESTARTS_TOTAL.load(Ordering::Relaxed)),
         "supervisor.giveups_total" => Some(SUPERVISOR_GIVEUPS_TOTAL.load(Ordering::Relaxed)),
-        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-        "mailbox.depth" => Some(crate::profiler::actor_registry::mailbox_aggregate().sum_depth),
-        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-        "mailbox.depth_max" => Some(crate::profiler::actor_registry::mailbox_aggregate().max_depth),
-        #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-        "mailbox.depth_p99" => Some(crate::profiler::actor_registry::mailbox_aggregate().p99_depth),
         "coroutines.live" => Some(COROUTINES_LIVE.load(Ordering::Relaxed)),
         "coroutines.suspended" => Some(COROUTINES_SUSPENDED.load(Ordering::Relaxed)),
         "coroutines.resumes_total" => Some(COROUTINES_RESUMES_TOTAL.load(Ordering::Relaxed)),
@@ -918,15 +477,8 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "pool.threads" => Some(POOL_THREADS.load(Ordering::Relaxed)),
         "pool.saturations_total" => Some(POOL_SATURATIONS_TOTAL.load(Ordering::Relaxed)),
         "arena.resets_total" => Some(ARENA_RESETS_TOTAL.load(Ordering::Relaxed)),
-        #[cfg(not(target_arch = "wasm32"))]
-        "registry.conflicts_total" => Some(crate::registry::metrics_snapshot().1),
-        _ => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(value) = crate::hew_node::observe_metric(name) {
-                return Some(value);
-            }
-            crate::metrics::read_u64(name)
-        }
+        _ => crate::platform::host_io::read_host_observe_u64(name)
+            .or_else(|| crate::metrics::read_u64(name)),
     }
 }
 
@@ -980,20 +532,6 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
         ("registry.names", "gauge"),
         ("registry.conflicts_total", "counter"),
     ]
-}
-
-#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn runtime_series_snapshot() -> Vec<hew_observe_protocol::RuntimeSeries> {
-    observe_series()
-        .iter()
-        .filter_map(|(name, kind)| {
-            read_u64(name).map(|value| hew_observe_protocol::RuntimeSeries {
-                name: (*name).to_owned(),
-                kind: (*kind).to_owned(),
-                value,
-            })
-        })
-        .collect()
 }
 
 /// Rendered Prometheus series names of the per-handler attributed-turn series
@@ -1117,16 +655,6 @@ fn prometheus_label_value(value: &str) -> String {
     escaped
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
-fn handler_name(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
-    crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
-}
-
-#[cfg(any(target_arch = "wasm32", not(feature = "profiler")))]
-fn handler_name(_dispatch_ptr: usize, _msg_type: i32) -> Option<String> {
-    None
-}
-
 fn push_attributed_turn_series(out: &mut String) {
     let mut turns = attributed_turns_snapshot();
     turns.sort_by_key(|((dispatch_ptr, msg_type), _)| (*dispatch_ptr, *msg_type));
@@ -1138,7 +666,8 @@ fn push_attributed_turn_series(out: &mut String) {
     out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[0]);
     out.push_str(" counter\n");
     for ((dispatch_ptr, msg_type), turn) in &turns {
-        let handler = handler_name(*dispatch_ptr, *msg_type).unwrap_or_default();
+        let handler = crate::platform::host_io::observe_handler_name(*dispatch_ptr, *msg_type)
+            .unwrap_or_default();
         out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[0]);
         out.push_str("{dispatch=\"0x");
         write!(out, "{dispatch_ptr:x}").expect("write to String cannot fail");
@@ -1155,7 +684,8 @@ fn push_attributed_turn_series(out: &mut String) {
     out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[1]);
     out.push_str(" counter\n");
     for ((dispatch_ptr, msg_type), turn) in &turns {
-        let handler = handler_name(*dispatch_ptr, *msg_type).unwrap_or_default();
+        let handler = crate::platform::host_io::observe_handler_name(*dispatch_ptr, *msg_type)
+            .unwrap_or_default();
         out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[1]);
         out.push_str("{dispatch=\"0x");
         write!(out, "{dispatch_ptr:x}").expect("write to String cannot fail");
@@ -1167,21 +697,6 @@ fn push_attributed_turn_series(out: &mut String) {
         out.push_str(&turn.duration_ns_total.to_string());
         out.push('\n');
     }
-}
-
-/// `(supervisor_label, child_label, restarts)` rows for every child across
-/// every registered supervisor tree, read from the same
-/// `CrashStats::total_crashes` lifetime counter the supervisor debug tree
-/// formats — not the bounded restart-budget ring. Empty on wasm32 and on a
-/// build without the `profiler` feature, same as [`handler_name`] above.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
-fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
-    crate::supervisor::restarts_by_child_snapshot()
-}
-
-#[cfg(any(target_arch = "wasm32", not(feature = "profiler")))]
-fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
-    Vec::new()
 }
 
 /// The crash counter, labelled by kind and actor type. Every kind in the
@@ -1215,7 +730,7 @@ fn push_crash_series(out: &mut String) {
 }
 
 fn push_restarts_by_child_series(out: &mut String) {
-    let rows = restarts_by_child_snapshot();
+    let rows = crate::platform::host_io::supervisor_restarts_by_child_snapshot();
     if rows.is_empty() {
         return;
     }
@@ -1316,37 +831,7 @@ fn push_user_metric_self_series(out: &mut String) {
 }
 
 fn push_mailbox_loss_series(out: &mut String) {
-    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-    {
-        use std::fmt::Write as _;
-
-        let actors = crate::profiler::actor_registry::snapshot_all();
-        for (index, name) in MAILBOX_LOSS_SERIES.iter().enumerate() {
-            let name = render_prometheus_name(name);
-            let _ = writeln!(out, "# TYPE {name} counter");
-            for actor in &actors {
-                let (Some(identity), Some(mailbox)) = (&actor.identity, &actor.mailbox) else {
-                    continue;
-                };
-                let Some(serial) = identity.spawn_serial else {
-                    continue;
-                };
-                let values = [
-                    mailbox.dropped_new,
-                    mailbox.dropped_old,
-                    mailbox.coalesced,
-                    mailbox.dropped_on_stop,
-                ];
-                let _ = writeln!(
-                    out,
-                    "{name}{{actor=\"{}\",spawn_serial=\"{serial}\"}} {}",
-                    identity.actor_id, values[index]
-                );
-            }
-        }
-    }
-    #[cfg(not(all(feature = "profiler", not(target_arch = "wasm32"))))]
-    let _ = out;
+    crate::platform::host_io::append_mailbox_loss_series(out, &MAILBOX_LOSS_SERIES);
 }
 
 #[must_use]
@@ -1446,74 +931,336 @@ pub extern "C" fn hew_observe_series() -> *mut HewString {
     string_from_str(&series_text())
 }
 
-/// Reset metrics that are safe to clear while dispatchers are live.
-///
-/// These are interval counters: a concurrent increment may land on either
-/// side of the reset boundary, but it can never invalidate runtime ownership.
-/// In particular, this deliberately does **not** reset live gauges or the
-/// dispatch-ticket/barrier state.  Those values have active writers and are
-/// reset only by [`reset_all`] after scheduler shutdown has joined workers.
-///
-/// KEEP(wasm32): called from `scheduler::hew_sched_metrics_reset`, the
-/// counter-reset half of the public metrics C ABI. lib.rs gates `pub mod
-/// scheduler` behind `#[cfg(not(target_arch = "wasm32"))]` while `pub mod
-/// observe` is unconditional, so only wasm32 sees no caller.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn reset_live_safe_counters() {
-    for counters in &HEAP_COUNTERS {
-        counters.allocated.store(0, Ordering::Relaxed);
-        counters.freed.store(0, Ordering::Relaxed);
-        counters.allocations.store(0, Ordering::Relaxed);
-        counters.frees.store(0, Ordering::Relaxed);
-    }
-    shard_reset(&ACTOR_TURNS_TOTAL);
-    shard_reset(&ACTOR_TURN_DURATION_NS_TOTAL);
-    SCHEDULER_PARKS_TOTAL.store(0, Ordering::Relaxed);
-    SCHEDULER_UNPARKS_TOTAL.store(0, Ordering::Relaxed);
-    COROUTINES_RESUMES_TOTAL.store(0, Ordering::Relaxed);
-    COROUTINES_SUSPENDS_TOTAL.store(0, Ordering::Relaxed);
-    REACTOR_READY_EVENTS_TOTAL.store(0, Ordering::Relaxed);
-    ACTORS_CRASHES_TOTAL.store(0, Ordering::Relaxed);
-    SUPERVISOR_GIVEUPS_TOTAL.store(0, Ordering::Relaxed);
-    CRASHES_BY_KIND.access(Vec::clear);
-    ACTORS_RESTARTS_TOTAL.store(0, Ordering::Relaxed);
-    ARENA_RESETS_TOTAL.store(0, Ordering::Relaxed);
-    ATTRIBUTED_TURNS.access(|slot| {
-        if let Some(map) = slot.as_mut() {
-            map.clear();
+mod native {
+    #[cfg(feature = "profiler")]
+    use super::{current_shard, observe_hot_tier_enabled, observe_series, read_u64, PoisonSafe};
+    use super::{
+        dispatch_barrier_lock, AtomicU64, Ordering, ACTORS_CRASHES_TOTAL, ACTORS_RESTARTS_TOTAL,
+        ACTOR_TURNS_TOTAL, ACTOR_TURN_DURATION_NS_TOTAL, ARENA_RESETS_TOTAL, ATTRIBUTED_TURNS,
+        COROUTINES_FRAME_BYTES_LIVE, COROUTINES_LIVE, COROUTINES_RESUMES_TOTAL,
+        COROUTINES_SUSPENDED, COROUTINES_SUSPENDS_TOTAL, CRASHES_BY_KIND, DISPATCH_ACTIVE_TICKETS,
+        DISPATCH_BARRIER, DISPATCH_BARRIER_WAITERS, HEAP_COUNTERS, HOT_TIER_ENABLED,
+        IO_HANDLES_LIVE, NEXT_DISPATCH_TICKET, OBSERVE_BARRIER_OK, POOL_SATURATIONS_TOTAL,
+        POOL_THREADS, PUBLISHED_DISPATCH_TICKET, REACTOR_READY_EVENTS_TOTAL,
+        REACTOR_REGISTRATIONS_LIVE, SCHEDULER_PARKS_TOTAL, SCHEDULER_UNPARKS_TOTAL, SHARD_COUNT,
+        SUPERVISOR_GIVEUPS_TOTAL, THREADS_BLOCKING_COUNT, TURN_ACTOR, TURN_DISPATCH, TURN_MSG_TYPE,
+        WORKER_SHARD,
+    };
+    use std::time::{Duration, Instant};
+
+    use crate::util::CondvarExt;
+
+    pub(super) const OBSERVE_BARRIER_ERR_WORKER_CONTEXT: i64 = -1;
+    const OBSERVE_BARRIER_ERR_TIMEOUT: i64 = -2;
+    const OBSERVE_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);
+
+    static SHARDS_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    pub(super) static DISPATCH_COMPLETION_WATERMARK: AtomicU64 = AtomicU64::new(0);
+
+    struct DispatchBarrierWaiter;
+
+    impl Drop for DispatchBarrierWaiter {
+        fn drop(&mut self) {
+            DISPATCH_BARRIER_WAITERS.fetch_sub(1, Ordering::AcqRel);
         }
-    });
-}
+    }
 
-/// Reset observe/session counters after the runtime has quiesced.
-/// Process-lifetime Rc allocation counts survive a session reset: escaped
-/// allocations and weak-only headers can still be released by their owners.
-///
-/// Quiescence authority is `scheduler::hew_sched_shutdown`: it joins native
-/// workers before firing `session_reset`, which invokes this hook.  Do not call
-/// this from a live metrics API: clearing a dispatch ticket while its worker
-/// still owns it makes that worker panic when it closes the ticket.
-///
-/// KEEP(wasm32): registered on `session::RESET_HOOKS` by
-/// [`register_reset_hooks`] and fired from `scheduler::hew_sched_shutdown`
-/// after workers are joined — both in the native-only `scheduler` module.
-/// Dropping it would silently leak a prior session's metrics registry and
-/// dispatch-ticket state into the next JIT/AOT reload cycle.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn reset_all() {
-    reset_live_safe_counters();
-    COROUTINES_LIVE.store(0, Ordering::Relaxed);
-    COROUTINES_SUSPENDED.store(0, Ordering::Relaxed);
-    COROUTINES_FRAME_BYTES_LIVE.store(0, Ordering::Relaxed);
-    REACTOR_REGISTRATIONS_LIVE.store(0, Ordering::Relaxed);
-    THREADS_BLOCKING_COUNT.store(0, Ordering::Relaxed);
+    #[cfg(feature = "profiler")]
+    mod profiler_support {
+        use super::{
+            current_shard, observe_hot_tier_enabled, observe_series, read_u64, Ordering,
+            PoisonSafe, HEAP_COUNTERS, SHARDS_IN_USE,
+        };
+        use std::collections::BTreeMap;
 
-    // Clear the developer-defined metric registry on the same proven-quiescent
-    // session boundary so a fresh session never observes a prior session's
-    // metrics.
-    crate::metrics::session_reset_metrics();
-    #[cfg(not(target_arch = "wasm32"))]
-    {
+        static RC_LIVE_BY_LABEL: PoisonSafe<BTreeMap<usize, u64>> =
+            PoisonSafe::new(BTreeMap::new());
+
+        pub(crate) fn record_rc_allocation(label: *const std::ffi::c_char) {
+            RC_LIVE_BY_LABEL.access(|counts| *counts.entry(label as usize).or_default() += 1);
+        }
+
+        pub(crate) fn record_rc_free(label: *const std::ffi::c_char) {
+            RC_LIVE_BY_LABEL.access(|counts| {
+                let count = counts
+                    .get_mut(&(label as usize))
+                    .expect("allocated Rc label is registered");
+                *count -= 1;
+                if *count == 0 {
+                    counts.remove(&(label as usize));
+                }
+            });
+        }
+
+        /// Live Rc blocks by payload type name, merging labels that render alike.
+        pub(crate) fn rc_live_by_type() -> Vec<hew_observe_protocol::RcSurvivorType> {
+            let mut by_name = BTreeMap::<String, u64>::new();
+            RC_LIVE_BY_LABEL.access(|counts| {
+                for (&label, &count) in counts.iter() {
+                    // SAFETY: a non-zero row's headers retain this NUL-terminated label,
+                    // and the lock orders this read before the final free's removal.
+                    let name =
+                        unsafe { std::ffi::CStr::from_ptr(label as *const std::ffi::c_char) };
+                    *by_name
+                        .entry(name.to_string_lossy().into_owned())
+                        .or_default() += count;
+                }
+            });
+            by_name
+                .into_iter()
+                .map(|(type_name, count)| hew_observe_protocol::RcSurvivorType { type_name, count })
+                .collect()
+        }
+
+        /// One past the highest shard any thread has been pinned to; shards at or
+        /// above it have never been written, so readers can stop summing there.
+        pub(crate) fn shards_in_use() -> usize {
+            SHARDS_IN_USE.load(Ordering::Relaxed)
+        }
+
+        pub(crate) fn record_heap_alloc(size: u64) {
+            if observe_hot_tier_enabled() {
+                let counters = &HEAP_COUNTERS[current_shard()];
+                counters.allocations.fetch_add(1, Ordering::Relaxed);
+                counters.allocated.fetch_add(size, Ordering::Relaxed);
+            }
+        }
+
+        pub(crate) fn record_heap_free(size: u64) {
+            if observe_hot_tier_enabled() {
+                let counters = &HEAP_COUNTERS[current_shard()];
+                counters.frees.fetch_add(1, Ordering::Relaxed);
+                counters.freed.fetch_add(size, Ordering::Relaxed);
+            }
+        }
+
+        pub(crate) fn runtime_series_snapshot() -> Vec<hew_observe_protocol::RuntimeSeries> {
+            observe_series()
+                .iter()
+                .filter_map(|(name, kind)| {
+                    read_u64(name).map(|value| hew_observe_protocol::RuntimeSeries {
+                        name: (*name).to_owned(),
+                        kind: (*kind).to_owned(),
+                        value,
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[cfg(feature = "profiler")]
+    pub(crate) use profiler_support::{
+        rc_live_by_type, record_heap_alloc, record_heap_free, record_rc_allocation, record_rc_free,
+        runtime_series_snapshot, shards_in_use,
+    };
+
+    /// Configure the hot observe tier from `HEW_OBSERVE`.
+    ///
+    /// Accepted true values are `1`, `true`, `yes`, `on`, and `hot`. Empty/unset
+    /// leaves the tier disabled. This is called during scheduler initialization.
+    pub(crate) fn configure_from_env() {
+        let enabled = match std::env::var("HEW_OBSERVE") {
+            Ok(value) => matches!(value.as_str(), "1" | "true" | "yes" | "on" | "hot"),
+            Err(_) => std::env::var_os("HEW_PPROF").is_some(),
+        };
+        HOT_TIER_ENABLED.store(enabled, Ordering::Release);
+        crate::fault::configure_from_env();
+    }
+
+    /// Pin the calling thread to its own counter shard.
+    pub(crate) fn set_current_worker_shard(worker_id: usize) {
+        let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
+        SHARDS_IN_USE.fetch_max(shard + 1, Ordering::Relaxed);
+        WORKER_SHARD.with(|slot| slot.set(shard));
+    }
+
+    fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
+        for counter in shards {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn record_scheduler_park() {
+        SCHEDULER_PARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_scheduler_unpark() {
+        SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_reactor_registration() {
+        REACTOR_REGISTRATIONS_LIVE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_reactor_unregistration(count: u64) {
+        let _ = REACTOR_REGISTRATIONS_LIVE.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |value| Some(value.saturating_sub(count)),
+        );
+    }
+
+    pub(crate) fn record_reactor_ready_event() {
+        REACTOR_READY_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_io_handle_opened() {
+        IO_HANDLES_LIVE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_io_handle_closed() {
+        let _ = IO_HANDLES_LIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_sub(1)
+        });
+    }
+
+    pub(crate) fn record_pool_threads(threads: usize) {
+        POOL_THREADS.store(threads as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_pool_saturation() {
+        POOL_SATURATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One worker shard's turn in progress.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct BusyWorker {
+        /// Worker index plus one; zero for threads off the pool.
+        pub worker_id: usize,
+        pub actor_id: u64,
+        pub dispatch: usize,
+        pub msg_type: i32,
+    }
+
+    /// What every worker shard is dispatching now.
+    #[must_use]
+    pub(crate) fn busy_workers() -> Vec<BusyWorker> {
+        (0..SHARD_COUNT)
+            .filter_map(|shard| {
+                let actor_id = TURN_ACTOR[shard].load(Ordering::Relaxed);
+                (actor_id != 0).then(|| BusyWorker {
+                    worker_id: shard,
+                    actor_id,
+                    dispatch: usize::try_from(TURN_DISPATCH[shard].load(Ordering::Relaxed))
+                        .unwrap_or(0),
+                    msg_type: TURN_MSG_TYPE[shard].load(Ordering::Relaxed),
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn record_blocking_start() {
+        THREADS_BLOCKING_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_blocking_finish() {
+        let _ =
+            THREADS_BLOCKING_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_sub(1)
+            });
+    }
+
+    fn computed_dispatch_watermark() -> u64 {
+        let published_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
+        DISPATCH_ACTIVE_TICKETS
+            .iter()
+            .filter_map(|slot| {
+                let ticket = slot.load(Ordering::SeqCst);
+                (ticket != 0 && ticket <= published_ticket).then_some(ticket)
+            })
+            .min()
+            .map_or(published_ticket, |ticket| ticket.saturating_sub(1))
+    }
+
+    fn publish_dispatch_watermark() -> u64 {
+        let watermark = computed_dispatch_watermark();
+        let mut current = DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire);
+        while watermark > current {
+            match DISPATCH_COMPLETION_WATERMARK.compare_exchange(
+                current,
+                watermark,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return watermark,
+                Err(actual) => current = actual,
+            }
+        }
+        current
+    }
+
+    /// Wait until in-flight attributed dispatches settle and return 0, or a
+    /// negative status on worker context / timeout.
+    pub(crate) fn native_observe_barrier() -> i64 {
+        if crate::execution_context::current_context_is_actor_dispatch() {
+            crate::set_last_error("observe.barrier: cannot wait from inside an actor dispatch");
+            return OBSERVE_BARRIER_ERR_WORKER_CONTEXT;
+        }
+
+        let target_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
+        if DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) >= target_ticket {
+            return OBSERVE_BARRIER_OK;
+        }
+
+        let deadline = Instant::now() + OBSERVE_BARRIER_TIMEOUT;
+        let mut guard = dispatch_barrier_lock();
+        DISPATCH_BARRIER_WAITERS.fetch_add(1, Ordering::SeqCst);
+        let _waiter = DispatchBarrierWaiter;
+
+        while publish_dispatch_watermark() < target_ticket {
+            let now = Instant::now();
+            if now >= deadline {
+                crate::set_last_error("observe.barrier: timed out after 30 seconds");
+                return OBSERVE_BARRIER_ERR_TIMEOUT;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let (next_guard, _) = DISPATCH_BARRIER
+                .cond
+                .wait_timeout_or_recover(guard, remaining);
+            guard = next_guard;
+        }
+
+        OBSERVE_BARRIER_OK
+    }
+
+    /// Reset metrics that are safe to clear while dispatchers are live.
+    pub(crate) fn reset_live_safe_counters() {
+        for counters in &HEAP_COUNTERS {
+            counters.allocated.store(0, Ordering::Relaxed);
+            counters.freed.store(0, Ordering::Relaxed);
+            counters.allocations.store(0, Ordering::Relaxed);
+            counters.frees.store(0, Ordering::Relaxed);
+        }
+        shard_reset(&ACTOR_TURNS_TOTAL);
+        shard_reset(&ACTOR_TURN_DURATION_NS_TOTAL);
+        SCHEDULER_PARKS_TOTAL.store(0, Ordering::Relaxed);
+        SCHEDULER_UNPARKS_TOTAL.store(0, Ordering::Relaxed);
+        COROUTINES_RESUMES_TOTAL.store(0, Ordering::Relaxed);
+        COROUTINES_SUSPENDS_TOTAL.store(0, Ordering::Relaxed);
+        REACTOR_READY_EVENTS_TOTAL.store(0, Ordering::Relaxed);
+        ACTORS_CRASHES_TOTAL.store(0, Ordering::Relaxed);
+        SUPERVISOR_GIVEUPS_TOTAL.store(0, Ordering::Relaxed);
+        CRASHES_BY_KIND.access(Vec::clear);
+        ACTORS_RESTARTS_TOTAL.store(0, Ordering::Relaxed);
+        ARENA_RESETS_TOTAL.store(0, Ordering::Relaxed);
+        ATTRIBUTED_TURNS.access(|slot| {
+            if let Some(map) = slot.as_mut() {
+                map.clear();
+            }
+        });
+    }
+
+    /// Reset observe/session counters after the runtime has quiesced.
+    pub(crate) fn reset_all() {
+        reset_live_safe_counters();
+        COROUTINES_LIVE.store(0, Ordering::Relaxed);
+        COROUTINES_SUSPENDED.store(0, Ordering::Relaxed);
+        COROUTINES_FRAME_BYTES_LIVE.store(0, Ordering::Relaxed);
+        REACTOR_REGISTRATIONS_LIVE.store(0, Ordering::Relaxed);
+        THREADS_BLOCKING_COUNT.store(0, Ordering::Relaxed);
+
+        crate::metrics::session_reset_metrics();
         let _guard = dispatch_barrier_lock();
         NEXT_DISPATCH_TICKET.store(0, Ordering::Release);
         PUBLISHED_DISPATCH_TICKET.store(0, Ordering::Release);
@@ -1524,18 +1271,30 @@ pub(crate) fn reset_all() {
         }
         DISPATCH_BARRIER.cond.notify_all();
     }
+
+    pub(crate) fn register_reset_hooks() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| crate::session::register_reset_hook(reset_all));
+    }
 }
 
-/// KEEP(wasm32): called from `scheduler::hew_sched_init`, which lib.rs gates
-/// behind `#[cfg(not(target_arch = "wasm32"))]`. Structurally identical to the
-/// sibling registrations in bridge.rs, tracing.rs and profiler/mod.rs on the
-/// same shared `session::RESET_HOOKS` registry.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_reset_hooks() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| crate::session::register_reset_hook(reset_all));
-}
+pub(crate) use native::{
+    busy_workers, configure_from_env, native_observe_barrier, record_blocking_finish,
+    record_blocking_start, record_io_handle_closed, record_io_handle_opened,
+    record_pool_saturation, record_pool_threads, record_reactor_ready_event,
+    record_reactor_registration, record_reactor_unregistration, record_scheduler_park,
+    record_scheduler_unpark, register_reset_hooks, reset_live_safe_counters,
+    set_current_worker_shard,
+};
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) use native::{
+    rc_live_by_type, record_heap_alloc, record_heap_free, record_rc_allocation, record_rc_free,
+    runtime_series_snapshot, shards_in_use,
+};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native::{reset_all, DISPATCH_COMPLETION_WATERMARK, OBSERVE_BARRIER_ERR_WORKER_CONTEXT};
 
 #[cfg(test)]
 mod tests {
@@ -1559,27 +1318,6 @@ mod tests {
         let scrape = scrape_text();
         assert!(scrape.contains("heap_live_bytes"));
         assert!(scrape.contains("scheduler_queue_depth"));
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn live_metrics_reset_keeps_an_active_dispatch_ticket_closable() {
-        let _runtime = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-
-        // This is the exact formerly-fatal interleaving: a worker began a
-        // dispatch, then an external metrics reader reset counters before that
-        // worker reached its attribution/close edge.  The reset runs on a
-        // separate thread to keep the production cross-thread shape, while the
-        // barrier makes the active-ticket ordering deterministic.
-        let ticket = observe_dispatch_begin(0, 0, 0);
-        std::thread::spawn(|| crate::scheduler::hew_sched_metrics_reset())
-            .join()
-            .expect("live metrics reset thread must not panic");
-
-        observe_dispatch_attributed(ticket);
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
     }
 
     #[test]
@@ -1790,244 +1528,282 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_returns_immediately_when_already_attributed() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin(0, 0, 0);
-        observe_dispatch_attributed(ticket);
+    mod native_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
 
-        let started = Instant::now();
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "already-attributed barrier should not wait for a future dispatch"
-        );
-    }
+        #[test]
+        fn live_metrics_reset_keeps_an_active_dispatch_ticket_closable() {
+            let _runtime = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_wakes_when_concurrent_dispatch_is_attributed() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin(0, 0, 0);
+            let ticket = observe_dispatch_begin(0, 0, 0);
+            std::thread::spawn(|| crate::scheduler::hew_sched_metrics_reset())
+                .join()
+                .expect("live metrics reset thread must not panic");
 
-        let worker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(25));
             observe_dispatch_attributed(ticket);
-        });
-
-        let started = Instant::now();
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "barrier should wake on attribution notify"
-        );
-        worker.join().unwrap();
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_holds_for_earlier_ticket_when_later_ticket_closes_first() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        let ticket_a = observe_dispatch_begin(0, 0, 0);
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-
-        let waiter = std::thread::spawn(move || {
-            done_tx.send(hew_observe_barrier()).unwrap();
-        });
-
-        let wait_started = Instant::now();
-        while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) == 0 {
-            assert!(
-                wait_started.elapsed() < Duration::from_secs(1),
-                "barrier did not start waiting"
-            );
-            std::thread::yield_now();
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
         }
 
-        set_current_worker_shard(1);
-        let ticket_b = observe_dispatch_begin(0, 0, 0);
-        observe_dispatch_attributed(ticket_b);
-
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(
-            done_rx.try_recv().is_err(),
-            "later ticket must not release a barrier targeting an earlier incomplete ticket"
-        );
-
-        set_current_worker_shard(0);
-        observe_dispatch_attributed(ticket_a);
-        assert_eq!(
-            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            OBSERVE_BARRIER_OK
-        );
-        waiter.join().unwrap();
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_dispatch_close_uses_no_mutex_without_waiters() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        DISPATCH_BARRIER_MUTEX_ACQUISITIONS.store(0, Ordering::Relaxed);
-        set_current_worker_shard(0);
-
-        for _ in 0..1024 {
+        #[test]
+        fn observe_barrier_returns_immediately_when_already_attributed() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
             let ticket = observe_dispatch_begin(0, 0, 0);
             observe_dispatch_attributed(ticket);
-        }
 
-        assert_eq!(
-            DISPATCH_BARRIER_MUTEX_ACQUISITIONS.load(Ordering::Relaxed),
-            0,
-            "dispatch begin/close should stay on the atomic fast path when no barrier is waiting"
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn wait_for_barrier_waiters(expected: u64) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) != expected {
+            let started = Instant::now();
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
             assert!(
-                Instant::now() < deadline,
-                "barrier did not register its cut"
+                started.elapsed() < Duration::from_millis(100),
+                "already-attributed barrier should not wait for a future dispatch"
             );
-            std::thread::yield_now();
         }
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barriers_keep_distinct_cuts_when_future_dispatch_remains_live() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        let first = observe_dispatch_begin(0, 0, 0);
-        let (first_tx, first_rx) = std::sync::mpsc::channel();
-        let first_waiter = std::thread::spawn(move || {
-            first_tx.send(hew_observe_barrier()).unwrap();
-        });
-        wait_for_barrier_waiters(1);
+        #[test]
+        fn observe_barrier_wakes_when_concurrent_dispatch_is_attributed() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
+            let ticket = observe_dispatch_begin(0, 0, 0);
 
-        set_current_worker_shard(1);
-        let second = observe_dispatch_begin(0, 0, 0);
-        let (second_tx, second_rx) = std::sync::mpsc::channel();
-        let second_waiter = std::thread::spawn(move || {
-            second_tx.send(hew_observe_barrier()).unwrap();
-        });
-        wait_for_barrier_waiters(2);
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(25));
+                observe_dispatch_attributed(ticket);
+            });
 
-        set_current_worker_shard(0);
-        observe_dispatch_attributed(first);
-        assert_eq!(
-            first_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            OBSERVE_BARRIER_OK
-        );
-        assert!(
-            second_rx.try_recv().is_err(),
-            "a later cut still owns its live dispatch"
-        );
-        assert_eq!(
-            DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire),
-            first.0
-        );
+            let started = Instant::now();
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "barrier should wake on attribution notify"
+            );
+            worker.join().unwrap();
+        }
 
-        set_current_worker_shard(1);
-        observe_dispatch_abandon(second);
-        assert_eq!(
-            second_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            OBSERVE_BARRIER_OK
-        );
-        first_waiter.join().unwrap();
-        second_waiter.join().unwrap();
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
-        reset_all();
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
-    }
+        #[test]
+        fn observe_barrier_holds_for_earlier_ticket_when_later_ticket_closes_first() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
+            let ticket_a = observe_dispatch_begin(0, 0, 0);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_rechecks_a_close_before_waiter_registration() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin(0, 0, 0);
-        // The barrier can take its cut before it obtains this mutex. Close
-        // without a waiter notification, then let it register and recheck.
-        let guard = dispatch_barrier_lock();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            done_tx.send(hew_observe_barrier()).unwrap();
-        });
-        observe_dispatch_attributed(ticket);
-        drop(guard);
-        assert_eq!(
-            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            OBSERVE_BARRIER_OK
-        );
-        waiter.join().unwrap();
-    }
+            let waiter = std::thread::spawn(move || {
+                done_tx.send(hew_observe_barrier()).unwrap();
+            });
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_excludes_a_dispatch_until_begin_is_published() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_current_worker_shard(0);
-        // Pause begin after reserving its active slot but before publication.
-        let ticket = NEXT_DISPATCH_TICKET.fetch_add(1, Ordering::Relaxed) + 1;
-        DISPATCH_ACTIVE_TICKETS[current_shard()].store(ticket, Ordering::Release);
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
-        publish_dispatch_begin(ticket);
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            done_tx.send(hew_observe_barrier()).unwrap();
-        });
-        wait_for_barrier_waiters(1);
-        assert!(done_rx.try_recv().is_err());
-        observe_dispatch_abandon(ObserveDispatchTicket(ticket));
-        assert_eq!(
-            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            OBSERVE_BARRIER_OK
-        );
-        waiter.join().unwrap();
-    }
+            let wait_started = Instant::now();
+            while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) == 0 {
+                assert!(
+                    wait_started.elapsed() < Duration::from_secs(1),
+                    "barrier did not start waiting"
+                );
+                std::thread::yield_now();
+            }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_fails_fast_from_worker_context() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        let mut actor = std::mem::MaybeUninit::<crate::actor::HewActor>::uninit();
-        let mut ctx = crate::execution_context::HewExecutionContext {
-            actor: actor.as_mut_ptr(),
-            ..crate::execution_context::HewExecutionContext::default()
-        };
-        let prev = crate::execution_context::set_current_context(&raw mut ctx);
+            set_current_worker_shard(1);
+            let ticket_b = observe_dispatch_begin(0, 0, 0);
+            observe_dispatch_attributed(ticket_b);
 
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_ERR_WORKER_CONTEXT);
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                done_rx.try_recv().is_err(),
+                "later ticket must not release a barrier targeting an earlier incomplete ticket"
+            );
 
-        let restored = crate::execution_context::set_current_context(prev);
-        assert_eq!(restored, &raw mut ctx);
-    }
+            set_current_worker_shard(0);
+            observe_dispatch_attributed(ticket_a);
+            assert_eq!(
+                done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                OBSERVE_BARRIER_OK
+            );
+            waiter.join().unwrap();
+        }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn observe_barrier_waits_from_a_root_task_context() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        let mut ctx = crate::execution_context::HewExecutionContext::default();
-        let prev = crate::execution_context::set_current_context(&raw mut ctx);
+        #[test]
+        fn observe_dispatch_close_uses_no_mutex_without_waiters() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            DISPATCH_BARRIER_MUTEX_ACQUISITIONS.store(0, Ordering::Relaxed);
+            set_current_worker_shard(0);
 
-        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+            for _ in 0..1024 {
+                let ticket = observe_dispatch_begin(0, 0, 0);
+                observe_dispatch_attributed(ticket);
+            }
 
-        let restored = crate::execution_context::set_current_context(prev);
-        assert_eq!(restored, &raw mut ctx);
+            assert_eq!(
+                DISPATCH_BARRIER_MUTEX_ACQUISITIONS.load(Ordering::Relaxed),
+                0,
+                "dispatch begin/close should stay on the atomic fast path when no barrier is waiting"
+            );
+        }
+
+        fn wait_for_barrier_waiters(expected: u64) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) != expected {
+                assert!(
+                    Instant::now() < deadline,
+                    "barrier did not register its cut"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        #[test]
+        fn observe_barriers_keep_distinct_cuts_when_future_dispatch_remains_live() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
+            let first = observe_dispatch_begin(0, 0, 0);
+            let (first_tx, first_rx) = std::sync::mpsc::channel();
+            let first_waiter = std::thread::spawn(move || {
+                first_tx.send(hew_observe_barrier()).unwrap();
+            });
+            wait_for_barrier_waiters(1);
+
+            set_current_worker_shard(1);
+            let second = observe_dispatch_begin(0, 0, 0);
+            let (second_tx, second_rx) = std::sync::mpsc::channel();
+            let second_waiter = std::thread::spawn(move || {
+                second_tx.send(hew_observe_barrier()).unwrap();
+            });
+            wait_for_barrier_waiters(2);
+
+            set_current_worker_shard(0);
+            observe_dispatch_attributed(first);
+            assert_eq!(
+                first_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                OBSERVE_BARRIER_OK
+            );
+            assert!(
+                second_rx.try_recv().is_err(),
+                "a later cut still owns its live dispatch"
+            );
+            assert_eq!(
+                DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire),
+                first.0
+            );
+
+            set_current_worker_shard(1);
+            observe_dispatch_abandon(second);
+            assert_eq!(
+                second_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                OBSERVE_BARRIER_OK
+            );
+            first_waiter.join().unwrap();
+            second_waiter.join().unwrap();
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+            reset_all();
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+        }
+
+        #[test]
+        fn observe_barrier_rechecks_a_close_before_waiter_registration() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
+            let ticket = observe_dispatch_begin(0, 0, 0);
+            let guard = dispatch_barrier_lock();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                done_tx.send(hew_observe_barrier()).unwrap();
+            });
+            observe_dispatch_attributed(ticket);
+            drop(guard);
+            assert_eq!(
+                done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                OBSERVE_BARRIER_OK
+            );
+            waiter.join().unwrap();
+        }
+
+        #[test]
+        fn observe_barrier_excludes_a_dispatch_until_begin_is_published() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_current_worker_shard(0);
+            let ticket = NEXT_DISPATCH_TICKET.fetch_add(1, Ordering::Relaxed) + 1;
+            DISPATCH_ACTIVE_TICKETS[current_shard()].store(ticket, Ordering::Release);
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+            publish_dispatch_begin(ticket);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                done_tx.send(hew_observe_barrier()).unwrap();
+            });
+            wait_for_barrier_waiters(1);
+            assert!(done_rx.try_recv().is_err());
+            observe_dispatch_abandon(ObserveDispatchTicket(ticket));
+            assert_eq!(
+                done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+                OBSERVE_BARRIER_OK
+            );
+            waiter.join().unwrap();
+        }
+
+        #[test]
+        fn observe_barrier_fails_fast_from_worker_context() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            let mut actor = std::mem::MaybeUninit::<crate::actor::HewActor>::uninit();
+            let mut ctx = crate::execution_context::HewExecutionContext {
+                actor: actor.as_mut_ptr(),
+                ..crate::execution_context::HewExecutionContext::default()
+            };
+            let prev = crate::execution_context::set_current_context(&raw mut ctx);
+
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_ERR_WORKER_CONTEXT);
+
+            let restored = crate::execution_context::set_current_context(prev);
+            assert_eq!(restored, &raw mut ctx);
+        }
+
+        #[test]
+        fn observe_barrier_waits_from_a_root_task_context() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            let mut ctx = crate::execution_context::HewExecutionContext::default();
+            let prev = crate::execution_context::set_current_context(&raw mut ctx);
+
+            assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+
+            let restored = crate::execution_context::set_current_context(prev);
+            assert_eq!(restored, &raw mut ctx);
+        }
+
+        #[cfg(feature = "profiler")]
+        #[test]
+        fn heap_counters_preserve_tier_and_reset_boundaries() {
+            let _guard = crate::runtime_test_guard();
+            reset_all();
+            set_hot_tier_enabled(false);
+            record_heap_alloc(128);
+            set_hot_tier_enabled(true);
+            set_current_worker_shard(0);
+            record_heap_alloc(64);
+            set_current_worker_shard(1);
+            record_heap_alloc(32);
+            record_heap_free(64);
+            set_hot_tier_enabled(false);
+            record_heap_free(32);
+
+            let hot = hot_counters_snapshot();
+            assert_eq!(hot.heap_allocated_total, 96);
+            assert_eq!(hot.heap_freed_total, 64);
+            assert_eq!(hot.heap_allocations_total, 2);
+            assert_eq!(hot.heap_frees_total, 1);
+            reset_live_safe_counters();
+            let reset = hot_counters_snapshot();
+            assert_eq!(reset.heap_allocated_total, 0);
+            assert_eq!(reset.heap_freed_total, 0);
+            assert_eq!(reset.heap_allocations_total, 0);
+            assert_eq!(reset.heap_frees_total, 0);
+            set_current_worker_shard(0);
+        }
     }
 
     #[test]
@@ -2048,36 +1824,6 @@ mod tests {
 
         set_hot_tier_enabled(false);
         reset_all();
-    }
-
-    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-    #[test]
-    fn heap_counters_preserve_tier_and_reset_boundaries() {
-        let _guard = crate::runtime_test_guard();
-        reset_all();
-        set_hot_tier_enabled(false);
-        record_heap_alloc(128);
-        set_hot_tier_enabled(true);
-        set_current_worker_shard(0);
-        record_heap_alloc(64);
-        set_current_worker_shard(1);
-        record_heap_alloc(32);
-        record_heap_free(64);
-        set_hot_tier_enabled(false);
-        record_heap_free(32);
-
-        let hot = hot_counters_snapshot();
-        assert_eq!(hot.heap_allocated_total, 96);
-        assert_eq!(hot.heap_freed_total, 64);
-        assert_eq!(hot.heap_allocations_total, 2);
-        assert_eq!(hot.heap_frees_total, 1);
-        reset_live_safe_counters();
-        let reset = hot_counters_snapshot();
-        assert_eq!(reset.heap_allocated_total, 0);
-        assert_eq!(reset.heap_freed_total, 0);
-        assert_eq!(reset.heap_allocations_total, 0);
-        assert_eq!(reset.heap_frees_total, 0);
-        set_current_worker_shard(0);
     }
 
     #[test]

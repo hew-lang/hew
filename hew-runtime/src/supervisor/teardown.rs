@@ -142,8 +142,7 @@ pub(crate) fn mark_child_spec_spent(sup: *mut HewSupervisor, identity: u64) {
 
 #[inline]
 fn supervisor_quiescence_expired(deadline: Instant) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if scheduler::shutdown_requested() {
+    if crate::platform::executor::shutdown_requested() {
         return true;
     }
     Instant::now() >= deadline
@@ -1312,12 +1311,5 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
 }
 
 fn actor_progress_available() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        scheduler::actor_progress_available()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        true
-    }
+    crate::platform::executor::actor_progress_available()
 }

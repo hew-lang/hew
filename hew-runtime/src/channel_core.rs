@@ -74,14 +74,7 @@ mod failure_properties;
 /// to, and [`crate::driver::step`] fails closed on its own once nothing is
 /// left that could run.
 fn send_abandoned_by_shutdown() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::shutdown::hew_shutdown_phase() >= crate::shutdown::PHASE_DRAIN
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        false
-    }
+    crate::platform::executor::send_abandoned_by_shutdown()
 }
 
 /// Codegen ABI: the await entry parked the continuation; the runtime will wake

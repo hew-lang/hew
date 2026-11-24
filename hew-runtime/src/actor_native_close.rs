@@ -267,8 +267,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             .store(record.as_raw(), Ordering::Release);
     }
     let actor_id = actor.id;
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::hew_node::retire_current_actor_names(actor_id);
+    crate::platform::host_io::retire_current_actor_names(actor_id);
     let notice = completion.terminal_notice.lock_or_recover().take();
     // Cleanup is complete, including the crash hook's decision, but close
     // observers stay pending until all terminal notifications are published.
@@ -364,8 +363,7 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
 #[derive(Debug)]
 pub struct HewNativeActorWait {
     completion: Option<Arc<NativeActorCompletion>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    imported: Option<Box<crate::actor_observe::HewNativeActorObservation>>,
+    imported: crate::platform::host_io::ImportedWaitOperation,
     pub(crate) target: live_actors::ActorIncarnation,
     _waker: Arc<OwnedWaker>,
 }
@@ -393,8 +391,7 @@ pub(crate) unsafe fn wait_from_target(
     }
     Box::into_raw(Box::new(HewNativeActorWait {
         completion,
-        #[cfg(not(target_arch = "wasm32"))]
-        imported: None,
+        imported: crate::platform::host_io::ImportedWaitOperation::NONE,
         target: actor,
         _waker: waker,
     }))
@@ -410,17 +407,16 @@ pub unsafe extern "C" fn hew_actor_wait_new(
     token: local_handles::HewLocalPidId,
     waker: *const HewWaker,
 ) -> *mut HewNativeActorWait {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(imported) = local_handles::current_imported_actor(token) {
+    let imported_wait =
         // SAFETY: the caller retains its live wake descriptor.
-        let (completion, operation) =
-            unsafe { crate::hew_node::monitor_link::imported_actor_wait(&imported, waker) };
+        unsafe { crate::platform::host_io::try_start_imported_actor_wait(token, waker) };
+    if let Some((completion, imported)) = imported_wait {
         // SAFETY: this borrow remains live while retaining the descriptor.
         let owned = Arc::new(unsafe { OwnedWaker::retain(&*waker) });
         completion.ready.register(&owned);
         return Box::into_raw(Box::new(HewNativeActorWait {
             completion: Some(completion),
-            imported: Some(operation),
+            imported,
             target: live_actors::ActorIncarnation::NONE,
             _waker: owned,
         }));
@@ -472,11 +468,8 @@ pub unsafe extern "C" fn hew_actor_wait_new(
 pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) -> i32 {
     // SAFETY: the operation remains live during this poll.
     let wait = unsafe { &mut *wait.cast_mut() };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(operation) = &mut wait.imported {
-        // SAFETY: the unique wait owner serializes polls of its setup operation.
-        unsafe { crate::actor_observe::hew_native_actor_observe_poll(&raw mut **operation) };
-    }
+    // SAFETY: the unique wait owner serializes polls of its setup operation.
+    unsafe { wait.imported.poll() };
     match &wait.completion {
         Some(completion) if completion.phase.load(Ordering::Acquire) != 2 => 0,
         Some(completion) if completion.code.load(Ordering::Relaxed) != 0 => 2,
@@ -583,8 +576,7 @@ mod tests {
             completion.ready.register(&waker);
             let wait = Box::into_raw(Box::new(HewNativeActorWait {
                 completion: Some(completion),
-                #[cfg(not(target_arch = "wasm32"))]
-                imported: None,
+                imported: crate::platform::host_io::ImportedWaitOperation::NONE,
                 target: live_actors::ActorIncarnation::NONE,
                 _waker: waker,
             }));
@@ -636,8 +628,7 @@ mod tests {
             let (_, waker) = crate::wake::blocking::Readiness::new();
             let wait = Box::into_raw(Box::new(HewNativeActorWait {
                 completion: Some(completion),
-                #[cfg(not(target_arch = "wasm32"))]
-                imported: None,
+                imported: crate::platform::host_io::ImportedWaitOperation::NONE,
                 target: live_actors::ActorIncarnation::NONE,
                 _waker: Arc::new(waker),
             }));
@@ -776,7 +767,7 @@ mod tests {
             let (_, waker) = crate::wake::blocking::Readiness::new();
             let wait = Box::into_raw(Box::new(HewNativeActorWait {
                 completion: Some(completion),
-                imported: None,
+                imported: crate::platform::host_io::ImportedWaitOperation::NONE,
                 target: live_actors::ActorIncarnation::NONE,
                 _waker: Arc::new(waker),
             }));
@@ -818,8 +809,7 @@ mod tests {
         let (_, waker) = crate::wake::blocking::Readiness::new();
         let wait = Box::into_raw(Box::new(HewNativeActorWait {
             completion: Some(completion.clone()),
-            #[cfg(not(target_arch = "wasm32"))]
-            imported: None,
+            imported: crate::platform::host_io::ImportedWaitOperation::NONE,
             target: live_actors::ActorIncarnation::NONE,
             _waker: Arc::new(waker),
         }));
@@ -852,8 +842,7 @@ mod tests {
         let (_, waker) = crate::wake::blocking::Readiness::new();
         let wait = Box::into_raw(Box::new(HewNativeActorWait {
             completion: Some(completion),
-            #[cfg(not(target_arch = "wasm32"))]
-            imported: None,
+            imported: crate::platform::host_io::ImportedWaitOperation::NONE,
             target: live_actors::ActorIncarnation::NONE,
             _waker: Arc::new(waker),
         }));

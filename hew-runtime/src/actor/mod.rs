@@ -84,343 +84,342 @@ fn run_crash_teardown_order_hook(event: c_int) {
 // retires the exact node and its retained reply-sender reference even though
 // the sender's wake CAS necessarily loses.
 #[cfg(all(test, not(target_arch = "wasm32")))]
-type SendPostEnqueueHook = (
-    u64,
-    std::sync::Arc<std::sync::Barrier>,
-    std::sync::Arc<std::sync::Barrier>,
-);
+mod native_test_hooks {
+    use super::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static SEND_POST_ENQUEUE_PRE_WAKE_HOOK: Mutex<Option<SendPostEnqueueHook>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_send_post_enqueue_pre_wake_hook(a: &HewActor) {
-    let rendezvous = {
-        let guard = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.as_ref().and_then(|(actor_id, entered, release)| {
-            (*actor_id == a.id).then(|| (entered.clone(), release.clone()))
-        })
-    };
-    if let Some((entered, release)) = rendezvous {
-        entered.wait();
-        release.wait();
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) struct SendPostEnqueueHookGuard;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl SendPostEnqueueHookGuard {
-    pub(crate) fn install(
-        actor_id: u64,
-    ) -> (
-        Self,
+    type SendPostEnqueueHook = (
+        u64,
         std::sync::Arc<std::sync::Barrier>,
         std::sync::Arc<std::sync::Barrier>,
-    ) {
-        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(hook.is_none(), "send ownership hook already installed");
-        *hook = Some((actor_id, entered.clone(), release.clone()));
-        (Self, entered, release)
-    }
-}
+    );
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for SendPostEnqueueHookGuard {
-    fn drop(&mut self) {
-        *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-}
+    static SEND_POST_ENQUEUE_PRE_WAKE_HOOK: Mutex<Option<SendPostEnqueueHook>> = Mutex::new(None);
 
-// ── Free-path pre-detach rendezvous hook (test-only) ─────────────────────
-//
-// Lets a test deterministically force the reactor-detach UAF window: the hook
-// fires inside `hew_actor_free_inner` *after* the actor first looks quiescent
-// and *before* `prepare_quiescent_actor_for_cleanup` (which runs
-// `reactor_detach_actor`). A test installs a hook that releases a "reactor
-// delivery" thread to publish a wake (`CAS Idle->Runnable` + `sched_enqueue`)
-// during the detach window, so the producer-side re-check is exercised every
-// run rather than by timing luck.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static FREE_PRE_DETACH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-#[cfg_attr(
-    not(unix),
-    allow(
-        dead_code,
-        reason = "only consumed by the unix-gated free-during-reactor-detach race test"
-    )
-)]
-fn set_free_pre_detach_hook_for_test(hook: Option<fn(*mut HewActor)>) {
-    let mut guard = FREE_PRE_DETACH_HOOK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = hook;
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_free_pre_detach_hook(actor: *mut HewActor) {
-    let hook = {
-        let guard = FREE_PRE_DETACH_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
-    };
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-// ── Free-path post-latch rendezvous hook (test-only) ─────────────────────
-//
-// Lets a test deterministically force the *non-reactor* wake UAF window: the
-// hook fires inside `hew_actor_free_inner` *after* free has latched the actor
-// out of `Idle` into the `Stopped` terminal state (step 3) and *before*
-// `untrack_actor`. A test installs a hook that performs the exact link/monitor
-// side effect (`with_live_actor_by_id` → `CAS Idle->Runnable` + `sched_enqueue`)
-// that `send_exit_signal` / `send_down_notification` run for a crashing peer.
-// Because free has already CAS'd the actor to `Stopped`, that producer-side
-// `CAS Idle->Runnable` must fail and no enqueue can happen — proving the
-// non-reactor wake is closed. Reverting the latch (breaking with the bare
-// post-detach `Idle` observation) lets the hook's CAS succeed and leaves a
-// freed actor queued (the UAF the verdict reproduced).
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static FREE_POST_LATCH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn set_free_post_latch_hook_for_test(hook: Option<fn(*mut HewActor)>) {
-    let mut guard = FREE_POST_LATCH_HOOK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = hook;
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_free_post_latch_hook(actor: *mut HewActor) {
-    let hook = {
-        let guard = FREE_POST_LATCH_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
-    };
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-// The destruction of an actor's system queue is only defensible if it cannot
-// race a producer. That rests on an ORDERING -- the actor is latched into a
-// terminal state and removed from live tracking before anything reaches the
-// queue -- and an ordering is a checkable fact, not a paragraph. This hook
-// fires on the instruction before `hew_mailbox_free`, so a test reads the
-// state that holds AT destruction. Move the queue free above the latch or the
-// untrack and `teardown_reaches_queue_destruction_only_after_terminal_and_untracked`
-// fails.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static PRE_QUEUE_DESTROY_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn set_pre_queue_destroy_hook_for_test(hook: Option<fn(*mut HewActor)>) {
-    let mut guard = PRE_QUEUE_DESTROY_HOOK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = hook;
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_pre_queue_destroy_hook(actor: *mut HewActor) {
-    let hook = {
-        let guard = PRE_QUEUE_DESTROY_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
-    };
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-// ── Stable-registration retirement rendezvous hooks (test-only) ──────────
-#[cfg(all(test, not(target_arch = "wasm32")))]
-#[derive(Clone)]
-struct RegistrationRetirementHook {
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static FREE_PRE_LATCH_REGISTRATION_HOOK: Mutex<Option<RegistrationRetirementHook>> =
-    Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static FREE_POST_RETIRE_REGISTRATION_HOOK: Mutex<Option<RegistrationRetirementHook>> =
-    Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) struct RegistrationRetirementHookGuard {
-    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for RegistrationRetirementHookGuard {
-    fn drop(&mut self) {
-        *self
-            .slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_registration_retirement_hook(
-    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-) -> RegistrationRetirementHookGuard {
-    *slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RegistrationRetirementHook {
-        actor_id,
-        entered,
-        release,
-    });
-    RegistrationRetirementHookGuard { slot }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn install_free_pre_latch_registration_hook_for_test(
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-) -> RegistrationRetirementHookGuard {
-    install_registration_retirement_hook(
-        &FREE_PRE_LATCH_REGISTRATION_HOOK,
-        actor_id,
-        entered,
-        release,
-    )
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn install_free_post_retire_registration_hook_for_test(
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-) -> RegistrationRetirementHookGuard {
-    install_registration_retirement_hook(
-        &FREE_POST_RETIRE_REGISTRATION_HOOK,
-        actor_id,
-        entered,
-        release,
-    )
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_registration_retirement_hook(
-    slot: &'static Mutex<Option<RegistrationRetirementHook>>,
-    actor_id: u64,
-) {
-    let hook = {
-        let mut guard = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.as_ref().is_some_and(|hook| hook.actor_id == actor_id) {
-            guard.take()
-        } else {
-            None
+    pub(super) fn run_send_post_enqueue_pre_wake_hook(a: &HewActor) {
+        let rendezvous = {
+            let guard = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.as_ref().and_then(|(actor_id, entered, release)| {
+                (*actor_id == a.id).then(|| (entered.clone(), release.clone()))
+            })
+        };
+        if let Some((entered, release)) = rendezvous {
+            entered.wait();
+            release.wait();
         }
-    };
-    if let Some(hook) = hook {
-        hook.entered.wait();
-        hook.release.wait();
     }
-}
 
-// ── Drain target pin rendezvous hook (test-only) ─────────────────────────
-//
-// `drain_actors` resolves actor IDs under `LIVE_ACTORS`, then calls the raw
-// pointer `hew_actor_stop` entry point after the registry lock is released.
-// The allocation must remain pinned across that gap. This hook pauses after
-// the pin is acquired and immediately before stop dereferences the pointer so
-// a test can drive a concurrent free through untracking and prove that final
-// reclamation remains blocked on this exact pin.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static DRAIN_POST_PIN_PRE_STOP_HOOK: Mutex<Option<RegistrationRetirementHook>> = Mutex::new(None);
+    pub struct SendPostEnqueueHookGuard;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_drain_post_pin_pre_stop_hook_for_test(
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-) -> RegistrationRetirementHookGuard {
-    install_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id, entered, release)
-}
+    impl SendPostEnqueueHookGuard {
+        pub(crate) fn install(
+            actor_id: u64,
+        ) -> (
+            Self,
+            std::sync::Arc<std::sync::Barrier>,
+            std::sync::Arc<std::sync::Barrier>,
+        ) {
+            let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(hook.is_none(), "send ownership hook already installed");
+            *hook = Some((actor_id, entered.clone(), release.clone()));
+            (Self, entered, release)
+        }
+    }
 
-// The second drain lifetime boundary is the handoff from a quiescent state
-// observation to cleanup preparation and the LIVE_ACTORS retirement claim.
-// This hook pauses after the exact actor has been pinned and its state read,
-// but before cleanup first dereferences it.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static DRAIN_POST_STATE_PRE_CLEANUP_HOOK: Mutex<Option<RegistrationRetirementHook>> =
-    Mutex::new(None);
+    impl Drop for SendPostEnqueueHookGuard {
+        fn drop(&mut self) {
+            *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn install_drain_post_state_pre_cleanup_hook_for_test(
-    actor_id: u64,
-    entered: std::sync::Arc<std::sync::Barrier>,
-    release: std::sync::Arc<std::sync::Barrier>,
-) -> RegistrationRetirementHookGuard {
-    install_registration_retirement_hook(
-        &DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
-        actor_id,
-        entered,
-        release,
-    )
-}
+    // ── Free-path pre-detach rendezvous hook (test-only) ─────────────────
+    //
+    // Lets a test deterministically force the reactor-detach UAF window: the hook
+    // fires inside `hew_actor_free_inner` *after* the actor first looks quiescent
+    // and *before* `prepare_quiescent_actor_for_cleanup` (which runs
+    // `reactor_detach_actor`). A test installs a hook that releases a "reactor
+    // delivery" thread to publish a wake (`CAS Idle->Runnable` + `sched_enqueue`)
+    // during the detach window, so the producer-side re-check is exercised every
+    // run rather than by timing luck.
+    static FREE_PRE_DETACH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
 
-// ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
-//
-// Fires inside `cleanup_all_actors` for each actor, AFTER
-// `prepare_quiescent_actor_for_cleanup` runs and BEFORE the Idle→Stopped
-// wake-proofing latch. A test uses this point to simulate a concurrent
-// by-ID send that CAS-es `Idle→Runnable` in the latch window, proving that
-// the latch-fail path (actor skipped / leaked) fires instead of a UAF
-// finalize-under-queued-actor.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static CLEANUP_POST_PREPARE_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn set_cleanup_post_prepare_hook_for_test(hook: Option<fn(*mut HewActor)>) {
-    let mut guard = CLEANUP_POST_PREPARE_HOOK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = hook;
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_cleanup_post_prepare_hook(actor: *mut HewActor) {
-    let hook = {
-        let guard = CLEANUP_POST_PREPARE_HOOK
+    #[cfg_attr(
+        not(unix),
+        allow(
+            dead_code,
+            reason = "only consumed by the unix-gated free-during-reactor-detach race test"
+        )
+    )]
+    pub(super) fn set_free_pre_detach_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+        let mut guard = FREE_PRE_DETACH_HOOK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
-    };
-    if let Some(hook) = hook {
-        hook(actor);
+        *guard = hook;
+    }
+
+    pub(super) fn run_free_pre_detach_hook(actor: *mut HewActor) {
+        let hook = {
+            let guard = FREE_PRE_DETACH_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+        };
+        if let Some(hook) = hook {
+            hook(actor);
+        }
+    }
+
+    // ── Free-path post-latch rendezvous hook (test-only) ─────────────────
+    //
+    // Lets a test deterministically force the *non-reactor* wake UAF window: the
+    // hook fires inside `hew_actor_free_inner` *after* free has latched the actor
+    // out of `Idle` into the `Stopped` terminal state (step 3) and *before*
+    // `untrack_actor`. A test installs a hook that performs the exact link/monitor
+    // side effect (`with_live_actor_by_id` → `CAS Idle->Runnable` + `sched_enqueue`)
+    // that `send_exit_signal` / `send_down_notification` run for a crashing peer.
+    // Because free has already CAS'd the actor to `Stopped`, that producer-side
+    // `CAS Idle->Runnable` must fail and no enqueue can happen — proving the
+    // non-reactor wake is closed. Reverting the latch (breaking with the bare
+    // post-detach `Idle` observation) lets the hook's CAS succeed and leaves a
+    // freed actor queued (the UAF the verdict reproduced).
+    static FREE_POST_LATCH_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+    pub(super) fn set_free_post_latch_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+        let mut guard = FREE_POST_LATCH_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = hook;
+    }
+
+    pub(super) fn run_free_post_latch_hook(actor: *mut HewActor) {
+        let hook = {
+            let guard = FREE_POST_LATCH_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+        };
+        if let Some(hook) = hook {
+            hook(actor);
+        }
+    }
+
+    // The destruction of an actor's system queue is only defensible if it cannot
+    // race a producer. That rests on an ORDERING -- the actor is latched into a
+    // terminal state and removed from live tracking before anything reaches the
+    // queue -- and an ordering is a checkable fact, not a paragraph. This hook
+    // fires on the instruction before `hew_mailbox_free`, so a test reads the
+    // state that holds AT destruction. Move the queue free above the latch or the
+    // untrack and `teardown_reaches_queue_destruction_only_after_terminal_and_untracked`
+    // fails.
+    static PRE_QUEUE_DESTROY_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+    pub(super) fn set_pre_queue_destroy_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+        let mut guard = PRE_QUEUE_DESTROY_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = hook;
+    }
+
+    pub(super) fn run_pre_queue_destroy_hook(actor: *mut HewActor) {
+        let hook = {
+            let guard = PRE_QUEUE_DESTROY_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+        };
+        if let Some(hook) = hook {
+            hook(actor);
+        }
+    }
+
+    // ── Stable-registration retirement rendezvous hooks (test-only) ──────
+    #[derive(Clone)]
+    pub(super) struct RegistrationRetirementHook {
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    }
+
+    pub(super) static FREE_PRE_LATCH_REGISTRATION_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+        Mutex::new(None);
+
+    pub(super) static FREE_POST_RETIRE_REGISTRATION_HOOK: Mutex<
+        Option<RegistrationRetirementHook>,
+    > = Mutex::new(None);
+
+    pub struct RegistrationRetirementHookGuard {
+        slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+    }
+
+    impl Drop for RegistrationRetirementHookGuard {
+        fn drop(&mut self) {
+            *self
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
+    fn install_registration_retirement_hook(
+        slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> RegistrationRetirementHookGuard {
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(RegistrationRetirementHook {
+                actor_id,
+                entered,
+                release,
+            });
+        RegistrationRetirementHookGuard { slot }
+    }
+
+    pub(crate) fn install_free_pre_latch_registration_hook_for_test(
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> RegistrationRetirementHookGuard {
+        install_registration_retirement_hook(
+            &FREE_PRE_LATCH_REGISTRATION_HOOK,
+            actor_id,
+            entered,
+            release,
+        )
+    }
+
+    pub(crate) fn install_free_post_retire_registration_hook_for_test(
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> RegistrationRetirementHookGuard {
+        install_registration_retirement_hook(
+            &FREE_POST_RETIRE_REGISTRATION_HOOK,
+            actor_id,
+            entered,
+            release,
+        )
+    }
+
+    pub(super) fn run_registration_retirement_hook(
+        slot: &'static Mutex<Option<RegistrationRetirementHook>>,
+        actor_id: u64,
+    ) {
+        let hook = {
+            let mut guard = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard.as_ref().is_some_and(|hook| hook.actor_id == actor_id) {
+                guard.take()
+            } else {
+                None
+            }
+        };
+        if let Some(hook) = hook {
+            hook.entered.wait();
+            hook.release.wait();
+        }
+    }
+
+    // ── Drain target pin rendezvous hook (test-only) ─────────────────────
+    //
+    // `drain_actors` resolves actor IDs under `LIVE_ACTORS`, then calls the raw
+    // pointer `hew_actor_stop` entry point after the registry lock is released.
+    // The allocation must remain pinned across that gap. This hook pauses after
+    // the pin is acquired and immediately before stop dereferences the pointer so
+    // a test can drive a concurrent free through untracking and prove that final
+    // reclamation remains blocked on this exact pin.
+    pub(super) static DRAIN_POST_PIN_PRE_STOP_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+        Mutex::new(None);
+
+    pub(super) fn install_drain_post_pin_pre_stop_hook_for_test(
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> RegistrationRetirementHookGuard {
+        install_registration_retirement_hook(
+            &DRAIN_POST_PIN_PRE_STOP_HOOK,
+            actor_id,
+            entered,
+            release,
+        )
+    }
+
+    // The second drain lifetime boundary is the handoff from a quiescent state
+    // observation to cleanup preparation and the LIVE_ACTORS retirement claim.
+    // This hook pauses after the exact actor has been pinned and its state read,
+    // but before cleanup first dereferences it.
+    pub(super) static DRAIN_POST_STATE_PRE_CLEANUP_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+        Mutex::new(None);
+
+    pub(super) fn install_drain_post_state_pre_cleanup_hook_for_test(
+        actor_id: u64,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> RegistrationRetirementHookGuard {
+        install_registration_retirement_hook(
+            &DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
+            actor_id,
+            entered,
+            release,
+        )
+    }
+
+    // ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────
+    //
+    // Fires inside `cleanup_all_actors` for each actor, AFTER
+    // `prepare_quiescent_actor_for_cleanup` runs and BEFORE the Idle→Stopped
+    // wake-proofing latch. A test uses this point to simulate a concurrent
+    // by-ID send that CAS-es `Idle→Runnable` in the latch window, proving that
+    // the latch-fail path (actor skipped / leaked) fires instead of a UAF
+    // finalize-under-queued-actor.
+    static CLEANUP_POST_PREPARE_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+    pub(super) fn set_cleanup_post_prepare_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+        let mut guard = CLEANUP_POST_PREPARE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = hook;
+    }
+
+    pub(super) fn run_cleanup_post_prepare_hook(actor: *mut HewActor) {
+        let hook = {
+            let guard = CLEANUP_POST_PREPARE_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+        };
+        if let Some(hook) = hook {
+            hook(actor);
+        }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native_test_hooks::{
+    install_drain_post_pin_pre_stop_hook_for_test,
+    install_drain_post_state_pre_cleanup_hook_for_test, run_cleanup_post_prepare_hook,
+    run_free_post_latch_hook, run_free_pre_detach_hook, run_pre_queue_destroy_hook,
+    run_registration_retirement_hook, run_send_post_enqueue_pre_wake_hook,
+    set_cleanup_post_prepare_hook_for_test, set_free_post_latch_hook_for_test,
+    set_free_pre_detach_hook_for_test, set_pre_queue_destroy_hook_for_test,
+    DRAIN_POST_PIN_PRE_STOP_HOOK, DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
+    FREE_POST_RETIRE_REGISTRATION_HOOK, FREE_PRE_LATCH_REGISTRATION_HOOK,
+};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use native_test_hooks::{
+    install_free_post_retire_registration_hook_for_test,
+    install_free_pre_latch_registration_hook_for_test, SendPostEnqueueHookGuard,
+};
 
 // ── Thread-local local ask error ────────────────────────────────────────
 
@@ -807,121 +806,120 @@ pub unsafe extern "C" fn hew_actor_state_lock_poison_after_panic(actor: *mut Hew
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-thread_local! {
-    static FAIL_ACTOR_STATE_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
-}
+mod native_dispatch_test_hooks {
+    use super::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-struct ActorStateAllocFailureGuard;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for ActorStateAllocFailureGuard {
-    fn drop(&mut self) {
-        FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
+    thread_local! {
+        static FAIL_ACTOR_STATE_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
     }
-}
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn fail_actor_state_alloc_on_nth(n: usize) -> ActorStateAllocFailureGuard {
-    FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(n));
-    ActorStateAllocFailureGuard
-}
+    pub(super) struct ActorStateAllocFailureGuard;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn should_fail_actor_state_alloc() -> bool {
-    FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| {
-        let remaining = slot.get();
-        if remaining == usize::MAX {
-            return false;
+    impl Drop for ActorStateAllocFailureGuard {
+        fn drop(&mut self) {
+            FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
         }
-        if remaining == 0 {
-            slot.set(usize::MAX);
-            return true;
-        }
-        slot.set(remaining - 1);
-        false
-    })
-}
-
-// Thread-local one-shot flag: when set, the next `alloc_actor_arena` call
-// returns null to simulate an OOM on the arena allocation step.
-// Reset to `false` automatically by `ArenaAllocFailureGuard::drop`.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-thread_local! {
-    static FAIL_ARENA_ALLOC_NEXT: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-struct ArenaAllocFailureGuard;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-impl Drop for ArenaAllocFailureGuard {
-    fn drop(&mut self) {
-        FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(false));
     }
-}
 
-/// Arm the arena-alloc failure injection.  Returns a guard that disarms it on
-/// drop so the hook cannot leak across test boundaries.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn fail_arena_alloc_next() -> ArenaAllocFailureGuard {
-    FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(true));
-    ArenaAllocFailureGuard
-}
+    pub(super) fn fail_actor_state_alloc_on_nth(n: usize) -> ActorStateAllocFailureGuard {
+        FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| slot.set(n));
+        ActorStateAllocFailureGuard
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn should_fail_arena_alloc() -> bool {
-    FAIL_ARENA_ALLOC_NEXT.with(|slot| {
-        if slot.get() {
-            slot.set(false);
-            true
-        } else {
+    pub(super) fn should_fail_actor_state_alloc() -> bool {
+        FAIL_ACTOR_STATE_ALLOC_ON_NTH.with(|slot| {
+            let remaining = slot.get();
+            if remaining == usize::MAX {
+                return false;
+            }
+            if remaining == 0 {
+                slot.set(usize::MAX);
+                return true;
+            }
+            slot.set(remaining - 1);
             false
+        })
+    }
+
+    // Thread-local one-shot flag: when set, the next `alloc_actor_arena` call
+    // returns null to simulate an OOM on the arena allocation step.
+    // Reset to `false` automatically by `ArenaAllocFailureGuard::drop`.
+    thread_local! {
+        static FAIL_ARENA_ALLOC_NEXT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) struct ArenaAllocFailureGuard;
+
+    impl Drop for ArenaAllocFailureGuard {
+        fn drop(&mut self) {
+            FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(false));
         }
-    })
-}
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-thread_local! {
-    static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
-}
+    /// Arm the arena-alloc failure injection.  Returns a guard that disarms it on
+    /// drop so the hook cannot leak across test boundaries.
+    pub(super) fn fail_arena_alloc_next() -> ArenaAllocFailureGuard {
+        FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(true));
+        ArenaAllocFailureGuard
+    }
 
-/// Force the next spawn to adopt `actor_id` as its packed `id` while keeping the
-/// full serial equal to it — the common case where aliasing is not under test.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn override_next_spawn_actor_id(actor_id: u64) {
-    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, actor_id))));
-}
+    pub(super) fn should_fail_arena_alloc() -> bool {
+        FAIL_ARENA_ALLOC_NEXT.with(|slot| {
+            if slot.get() {
+                slot.set(false);
+                true
+            } else {
+                false
+            }
+        })
+    }
 
-/// Force the next spawn to adopt `actor_id` as its packed `id` but a DISTINCT
-/// full `serial`. Fabricates the masked-`id` alias shape: two incarnations that
-/// collide on `id` yet differ on the aliasing-proof discriminator. Used by the
-/// supervisor role-ask alias tooth (`supervisor.rs`).
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn override_next_spawn_actor_identity(actor_id: u64, serial: u64) {
-    NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, serial))));
-}
+    thread_local! {
+        pub(super) static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<(u64, u64)>> =
+            const { Cell::new(None) };
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-type SpawnPublicationHook = Option<(
-    std::sync::Arc<std::sync::Barrier>,
-    std::sync::Arc<std::sync::Barrier>,
-)>;
+    /// Force the next spawn to adopt `actor_id` as its packed `id` while keeping the
+    /// full serial equal to it — the common case where aliasing is not under test.
+    pub(super) fn override_next_spawn_actor_id(actor_id: u64) {
+        NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, actor_id))));
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-static SPAWN_PUBLICATION_HOOK: Mutex<SpawnPublicationHook> = Mutex::new(None);
+    /// Force the next spawn to adopt `actor_id` as its packed `id` but a DISTINCT
+    /// full `serial`. Fabricates the masked-`id` alias shape: two incarnations that
+    /// collide on `id` yet differ on the aliasing-proof discriminator. Used by the
+    /// supervisor role-ask alias tooth (`supervisor.rs`).
+    pub(crate) fn override_next_spawn_actor_identity(actor_id: u64, serial: u64) {
+        NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(|slot| slot.set(Some((actor_id, serial))));
+    }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn run_spawn_publication_hook() {
-    let hook = SPAWN_PUBLICATION_HOOK
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
-    if let Some((entered, release)) = hook {
-        entered.wait();
-        release.wait();
+    type SpawnPublicationHook = Option<(
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    )>;
+
+    pub(super) static SPAWN_PUBLICATION_HOOK: Mutex<SpawnPublicationHook> = Mutex::new(None);
+
+    pub(super) fn run_spawn_publication_hook() {
+        let hook = SPAWN_PUBLICATION_HOOK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some((entered, release)) = hook {
+            entered.wait();
+            release.wait();
+        }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use native_dispatch_test_hooks::override_next_spawn_actor_identity;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use native_dispatch_test_hooks::{
+    fail_actor_state_alloc_on_nth, fail_arena_alloc_next, override_next_spawn_actor_id,
+    run_spawn_publication_hook, should_fail_actor_state_alloc, should_fail_arena_alloc,
+    NEXT_SPAWN_ACTOR_ID_OVERRIDE, SPAWN_PUBLICATION_HOOK,
+};
 
 /// Derive the current actor's ID from an execution context pointer.
 ///
@@ -1253,8 +1251,12 @@ pub struct HewActor {
     /// the runtime after actors/workers are drained, so the runtime outlives every
     /// actor that carries this pointer. Null is reserved for legacy/test actors
     /// and preserves the existing default-runtime fallback.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) runtime: *const crate::runtime::RuntimeInner,
+    /// Non-owning handle to the runtime that owns this actor.
+    ///
+    /// On native targets this points to the `RuntimeInner` that owns the live-actor
+    /// table; cleanup only drops runtimes after draining actors. On `wasm32` it is
+    /// zero-sized.
+    pub(crate) runtime: crate::platform::executor::RuntimeHandle,
 
     /// Count of in-flight by-ID operations and scheduler queue entries
     /// currently pinning this actor allocation.
@@ -1566,14 +1568,7 @@ fn seed_next_actor_serial(serial: u64) {
 /// wasm32 has exactly one, so every actor carries the default id; natively the
 /// installed runtime names itself.
 fn owning_runtime_id() -> crate::runtime_id::RuntimeId {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::runtime::rt_current().runtime_id()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::runtime_id::RuntimeId::DEFAULT
-    }
+    crate::platform::executor::current_runtime_id_or_default()
 }
 
 /// Allocate the next actor serial, or `None` when the serial space is exhausted.

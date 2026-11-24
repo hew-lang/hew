@@ -77,15 +77,9 @@ pub(crate) struct MonitorState {
     table: [PoisonSafeRw<MonitorShard>; MONITOR_SHARDS],
     /// Sole watcher-side observation authority for local/remote monitors and links.
     observations: Mutex<HashMap<u64, ObservationEntry>>,
-    /// Target-side remote registrations used only to fan terminal frames to peers.
+    /// Target-side remote registrations and watcher accounting.
     #[cfg(not(target_arch = "wasm32"))]
-    remote_targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
-    /// Cumulative count of target-side remote-watcher registrations ever
-    /// accepted — monotonic, never reset. Test-introspection authority: an
-    /// event counter cannot be missed by a sampler the way the transient live
-    /// count can.
-    #[cfg(not(target_arch = "wasm32"))]
-    remote_watchers_registered_total: AtomicU64,
+    remote: remote::RemoteMonitorState,
     ref_counter: AtomicU64,
     ref_exhausted: AtomicBool,
 }
@@ -127,79 +121,9 @@ enum ObservationTarget {
 #[derive(Debug, Clone)]
 struct ObservationEntry {
     #[cfg(not(target_arch = "wasm32"))]
-    authority: Option<ObservationAuthority>,
-    #[cfg(not(target_arch = "wasm32"))]
-    completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
+    remote: remote::ObservationRemote,
     target: ObservationTarget,
     action: WatcherAction,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct ObservationAuthority {
-    pub(crate) grant: u64,
-    pub(crate) publication: u64,
-    pub(crate) watcher: Location,
-}
-
-/// A claimed remote monitor terminal action.
-#[derive(Debug, Clone)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct MonitorDown {
-    pub(crate) completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
-    pub monitor_id: u64,
-    pub watcher_actor_id: u64,
-    pub target: Location,
-}
-
-/// A claimed cross-node link terminal action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct LinkDown {
-    pub local_actor_id: u64,
-    pub target: Location,
-    pub reason: i32,
-    pub crash_kind: i32,
-    pub policy_tag: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-struct RemoteWatcher {
-    destination: Location,
-    publication: Option<u64>,
-    reciprocal_ref: u64,
-    watcher: Location,
-    ref_id: u64,
-    is_link: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct RemoteWatcherTarget {
-    pub(crate) destination: Location,
-    pub(crate) publication: Option<u64>,
-    pub watcher: Location,
-    pub ref_id: u64,
-    pub is_link: bool,
-}
-
-/// Snapshot for one late remote subscription. Diagnostic ownership stays with
-/// the pinned actor completion, never the scalar terminal-history table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct RemoteTerminal {
-    pub(crate) reason: TerminalMonitorReason,
-    pub(crate) close_fault: Option<(i32, String)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) enum RemoteWatcherSetup {
-    Registered,
-    Terminal(RemoteTerminal),
-    Refused,
-    TargetGone,
 }
 
 impl MonitorState {
@@ -226,9 +150,7 @@ impl MonitorState {
             }),
             observations: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
-            remote_targets: Mutex::new(HashMap::new()),
-            #[cfg(not(target_arch = "wasm32"))]
-            remote_watchers_registered_total: AtomicU64::new(0),
+            remote: remote::RemoteMonitorState::new(),
             ref_counter: AtomicU64::new(1),
             ref_exhausted: AtomicBool::new(false),
         }
@@ -257,783 +179,974 @@ impl MonitorState {
             }
         }
     }
+}
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn register_remote_monitor(
-        &self,
-        target: Location,
-        watcher_actor_id: u64,
-    ) -> Option<u64> {
-        self.register_remote_observation(target, WatcherAction::Monitor { watcher_actor_id })
+#[cfg(not(target_arch = "wasm32"))]
+mod remote {
+    use super::{
+        deliver_down_message, get_shard_index, terminal_monitor_reason, Arc, AtomicU64, HashMap,
+        HewActor, HewDownMessage, HewNotificationTarget, Location, MonitorState, Mutex, NodeId,
+        ObservationEntry, ObservationTarget, Ordering, PoisonError, TerminalMonitorReason,
+        WatcherAction, DOWN_REASON_CRASHED, DOWN_REASON_STOPPED, DOWN_REASON_TERMINATED,
+        MONITOR_REASON_LOST,
+    };
+
+    pub(super) const DOWN_TARGET_REMOTE: u32 = 1;
+    /// Native notification tag for a remote stable-role Location.
+    pub const DOWN_TARGET_REMOTE_ROLE: u32 = 3;
+    const DOWN_REASON_MONITOR_LOST: u32 = 3;
+    const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 4;
+
+    pub(super) struct RemoteMonitorState {
+        remote_targets: Mutex<HashMap<u64, Vec<RemoteWatcher>>>,
+        remote_watchers_registered_total: AtomicU64,
     }
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn register_link_watcher(
-        &self,
-        target: Location,
-        local_actor_id: u64,
-        policy_tag: u8,
-    ) -> Option<u64> {
-        let monitor_id = self.next_observation_id()?;
-        self.register_link_watcher_with_id(monitor_id, target, local_actor_id, policy_tag);
-        Some(monitor_id)
+    impl RemoteMonitorState {
+        pub(super) fn new() -> Self {
+            Self {
+                remote_targets: Mutex::new(HashMap::new()),
+                remote_watchers_registered_total: AtomicU64::new(0),
+            }
+        }
     }
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn register_link_watcher_with_id(
-        &self,
-        monitor_id: u64,
-        target: Location,
-        local_actor_id: u64,
-        policy_tag: u8,
-    ) {
-        self.insert_remote_observation(
-            monitor_id,
-            target,
-            WatcherAction::Link {
-                local_actor_id,
-                policy_tag,
-            },
-        );
+    #[derive(Debug, Clone)]
+    pub(super) struct ObservationRemote {
+        pub(super) authority: Option<ObservationAuthority>,
+        pub(super) completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
     }
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn register_remote_observation(&self, target: Location, action: WatcherAction) -> Option<u64> {
-        let monitor_id = self.next_observation_id()?;
-        self.insert_remote_observation(monitor_id, target, action);
-        Some(monitor_id)
-    }
-
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn insert_remote_observation(&self, monitor_id: u64, target: Location, action: WatcherAction) {
-        self.observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                monitor_id,
-                ObservationEntry {
-                    authority: None,
-                    completion: None,
-                    target: ObservationTarget::Remote(target),
-                    action,
-                },
-            );
-    }
-
-    /// Remove one setup-time remote observation without sending a demonitor.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remove_remote_observation(&self, monitor_id: u64) -> Option<Location> {
-        let mut observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).cloned()?;
-        let ObservationTarget::Remote(target) = entry.target else {
-            return None;
+    impl ObservationRemote {
+        pub(super) const EMPTY: Self = Self {
+            authority: None,
+            completion: None,
         };
-        observations.remove(&monitor_id);
-        drop(observations);
-        if let (WatcherAction::Link { local_actor_id, .. }, Some(authority)) =
-            (entry.action, entry.authority)
-        {
-            self.remove_reciprocal_target(
-                local_actor_id,
-                target,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct ObservationAuthority {
+        pub(crate) grant: u64,
+        pub(crate) publication: u64,
+        pub(crate) watcher: Location,
+    }
+
+    /// A claimed remote monitor terminal action.
+    #[derive(Debug, Clone)]
+    pub(crate) struct MonitorDown {
+        pub(crate) completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
+        pub monitor_id: u64,
+        pub watcher_actor_id: u64,
+        pub target: Location,
+    }
+
+    /// A claimed cross-node link terminal action.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct LinkDown {
+        pub local_actor_id: u64,
+        pub target: Location,
+        pub reason: i32,
+        pub crash_kind: i32,
+        pub policy_tag: u8,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct RemoteWatcher {
+        destination: Location,
+        publication: Option<u64>,
+        reciprocal_ref: u64,
+        watcher: Location,
+        ref_id: u64,
+        is_link: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct RemoteWatcherTarget {
+        pub(crate) destination: Location,
+        pub(crate) publication: Option<u64>,
+        pub watcher: Location,
+        pub ref_id: u64,
+        pub is_link: bool,
+    }
+
+    /// Snapshot for one late remote subscription. Diagnostic ownership stays with
+    /// the pinned actor completion, never the scalar terminal-history table.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct RemoteTerminal {
+        pub(crate) reason: TerminalMonitorReason,
+        pub(crate) close_fault: Option<(i32, String)>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum RemoteWatcherSetup {
+        Registered,
+        Terminal(RemoteTerminal),
+        Refused,
+        TargetGone,
+    }
+
+    pub(super) fn demonitor_observation(entry: &ObservationEntry, ref_id: u64, target: Location) {
+        if let Some(authority) = entry.remote.authority {
+            crate::hew_node::monitor_link::send_admitted_cleanup(target, authority, ref_id, false);
+        } else if let WatcherAction::Monitor { watcher_actor_id } = entry.action {
+            crate::hew_node::send_remote_demonitor(ref_id, target, watcher_actor_id);
+        }
+    }
+
+    impl MonitorState {
+        #[cfg(test)]
+        pub(crate) fn register_remote_monitor(
+            &self,
+            target: Location,
+            watcher_actor_id: u64,
+        ) -> Option<u64> {
+            self.register_remote_observation(target, WatcherAction::Monitor { watcher_actor_id })
+        }
+
+        #[cfg(test)]
+        pub(crate) fn register_link_watcher(
+            &self,
+            target: Location,
+            local_actor_id: u64,
+            policy_tag: u8,
+        ) -> Option<u64> {
+            let monitor_id = self.next_observation_id()?;
+            self.register_link_watcher_with_id(monitor_id, target, local_actor_id, policy_tag);
+            Some(monitor_id)
+        }
+
+        #[cfg(test)]
+        pub(crate) fn register_link_watcher_with_id(
+            &self,
+            monitor_id: u64,
+            target: Location,
+            local_actor_id: u64,
+            policy_tag: u8,
+        ) {
+            self.insert_remote_observation(
                 monitor_id,
-                authority.publication,
-            );
-        }
-        Some(target)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn remove_reciprocal_target(&self, actor: u64, target: Location, id: u64, publication: u64) {
-        let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
-        let actor = crate::pid::hew_pid_serial(actor);
-        if let Some(watchers) = targets.get_mut(&actor) {
-            watchers.retain(|watcher| {
-                !(watcher.watcher == target
-                    && watcher.reciprocal_ref == id
-                    && watcher.publication == Some(publication))
-            });
-            if watchers.is_empty() {
-                targets.remove(&actor);
-            }
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn insert_admitted_observation(
-        &self,
-        id: u64,
-        target: Location,
-        action: WatcherAction,
-        authority: ObservationAuthority,
-        completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
-    ) {
-        crate::util::MutexExt::lock_or_recover(&self.observations).insert(
-            id,
-            ObservationEntry {
-                target: ObservationTarget::Remote(target),
-                action,
-                authority: Some(authority),
-                completion,
-            },
-        );
-    }
-
-    /// A reciprocal request can only complete the exact link this caller began.
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn permits_reciprocal(
-        &self,
-        payload: &crate::envelope::LinkReqPayload,
-        publication: u64,
-    ) -> bool {
-        let entries = crate::util::MutexExt::lock_or_recover(&self.observations);
-        Self::reciprocal_matches(&entries, payload, publication)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn reciprocal_matches(
-        entries: &HashMap<u64, ObservationEntry>,
-        payload: &crate::envelope::LinkReqPayload,
-        publication: u64,
-    ) -> bool {
-        entries.get(&payload.reciprocal_ref).is_some_and(|entry| {
-            matches!(entry.action, WatcherAction::Link { policy_tag, .. } if policy_tag == payload.policy_tag)
-                && entry.target == ObservationTarget::Remote(payload.linker)
-                && entry.authority.is_some_and(|auth| auth.grant == payload.grant_id
-                    && auth.publication == publication && auth.watcher == payload.target)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remove_imported_links(
-        &self,
-        actor: u64,
-        target: Location,
-    ) -> Vec<(u64, ObservationAuthority)> {
-        let mut entries = crate::util::MutexExt::lock_or_recover(&self.observations);
-        let selected: Vec<_> = entries.iter().filter_map(|(&id, entry)| {
-            (entry.target == ObservationTarget::Remote(target)
-                && matches!(entry.action, WatcherAction::Link { local_actor_id, .. } if local_actor_id == actor))
-                .then(|| entry.authority.map(|auth| (id, auth))).flatten()
-        }).collect();
-        for (id, _) in &selected {
-            entries.remove(id);
-        }
-        drop(entries);
-        for (id, authority) in &selected {
-            self.remove_reciprocal_target(actor, target, *id, authority.publication);
-        }
-        selected
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn enqueue_terminal(
-        &self,
-        down: MonitorDown,
-        crash_kind: u32,
-        end_reason: u8,
-        close_fault: Option<(i32, String)>,
-    ) {
-        if let Some(completion) = down.completion {
-            // The original crash stays on its owning node. Only a distinct
-            // cleanup fault transfers to this completion observer.
-            completion.finish_remote(close_fault);
-        } else {
-            self.enqueue_down(
-                down.watcher_actor_id,
-                down.monitor_id,
-                down.target,
-                crash_kind,
-                end_reason,
-            );
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn sole_remote_monitor_for_watcher(&self, watcher_actor_id: u64) -> Option<u64> {
-        let observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut matches = observations.iter().filter_map(|(monitor_id, entry)| {
-            matches!(
-                entry.action,
-                WatcherAction::Monitor {
-                    watcher_actor_id: entry_watcher
-                } if entry_watcher == watcher_actor_id
-            )
-            .then_some(*monitor_id)
-        });
-        let monitor_id = matches.next()?;
-        matches.next().is_none().then_some(monitor_id)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn deliver_monitor_to_ref(
-        &self,
-        monitor_id: u64,
-        target: Location,
-    ) -> Option<MonitorDown> {
-        let mut observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).cloned()?;
-        match (entry.target, entry.action) {
-            (
-                ObservationTarget::Remote(entry_target),
-                WatcherAction::Monitor { watcher_actor_id },
-            ) if entry_target == target => {
-                observations.remove(&monitor_id);
-                Some(MonitorDown {
-                    completion: entry.completion,
-                    monitor_id,
-                    watcher_actor_id,
-                    target,
-                })
-            }
-            _ => None,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn deliver_link_down_to_ref(
-        &self,
-        monitor_id: u64,
-        target: Location,
-        reason: i32,
-        crash_kind: i32,
-    ) -> Option<LinkDown> {
-        let mut observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).cloned()?;
-        match (entry.target, entry.action) {
-            (
-                ObservationTarget::Remote(entry_target),
+                target,
                 WatcherAction::Link {
                     local_actor_id,
                     policy_tag,
                 },
-            ) if entry_target == target => {
-                observations.remove(&monitor_id);
-                Some(LinkDown {
-                    local_actor_id,
-                    target,
-                    reason,
-                    crash_kind,
-                    policy_tag,
-                })
-            }
-            _ => None,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_monitor_downs_for_owner(
-        &self,
-        remote_node: NodeId,
-        session_incarnation: u32,
-        publication: u64,
-    ) -> Vec<MonitorDown> {
-        self.take_monitor_downs_matching(|target, authority| {
-            target.node() == remote_node
-                && target.incarnation() == session_incarnation
-                && authority.is_some_and(|authority| authority.publication == publication)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn drain_remote_observations_for_shutdown(&self) {
-        for down in self.take_monitor_downs_matching(|_, _| true) {
-            self.enqueue_shutdown(down);
-        }
-        for down in self.take_link_downs_matching(|_, _| true) {
-            crate::link::deliver_cross_node_link_exit(
-                down.local_actor_id,
-                down.target,
-                down.reason,
-                down.policy_tag,
-                down.crash_kind,
             );
         }
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_monitor_downs_matching(
-        &self,
-        matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
-    ) -> Vec<MonitorDown> {
-        let mut observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let ids: Vec<_> = observations
-            .iter()
-            .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
-                (
-                    ObservationTarget::Remote(target),
-                    WatcherAction::Monitor { watcher_actor_id },
-                ) if matches(target, entry.authority) => Some((
-                    monitor_id,
-                    watcher_actor_id,
-                    target,
-                    entry.completion.clone(),
-                )),
-                _ => None,
-            })
-            .collect();
-        for (monitor_id, _, _, _) in &ids {
-            observations.remove(monitor_id);
+        #[cfg(test)]
+        fn register_remote_observation(
+            &self,
+            target: Location,
+            action: WatcherAction,
+        ) -> Option<u64> {
+            let monitor_id = self.next_observation_id()?;
+            self.insert_remote_observation(monitor_id, target, action);
+            Some(monitor_id)
         }
-        ids.into_iter()
-            .map(
-                |(monitor_id, watcher_actor_id, target, completion)| MonitorDown {
-                    completion,
+
+        #[cfg(test)]
+        fn insert_remote_observation(
+            &self,
+            monitor_id: u64,
+            target: Location,
+            action: WatcherAction,
+        ) {
+            self.observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
                     monitor_id,
-                    watcher_actor_id,
+                    ObservationEntry {
+                        remote: ObservationRemote::EMPTY,
+                        target: ObservationTarget::Remote(target),
+                        action,
+                    },
+                );
+        }
+
+        /// Remove one setup-time remote observation without sending a demonitor.
+        pub(crate) fn remove_remote_observation(&self, monitor_id: u64) -> Option<Location> {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let entry = observations.get(&monitor_id).cloned()?;
+            let ObservationTarget::Remote(target) = entry.target else {
+                return None;
+            };
+            observations.remove(&monitor_id);
+            drop(observations);
+            if let (WatcherAction::Link { local_actor_id, .. }, Some(authority)) =
+                (entry.action, entry.remote.authority)
+            {
+                self.remove_reciprocal_target(
+                    local_actor_id,
                     target,
+                    monitor_id,
+                    authority.publication,
+                );
+            }
+            Some(target)
+        }
+
+        fn remove_reciprocal_target(
+            &self,
+            actor: u64,
+            target: Location,
+            id: u64,
+            publication: u64,
+        ) {
+            let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote.remote_targets);
+            let actor = crate::pid::hew_pid_serial(actor);
+            if let Some(watchers) = targets.get_mut(&actor) {
+                watchers.retain(|watcher| {
+                    !(watcher.watcher == target
+                        && watcher.reciprocal_ref == id
+                        && watcher.publication == Some(publication))
+                });
+                if watchers.is_empty() {
+                    targets.remove(&actor);
+                }
+            }
+        }
+
+        pub(crate) fn insert_admitted_observation(
+            &self,
+            id: u64,
+            target: Location,
+            action: WatcherAction,
+            authority: ObservationAuthority,
+            completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
+        ) {
+            crate::util::MutexExt::lock_or_recover(&self.observations).insert(
+                id,
+                ObservationEntry {
+                    remote: ObservationRemote {
+                        authority: Some(authority),
+                        completion,
+                    },
+                    target: ObservationTarget::Remote(target),
+                    action,
                 },
-            )
-            .collect()
-    }
+            );
+        }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_link_downs_for_owner(
-        &self,
-        remote_node: NodeId,
-        session_incarnation: u32,
-        publication: u64,
-    ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(|target, authority| {
-            target.node() == remote_node
-                && target.incarnation() == session_incarnation
-                && authority.is_some_and(|authority| authority.publication == publication)
-        })
-    }
+        /// A reciprocal request can only complete the exact link this caller began.
+        #[cfg(test)]
+        pub(crate) fn permits_reciprocal(
+            &self,
+            payload: &crate::envelope::LinkReqPayload,
+            publication: u64,
+        ) -> bool {
+            let entries = crate::util::MutexExt::lock_or_recover(&self.observations);
+            Self::reciprocal_matches(&entries, payload, publication)
+        }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_link_downs_matching(
-        &self,
-        matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
-    ) -> Vec<LinkDown> {
-        let mut observations = self
-            .observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let ids: Vec<_> = observations
-            .iter()
-            .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
+        fn reciprocal_matches(
+            entries: &HashMap<u64, ObservationEntry>,
+            payload: &crate::envelope::LinkReqPayload,
+            publication: u64,
+        ) -> bool {
+            entries.get(&payload.reciprocal_ref).is_some_and(|entry| {
+                matches!(entry.action, WatcherAction::Link { policy_tag, .. } if policy_tag == payload.policy_tag)
+                    && entry.target == ObservationTarget::Remote(payload.linker)
+                    && entry.remote.authority.is_some_and(|auth| {
+                        auth.grant == payload.grant_id
+                            && auth.publication == publication
+                            && auth.watcher == payload.target
+                    })
+            })
+        }
+
+        pub(crate) fn remove_imported_links(
+            &self,
+            actor: u64,
+            target: Location,
+        ) -> Vec<(u64, ObservationAuthority)> {
+            let mut entries = crate::util::MutexExt::lock_or_recover(&self.observations);
+            let selected: Vec<_> = entries
+                .iter()
+                .filter_map(|(&id, entry)| {
+                    (entry.target == ObservationTarget::Remote(target)
+                        && matches!(
+                            entry.action,
+                            WatcherAction::Link { local_actor_id, .. } if local_actor_id == actor
+                        ))
+                    .then(|| entry.remote.authority.map(|auth| (id, auth)))
+                    .flatten()
+                })
+                .collect();
+            for (id, _) in &selected {
+                entries.remove(id);
+            }
+            drop(entries);
+            for (id, authority) in &selected {
+                self.remove_reciprocal_target(actor, target, *id, authority.publication);
+            }
+            selected
+        }
+
+        pub(crate) fn enqueue_terminal(
+            &self,
+            down: MonitorDown,
+            crash_kind: u32,
+            end_reason: u8,
+            close_fault: Option<(i32, String)>,
+        ) {
+            if let Some(completion) = down.completion {
+                // The original crash stays on its owning node. Only a distinct
+                // cleanup fault transfers to this completion observer.
+                completion.finish_remote(close_fault);
+            } else {
+                self.enqueue_down(
+                    down.watcher_actor_id,
+                    down.monitor_id,
+                    down.target,
+                    crash_kind,
+                    end_reason,
+                );
+            }
+        }
+
+        pub(crate) fn sole_remote_monitor_for_watcher(&self, watcher_actor_id: u64) -> Option<u64> {
+            let observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mut matches = observations.iter().filter_map(|(monitor_id, entry)| {
+                matches!(
+                    entry.action,
+                    WatcherAction::Monitor {
+                        watcher_actor_id: entry_watcher
+                    } if entry_watcher == watcher_actor_id
+                )
+                .then_some(*monitor_id)
+            });
+            let monitor_id = matches.next()?;
+            matches.next().is_none().then_some(monitor_id)
+        }
+
+        pub(crate) fn deliver_monitor_to_ref(
+            &self,
+            monitor_id: u64,
+            target: Location,
+        ) -> Option<MonitorDown> {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let entry = observations.get(&monitor_id).cloned()?;
+            match (entry.target, entry.action) {
                 (
-                    ObservationTarget::Remote(target),
+                    ObservationTarget::Remote(entry_target),
+                    WatcherAction::Monitor { watcher_actor_id },
+                ) if entry_target == target => {
+                    observations.remove(&monitor_id);
+                    Some(MonitorDown {
+                        completion: entry.remote.completion,
+                        monitor_id,
+                        watcher_actor_id,
+                        target,
+                    })
+                }
+                _ => None,
+            }
+        }
+
+        pub(crate) fn deliver_link_down_to_ref(
+            &self,
+            monitor_id: u64,
+            target: Location,
+            reason: i32,
+            crash_kind: i32,
+        ) -> Option<LinkDown> {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let entry = observations.get(&monitor_id).cloned()?;
+            match (entry.target, entry.action) {
+                (
+                    ObservationTarget::Remote(entry_target),
                     WatcherAction::Link {
                         local_actor_id,
                         policy_tag,
                     },
-                ) if matches(target, entry.authority) => Some((
-                    monitor_id,
-                    LinkDown {
+                ) if entry_target == target => {
+                    observations.remove(&monitor_id);
+                    Some(LinkDown {
                         local_actor_id,
                         target,
-                        reason: MONITOR_REASON_LOST,
-                        crash_kind: crate::internal::types::CrashKind::PartitionDetected.tag(),
-                        policy_tag,
-                    },
-                )),
-                _ => None,
-            })
-            .collect();
-        for (monitor_id, _) in &ids {
-            observations.remove(monitor_id);
-        }
-        ids.into_iter().map(|(_, down)| down).collect()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "registration binds selected worker, semantic destination and authenticated publication"
-    )]
-    pub(crate) fn register_admitted_watcher(
-        &self,
-        actor: crate::lifetime::live_actors::ActorIncarnation,
-        destination: Location,
-        watcher: Location,
-        id: u64,
-        link: bool,
-        publication: u64,
-        reciprocal_ref: u64,
-    ) -> RemoteWatcherSetup {
-        self.register_remote_watcher_kind(
-            actor,
-            RemoteWatcher {
-                destination,
-                watcher,
-                ref_id: id,
-                is_link: link,
-                publication: Some(publication),
-                reciprocal_ref,
-            },
-            None,
-        )
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn register_reciprocal_watcher(
-        &self,
-        actor: crate::lifetime::live_actors::ActorIncarnation,
-        payload: &crate::envelope::LinkReqPayload,
-        publication: u64,
-    ) -> RemoteWatcherSetup {
-        self.register_remote_watcher_kind(
-            actor,
-            RemoteWatcher {
-                destination: payload.target,
-                watcher: payload.linker,
-                ref_id: payload.ref_id,
-                is_link: true,
-                publication: Some(publication),
-                reciprocal_ref: payload.reciprocal_ref,
-            },
-            Some(payload),
-        )
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn retract_admitted_watcher(
-        &self,
-        destination: Location,
-        watcher: Location,
-        id: u64,
-        publication: u64,
-    ) {
-        let reverse = {
-            let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
-            let mut reverse = Vec::new();
-            targets.retain(|_, entries| {
-                entries.retain(|entry| {
-                    let matches = entry.destination == destination
-                        && entry.watcher == watcher
-                        && entry.ref_id == id
-                        && entry.publication == Some(publication);
-                    if matches && entry.reciprocal_ref != 0 {
-                        reverse.push(entry.reciprocal_ref);
-                    }
-                    !matches
-                });
-                !entries.is_empty()
-            });
-            reverse
-        };
-        for reference in reverse {
-            self.remove_remote_observation(reference);
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn permits_terminal(&self, id: u64, target: Location, publication: u64) -> bool {
-        crate::util::MutexExt::lock_or_recover(&self.observations)
-            .get(&id)
-            .is_some_and(|entry| {
-                entry.target == ObservationTarget::Remote(target)
-                    && entry
-                        .authority
-                        .is_none_or(|authority| authority.publication == publication)
-            })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn register_remote_watcher_kind(
-        &self,
-        selected: crate::lifetime::live_actors::ActorIncarnation,
-        registration: RemoteWatcher,
-        reciprocal: Option<&crate::envelope::LinkReqPayload>,
-    ) -> RemoteWatcherSetup {
-        let target_actor_id = selected.actor_id();
-        let RemoteWatcher {
-            destination: _,
-            watcher,
-            ref_id: monitor_id,
-            is_link: _,
-            publication,
-            reciprocal_ref: _,
-        } = registration;
-        let shard_index = get_shard_index(target_actor_id);
-        let register = |actor: &HewActor| {
-            self.table[shard_index].access(|shard| {
-                // Match and install under the same observation claim. Cancellation
-                // cannot retire the caller between reciprocal authorization and insertion.
-                let caller =
-                    reciprocal.map(|_| crate::util::MutexExt::lock_or_recover(&self.observations));
-                if reciprocal
-                    .zip(caller.as_ref())
-                    .is_some_and(|(payload, entries)| {
-                        !Self::reciprocal_matches(
-                            entries,
-                            payload,
-                            publication.expect("authenticated reciprocal publication"),
-                        )
-                    })
-                {
-                    return RemoteWatcherSetup::Refused;
-                }
-                let terminal = shard
-                    .terminal_reasons
-                    .get(&target_actor_id)
-                    .copied()
-                    .or_else(|| {
-                        let state = actor.actor_state.load(Ordering::Acquire);
-                        (terminal_monitor_reason(state).is_some()
-                            && actor
-                                .native_completion
-                                .as_ref()
-                                .is_none_or(|completion| completion.is_finished()))
-                        .then(|| TerminalMonitorReason {
-                            state,
-                            crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
-                                actor.error_code.load(Ordering::Acquire),
-                            )
-                            .cast_unsigned(),
-                            // SAFETY: the send pin retains this actor and mailbox.
-                            end: crate::internal::types::ActorEndReason::from_terminal(
-                                state,
-                                unsafe {
-                                    crate::mailbox::mailbox_terminate_requested(
-                                        actor.mailbox.cast(),
-                                    )
-                                },
-                            ),
-                        })
-                    });
-                if let Some(reason) = terminal {
-                    return RemoteWatcherSetup::Terminal(RemoteTerminal {
                         reason,
-                        close_fault: actor
-                            .native_completion
-                            .as_ref()
-                            .and_then(|completion| completion.close_fault_payload()),
-                    });
+                        crash_kind,
+                        policy_tag,
+                    })
                 }
-                let target_serial = crate::pid::hew_pid_serial(target_actor_id);
-                let mut targets = self
-                    .remote_targets
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let watchers = targets.entry(target_serial).or_default();
-                if !watchers.iter().any(|entry| {
-                    entry.destination == registration.destination
-                        && entry.watcher == watcher
-                        && entry.ref_id == monitor_id
-                        && entry.publication == publication
-                }) {
-                    watchers.push(registration);
-                    self.remote_watchers_registered_total
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                RemoteWatcherSetup::Registered
-            })
-        };
-
-        if let Some(result) = crate::lifetime::live_actors::with_live_incarnation(selected, |pin| {
-            register(pin.actor())
-        }) {
-            return result;
+                _ => None,
+            }
         }
 
-        RemoteWatcherSetup::TargetGone
-    }
+        pub(crate) fn take_monitor_downs_for_owner(
+            &self,
+            remote_node: NodeId,
+            session_incarnation: u32,
+            publication: u64,
+        ) -> Vec<MonitorDown> {
+            self.take_monitor_downs_matching(|target, authority| {
+                target.node() == remote_node
+                    && target.incarnation() == session_incarnation
+                    && authority.is_some_and(|authority| authority.publication == publication)
+            })
+        }
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn register_remote_link_watcher_for_test(
-        &self,
-        target_serial: u64,
-        watcher: Location,
-        monitor_id: u64,
-    ) {
-        self.remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(target_serial)
-            .or_default()
-            .push(RemoteWatcher {
-                destination: Location::direct(watcher.node(), target_serial, watcher.incarnation())
-                    .expect("test destination"),
-                publication: None,
-                reciprocal_ref: 0,
+        pub(crate) fn drain_remote_observations_for_shutdown(&self) {
+            for down in self.take_monitor_downs_matching(|_, _| true) {
+                self.enqueue_shutdown(down);
+            }
+            for down in self.take_link_downs_matching(|_, _| true) {
+                crate::link::deliver_cross_node_link_exit(
+                    down.local_actor_id,
+                    down.target,
+                    down.reason,
+                    down.policy_tag,
+                    down.crash_kind,
+                );
+            }
+        }
+
+        fn take_monitor_downs_matching(
+            &self,
+            matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
+        ) -> Vec<MonitorDown> {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<_> = observations
+                .iter()
+                .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
+                    (
+                        ObservationTarget::Remote(target),
+                        WatcherAction::Monitor { watcher_actor_id },
+                    ) if matches(target, entry.remote.authority) => Some((
+                        monitor_id,
+                        watcher_actor_id,
+                        target,
+                        entry.remote.completion.clone(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            for (monitor_id, _, _, _) in &ids {
+                observations.remove(monitor_id);
+            }
+            ids.into_iter()
+                .map(
+                    |(monitor_id, watcher_actor_id, target, completion)| MonitorDown {
+                        completion,
+                        monitor_id,
+                        watcher_actor_id,
+                        target,
+                    },
+                )
+                .collect()
+        }
+
+        pub(crate) fn take_link_downs_for_owner(
+            &self,
+            remote_node: NodeId,
+            session_incarnation: u32,
+            publication: u64,
+        ) -> Vec<LinkDown> {
+            self.take_link_downs_matching(|target, authority| {
+                target.node() == remote_node
+                    && target.incarnation() == session_incarnation
+                    && authority.is_some_and(|authority| authority.publication == publication)
+            })
+        }
+
+        fn take_link_downs_matching(
+            &self,
+            matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
+        ) -> Vec<LinkDown> {
+            let mut observations = self
+                .observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<_> = observations
+                .iter()
+                .filter_map(|(&monitor_id, entry)| match (entry.target, entry.action) {
+                    (
+                        ObservationTarget::Remote(target),
+                        WatcherAction::Link {
+                            local_actor_id,
+                            policy_tag,
+                        },
+                    ) if matches(target, entry.remote.authority) => Some((
+                        monitor_id,
+                        LinkDown {
+                            local_actor_id,
+                            target,
+                            reason: MONITOR_REASON_LOST,
+                            crash_kind: crate::internal::types::CrashKind::PartitionDetected.tag(),
+                            policy_tag,
+                        },
+                    )),
+                    _ => None,
+                })
+                .collect();
+            for (monitor_id, _) in &ids {
+                observations.remove(monitor_id);
+            }
+            ids.into_iter().map(|(_, down)| down).collect()
+        }
+
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "registration binds selected worker, semantic destination and authenticated publication"
+        )]
+        pub(crate) fn register_admitted_watcher(
+            &self,
+            actor: crate::lifetime::live_actors::ActorIncarnation,
+            destination: Location,
+            watcher: Location,
+            id: u64,
+            link: bool,
+            publication: u64,
+            reciprocal_ref: u64,
+        ) -> RemoteWatcherSetup {
+            self.register_remote_watcher_kind(
+                actor,
+                RemoteWatcher {
+                    destination,
+                    watcher,
+                    ref_id: id,
+                    is_link: link,
+                    publication: Some(publication),
+                    reciprocal_ref,
+                },
+                None,
+            )
+        }
+
+        pub(crate) fn register_reciprocal_watcher(
+            &self,
+            actor: crate::lifetime::live_actors::ActorIncarnation,
+            payload: &crate::envelope::LinkReqPayload,
+            publication: u64,
+        ) -> RemoteWatcherSetup {
+            self.register_remote_watcher_kind(
+                actor,
+                RemoteWatcher {
+                    destination: payload.target,
+                    watcher: payload.linker,
+                    ref_id: payload.ref_id,
+                    is_link: true,
+                    publication: Some(publication),
+                    reciprocal_ref: payload.reciprocal_ref,
+                },
+                Some(payload),
+            )
+        }
+
+        pub(crate) fn retract_admitted_watcher(
+            &self,
+            destination: Location,
+            watcher: Location,
+            id: u64,
+            publication: u64,
+        ) {
+            let reverse = {
+                let mut targets =
+                    crate::util::MutexExt::lock_or_recover(&self.remote.remote_targets);
+                let mut reverse = Vec::new();
+                targets.retain(|_, entries| {
+                    entries.retain(|entry| {
+                        let matches = entry.destination == destination
+                            && entry.watcher == watcher
+                            && entry.ref_id == id
+                            && entry.publication == Some(publication);
+                        if matches && entry.reciprocal_ref != 0 {
+                            reverse.push(entry.reciprocal_ref);
+                        }
+                        !matches
+                    });
+                    !entries.is_empty()
+                });
+                reverse
+            };
+            for reference in reverse {
+                self.remove_remote_observation(reference);
+            }
+        }
+
+        pub(crate) fn permits_terminal(&self, id: u64, target: Location, publication: u64) -> bool {
+            crate::util::MutexExt::lock_or_recover(&self.observations)
+                .get(&id)
+                .is_some_and(|entry| {
+                    entry.target == ObservationTarget::Remote(target)
+                        && entry
+                            .remote
+                            .authority
+                            .is_none_or(|authority| authority.publication == publication)
+                })
+        }
+
+        fn register_remote_watcher_kind(
+            &self,
+            selected: crate::lifetime::live_actors::ActorIncarnation,
+            registration: RemoteWatcher,
+            reciprocal: Option<&crate::envelope::LinkReqPayload>,
+        ) -> RemoteWatcherSetup {
+            let target_actor_id = selected.actor_id();
+            let RemoteWatcher {
+                destination: _,
                 watcher,
                 ref_id: monitor_id,
-                is_link: true,
-            });
-    }
+                is_link: _,
+                publication,
+                reciprocal_ref: _,
+            } = registration;
+            let shard_index = get_shard_index(target_actor_id);
+            let register = |actor: &HewActor| {
+                self.table[shard_index].access(|shard| {
+                    let caller = reciprocal
+                        .map(|_| crate::util::MutexExt::lock_or_recover(&self.observations));
+                    if reciprocal
+                        .zip(caller.as_ref())
+                        .is_some_and(|(payload, entries)| {
+                            !Self::reciprocal_matches(
+                                entries,
+                                payload,
+                                publication.expect("authenticated reciprocal publication"),
+                            )
+                        })
+                    {
+                        return RemoteWatcherSetup::Refused;
+                    }
+                    let terminal = shard
+                        .terminal_reasons
+                        .get(&target_actor_id)
+                        .copied()
+                        .or_else(|| {
+                            let state = actor.actor_state.load(Ordering::Acquire);
+                            (terminal_monitor_reason(state).is_some()
+                                && actor
+                                    .native_completion
+                                    .as_ref()
+                                    .is_none_or(|completion| completion.is_finished()))
+                            .then(|| TerminalMonitorReason {
+                                state,
+                                crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
+                                    actor.error_code.load(Ordering::Acquire),
+                                )
+                                .cast_unsigned(),
+                                // SAFETY: the send pin retains this actor and mailbox.
+                                end: crate::internal::types::ActorEndReason::from_terminal(
+                                    state,
+                                    unsafe {
+                                        crate::mailbox::mailbox_terminate_requested(
+                                            actor.mailbox.cast(),
+                                        )
+                                    },
+                                ),
+                            })
+                        });
+                    if let Some(reason) = terminal {
+                        return RemoteWatcherSetup::Terminal(RemoteTerminal {
+                            reason,
+                            close_fault: actor
+                                .native_completion
+                                .as_ref()
+                                .and_then(|completion| completion.close_fault_payload()),
+                        });
+                    }
+                    let target_serial = crate::pid::hew_pid_serial(target_actor_id);
+                    let mut targets = self
+                        .remote
+                        .remote_targets
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let watchers = targets.entry(target_serial).or_default();
+                    if !watchers.iter().any(|entry| {
+                        entry.destination == registration.destination
+                            && entry.watcher == watcher
+                            && entry.ref_id == monitor_id
+                            && entry.publication == publication
+                    }) {
+                        watchers.push(registration);
+                        self.remote
+                            .remote_watchers_registered_total
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    RemoteWatcherSetup::Registered
+                })
+            };
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remove_remote_watcher(
-        &self,
-        destination: Location,
-        watcher: Location,
-        monitor_id: u64,
-    ) {
-        let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
-        targets.retain(|_, watchers| {
-            watchers.retain(|entry| {
-                !(entry.destination == destination
-                    && entry.watcher == watcher
-                    && entry.ref_id == monitor_id)
-            });
-            !watchers.is_empty()
-        });
-    }
+            if let Some(result) =
+                crate::lifetime::live_actors::with_live_incarnation(selected, |pin| {
+                    register(pin.actor())
+                })
+            {
+                return result;
+            }
 
-    #[cfg(test)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<RemoteWatcherTarget> {
-        self.remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&target_serial)
-            .map(|watchers| {
-                watchers
-                    .into_iter()
-                    .map(|entry| RemoteWatcherTarget {
-                        destination: entry.destination,
-                        publication: entry.publication,
-                        watcher: entry.watcher,
-                        ref_id: entry.ref_id,
-                        is_link: entry.is_link,
-                    })
-                    .collect()
+            RemoteWatcherSetup::TargetGone
+        }
+
+        #[cfg(test)]
+        pub(crate) fn register_remote_link_watcher_for_test(
+            &self,
+            target_serial: u64,
+            watcher: Location,
+            monitor_id: u64,
+        ) {
+            self.remote
+                .remote_targets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(target_serial)
+                .or_default()
+                .push(RemoteWatcher {
+                    destination: Location::direct(
+                        watcher.node(),
+                        target_serial,
+                        watcher.incarnation(),
+                    )
+                    .expect("test destination"),
+                    publication: None,
+                    reciprocal_ref: 0,
+                    watcher,
+                    ref_id: monitor_id,
+                    is_link: true,
+                });
+        }
+
+        pub(crate) fn remove_remote_watcher(
+            &self,
+            destination: Location,
+            watcher: Location,
+            monitor_id: u64,
+        ) {
+            let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote.remote_targets);
+            targets.retain(|_, watchers| {
+                watchers.retain(|entry| {
+                    !(entry.destination == destination
+                        && entry.watcher == watcher
+                        && entry.ref_id == monitor_id)
+                });
+                !watchers.is_empty()
+            });
+        }
+
+        pub(crate) fn take_remote_watchers(&self, target_serial: u64) -> Vec<RemoteWatcherTarget> {
+            self.remote
+                .remote_targets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&target_serial)
+                .map(|watchers| {
+                    watchers
+                        .into_iter()
+                        .map(|entry| RemoteWatcherTarget {
+                            destination: entry.destination,
+                            publication: entry.publication,
+                            watcher: entry.watcher,
+                            ref_id: entry.ref_id,
+                            is_link: entry.is_link,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        pub(crate) fn prune_remote_watchers_for_owner(
+            &self,
+            dead_watcher: NodeId,
+            session_incarnation: u32,
+            publication: u64,
+        ) -> usize {
+            self.prune_remote_watchers_matching(|entry| {
+                entry.watcher.node() == dead_watcher
+                    && entry.watcher.incarnation() == session_incarnation
+                    && entry.publication == Some(publication)
             })
-            .unwrap_or_default()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn prune_remote_watchers_for_owner(
-        &self,
-        dead_watcher: NodeId,
-        session_incarnation: u32,
-        publication: u64,
-    ) -> usize {
-        self.prune_remote_watchers_matching(|entry| {
-            entry.watcher.node() == dead_watcher
-                && entry.watcher.incarnation() == session_incarnation
-                && entry.publication == Some(publication)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prune_remote_watchers_matching(&self, matches: impl Fn(RemoteWatcher) -> bool) -> usize {
-        let mut targets = self
-            .remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut pruned = 0;
-        targets.retain(|_, watchers| {
-            let before = watchers.len();
-            watchers.retain(|entry| !matches(*entry));
-            pruned += before - watchers.len();
-            !watchers.is_empty()
-        });
-        pruned
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote_watchers_registered_total(&self) -> u64 {
-        self.remote_watchers_registered_total
-            .load(Ordering::Relaxed)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote_watcher_count(&self) -> usize {
-        self.remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .map(Vec::len)
-            .sum()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn pending_observation_count(&self) -> usize {
-        self.observations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len()
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
-    )]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn enqueue_down(
-        &self,
-        watcher_actor_id: u64,
-        monitor_id: u64,
-        target: Location,
-        crash_kind: u32,
-        end_reason: u8,
-    ) {
-        deliver_down_message(
-            watcher_actor_id,
-            HewDownMessage::remote(monitor_id, target, crash_kind, end_reason),
-        );
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
-    )]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn enqueue_lost(&self, down: MonitorDown) {
-        if let Some(completion) = down.completion {
-            completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
-            return;
         }
-        deliver_down_message(
-            down.watcher_actor_id,
-            HewDownMessage::remote_lost(down.monitor_id, down.target),
-        );
+
+        fn prune_remote_watchers_matching(&self, matches: impl Fn(RemoteWatcher) -> bool) -> usize {
+            let mut targets = self
+                .remote
+                .remote_targets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mut pruned = 0;
+            targets.retain(|_, watchers| {
+                let before = watchers.len();
+                watchers.retain(|entry| !matches(*entry));
+                pruned += before - watchers.len();
+                !watchers.is_empty()
+            });
+            pruned
+        }
+
+        pub(crate) fn remote_watchers_registered_total(&self) -> u64 {
+            self.remote
+                .remote_watchers_registered_total
+                .load(Ordering::Relaxed)
+        }
+
+        pub(crate) fn remote_watcher_count(&self) -> usize {
+            self.remote
+                .remote_targets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .values()
+                .map(Vec::len)
+                .sum()
+        }
+
+        pub(crate) fn pending_observation_count(&self) -> usize {
+            self.observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
+
+        #[expect(
+            clippy::unused_self,
+            reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+        )]
+        pub(crate) fn enqueue_down(
+            &self,
+            watcher_actor_id: u64,
+            monitor_id: u64,
+            target: Location,
+            crash_kind: u32,
+            end_reason: u8,
+        ) {
+            deliver_down_message(
+                watcher_actor_id,
+                HewDownMessage::remote(monitor_id, target, crash_kind, end_reason),
+            );
+        }
+
+        #[expect(
+            clippy::unused_self,
+            reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+        )]
+        pub(crate) fn enqueue_lost(&self, down: MonitorDown) {
+            if let Some(completion) = down.completion {
+                completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+                return;
+            }
+            deliver_down_message(
+                down.watcher_actor_id,
+                HewDownMessage::remote_lost(down.monitor_id, down.target),
+            );
+        }
+
+        #[expect(
+            clippy::unused_self,
+            reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
+        )]
+        pub(crate) fn enqueue_shutdown(&self, down: MonitorDown) {
+            if let Some(completion) = down.completion {
+                completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+                return;
+            }
+            deliver_down_message(
+                down.watcher_actor_id,
+                HewDownMessage::remote_shutdown(down.monitor_id, down.target),
+            );
+        }
     }
 
-    #[expect(
-        clippy::unused_self,
-        reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
-    )]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn enqueue_shutdown(&self, down: MonitorDown) {
-        if let Some(completion) = down.completion {
-            completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
-            return;
+    impl HewNotificationTarget {
+        pub(crate) fn remote(target: Location) -> Self {
+            Self {
+                kind: match target.target() {
+                    crate::node_identity::Target::Direct(_) => DOWN_TARGET_REMOTE,
+                    crate::node_identity::Target::Role(_) => DOWN_TARGET_REMOTE_ROLE,
+                },
+                session_incarnation: target.incarnation(),
+                node_hi: target.node().hi(),
+                node_lo: target.node().lo(),
+                slot: target.target().id(),
+            }
         }
-        deliver_down_message(
-            down.watcher_actor_id,
-            HewDownMessage::remote_shutdown(down.monitor_id, down.target),
-        );
+
+        pub(crate) fn remote_location(self) -> Option<Location> {
+            let node = crate::node_identity::HewNodeId {
+                hi: self.node_hi,
+                lo: self.node_lo,
+            }
+            .into();
+            match self.kind {
+                DOWN_TARGET_REMOTE => {
+                    Location::direct(node, self.slot, self.session_incarnation).ok()
+                }
+                DOWN_TARGET_REMOTE_ROLE => {
+                    Location::role(node, self.slot, self.session_incarnation).ok()
+                }
+                _ => None,
+            }
+        }
+    }
+
+    impl HewDownMessage {
+        pub(crate) fn remote(
+            monitor_id: u64,
+            target: Location,
+            crash_kind: u32,
+            end_reason: u8,
+        ) -> Self {
+            let reason_kind = match end_reason {
+                0 => DOWN_REASON_STOPPED,
+                1 => DOWN_REASON_TERMINATED,
+                2 => DOWN_REASON_CRASHED,
+                4 => DOWN_REASON_LOCAL_SHUTDOWN,
+                _ => DOWN_REASON_MONITOR_LOST,
+            };
+            Self {
+                monitor_id,
+                target: HewNotificationTarget::remote(target),
+                reason_kind,
+                crash_kind: if reason_kind == DOWN_REASON_CRASHED {
+                    crash_kind
+                } else {
+                    0
+                },
+            }
+        }
+
+        pub(crate) fn remote_lost(monitor_id: u64, target: Location) -> Self {
+            Self {
+                monitor_id,
+                target: HewNotificationTarget::remote(target),
+                reason_kind: DOWN_REASON_MONITOR_LOST,
+                crash_kind: 0,
+            }
+        }
+
+        pub(crate) fn remote_shutdown(monitor_id: u64, target: Location) -> Self {
+            Self {
+                reason_kind: DOWN_REASON_LOCAL_SHUTDOWN,
+                ..Self::remote_lost(monitor_id, target)
+            }
+        }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use remote::DOWN_TARGET_REMOTE_ROLE;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use remote::{
+    MonitorDown, ObservationAuthority, RemoteTerminal, RemoteWatcherSetup, RemoteWatcherTarget,
+};
+
 #[inline]
 fn monitor_state() -> &'static MonitorState {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        &crate::runtime::rt_current().monitors
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        static STATE: std::sync::OnceLock<MonitorState> = std::sync::OnceLock::new();
-        STATE.get_or_init(MonitorState::new)
-    }
+    crate::platform::executor::current_monitors()
 }
 
 /// Resolve the per-runtime monitor state, tolerating a missing runtime.
@@ -1056,14 +1169,7 @@ fn monitor_state() -> &'static MonitorState {
 /// [`crate::runtime::rt_current_opt`]).
 #[inline]
 fn monitor_state_opt() -> Option<&'static MonitorState> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::runtime::rt_current_opt().map(|rt| &rt.monitors)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        Some(monitor_state())
-    }
+    crate::platform::executor::current_monitors_opt()
 }
 
 #[cfg(test)]
@@ -1101,19 +1207,10 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
 }
 
 const DOWN_TARGET_LOCAL: u32 = 0;
-#[cfg(not(target_arch = "wasm32"))]
-const DOWN_TARGET_REMOTE: u32 = 1;
-#[cfg(not(target_arch = "wasm32"))]
-/// Native notification tag for a remote stable-role Location.
-pub const DOWN_TARGET_REMOTE_ROLE: u32 = 3;
 pub(crate) const DOWN_TARGET_ROLE: u32 = 2;
 const DOWN_REASON_STOPPED: u32 = 0;
 const DOWN_REASON_TERMINATED: u32 = 1;
 const DOWN_REASON_CRASHED: u32 = 2;
-#[cfg(not(target_arch = "wasm32"))]
-const DOWN_REASON_MONITOR_LOST: u32 = 3;
-#[cfg(not(target_arch = "wasm32"))]
-const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 4;
 
 /// Shared physical target payload for monitor and link notifications.
 #[repr(C)]
@@ -1134,36 +1231,6 @@ impl HewNotificationTarget {
             node_hi: 0,
             node_lo: 0,
             slot: crate::pid::hew_pid_serial(actor_id),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote(target: Location) -> Self {
-        Self {
-            kind: match target.target() {
-                crate::node_identity::Target::Direct(_) => DOWN_TARGET_REMOTE,
-                crate::node_identity::Target::Role(_) => DOWN_TARGET_REMOTE_ROLE,
-            },
-            session_incarnation: target.incarnation(),
-            node_hi: target.node().hi(),
-            node_lo: target.node().lo(),
-            slot: target.target().id(),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote_location(self) -> Option<Location> {
-        let node = crate::node_identity::HewNodeId {
-            hi: self.node_hi,
-            lo: self.node_lo,
-        }
-        .into();
-        match self.kind {
-            DOWN_TARGET_REMOTE => Location::direct(node, self.slot, self.session_incarnation).ok(),
-            DOWN_TARGET_REMOTE_ROLE => {
-                Location::role(node, self.slot, self.session_incarnation).ok()
-            }
-            _ => None,
         }
     }
 
@@ -1211,52 +1278,6 @@ impl HewDownMessage {
             } else {
                 0
             },
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote(
-        monitor_id: u64,
-        target: Location,
-        crash_kind: u32,
-        end_reason: u8,
-    ) -> Self {
-        let reason_kind = match end_reason {
-            0 => DOWN_REASON_STOPPED,
-            1 => DOWN_REASON_TERMINATED,
-            2 => DOWN_REASON_CRASHED,
-            4 => DOWN_REASON_LOCAL_SHUTDOWN,
-            // The codec admits 3 (monitor lost); any invalid internal caller
-            // also fails closed as lost rather than inventing a terminal cause.
-            _ => DOWN_REASON_MONITOR_LOST,
-        };
-        Self {
-            monitor_id,
-            target: HewNotificationTarget::remote(target),
-            reason_kind,
-            crash_kind: if reason_kind == DOWN_REASON_CRASHED {
-                crash_kind
-            } else {
-                0
-            },
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote_lost(monitor_id: u64, target: Location) -> Self {
-        Self {
-            monitor_id,
-            target: HewNotificationTarget::remote(target),
-            reason_kind: DOWN_REASON_MONITOR_LOST,
-            crash_kind: 0,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn remote_shutdown(monitor_id: u64, target: Location) -> Self {
-        Self {
-            reason_kind: DOWN_REASON_LOCAL_SHUTDOWN,
-            ..Self::remote_lost(monitor_id, target)
         }
     }
 
@@ -1387,9 +1408,7 @@ unsafe fn register_local_monitor(
     let monitor_entry = MonitorEntry { ref_id };
     let observation = ObservationEntry {
         #[cfg(not(target_arch = "wasm32"))]
-        authority: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        completion: None,
+        remote: remote::ObservationRemote::EMPTY,
         target: ObservationTarget::Local(target_id),
         action: WatcherAction::Monitor {
             watcher_actor_id: watcher_id,
@@ -1709,13 +1728,7 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
         }
         #[cfg(not(target_arch = "wasm32"))]
         ObservationTarget::Remote(target) => {
-            if let Some(authority) = entry.authority {
-                crate::hew_node::monitor_link::send_admitted_cleanup(
-                    target, authority, ref_id, false,
-                );
-            } else if let WatcherAction::Monitor { watcher_actor_id } = entry.action {
-                crate::hew_node::send_remote_demonitor(ref_id, target, watcher_actor_id);
-            }
+            remote::demonitor_observation(&entry, ref_id, target);
         }
     }
 }
@@ -1742,7 +1755,7 @@ pub(crate) fn notify_monitors_on_end(
     };
 
     // Take all monitors for this actor ID.
-    let snapshot = state.table[shard_index].access(|shard| {
+    let (monitors, remote_watchers) = state.table[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         if crate::lifetime::local_handles::current_handles()
             .is_some_and(|handles| handles.has_actor_identity(actor_id))
@@ -1762,37 +1775,10 @@ pub(crate) fn notify_monitors_on_end(
             shard.ref_to_monitor.remove(&monitor.ref_id);
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let target_serial = crate::pid::hew_pid_serial(actor_id);
-            let remote_watchers: Vec<_> = state
-                .remote_targets
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&target_serial)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|entry| RemoteWatcherTarget {
-                    destination: entry.destination,
-                    publication: entry.publication,
-                    watcher: entry.watcher,
-                    ref_id: entry.ref_id,
-                    is_link: entry.is_link,
-                })
-                .collect();
-
-            (monitors, remote_watchers)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            monitors
-        }
+        let remote_watchers =
+            crate::platform::host_io::take_remote_watchers_for_actor(state, actor_id);
+        (monitors, remote_watchers)
     });
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let (monitors, remote_watchers) = snapshot;
-    #[cfg(target_arch = "wasm32")]
-    let monitors = snapshot;
 
     let claimed: Vec<_> = {
         let mut observations = state
@@ -1826,16 +1812,13 @@ pub(crate) fn notify_monitors_on_end(
     // terminal reason. The distributed table keys on the actor's serial; the
     // fan-out is fail-closed and no-ops when no remote watcher exists or no
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::hew_node::fan_out_remote_monitor_down(
+    crate::platform::host_io::fan_out_remote_monitor_down(
         remote_watchers,
         reason,
         crash_kind,
         end,
         close_fault,
     );
-    #[cfg(target_arch = "wasm32")]
-    let _ = close_fault;
 }
 
 #[cfg(test)]
@@ -2336,7 +2319,7 @@ mod tests {
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: std::ptr::null(),
+            runtime: crate::platform::executor::RuntimeHandle::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,

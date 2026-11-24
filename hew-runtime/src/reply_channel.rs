@@ -170,9 +170,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
 pub(crate) unsafe fn configure_native_request(
     channel: *mut HewReplyChannel,
     deadline: crate::request_deadline::RequestDeadline,
-    #[cfg(not(target_arch = "wasm32"))] admission: Option<
-        crate::hew_node::service::RemoteAdmission,
-    >,
+    admission: crate::platform::host_io::RemoteAdmissionSlot,
 ) {
     // SAFETY: the caller exclusively owns this fresh reply channel.
     let channel = unsafe { &mut *channel };
@@ -181,9 +179,7 @@ pub(crate) unsafe fn configure_native_request(
         "request metadata is configured once"
     );
     channel.native_request = Some(Arc::new(crate::request_state::RequestState::new(
-        deadline,
-        #[cfg(not(target_arch = "wasm32"))]
-        admission,
+        deadline, admission,
     )));
 }
 
@@ -1568,7 +1564,7 @@ mod tests {
                 suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
                 suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
                 runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-                runtime: ptr::null(),
+                runtime: crate::platform::executor::RuntimeHandle::null(),
                 send_pin_count: std::sync::atomic::AtomicU32::new(0),
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,

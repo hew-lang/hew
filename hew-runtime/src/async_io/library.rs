@@ -143,6 +143,7 @@ where
     // The operation has not been published or cloned yet.
     Arc::get_mut(&mut operation)
         .expect("unpublished socket operation")
+        .native
         .socket_cancel = Some(Arc::clone(&cancel));
     if cancel.is_cancelled() {
         operation.cancel_and_wake();

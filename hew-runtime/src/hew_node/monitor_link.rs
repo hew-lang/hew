@@ -1228,12 +1228,13 @@ pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservatio
     if operation.status.is_some() {
         return true;
     }
-    let Some((setup_id, pending)) = &operation.pending else {
+    let Some((setup_id, pending)) = &operation.transport.pending else {
         return false;
     };
     let outcome = pending.outcome.lock_or_recover().take();
     // SAFETY: this operation owns its timer until drop.
-    let expired = unsafe { crate::coro_sleep::hew_coro_sleep_status(operation.timer) } != 0;
+    let expired =
+        unsafe { crate::coro_sleep::hew_coro_sleep_status(operation.transport.timer) } != 0;
     if outcome.is_none() && !expired {
         return false;
     }
@@ -1248,6 +1249,7 @@ pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservatio
             result.setup_id == *setup_id
                 && result.ref_id == operation.ref_id
                 && operation
+                    .transport
                     .remote
                     .is_some_and(|(target, _)| result.target == target)
         })
@@ -1255,7 +1257,7 @@ pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservatio
             result.status
         });
     reply_table().remove(*setup_id);
-    operation.pending = None;
+    operation.transport.pending = None;
     operation.status = Some(match status {
         crate::envelope::SETUP_STATUS_ACCEPTED => 0,
         crate::envelope::SETUP_STATUS_REFUSED => {
@@ -1265,14 +1267,17 @@ pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservatio
             -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
         }
         _ => {
-            let (target, _) = operation.remote.expect("remote setup owns target");
+            let (target, _) = operation
+                .transport
+                .remote
+                .expect("remote setup owns target");
             if operation.kind == 1 {
                 link_unreachable(
                     crate::runtime::rt_current(),
                     Some(operation.ref_id),
                     operation.actor_id,
                     target,
-                    operation.policy,
+                    operation.transport.policy,
                 );
             } else if let Some(down) = crate::runtime::rt_current()
                 .monitors
@@ -1286,7 +1291,7 @@ pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservatio
         }
     });
     if operation.status != Some(0) {
-        if let Some(completion) = &operation.completion {
+        if let Some(completion) = &operation.transport.completion {
             completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
         }
     }
@@ -1346,7 +1351,7 @@ pub(crate) unsafe fn start_imported_observation(
                     linker: watcher,
                     ref_id,
                     target: offer.target,
-                    policy_tag: operation.policy,
+                    policy_tag: operation.transport.policy,
                     reciprocate: 1,
                     setup_id,
                 })
@@ -1383,7 +1388,7 @@ pub(crate) unsafe fn start_imported_observation(
             if operation.kind == 1 {
                 crate::monitor::WatcherAction::Link {
                     local_actor_id: operation.actor_id,
-                    policy_tag: operation.policy,
+                    policy_tag: operation.transport.policy,
                 }
             } else {
                 crate::monitor::WatcherAction::Monitor {
@@ -1391,13 +1396,14 @@ pub(crate) unsafe fn start_imported_observation(
                 }
             },
             authority,
-            operation.completion.clone(),
+            operation.transport.completion.clone(),
         );
-        operation.remote = Some((offer.target, authority));
+        operation.transport.remote = Some((offer.target, authority));
         operation.ref_id = ref_id;
-        operation.pending = Some((setup_id, pending));
+        operation.transport.pending = Some((setup_id, pending));
         // SAFETY: the timer retains the descriptor; this operation owns its handle.
-        operation.timer = unsafe { crate::coro_sleep::hew_coro_sleep_new(5_000_000_000, waker) };
+        operation.transport.timer =
+            unsafe { crate::coro_sleep::hew_coro_sleep_new(5_000_000_000, waker) };
         let table = Arc::clone(&rt.node.reply_table);
         let completion_table = Arc::clone(&table);
         if let Err(reason) = claim.submit(
@@ -1430,11 +1436,11 @@ pub(crate) unsafe fn start_imported_observation(
                     None,
                     operation.actor_id,
                     imported.identity(),
-                    operation.policy,
+                    operation.transport.policy,
                 );
             } else {
                 rt.monitors.enqueue_lost(crate::monitor::MonitorDown {
-                    completion: operation.completion.clone(),
+                    completion: operation.transport.completion.clone(),
                     monitor_id: ref_id,
                     watcher_actor_id: operation.actor_id,
                     target: imported.identity(),
@@ -1450,7 +1456,7 @@ pub(crate) unsafe fn start_imported_observation(
         } else {
             crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
         });
-        if let Some(completion) = &operation.completion {
+        if let Some(completion) = &operation.transport.completion {
             completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
         }
     }
@@ -1521,17 +1527,16 @@ pub(crate) unsafe fn imported_actor_wait(
 ) {
     let completion = Arc::new(crate::actor_native::NativeActorCompletion::default());
     let mut operation = Box::new(HewNativeActorObservation {
-        pending: None,
-        timer: std::ptr::null_mut(),
-        remote: None,
+        transport: crate::platform::host_io::RemoteActorObservation {
+            completion: Some(completion.clone()),
+            ..crate::platform::host_io::RemoteActorObservation::EMPTY
+        },
         ref_id: 0,
         actor_id: 0,
         local_link: None,
         kind: 0,
-        policy: 0,
         status: None,
         taken: false,
-        completion: Some(completion.clone()),
     });
     // SAFETY: the caller retains this descriptor throughout registration.
     unsafe { start_imported_observation(&mut operation, imported, waker) };
@@ -1540,14 +1545,14 @@ pub(crate) unsafe fn imported_actor_wait(
 
 /// Retire native setup ownership; return whether this was a remote observation.
 pub(crate) fn retire_imported_observation(operation: &mut HewNativeActorObservation) -> bool {
-    if let Some((setup_id, _)) = operation.pending.take() {
+    if let Some((setup_id, _)) = operation.transport.pending.take() {
         reply_table().remove(setup_id);
     }
-    if !operation.timer.is_null() {
+    if !operation.transport.timer.is_null() {
         // SAFETY: this operation uniquely owns its timer.
-        unsafe { crate::coro_sleep::hew_coro_sleep_free(operation.timer) };
+        unsafe { crate::coro_sleep::hew_coro_sleep_free(operation.transport.timer) };
     }
-    if let Some((target, authority)) = operation.remote {
+    if let Some((target, authority)) = operation.transport.remote {
         if !operation.taken {
             crate::runtime::rt_current()
                 .monitors

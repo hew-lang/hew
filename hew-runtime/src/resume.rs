@@ -28,10 +28,5 @@ pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
 pub(crate) use crate::activation::enqueue_resume_by_incarnation;
 
 fn publish(entry: SchedulerQueueEntry) {
-    if crate::driver::active() {
-        crate::driver::publish_queue_entry(entry);
-        return;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::scheduler::publish_queue_entry(entry);
+    crate::platform::executor::publish_queue_entry(entry);
 }

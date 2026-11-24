@@ -68,17 +68,11 @@ impl MtState {
             s.init_by_array(&[0]);
             return s;
         }
-        // Auto-seed from OS entropy via rand (already a dependency).
-        // WASM doesn't have reliable OS entropy, so use fixed seed there.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use rand::RngExt;
-            let mut rng = rand::rng();
-            let key: [u32; 4] = std::array::from_fn(|_| rng.random());
+        // Auto-seed from OS / WASI entropy via the platform seam, falling back to
+        // a fixed seed only on targets with no entropy source.
+        if let Some(key) = crate::platform::entropy::seed_words::<4>() {
             s.init_by_array(&key);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
+        } else {
             s.init_genrand(19_650_218);
         }
         s

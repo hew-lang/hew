@@ -167,21 +167,8 @@ pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {
     )
 )]
 pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // SAFETY: the native trap bridge checks whether an actor recovery
-        // context is active and returns only when no recovery context exists.
-        unsafe { crate::supervisor::hew_trap_with_code(code) };
-        std::process::abort();
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        // SAFETY: the shared bridge reports and ends the run; it never returns
-        // for a non-actor trap.
-        unsafe { fault_trap_bridge(code, false) };
-        std::process::abort();
-    }
+    // SAFETY: forwarded from caller contract.
+    unsafe { crate::platform::executor::bounds_trap(code) }
 }
 
 /// The fallback for a raised fault without a checked failure continuation.
@@ -193,26 +180,8 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 /// May be called in or out of actor dispatch; the installed execution context,
 /// if any, is scheduler-owned and valid for the call.
 pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
-    #[cfg(not(target_arch = "wasm32"))]
-    // SAFETY: forwarded caller contract.
-    unsafe {
-        crate::supervisor::trap_with_code(code, reported);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if !reported {
-            crate::fault::report_trap_code(code);
-        }
-        crate::output::flush();
-        crate::test_report::finish(1);
-        // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
-        // the trap code in the reported line is the runtime's internal tag and
-        // is never the process exit status.
-        // JUSTIFIED: this raw trap ABI has no checked failure continuation.
-        // Checked actor invocations return their fault before this boundary;
-        // an unowned fallback ends the module and the host reclaims it.
-        std::process::exit(1);
-    }
+    // SAFETY: forwarded from caller contract.
+    unsafe { crate::platform::executor::fault_trap_bridge(code, reported) }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -26,15 +26,7 @@ pub const HEW_FAULT_REFUSED: i32 = -4;
 /// cancellation is an expected stop, not a fault. The wasm32 driver has no
 /// shutdown sequence, so there it is always false.
 pub(crate) fn cancelled_by_shutdown(code: i32) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        code == HEW_FAULT_CANCELLED && crate::shutdown::hew_is_shutting_down() != 0
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = code;
-        false
-    }
+    crate::platform::host_io::cancelled_by_shutdown(code)
 }
 pub const HEW_FAULT_DEADLINE: i32 = -2;
 /// Internal cancellation requested after another race child has completed.

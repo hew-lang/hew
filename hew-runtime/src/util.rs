@@ -5,73 +5,136 @@
 
 use std::io::Write as _;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
-/// Build a JSON array by writing each element directly into the output string.
-///
-/// Consumed only by the profiler's JSON snapshot endpoints; gated to the
-/// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "profiler", test)))]
-pub(crate) fn json_array<I, F>(items: I, mut write_item: F) -> String
-where
-    I: IntoIterator,
-    F: FnMut(&mut String, I::Item),
-{
-    let mut json = String::from("[");
-    let mut first = true;
-    for item in items {
-        if first {
-            first = false;
-        } else {
-            json.push(',');
-        }
-        write_item(&mut json, item);
-    }
-    json.push(']');
-    json
-}
-
-/// Push a JSON string value into `out`, escaping control characters as needed.
-///
-/// Consumed only by the profiler's JSON snapshot endpoints; gated to the
-/// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "profiler", test)))]
-pub(crate) fn push_json_string(out: &mut String, s: &str) {
-    use std::fmt::Write as _;
-
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => {
-                let _ = write!(out, "\\u{:04x}", ch as u32);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-}
-
-/// Extract a readable message from a panic payload.
-//
-// KEEP(wasm32): reached from `take_panic_payload_message`, whose own note
-// explains why the whole pair is native-only.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = panic_payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "non-string panic payload".to_string()
+mod native {
+    use super::quarantine_panic_payload;
+    use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+    /// Build a JSON array by writing each element directly into the output string.
+    ///
+    /// Consumed only by the profiler's JSON snapshot endpoints; gated to the
+    /// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
+    #[cfg(any(feature = "profiler", test))]
+    pub(crate) fn json_array<I, F>(items: I, mut write_item: F) -> String
+    where
+        I: IntoIterator,
+        F: FnMut(&mut String, I::Item),
+    {
+        let mut json = String::from("[");
+        let mut first = true;
+        for item in items {
+            if first {
+                first = false;
+            } else {
+                json.push(',');
+            }
+            write_item(&mut json, item);
+        }
+        json.push(']');
+        json
+    }
+
+    /// Push a JSON string value into `out`, escaping control characters as needed.
+    ///
+    /// Consumed only by the profiler's JSON snapshot endpoints; gated to the
+    /// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
+    #[cfg(any(feature = "profiler", test))]
+    pub(crate) fn push_json_string(out: &mut String, s: &str) {
+        use std::fmt::Write as _;
+
+        out.push('"');
+        for ch in s.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                ch if ch.is_control() => {
+                    let _ = write!(out, "\\u{:04x}", ch as u32);
+                }
+                ch => out.push(ch),
+            }
+        }
+        out.push('"');
+    }
+
+    /// Extract a readable message from a panic payload.
+    pub(crate) fn panic_payload_message(panic_payload: &(dyn std::any::Any + Send)) -> String {
+        if let Some(s) = panic_payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "non-string panic payload".to_string()
+        }
+    }
+
+    /// Extract a diagnostic string, then release the owned payload through the
+    /// runtime's containment authority.
+    pub(crate) fn take_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        let message = panic_payload_message(payload.as_ref());
+        quarantine_panic_payload(payload);
+        message
+    }
+
+    /// Report a background-thread panic observed while joining during teardown.
+    pub(crate) fn report_join_panic(context: &str, join_result: std::thread::Result<()>) {
+        if let Err(panic_payload) = join_result {
+            let message = format!(
+                "{context} panicked during teardown: {}",
+                take_panic_payload_message(panic_payload)
+            );
+            crate::set_last_error(message.clone());
+            eprintln!("hew: {message}");
+        }
+    }
+
+    /// Extension trait for [`RwLock`] that recovers from poisoned locks.
+    pub(crate) trait RwLockExt<T> {
+        fn read_or_recover(&self) -> RwLockReadGuard<'_, T>;
+        fn write_or_recover(&self) -> RwLockWriteGuard<'_, T>;
+    }
+
+    impl<T> RwLockExt<T> for RwLock<T> {
+        fn read_or_recover(&self) -> RwLockReadGuard<'_, T> {
+            self.read().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        fn write_or_recover(&self) -> RwLockWriteGuard<'_, T> {
+            self.write().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    /// Convert a C string pointer to a Rust `&str`, setting last error on failure.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, null-terminated C string or null.
+    pub(crate) unsafe fn cstr_to_str<'a>(
+        ptr: &'a *const std::ffi::c_char,
+        context: &str,
+    ) -> Option<&'a str> {
+        if ptr.is_null() {
+            crate::set_last_error(format!("{context}: null pointer"));
+            return None;
+        }
+        // SAFETY: Caller guarantees ptr is a valid NUL-terminated C string.
+        if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(*ptr) }.to_str() {
+            Some(s)
+        } else {
+            crate::set_last_error(format!("{context}: invalid UTF-8"));
+            None
+        }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::{cstr_to_str, report_join_panic, take_panic_payload_message, RwLockExt};
+#[cfg(all(any(feature = "profiler", test), not(target_arch = "wasm32")))]
+pub(crate) use native::{json_array, push_json_string};
 
 /// Dispose a caught panic payload without allowing hostile payload drop glue
 /// to escape the runtime containment boundary.
@@ -98,36 +161,6 @@ pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send
     std::process::abort();
 }
 
-/// Extract a diagnostic string, then release the owned payload through the
-/// runtime's containment authority.
-//
-// KEEP(wasm32): call sites across `timer_periodic.rs`, `task_scope.rs` and
-// `blocking_pool.rs`, plus `report_join_panic` in this file. All of those are
-// declared `#[cfg(not(target_arch = "wasm32"))]` while `pub mod util` is
-// unconditional, so wasm32 is the only build with no caller. The behaviour is load-bearing: a background-thread panic becomes a
-// diagnostic and the payload is released through `quarantine_panic_payload`,
-// which contains a hostile `Drop` rather than letting a second unwind escape
-// the runtime boundary.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn take_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    let message = panic_payload_message(payload.as_ref());
-    quarantine_panic_payload(payload);
-    message
-}
-
-/// Report a background-thread panic observed while joining during teardown.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn report_join_panic(context: &str, join_result: std::thread::Result<()>) {
-    if let Err(panic_payload) = join_result {
-        let message = format!(
-            "{context} panicked during teardown: {}",
-            take_panic_payload_message(panic_payload)
-        );
-        crate::set_last_error(message.clone());
-        eprintln!("hew: {message}");
-    }
-}
-
 /// Extension trait for [`Mutex`] that recovers from poisoned locks.
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
@@ -136,24 +169,6 @@ pub(crate) trait MutexExt<T> {
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-/// Extension trait for [`RwLock`] that recovers from poisoned locks.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait RwLockExt<T> {
-    fn read_or_recover(&self) -> RwLockReadGuard<'_, T>;
-    fn write_or_recover(&self) -> RwLockWriteGuard<'_, T>;
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<T> RwLockExt<T> for RwLock<T> {
-    fn read_or_recover(&self) -> RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn write_or_recover(&self) -> RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -166,29 +181,6 @@ pub(crate) trait CondvarExt {
         guard: MutexGuard<'a, T>,
         dur: Duration,
     ) -> (MutexGuard<'a, T>, std::sync::WaitTimeoutResult);
-}
-
-/// Convert a C string pointer to a Rust `&str`, setting last error on failure.
-///
-/// # Safety
-///
-/// `ptr` must be a valid, null-terminated C string or null.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn cstr_to_str<'a>(
-    ptr: &'a *const std::ffi::c_char,
-    context: &str,
-) -> Option<&'a str> {
-    if ptr.is_null() {
-        crate::set_last_error(format!("{context}: null pointer"));
-        return None;
-    }
-    // SAFETY: Caller guarantees ptr is a valid NUL-terminated C string.
-    if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(*ptr) }.to_str() {
-        Some(s)
-    } else {
-        crate::set_last_error(format!("{context}: invalid UTF-8"));
-        None
-    }
 }
 
 impl CondvarExt for Condvar {

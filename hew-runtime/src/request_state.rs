@@ -72,22 +72,18 @@ pub(crate) struct RequestState {
     dispatch: AtomicU8,
     observer: Option<crate::wake::OwnedWaker>,
     pub(crate) deadline: RequestDeadline,
-    #[cfg(not(target_arch = "wasm32"))]
-    admission: Option<crate::hew_node::service::RemoteAdmission>,
+    admission: crate::platform::host_io::RemoteAdmissionSlot,
 }
 
 impl RequestState {
     pub(crate) fn new(
         deadline: RequestDeadline,
-        #[cfg(not(target_arch = "wasm32"))] admission: Option<
-            crate::hew_node::service::RemoteAdmission,
-        >,
+        admission: crate::platform::host_io::RemoteAdmissionSlot,
     ) -> Self {
         Self {
             dispatch: AtomicU8::new(1),
             observer: None,
             deadline,
-            #[cfg(not(target_arch = "wasm32"))]
             admission,
         }
     }
@@ -129,16 +125,9 @@ impl RequestState {
             self.dispatch
                 .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let claimed = if let Some(admission) = &self.admission {
-            // The CAS stays inside the export authority's lock; readiness is
-            // notified only after that authority has released its lock.
-            admission.claim(claim)?
-        } else {
-            claim()
-        };
-        #[cfg(target_arch = "wasm32")]
-        let claimed = claim();
+        // The CAS stays inside the export authority's lock when present;
+        // readiness is notified only after that authority has released its lock.
+        let claimed = self.admission.claim(claim)?;
         if claimed.is_ok() {
             self.notify();
         }

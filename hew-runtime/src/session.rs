@@ -29,41 +29,47 @@
 //! `profiler::register_reset_hooks`.
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::lifetime::PoisonSafe;
+mod native {
+    use crate::lifetime::PoisonSafe;
 
-/// A zero-argument, infallible cleanup callback.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type ResetHook = fn();
+    /// A zero-argument, infallible cleanup callback.
+    pub(crate) type ResetHook = fn();
 
-/// Global list of reset hooks, populated at init time.
-#[cfg(not(target_arch = "wasm32"))]
-static RESET_HOOKS: PoisonSafe<Vec<ResetHook>> = PoisonSafe::new(Vec::new());
+    /// Global list of reset hooks, populated at init time.
+    static RESET_HOOKS: PoisonSafe<Vec<ResetHook>> = PoisonSafe::new(Vec::new());
 
-/// Register a reset hook.
-///
-/// Hooks registered here will be called in order when `session_reset` fires.
-/// Callers are responsible for guarding against duplicate registration (e.g.
-/// with `std::sync::Once`).
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_reset_hook(hook: ResetHook) {
-    RESET_HOOKS.access(|hooks| hooks.push(hook));
-}
+    /// Register a reset hook.
+    ///
+    /// Hooks registered here will be called in order when `session_reset` fires.
+    /// Callers are responsible for guarding against duplicate registration (e.g.
+    /// with `std::sync::Once`).
+    pub(crate) fn register_reset_hook(hook: ResetHook) {
+        RESET_HOOKS.access(|hooks| hooks.push(hook));
+    }
 
-/// Fire all registered reset hooks in registration order.
-///
-/// Called from both `hew_sched_shutdown` paths (WASM cooperative and native
-/// work-stealing) after the actor drain completes and before scheduler statics
-/// are cleared.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn session_reset() {
-    // Snapshot the hooks under the lock, then release the lock before
-    // calling each hook.  This avoids a potential deadlock if a hook
-    // attempts to register another hook during teardown.
-    let hooks: Vec<ResetHook> = RESET_HOOKS.access(|hooks| hooks.clone());
-    for hook in hooks {
-        hook();
+    /// Fire all registered reset hooks in registration order.
+    ///
+    /// Called from both `hew_sched_shutdown` paths (WASM cooperative and native
+    /// work-stealing) after the actor drain completes and before scheduler statics
+    /// are cleared.
+    pub(crate) fn session_reset() {
+        // Snapshot the hooks under the lock, then release the lock before
+        // calling each hook.  This avoids a potential deadlock if a hook
+        // attempts to register another hook during teardown.
+        let hooks: Vec<ResetHook> = RESET_HOOKS.access(|hooks| hooks.clone());
+        for hook in hooks {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_hooks() {
+        RESET_HOOKS.access(std::vec::Vec::clear);
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::{register_reset_hook, session_reset};
 
 // ── Cross-module test helpers ────────────────────────────────────────────
 //
@@ -91,7 +97,8 @@ pub(crate) fn reset_hooks_for_test() -> std::sync::MutexGuard<'static, ()> {
     let guard = SESSION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    RESET_HOOKS.access(std::vec::Vec::clear);
+    #[cfg(not(target_arch = "wasm32"))]
+    native::clear_hooks();
     guard
 }
 

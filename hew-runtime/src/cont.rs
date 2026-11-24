@@ -335,14 +335,7 @@ struct CrashCleanupDrainGuard;
 
 #[inline]
 fn publish_crash_cleanup_drain_to_signal_handler(active: bool) {
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::signal::set_crash_cleanup_drain_active(active);
-
-    // wasm32 has no native signal module or hardware-fault boundary.
-    // The thread-local drain-depth guard remains authoritative for cooperative
-    // trap rejection without claiming native signal containment.
-    #[cfg(target_arch = "wasm32")]
-    let _ = active;
+    crate::platform::executor::publish_crash_cleanup_drain_to_signal_handler(active);
 }
 
 impl CrashCleanupDrainGuard {
@@ -2898,261 +2891,248 @@ mod tests {
 
     use std::sync::atomic::AtomicU32;
 
-    // Separate counters per test so the dispatch tests stay isolated under
-    // nextest's parallel execution (a shared counter would race).
     #[cfg(not(target_arch = "wasm32"))]
-    static PENDING_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
-    #[cfg(not(target_arch = "wasm32"))]
-    static CONSUMED_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
-    #[cfg(not(target_arch = "wasm32"))]
-    static ENV_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+    mod native_tests {
+        use super::*;
 
-    /// Stand-in for a codegen-emitted typed out-drop thunk: bumps the
-    /// pending-path counter. A real thunk GEPs to the companion's `out` field and
-    /// runs `Y`'s drop; the dispatch contract this pins is "called once iff pending".
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn pending_counting_thunk(_companion: *mut c_void) {
-        PENDING_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
-    }
+        // Separate counters per test so the dispatch tests stay isolated under
+        // nextest's parallel execution (a shared counter would race).
+        static PENDING_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+        static CONSUMED_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+        static ENV_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
 
-    /// Stand-in thunk for the consumed-path test (bumps a distinct counter).
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn consumed_counting_thunk(_companion: *mut c_void) {
-        CONSUMED_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn env_counting_thunk(_env: *mut c_void) {
-        ENV_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Build a minimal companion block matching the codegen layout, with a null
-    /// coro handle + null env (so handle/env teardown are no-ops) and the given
-    /// `pending` flag + out-drop thunk. Returns the companion pointer (owned by
-    /// `hew_cont_frame_alloc`, freed by `hew_gen_coro_destroy`).
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe fn make_companion(
-        pending: u8,
-        out_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
-        env: *mut c_void,
-        env_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
-    ) -> *mut c_void {
-        let ptr_width = core::mem::size_of::<*mut c_void>();
-        // Four pointers + two flag bytes is the only region the runtime reads;
-        // size the block generously past that so the flag/thunk writes are in
-        // bounds (the real `out` field follows but the runtime never reads it).
-        let size = (ptr_width * 5) as u64;
-        // SAFETY: hew_cont_frame_alloc is safe for any size and returns a block
-        // freed by hew_gen_coro_destroy below.
-        let companion = unsafe { hew_cont_frame_alloc(size) };
-        assert!(!companion.is_null());
-        // SAFETY: every write below targets an in-bounds field of the companion
-        // block just allocated (handle @0, env @ptr_width, env thunk @2*ptr_width,
-        // out thunk @3*ptr_width, started @4*ptr_width,
-        // pending @4*ptr_width+1), matching the codegen
-        // layout the runtime destroy reads.
-        unsafe {
-            ptr::write(companion.cast::<*mut c_void>(), ptr::null_mut());
-            ptr::write_unaligned(
-                companion.cast::<u8>().add(ptr_width).cast::<*mut c_void>(),
-                env,
-            );
-            ptr::write_unaligned(
-                companion
-                    .cast::<u8>()
-                    .add(ptr_width * 2)
-                    .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
-                env_thunk,
-            );
-            ptr::write_unaligned(
-                companion
-                    .cast::<u8>()
-                    .add(ptr_width * 3)
-                    .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
-                out_thunk,
-            );
-            ptr::write(companion.cast::<u8>().add(ptr_width * 4), 0u8);
-            ptr::write(companion.cast::<u8>().add(ptr_width * 4 + 1), pending);
+        /// Stand-in for a codegen-emitted typed out-drop thunk: bumps the
+        /// pending-path counter. A real thunk GEPs to the companion's `out` field and
+        /// runs `Y`'s drop; the dispatch contract this pins is "called once iff pending".
+        unsafe extern "C-unwind" fn pending_counting_thunk(_companion: *mut c_void) {
+            PENDING_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
         }
-        companion
-    }
 
-    /// A companion dropped with `pending == 1` and a non-null thunk runs the
-    /// typed out-drop EXACTLY once — the leak fix for an un-consumed owned yield.
-    /// `hew_gen_coro_destroy` is not emitted for wasm32 (the IR path handles
-    /// teardown there); this test covers the native Rust implementation only.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn destroy_runs_out_drop_thunk_exactly_once_when_pending() {
-        PENDING_DROP_CALLS.store(0, Ordering::SeqCst);
-        // SAFETY: companion is a well-formed block from make_companion; destroy
-        // is its sole teardown owner.
-        unsafe {
-            let companion = make_companion(1, Some(pending_counting_thunk), ptr::null_mut(), None);
-            hew_gen_coro_destroy(companion);
+        /// Stand-in thunk for the consumed-path test (bumps a distinct counter).
+        unsafe extern "C-unwind" fn consumed_counting_thunk(_companion: *mut c_void) {
+            CONSUMED_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
         }
-        assert_eq!(
-            PENDING_DROP_CALLS.load(Ordering::SeqCst),
-            1,
-            "a pending un-consumed owned yield must be typed-dropped exactly once"
-        );
-    }
 
-    /// A companion dropped with `pending == 0` (the value was consumed by a
-    /// `.next()`, or never yielded) must NOT run the thunk — dropping a consumed
-    /// value would double-free the copy the consumer now owns.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn destroy_skips_out_drop_thunk_when_not_pending() {
-        CONSUMED_DROP_CALLS.store(0, Ordering::SeqCst);
-        // SAFETY: companion is a well-formed block from make_companion.
-        unsafe {
-            let companion = make_companion(0, Some(consumed_counting_thunk), ptr::null_mut(), None);
-            hew_gen_coro_destroy(companion);
+        unsafe extern "C-unwind" fn env_counting_thunk(_env: *mut c_void) {
+            ENV_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
         }
-        assert_eq!(
-            CONSUMED_DROP_CALLS.load(Ordering::SeqCst),
-            0,
-            "a consumed (pending == 0) out value must NOT be re-dropped"
-        );
-    }
 
-    /// A `BitCopy` `Y` plants a null thunk; destroy with pending set must be a
-    /// no-op on the drop side (nothing to free) and not deref a null thunk.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn destroy_null_thunk_pending_is_noop_drop() {
-        // SAFETY: companion has a null thunk; destroy must skip the call.
-        unsafe {
-            let companion = make_companion(1, None, ptr::null_mut(), None);
-            hew_gen_coro_destroy(companion);
+        /// Build a minimal companion block matching the codegen layout, with a null
+        /// coro handle + null env (so handle/env teardown are no-ops) and the given
+        /// `pending` flag + out-drop thunk. Returns the companion pointer (owned by
+        /// `hew_cont_frame_alloc`, freed by `hew_gen_coro_destroy`).
+        unsafe fn make_companion(
+            pending: u8,
+            out_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+            env: *mut c_void,
+            env_thunk: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+        ) -> *mut c_void {
+            let ptr_width = core::mem::size_of::<*mut c_void>();
+            // Four pointers + two flag bytes is the only region the runtime reads;
+            // size the block generously past that so the flag/thunk writes are in
+            // bounds (the real `out` field follows but the runtime never reads it).
+            let size = (ptr_width * 5) as u64;
+            // SAFETY: hew_cont_frame_alloc is safe for any size and returns a block
+            // freed by hew_gen_coro_destroy below.
+            let companion = unsafe { hew_cont_frame_alloc(size) };
+            assert!(!companion.is_null());
+            // SAFETY: every write below targets an in-bounds field of the companion
+            // block just allocated (handle @0, env @ptr_width, env thunk @2*ptr_width,
+            // out thunk @3*ptr_width, started @4*ptr_width,
+            // pending @4*ptr_width+1), matching the codegen
+            // layout the runtime destroy reads.
+            unsafe {
+                ptr::write(companion.cast::<*mut c_void>(), ptr::null_mut());
+                ptr::write_unaligned(
+                    companion.cast::<u8>().add(ptr_width).cast::<*mut c_void>(),
+                    env,
+                );
+                ptr::write_unaligned(
+                    companion
+                        .cast::<u8>()
+                        .add(ptr_width * 2)
+                        .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
+                    env_thunk,
+                );
+                ptr::write_unaligned(
+                    companion
+                        .cast::<u8>()
+                        .add(ptr_width * 3)
+                        .cast::<Option<unsafe extern "C-unwind" fn(*mut c_void)>>(),
+                    out_thunk,
+                );
+                ptr::write(companion.cast::<u8>().add(ptr_width * 4), 0u8);
+                ptr::write(companion.cast::<u8>().add(ptr_width * 4 + 1), pending);
+            }
+            companion
         }
-        // No crash, no double-free; reaching here is the assertion.
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn destroy_runs_env_drop_thunk_exactly_once() {
-        ENV_DROP_CALLS.store(0, Ordering::SeqCst);
-        // SAFETY: both allocations are created by the frame allocator and the
-        // companion is destroyed exactly once by the sole teardown owner.
-        unsafe {
-            let env = hew_cont_frame_alloc(8);
-            let companion = make_companion(0, None, env, Some(env_counting_thunk));
-            hew_gen_coro_destroy(companion);
-        }
-        assert_eq!(ENV_DROP_CALLS.load(Ordering::SeqCst), 1);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    static UNWIND_ENV_DROPS: AtomicU32 = AtomicU32::new(0);
-    #[cfg(not(target_arch = "wasm32"))]
-    static UNWIND_OUT_DROPS: AtomicU32 = AtomicU32::new(0);
-    #[cfg(not(target_arch = "wasm32"))]
-    static UNWIND_CORO_DESTROYS: AtomicU32 = AtomicU32::new(0);
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn unwind_recording_env_thunk(_env: *mut c_void) {
-        UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn unwind_recording_out_thunk(_companion: *mut c_void) {
-        UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn panicking_coro_destroy(handle: *mut c_void) {
-        UNWIND_CORO_DESTROYS.fetch_add(1, Ordering::SeqCst);
-        // SAFETY: `handle` came from `hew_cont_frame_alloc` for this test fixture.
-        unsafe { hew_cont_frame_free(handle) };
-        panic!("simulated coroutine destroy unwind");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn panicking_env_thunk(_env: *mut c_void) {
-        UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
-        panic!("simulated env drop unwind");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe extern "C-unwind" fn panicking_out_thunk(_companion: *mut c_void) {
-        UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
-        panic!("simulated out drop unwind");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn gen_coro_destroy_unwind_runs_remaining_destructors_and_frees() {
-        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = TEST_LOCK.lock().unwrap();
-
-        // 1. Coroutine destroy unwinds: env_thunk, out_thunk, env free, and
-        //    companion free must all still execute in RAII order.
-        UNWIND_CORO_DESTROYS.store(0, Ordering::SeqCst);
-        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
-        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
-        // SAFETY: mock handle, env, and companion come from `hew_cont_frame_alloc`
-        // and are solely owned by `hew_gen_coro_destroy`.
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            let handle = hew_cont_frame_alloc(core::mem::size_of::<CoroFramePrefix>() as u64);
-            ptr::write(
-                handle.cast::<CoroFramePrefix>(),
-                CoroFramePrefix {
-                    resume: None,
-                    destroy: Some(panicking_coro_destroy),
-                },
-            );
-            let env = hew_cont_frame_alloc(8);
-            let companion = make_companion(
+        /// A companion dropped with `pending == 1` and a non-null thunk runs the
+        /// typed out-drop EXACTLY once — the leak fix for an un-consumed owned yield.
+        /// `hew_gen_coro_destroy` is not emitted for wasm32 (the IR path handles
+        /// teardown there); this test covers the native Rust implementation only.
+        #[test]
+        fn destroy_runs_out_drop_thunk_exactly_once_when_pending() {
+            PENDING_DROP_CALLS.store(0, Ordering::SeqCst);
+            // SAFETY: companion is a well-formed block from make_companion; destroy
+            // is its sole teardown owner.
+            unsafe {
+                let companion =
+                    make_companion(1, Some(pending_counting_thunk), ptr::null_mut(), None);
+                hew_gen_coro_destroy(companion);
+            }
+            assert_eq!(
+                PENDING_DROP_CALLS.load(Ordering::SeqCst),
                 1,
-                Some(unwind_recording_out_thunk),
-                env,
-                Some(unwind_recording_env_thunk),
+                "a pending un-consumed owned yield must be typed-dropped exactly once"
             );
-            ptr::write(companion.cast::<*mut c_void>(), handle);
-            hew_gen_coro_destroy(companion);
-        }));
-        assert!(res.is_err());
-        assert_eq!(UNWIND_CORO_DESTROYS.load(Ordering::SeqCst), 1);
-        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
-        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+        }
 
-        // 2. Env thunk unwinds: out_thunk and both frame frees still run.
-        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
-        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
-        // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            let env = hew_cont_frame_alloc(8);
-            let companion = make_companion(
-                1,
-                Some(unwind_recording_out_thunk),
-                env,
-                Some(panicking_env_thunk),
+        /// A companion dropped with `pending == 0` (the value was consumed by a
+        /// `.next()`, or never yielded) must NOT run the thunk — dropping a consumed
+        /// value would double-free the copy the consumer now owns.
+        #[test]
+        fn destroy_skips_out_drop_thunk_when_not_pending() {
+            CONSUMED_DROP_CALLS.store(0, Ordering::SeqCst);
+            // SAFETY: companion is a well-formed block from make_companion.
+            unsafe {
+                let companion =
+                    make_companion(0, Some(consumed_counting_thunk), ptr::null_mut(), None);
+                hew_gen_coro_destroy(companion);
+            }
+            assert_eq!(
+                CONSUMED_DROP_CALLS.load(Ordering::SeqCst),
+                0,
+                "a consumed (pending == 0) out value must NOT be re-dropped"
             );
-            hew_gen_coro_destroy(companion);
-        }));
-        assert!(res.is_err());
-        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
-        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+        }
 
-        // 3. Out thunk unwinds: env_thunk already ran and companion is still freed.
-        UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
-        UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
-        // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            let env = hew_cont_frame_alloc(8);
-            let companion = make_companion(
-                1,
-                Some(panicking_out_thunk),
-                env,
-                Some(unwind_recording_env_thunk),
-            );
-            hew_gen_coro_destroy(companion);
-        }));
-        assert!(res.is_err());
-        assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
-        assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+        /// A `BitCopy` `Y` plants a null thunk; destroy with pending set must be a
+        /// no-op on the drop side (nothing to free) and not deref a null thunk.
+        #[test]
+        fn destroy_null_thunk_pending_is_noop_drop() {
+            // SAFETY: companion has a null thunk; destroy must skip the call.
+            unsafe {
+                let companion = make_companion(1, None, ptr::null_mut(), None);
+                hew_gen_coro_destroy(companion);
+            }
+            // No crash, no double-free; reaching here is the assertion.
+        }
+
+        #[test]
+        fn destroy_runs_env_drop_thunk_exactly_once() {
+            ENV_DROP_CALLS.store(0, Ordering::SeqCst);
+            // SAFETY: both allocations are created by the frame allocator and the
+            // companion is destroyed exactly once by the sole teardown owner.
+            unsafe {
+                let env = hew_cont_frame_alloc(8);
+                let companion = make_companion(0, None, env, Some(env_counting_thunk));
+                hew_gen_coro_destroy(companion);
+            }
+            assert_eq!(ENV_DROP_CALLS.load(Ordering::SeqCst), 1);
+        }
+
+        static UNWIND_ENV_DROPS: AtomicU32 = AtomicU32::new(0);
+        static UNWIND_OUT_DROPS: AtomicU32 = AtomicU32::new(0);
+        static UNWIND_CORO_DESTROYS: AtomicU32 = AtomicU32::new(0);
+
+        unsafe extern "C-unwind" fn unwind_recording_env_thunk(_env: *mut c_void) {
+            UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe extern "C-unwind" fn unwind_recording_out_thunk(_companion: *mut c_void) {
+            UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe extern "C-unwind" fn panicking_coro_destroy(handle: *mut c_void) {
+            UNWIND_CORO_DESTROYS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: `handle` came from `hew_cont_frame_alloc` for this test fixture.
+            unsafe { hew_cont_frame_free(handle) };
+            panic!("simulated coroutine destroy unwind");
+        }
+
+        unsafe extern "C-unwind" fn panicking_env_thunk(_env: *mut c_void) {
+            UNWIND_ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("simulated env drop unwind");
+        }
+
+        unsafe extern "C-unwind" fn panicking_out_thunk(_companion: *mut c_void) {
+            UNWIND_OUT_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("simulated out drop unwind");
+        }
+
+        #[test]
+        fn gen_coro_destroy_unwind_runs_remaining_destructors_and_frees() {
+            static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _guard = TEST_LOCK.lock().unwrap();
+
+            // 1. Coroutine destroy unwinds: env_thunk, out_thunk, env free, and
+            //    companion free must all still execute in RAII order.
+            UNWIND_CORO_DESTROYS.store(0, Ordering::SeqCst);
+            UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+            UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+            // SAFETY: mock handle, env, and companion come from `hew_cont_frame_alloc`
+            // and are solely owned by `hew_gen_coro_destroy`.
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                let handle = hew_cont_frame_alloc(core::mem::size_of::<CoroFramePrefix>() as u64);
+                ptr::write(
+                    handle.cast::<CoroFramePrefix>(),
+                    CoroFramePrefix {
+                        resume: None,
+                        destroy: Some(panicking_coro_destroy),
+                    },
+                );
+                let env = hew_cont_frame_alloc(8);
+                let companion = make_companion(
+                    1,
+                    Some(unwind_recording_out_thunk),
+                    env,
+                    Some(unwind_recording_env_thunk),
+                );
+                ptr::write(companion.cast::<*mut c_void>(), handle);
+                hew_gen_coro_destroy(companion);
+            }));
+            assert!(res.is_err());
+            assert_eq!(UNWIND_CORO_DESTROYS.load(Ordering::SeqCst), 1);
+            assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+
+            // 2. Env thunk unwinds: out_thunk and both frame frees still run.
+            UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+            UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+            // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                let env = hew_cont_frame_alloc(8);
+                let companion = make_companion(
+                    1,
+                    Some(unwind_recording_out_thunk),
+                    env,
+                    Some(panicking_env_thunk),
+                );
+                hew_gen_coro_destroy(companion);
+            }));
+            assert!(res.is_err());
+            assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+
+            // 3. Out thunk unwinds: env_thunk already ran and companion is still freed.
+            UNWIND_ENV_DROPS.store(0, Ordering::SeqCst);
+            UNWIND_OUT_DROPS.store(0, Ordering::SeqCst);
+            // SAFETY: companion and env are solely owned by `hew_gen_coro_destroy`.
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                let env = hew_cont_frame_alloc(8);
+                let companion = make_companion(
+                    1,
+                    Some(panicking_out_thunk),
+                    env,
+                    Some(unwind_recording_env_thunk),
+                );
+                hew_gen_coro_destroy(companion);
+            }));
+            assert!(res.is_err());
+            assert_eq!(UNWIND_ENV_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(UNWIND_OUT_DROPS.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[test]

@@ -1,32 +1,17 @@
 //! Checked observation ownership for local and admitted actor handles.
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::hew_node::PendingReply;
 use crate::monitor::HEW_OBSERVATION_NO_CONTEXT;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::node_identity::Location;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
 
 /// One ordinary observation owner, shared by local and admitted actor values.
 /// Setup acknowledgement, cancellation and its readiness registration retire together.
 pub struct HewNativeActorObservation {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) pending: Option<(u64, Arc<PendingReply>)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) timer: *mut crate::coro_sleep::HewCoroSleep,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) remote: Option<(Location, crate::monitor::ObservationAuthority)>,
+    pub(crate) transport: crate::platform::host_io::RemoteActorObservation,
     pub(crate) ref_id: u64,
     pub(crate) actor_id: u64,
     pub(crate) local_link: Option<u64>,
     pub(crate) kind: u8,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) policy: u8,
     pub(crate) status: Option<i32>,
     pub(crate) taken: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
 }
 
 impl std::fmt::Debug for HewNativeActorObservation {
@@ -41,21 +26,14 @@ impl std::fmt::Debug for HewNativeActorObservation {
 
 impl HewNativeActorObservation {
     fn poll(&mut self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            crate::hew_node::monitor_link::poll_imported_observation(self)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.status.is_some()
-        }
+        crate::platform::host_io::poll_imported_observation(self)
+            .unwrap_or_else(|| self.status.is_some())
     }
 }
 
 impl Drop for HewNativeActorObservation {
     fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if crate::hew_node::monitor_link::retire_imported_observation(self) {
+        if crate::platform::host_io::retire_imported_observation(self) {
             return;
         }
         if !self.taken && self.status == Some(0) {
@@ -79,22 +57,13 @@ pub unsafe extern "C" fn hew_native_actor_observe_new(
     waker: *const crate::wake::HewWaker,
 ) -> *mut HewNativeActorObservation {
     let mut operation = HewNativeActorObservation {
-        #[cfg(not(target_arch = "wasm32"))]
-        pending: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        timer: std::ptr::null_mut(),
-        #[cfg(not(target_arch = "wasm32"))]
-        remote: None,
+        transport: crate::platform::host_io::new_remote_actor_observation(),
         ref_id: 0,
         actor_id: 0,
         local_link: None,
         kind,
-        #[cfg(not(target_arch = "wasm32"))]
-        policy: crate::execution_context::current_partition_policy() as u8,
         status: None,
         taken: false,
-        #[cfg(not(target_arch = "wasm32"))]
-        completion: None,
     };
     let actor = crate::actor::hew_actor_self();
     if actor.is_null() {
@@ -104,32 +73,20 @@ pub unsafe extern "C" fn hew_native_actor_observe_new(
     } else {
         // SAFETY: the current activation owns its actor allocation.
         operation.actor_id = unsafe { (*actor).id };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(imported) = crate::lifetime::local_handles::current_imported_actor(token) {
-            // SAFETY: forwarded live wake descriptor contract.
-            unsafe {
-                crate::hew_node::monitor_link::start_imported_observation(
-                    &mut operation,
-                    &imported,
-                    waker,
-                );
-            };
+        // SAFETY: forwarded live wake descriptor contract.
+        if unsafe {
+            crate::platform::host_io::try_start_imported_observation(&mut operation, token, waker)
+        } {
             return Box::into_raw(Box::new(operation));
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = waker;
-        {
-            operation.status = Some(if kind == 0 {
-                // SAFETY: the local stack output is writable.
-                unsafe {
-                    crate::monitor::hew_native_actor_monitor(token, &raw mut operation.ref_id)
-                }
-            } else {
-                let (status, selected) = crate::link::link_actor_for_observation(token);
-                operation.local_link = selected;
-                status
-            });
-        }
+        operation.status = Some(if kind == 0 {
+            // SAFETY: the local stack output is writable.
+            unsafe { crate::monitor::hew_native_actor_monitor(token, &raw mut operation.ref_id) }
+        } else {
+            let (status, selected) = crate::link::link_actor_for_observation(token);
+            operation.local_link = selected;
+            status
+        });
     }
     Box::into_raw(Box::new(operation))
 }

@@ -283,18 +283,8 @@ pub(crate) fn record_logical_crash(
     push_crash_to(&RECENT_CRASHES, &record);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn remote_origin(link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
-    link_target
-        .and_then(crate::monitor::HewNotificationTarget::remote_location)
-        .map_or_else(String::new, |location| {
-            format!("hew:   while handling link exit from remote {location}\n")
-        })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn remote_origin(_link_target: Option<crate::monitor::HewNotificationTarget>) -> String {
-    String::new()
+    crate::platform::host_io::remote_crash_origin(link_target)
 }
 
 /// Record a fault-injected crash. Deliberately silent: a deterministic

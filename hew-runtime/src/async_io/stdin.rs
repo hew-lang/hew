@@ -248,6 +248,8 @@ fn reader_loop() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native_stdin {
+    #[cfg(windows)]
+    use super::ensure_reader;
     use super::{attempt, Arc, HewAsyncIo, HewWaker, MutexExt, STDIN};
     use crate::reactor::{Direction, Slot};
 

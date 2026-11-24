@@ -80,7 +80,11 @@ impl Checker {
         // Reifying an extern as a callable performs the same authority check
         // as invoking it. An unsafe block may wrap that checked operation in
         // an ordinary callable, as an authored closure can.
-        self.require_unsafe(signature_key, span);
+        self.require_unsafe(
+            self.fn_sig_keys.get(signature_key).copied(),
+            signature_key,
+            span,
+        );
         let target = self.call_target_for_signature(signature_key);
         let lifecycle = match &target {
             super::CallTarget::Builtin { endpoint } => {

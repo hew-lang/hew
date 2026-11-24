@@ -1373,7 +1373,7 @@ impl Checker {
                 return None;
             }
         }
-        self.require_unsafe(&key, span);
+        self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
         let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
@@ -2121,7 +2121,20 @@ impl Checker {
             return Ty::Error;
         }
 
-        self.require_unsafe(&func_name, span);
+        let unsafe_declaration = (!lexical_shadow_of_item)
+            .then(|| {
+                let visible_key =
+                    if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                        self.visible_fn_signature_key(*ident)
+                    } else {
+                        self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                    };
+                visible_key
+                    .and_then(|key| self.fn_sig_keys.get(&key).copied())
+                    .or_else(|| self.scoped_fn_declaration(&func_name, false))
+            })
+            .flatten();
+        self.require_unsafe(unsafe_declaration, &func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
         if let Some(source_identity) = self
             .import_fn_name_aliases

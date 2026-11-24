@@ -20,7 +20,8 @@ pub struct Receipt {
 pub use super::cache::format_digest;
 
 fn parse_digest(value: &str) -> Result<[u8; 32]> {
-    if value.len() != 64 || !value.is_ascii() {
+    // `from_str_radix` alone accepts a leading `+`, so check every digit.
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("component identity must contain 64 hexadecimal digits".into());
     }
     let mut digest = [0; 32];
@@ -333,4 +334,32 @@ fn run(command: &mut Command) -> Result<()> {
         return Err(format!("{command:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_digest, parse_digest};
+
+    #[test]
+    fn component_identity_requires_exactly_64_hexadecimal_digits() {
+        let digest: [u8; 32] =
+            std::array::from_fn(|index| u8::try_from(index * 7).expect("small index") ^ 0xa5);
+        let canonical = format_digest(digest);
+        assert_eq!(parse_digest(&canonical).unwrap(), digest);
+        assert_eq!(
+            parse_digest(&canonical.to_ascii_uppercase()).unwrap(),
+            digest
+        );
+        // Signed radix syntax is not a hexadecimal digit, even though
+        // `u8::from_str_radix("+f", 16)` accepts it.
+        for invalid in [
+            "+f".repeat(32),
+            "0".repeat(63),
+            "0".repeat(65),
+            format!("{}g", "0".repeat(63)),
+            format!("{}é", "0".repeat(62)),
+        ] {
+            assert!(parse_digest(&invalid).is_err(), "{invalid:?}");
+        }
+    }
 }

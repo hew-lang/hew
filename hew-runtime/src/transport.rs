@@ -837,7 +837,7 @@ pub(crate) unsafe fn hew_transport_cancel_io(transport: *mut HewTransport) {
 /// - TCP ops ⇒ the stored socket's `peer_addr()` loopback classification.
 /// - quic-mesh ops ⇒ the live `PeerConn::remote_address()` classification
 ///   (dispatched inside `hew-runtime/src/quic_mesh.rs`).
-/// - plain-quic / any other / stub / null ⇒ [`RemoteIpClass::Unknown`], which
+/// - any other / stub / null ⇒ [`RemoteIpClass::Unknown`], which
 ///   the admission path treats as strict, fail-closed.
 ///
 /// # Safety

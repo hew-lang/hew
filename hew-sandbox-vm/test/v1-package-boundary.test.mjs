@@ -134,6 +134,14 @@ test("negative supervisor stop deadlines reject before construction or host effe
   const trace = await runBytecode(pkg, {
     codecBridge: bridge,
     calendarBridge: bridge,
+    unicodeBridge: {
+      charProperties: bridge,
+      charToUpper: bridge,
+      charToLower: bridge,
+      charToTitle: bridge,
+    },
+    cryptoBridge: bridge,
+    urlBridge: bridge,
   });
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(

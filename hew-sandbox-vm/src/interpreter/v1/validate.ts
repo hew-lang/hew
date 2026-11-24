@@ -487,7 +487,10 @@ function rejectRegistration(refusal: Refused): SandboxRejection {
       refusal.message ??
       (refusal.capability === "codecBridge" ||
       refusal.capability === "calendarBridge" ||
-      refusal.capability === "regexBridge"
+      refusal.capability === "regexBridge" ||
+      refusal.capability === "unicodeBridge" ||
+      refusal.capability === "cryptoBridge" ||
+      refusal.capability === "urlBridge"
         ? `This operation requires the ${refusal.capability.replace(/Bridge$/, "")} Wasm bridge.`
         : refusal.description !== undefined
           ? `${refusal.description} require native execution.`

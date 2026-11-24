@@ -948,13 +948,6 @@ sandbox-vm-deps:
 		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
 	fi
 
-.PHONY: unicode-tables unicode-tables-check
-unicode-tables: ## Generate: export native Unicode character operations for the sandbox VM
-	cargo run -p hew-runtime --example unicode_tables -- hew-sandbox-vm/src/interpreter/unicode-data.ts
-
-unicode-tables-check: ## Check: verify sandbox Unicode tables match the native runtime
-	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
-
 HEW_NATIVE_BIN ?= $(DEBUG_HEW)
 SANDBOX_VM_TEST_ARGS ?=
 
@@ -986,8 +979,8 @@ endif
 # not LLVM. Native comparisons run with the complete package in sandbox-parity.
 playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and build the playground package
 	npm --prefix hew-sandbox-vm run build
-	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib $(addprefix --test ,$(PLAYGROUND_CHECK_TESTS))
 	$(MAKE) wasm
+	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib $(addprefix --test ,$(PLAYGROUND_CHECK_TESTS))
 	node --test hew-wasm/tests/project_wasm.mjs
 
 # Focused curated playground WASI runtime preflight.

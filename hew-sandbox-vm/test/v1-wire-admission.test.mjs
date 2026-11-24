@@ -261,3 +261,144 @@ test("missing calendar bridge rejects before output and the supplied bridge rece
   assert.equal(calls, 1);
   assert.deepEqual(trace.final_state.stdout, ["effect before bridge\n"]);
 });
+
+test("missing unicode, crypto, and url bridges reject before output and supplied bridges execute", async () => {
+  const unicodePkg = bridgePackage(
+    {
+      op: "runtime.call",
+      family: 1,
+      args: [{ value: 1, decision: "borrow" }],
+      result: { value: 2, own: "owned" },
+      result_shape: null,
+      normal: { to: 2, args: [] },
+      unwind: null,
+    },
+    [{ op: "const.str", dst: 1, str: 1 }],
+  );
+  unicodePkg.strings.push("a");
+  unicodePkg.runtime_families.push({
+    id: 1,
+    family: "CharToUpper",
+    detail: null,
+  });
+  assert.equal(
+    (await assertBeforeOutput(unicodePkg, "not_implemented")).final_state
+      .sandbox_rejections[0].capability,
+    "unicodeBridge",
+  );
+  assert.equal(
+    (
+      await assertBeforeOutput(unicodePkg, "not_implemented", {
+        unicodeBridge: { charProperties: () => 0 },
+      })
+    ).final_state.sandbox_rejections[0].capability,
+    "unicodeBridge",
+  );
+  let unicodeCalls = 0;
+  const unicodeTrace = await runBytecode(unicodePkg, {
+    unicodeBridge: {
+      charProperties: () => 0,
+      charToUpper(cp) {
+        unicodeCalls += 1;
+        return cp === 97 ? 65 : cp;
+      },
+      charToLower: (cp) => cp,
+      charToTitle: (cp) => cp,
+    },
+  });
+  assert.equal(unicodeTrace.result, "ok");
+  assert.equal(unicodeCalls, 1);
+
+  const cryptoPkg = bridgePackage(
+    {
+      op: "extern.call",
+      extern: 0,
+      args: [{ value: 1, decision: "borrow" }],
+      result: { value: 2, own: "owned" },
+      result_shape: null,
+      normal: { to: 2, args: [] },
+      unwind: null,
+    },
+    [{ op: "const.bytes", dst: 1, bytes: 0 }],
+    { bytes: [[]], externs: [{ id: 0, symbol: "hew_sha256_hew" }] },
+  );
+  assert.equal(
+    (await assertBeforeOutput(cryptoPkg, "not_implemented")).final_state
+      .sandbox_rejections[0].capability,
+    "cryptoBridge",
+  );
+  let cryptoCalls = 0;
+  const cryptoTrace = await runBytecode(cryptoPkg, {
+    cryptoBridge(request) {
+      cryptoCalls += 1;
+      assert.equal(JSON.parse(request).operation, "sha256");
+      return JSON.stringify({ ok: true, bytes: [1, 2, 3] });
+    },
+  });
+  assert.equal(cryptoTrace.result, "ok");
+  assert.equal(cryptoCalls, 1);
+
+  const randomPkg = bridgePackage(
+    {
+      op: "extern.call",
+      extern: 0,
+      args: [],
+      result: { value: 2, own: "owned" },
+      result_shape: null,
+      normal: { to: 2, args: [] },
+      unwind: null,
+    },
+    [],
+    { externs: [{ id: 0, symbol: "hew_random_bytes_hew" }] },
+  );
+  assert.equal(
+    (
+      await assertBeforeOutput(randomPkg, "not_implemented", {
+        cryptoBridge: () => {
+          throw new Error("cryptoBridge must not run for random_bytes");
+        },
+      })
+    ).final_state.sandbox_rejections[0].capability,
+    "hew_random_bytes_hew",
+  );
+
+  const urlPkg = bridgePackage(
+    {
+      op: "extern.call",
+      extern: 0,
+      args: [{ value: 1, decision: "borrow" }],
+      result: { value: 2, own: "none" },
+      result_shape: null,
+      normal: { to: 2, args: [] },
+      unwind: null,
+    },
+    [{ op: "const.str", dst: 1, str: 1 }],
+    { externs: [{ id: 0, symbol: "hew_url_parse" }] },
+  );
+  urlPkg.strings.push("https://example.com");
+  assert.equal(
+    (await assertBeforeOutput(urlPkg, "not_implemented")).final_state
+      .sandbox_rejections[0].capability,
+    "urlBridge",
+  );
+  let urlCalls = 0;
+  const urlTrace = await runBytecode(urlPkg, {
+    urlBridge(request) {
+      urlCalls += 1;
+      assert.equal(JSON.parse(request).operation, "parse");
+      return JSON.stringify({
+        ok: true,
+        valid: true,
+        href: "https://example.com/",
+        scheme: "https",
+        host: "example.com",
+        port: -1,
+        path: "/",
+        query: "",
+        fragment: "",
+      });
+    },
+  });
+  assert.equal(urlTrace.result, "ok");
+  assert.equal(urlCalls, 1);
+});

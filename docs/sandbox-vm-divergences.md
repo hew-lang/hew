@@ -102,3 +102,12 @@ hosts. Hosts supply the initialized `executeCalendar` export from
 preserves normalized Unix seconds and nanoseconds. Calendar results and owned
 error messages follow the checked source record descriptors; formatting,
 offset normalization, leap-second rejection and range errors share one engine.
+
+Unicode scalar classification and case-mapping operations (`CharIs*`,
+`CharToUpper`, `CharToLower`, `CharToTitle`) execute through `unicodeBridge`
+(`charProperties`, `charToUpper`, `charToLower`, `charToTitle`) backed by the
+same Rust `char` and pinned `finl_unicode` tables. Cryptographic digests,
+HMAC-SHA256 and constant-time comparison in `std.crypto.hash` execute through
+`cryptoBridge` (`executeCrypto`), while `std.crypto.hash.random_bytes` remains
+refused under deterministic execution. Parsed URL operations in `std.net.url`
+execute through `urlBridge` (`executeUrl`).

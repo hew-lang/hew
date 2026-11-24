@@ -3,7 +3,13 @@ import {
   type DirectoryOperation,
 } from "./browser-directory.js";
 import { executeCalendar } from "./calendar.js";
+import {
+  executeConstantTimeEq,
+  executeHmacSha256,
+  executeShaDigest,
+} from "./crypto.js";
 import { executeEncoding, type EncodingFormat } from "./encoding-values.js";
+import { UrlHandleTable } from "./url.js";
 import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
 /// Runtime implementations and their host execution registration. Admission and
@@ -73,6 +79,10 @@ export interface ShimHost {
   setFileError(message: string | null): void;
   calendarBridge?: (request: string) => string;
   codecBridge?: (request: string) => string;
+  unicodeBridge?: import("../types.js").UnicodeBridge;
+  cryptoBridge?: (request: string) => string;
+  urlBridge?: (request: string) => string;
+  urls?: UrlHandleTable;
   encodingError?(format: EncodingFormat, message?: string): string;
   pipes?: Pipes;
   semaphores?: import("./semaphores.js").Semaphores;
@@ -113,9 +123,21 @@ export type RuntimeShim = (
 
 export type HostBridges = Pick<
   import("../types.js").RunOptions,
-  "codecBridge" | "calendarBridge" | "regexBridge" | "directoryRoots"
+  | "codecBridge"
+  | "calendarBridge"
+  | "regexBridge"
+  | "unicodeBridge"
+  | "cryptoBridge"
+  | "urlBridge"
+  | "directoryRoots"
 >;
-type BridgeRequirement = "codecBridge" | "calendarBridge" | "regexBridge";
+type BridgeRequirement =
+  | "codecBridge"
+  | "calendarBridge"
+  | "regexBridge"
+  | "unicodeBridge"
+  | "cryptoBridge"
+  | "urlBridge";
 export type DirectoryRegistration = {
   kind: "directory";
   operation: DirectoryOperation;
@@ -186,6 +208,19 @@ export type RuntimeRegistration =
 function ordinary(shim: RuntimeShim): Ordinary {
   return { kind: "ordinary", shim };
 }
+function bridged(bridge: BridgeRequirement, shim: RuntimeShim): Ordinary {
+  return { kind: "ordinary", bridge, shim };
+}
+function hasUnicodeBridge(
+  bridge: import("../types.js").UnicodeBridge | undefined,
+): bridge is import("../types.js").UnicodeBridge {
+  return (
+    typeof bridge?.charProperties === "function" &&
+    typeof bridge?.charToUpper === "function" &&
+    typeof bridge?.charToLower === "function" &&
+    typeof bridge?.charToTitle === "function"
+  );
+}
 function refused(capability: string, native = false): Refused {
   return {
     kind: "refused",
@@ -215,9 +250,13 @@ export function registrationRefusal(
       ...refused(`directoryRoots.${registration.operation.access}`),
       message: `This operation requires a host-supplied OPFS ${registration.operation.access} directory handle.`,
     };
-  return "bridge" in registration &&
-    registration.bridge &&
-    typeof bridges[registration.bridge] !== "function"
+  if (!("bridge" in registration) || !registration.bridge) return null;
+  if (registration.bridge === "unicodeBridge") {
+    return hasUnicodeBridge(bridges.unicodeBridge)
+      ? null
+      : refused("unicodeBridge");
+  }
+  return typeof bridges[registration.bridge] !== "function"
     ? refused(registration.bridge)
     : null;
 }
@@ -677,19 +716,43 @@ const UNIT_FAMILIES = {
   U8ToString: (_host, args) => str(renderStdout(arg(args, 0))),
   BoolToString: (_host, args) => str(renderStdout(arg(args, 0))),
   F64ToString: (_host, args) => str(renderStdout(arg(args, 0))),
-  CharIsDigit: (_host, args) => bool(charProperty(text(args, 0), 0)),
-  CharIsLetter: (_host, args) => bool(charProperty(text(args, 0), 1)),
-  CharIsAlphanumeric: (_host, args) => bool(charProperty(text(args, 0), 2)),
-  CharIsWhitespace: (_host, args) => bool(charProperty(text(args, 0), 3)),
-  CharIsUpper: (_host, args) => bool(charProperty(text(args, 0), 4)),
-  CharIsLower: (_host, args) => bool(charProperty(text(args, 0), 5)),
-  CharIsPunctuation: (_host, args) => bool(charProperty(text(args, 0), 6)),
-  CharIsControl: (_host, args) => bool(charProperty(text(args, 0), 7)),
-  CharIsAscii: (_host, args) => bool(charProperty(text(args, 0), 8)),
+  CharIsDigit: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 0)),
+  ),
+  CharIsLetter: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 1)),
+  ),
+  CharIsAlphanumeric: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 2)),
+  ),
+  CharIsWhitespace: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 3)),
+  ),
+  CharIsUpper: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 4)),
+  ),
+  CharIsLower: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 5)),
+  ),
+  CharIsPunctuation: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 6)),
+  ),
+  CharIsControl: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 7)),
+  ),
+  CharIsAscii: bridged("unicodeBridge", (host, args) =>
+    bool(charProperty(host.unicodeBridge, text(args, 0), 8)),
+  ),
   CharLenUtf8: (_host, args) => int(BigInt(indexed(args, 0).byteLength)),
-  CharToUpper: (_host, args) => str(charCase(text(args, 0), "upper")),
-  CharToLower: (_host, args) => str(charCase(text(args, 0), "lower")),
-  CharToTitle: (_host, args) => str(charCase(text(args, 0), "title")),
+  CharToUpper: bridged("unicodeBridge", (host, args) =>
+    str(charCase(host.unicodeBridge, text(args, 0), "upper")),
+  ),
+  CharToLower: bridged("unicodeBridge", (host, args) =>
+    str(charCase(host.unicodeBridge, text(args, 0), "lower")),
+  ),
+  CharToTitle: bridged("unicodeBridge", (host, args) =>
+    str(charCase(host.unicodeBridge, text(args, 0), "title")),
+  ),
   CharToDigit: (host, args, shape) => {
     if (!shape) throw new TypeError("char to_digit requires its Option shape");
     const radix = index(args, 1);
@@ -1664,6 +1727,50 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
     const high = integer(args, 1);
     return int(high <= low ? low : low + host.prng.randbelow(high - low));
   },
+  hew_sha256_hew: bridged("cryptoBridge", (host, args) =>
+    executeShaDigest(host.cryptoBridge, "sha256", args),
+  ),
+  hew_sha384_hew: bridged("cryptoBridge", (host, args) =>
+    executeShaDigest(host.cryptoBridge, "sha384", args),
+  ),
+  hew_sha512_hew: bridged("cryptoBridge", (host, args) =>
+    executeShaDigest(host.cryptoBridge, "sha512", args),
+  ),
+  hew_hmac_sha256_hew: bridged("cryptoBridge", (host, args) =>
+    executeHmacSha256(host.cryptoBridge, args),
+  ),
+  hew_constant_time_eq_hew: bridged("cryptoBridge", (host, args) =>
+    executeConstantTimeEq(host.cryptoBridge, args),
+  ),
+  hew_url_parse: bridged("urlBridge", (host, args) =>
+    host.urls!.parse(host.urlBridge, args),
+  ),
+  hew_url_is_valid: bridged("urlBridge", (host, args) =>
+    host.urls!.isValid(args),
+  ),
+  hew_url_scheme: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "scheme"),
+  ),
+  hew_url_host: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "host"),
+  ),
+  hew_url_port: bridged("urlBridge", (host, args) => host.urls!.port(args)),
+  hew_url_path: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "path"),
+  ),
+  hew_url_query: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "query"),
+  ),
+  hew_url_fragment: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "fragment"),
+  ),
+  hew_url_to_string: bridged("urlBridge", (host, args) =>
+    host.urls!.component(args, "href"),
+  ),
+  hew_url_join: bridged("urlBridge", (host, args) =>
+    host.urls!.join(host.urlBridge, args),
+  ),
+  hew_url_free: bridged("urlBridge", (host, args) => host.urls!.free(args)),
 };
 
 export function decodeUtf8Checked(

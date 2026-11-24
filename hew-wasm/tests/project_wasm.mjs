@@ -12,6 +12,19 @@ const vmPath = resolve(process.env.HEW_PROJECT_VM || 'hew-sandbox-vm/dist/interp
 const compiler = await import(pathToFileURL(compilerPath));
 compiler.initSync({module: readFileSync(join(dirname(compilerPath), 'hew_wasm_bg.wasm'))});
 const {runBytecode} = await import(pathToFileURL(vmPath));
+const wasmBridges = {
+  codecBridge: compiler.executeCodec,
+  calendarBridge: compiler.executeCalendar,
+  regexBridge: compiler.compileSandboxRegex,
+  unicodeBridge: {
+    charProperties: compiler.charProperties,
+    charToUpper: compiler.charToUpper,
+    charToLower: compiler.charToLower,
+    charToTitle: compiler.charToTitle,
+  },
+  cryptoBridge: compiler.executeCrypto,
+  urlBridge: compiler.executeUrl,
+};
 const compile = (entry, files) => JSON.parse(compiler.compileProjectToSandboxBytecode(JSON.stringify({entry, files}), 'sandbox-vm-export'));
 const source = (path, source) => ({path, source});
 const manifest = source('user/hew.toml', '[package]\nname = "user"\n');
@@ -70,7 +83,10 @@ test('completion insertions compile and execute with the intended call context',
 
 async function execute(output, stdin = '') {
   assert.ok(output.bytecode, JSON.stringify(output.diagnostics));
-  const trace = await runBytecode(output.bytecode, {replay: {inputs: [{kind: 'stdin', data: stdin}]}});
+  const trace = await runBytecode(output.bytecode, {
+    ...wasmBridges,
+    replay: {inputs: [{kind: 'stdin', data: stdin}]},
+  });
   return {trace, stdout: trace.final_state.stdout.join('')};
 }
 
@@ -194,7 +210,7 @@ import std.math;
   assert.equal(output.tests.length, 3);
   const [passes, fails, hostOnly] = output.tests;
   assert.equal(passes.identity, 'playground.hew::passes');
-  const options = {codecBridge: compiler.executeCodec};
+  const options = wasmBridges;
   const passed = await runBytecode(passes.bytecode, options);
   assert.equal(passed.result, 'ok');
   assert.equal(passed.final_state.stdout.join(''), 'browser test passed\n');
@@ -213,7 +229,7 @@ for (const format of ['json', 'yaml', 'toml']) {
     assert.ok(output.tests.length > 0);
     for (const selected of output.tests) {
       assert.ok(selected.bytecode, `${selected.identity}: ${JSON.stringify(selected.diagnostics)}`);
-      const trace = await runBytecode(selected.bytecode, {codecBridge: compiler.executeCodec});
+      const trace = await runBytecode(selected.bytecode, wasmBridges);
       assert.equal(trace.result, 'ok', `${selected.identity}: ${JSON.stringify(trace.final_state)}`);
     }
   });
@@ -261,7 +277,7 @@ fn main() {
 }`;
   const output = JSON.parse(compiler.compileToSandboxBytecode(source, 'sandbox-vm-export'));
   assert.ok(output.bytecode, JSON.stringify(output.diagnostics));
-  const trace = await runBytecode(output.bytecode, {codecBridge: compiler.executeCodec});
+  const trace = await runBytecode(output.bytecode, wasmBridges);
   assert.equal(trace.result, 'ok', JSON.stringify(trace.final_state));
 });
 
@@ -316,4 +332,35 @@ test('computed collection keys preserve snapshots and fault cleanup', async t =>
       }
     });
   }
+});
+
+test('unicode, crypto.hash, and net.url execute through the Wasm bridges', async () => {
+  const unicodeSource = readFileSync('tests/core-acceptance/cases/string-indexed-unicode.hew', 'utf8');
+  const unicodeOut = JSON.parse(compiler.compileToSandboxBytecode(unicodeSource, 'sandbox-vm-export'));
+  const unicodeResult = await execute(unicodeOut);
+  assert.equal(unicodeResult.trace.result, 'ok', JSON.stringify(unicodeResult.trace.final_state));
+  assert.equal(unicodeResult.stdout, '222:407\n222:407\nindexed Unicode preserved\n');
+
+  const cryptoAndUrl = `
+    import std.crypto.hash;
+    import std.net.url;
+    fn main() {
+      let digest = hash.sha256("hew".to_bytes());
+      println(digest.len());
+      let mac = hash.hmac_sha256("key".to_bytes(), "hew".to_bytes());
+      println(mac.len());
+      println(hash.constant_time_eq(digest, digest));
+      let u = url.parse("https://example.com:8443/v1?q=1#frag").expect("valid url");
+      println(u.scheme());
+      println(u.host());
+      let r = u.resolve("../v2").expect("resolved");
+      println(r.to_string());
+      r.close();
+      u.close();
+    }
+  `;
+  const compiled = JSON.parse(compiler.compileToSandboxBytecode(cryptoAndUrl, 'sandbox-vm-export'));
+  const result = await execute(compiled);
+  assert.equal(result.trace.result, 'ok', JSON.stringify(result.trace.final_state));
+  assert.equal(result.stdout, '32\n32\ntrue\nhttps\nexample.com\nhttps://example.com:8443/v2\n');
 });

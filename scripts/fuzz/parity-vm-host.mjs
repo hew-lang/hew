@@ -27,7 +27,23 @@ if (typeof wasm.default === "function") {
   });
 }
 const compile = wasm.compileToSandboxBytecode ?? wasm.default?.compileToSandboxBytecode;
-const codecBridge = wasm.executeCodec ?? wasm.default?.executeCodec;
+const mod = wasm.executeCodec ? wasm : wasm.default;
+const wasmBridges = {
+  codecBridge: mod?.executeCodec,
+  calendarBridge: mod?.executeCalendar,
+  regexBridge: mod?.compileSandboxRegex,
+  unicodeBridge:
+    mod?.charProperties && mod?.charToUpper && mod?.charToLower && mod?.charToTitle
+      ? {
+          charProperties: mod.charProperties,
+          charToUpper: mod.charToUpper,
+          charToLower: mod.charToLower,
+          charToTitle: mod.charToTitle,
+        }
+      : undefined,
+  cryptoBridge: mod?.executeCrypto,
+  urlBridge: mod?.executeUrl,
+};
 const seed = Number.parseInt(process.env.HEW_SEED ?? "42", 10);
 const stepBudget = Number.parseInt(process.env.HEW_PARITY_STEP_BUDGET ?? "5000000", 10);
 
@@ -43,7 +59,7 @@ async function handle(request) {
     return { phase: "compile", diagnostics: errors.length ? errors : compiled.diagnostics };
   }
   const trace = await vm.runBytecode(compiled.bytecode, {
-    codecBridge,
+    ...wasmBridges,
     replay: {
       seed,
       step_budget: stepBudget,

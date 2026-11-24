@@ -45,6 +45,9 @@ declare global {
   var __hewSandboxExecuteCodec: ((request: string) => string) | undefined;
   var __hewSandboxCompileRegex: import("./types.js").RunOptions["regexBridge"];
   var __hewSandboxExecuteCalendar: ((request: string) => string) | undefined;
+  var __hewSandboxUnicode: import("./types.js").UnicodeBridge | undefined;
+  var __hewSandboxExecuteCrypto: ((request: string) => string) | undefined;
+  var __hewSandboxExecuteUrl: ((request: string) => string) | undefined;
   var compileToSandboxBytecode: SandboxCompiler | undefined;
 }
 
@@ -78,6 +81,9 @@ export async function runProgram(
     regexBridge: options.regexBridge ?? globalThis.__hewSandboxCompileRegex,
     calendarBridge:
       options.calendarBridge ?? globalThis.__hewSandboxExecuteCalendar,
+    unicodeBridge: options.unicodeBridge ?? globalThis.__hewSandboxUnicode,
+    cryptoBridge: options.cryptoBridge ?? globalThis.__hewSandboxExecuteCrypto,
+    urlBridge: options.urlBridge ?? globalThis.__hewSandboxExecuteUrl,
     traceId: "trace:page-run",
     replay: { inputs: [{ kind: "stdin", data: stdin }] },
   });

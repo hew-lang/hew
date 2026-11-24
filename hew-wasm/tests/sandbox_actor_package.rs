@@ -106,9 +106,24 @@ fn execute_options(
             "-e",
             r"
             import fs from 'node:fs';
+            import path from 'node:path';
+            import { pathToFileURL } from 'node:url';
             import { runBytecode } from './dist/interpreter/index.js';
+            import { bridgesFromWasmModule, packageNeedsWasmBridges } from './dist/interpreter/wasm-bridges.js';
             const package_ = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-            process.stdout.write(JSON.stringify(await runBytecode(package_, JSON.parse(process.argv[2]))));
+            let bridges = {};
+            if (packageNeedsWasmBridges(package_)) {
+              const local = path.resolve('../hew-wasm/pkg/hew_wasm.js');
+              const location = process.env.HEW_WASM_MODULE ?? (fs.existsSync(local) ? pathToFileURL(local).href : null);
+              if (!location) throw new Error('hew-wasm pkg missing; run make wasm or set HEW_WASM_MODULE');
+              const wasm = await import(location);
+              if (typeof wasm.default === 'function') {
+                const resolved = location.startsWith('file:') ? location : import.meta.resolve(location);
+                await wasm.default({ module_or_path: fs.readFileSync(new URL(resolved.replace(/\.js$/, '_bg.wasm'))) });
+              }
+              bridges = bridgesFromWasmModule(wasm);
+            }
+            process.stdout.write(JSON.stringify(await runBytecode(package_, { ...bridges, ...JSON.parse(process.argv[2]) })));
         ",
         ])
         .arg(file.path())

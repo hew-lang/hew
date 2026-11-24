@@ -173,6 +173,13 @@ export interface CompiledRegex {
   free(): void;
 }
 
+export interface UnicodeBridge {
+  charProperties(codepoint: number): number;
+  charToUpper(codepoint: number): number;
+  charToLower(codepoint: number): number;
+  charToTitle(codepoint: number): number;
+}
+
 export interface RunOptions {
   /** Explicit browser filesystem authority; absent roots grant no access. */
   directoryRoots?: import("./v1/browser-directory.js").DirectoryRoots;
@@ -182,6 +189,9 @@ export interface RunOptions {
   codecBridge?: (request: string) => string;
   regexBridge?: (pattern: string) => CompiledRegex;
   calendarBridge?: (request: string) => string;
+  unicodeBridge?: UnicodeBridge;
+  cryptoBridge?: (request: string) => string;
+  urlBridge?: (request: string) => string;
   propertyInput?: number[];
   fixtureId?: string;
   traceId?: string;

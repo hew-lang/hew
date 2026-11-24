@@ -50,6 +50,22 @@ globalThis.__hewSandboxCompileRegex =
   wasmModule.compileSandboxRegex ?? wasmModule.default?.compileSandboxRegex;
 globalThis.__hewSandboxExecuteCalendar =
   wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
+const charProperties =
+  wasmModule.charProperties ?? wasmModule.default?.charProperties;
+const charToUpper = wasmModule.charToUpper ?? wasmModule.default?.charToUpper;
+const charToLower = wasmModule.charToLower ?? wasmModule.default?.charToLower;
+const charToTitle = wasmModule.charToTitle ?? wasmModule.default?.charToTitle;
+globalThis.__hewSandboxUnicode =
+  typeof charProperties === "function" &&
+  typeof charToUpper === "function" &&
+  typeof charToLower === "function" &&
+  typeof charToTitle === "function"
+    ? { charProperties, charToUpper, charToLower, charToTitle }
+    : undefined;
+globalThis.__hewSandboxExecuteCrypto =
+  wasmModule.executeCrypto ?? wasmModule.default?.executeCrypto;
+globalThis.__hewSandboxExecuteUrl =
+  wasmModule.executeUrl ?? wasmModule.default?.executeUrl;
 
 test.after(() => {
   try {
@@ -76,6 +92,9 @@ test.after(() => {
     delete globalThis.__hewSandboxExecuteCodec;
     delete globalThis.__hewSandboxCompileRegex;
     delete globalThis.__hewSandboxExecuteCalendar;
+    delete globalThis.__hewSandboxUnicode;
+    delete globalThis.__hewSandboxExecuteCrypto;
+    delete globalThis.__hewSandboxExecuteUrl;
   }
 });
 
@@ -207,6 +226,9 @@ for (const name of [
       codecBridge: globalThis.__hewSandboxExecuteCodec,
       calendarBridge: globalThis.__hewSandboxExecuteCalendar,
       regexBridge: globalThis.__hewSandboxCompileRegex,
+      unicodeBridge: globalThis.__hewSandboxUnicode,
+      cryptoBridge: globalThis.__hewSandboxExecuteCrypto,
+      urlBridge: globalThis.__hewSandboxExecuteUrl,
     });
     assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
     assert.equal(trace.final_state.exit_code, 0);
@@ -1000,6 +1022,9 @@ test("calendar extern results require their checked record descriptor", async ()
     const trace = await runBytecode(malformed, {
       calendarBridge: globalThis.__hewSandboxExecuteCalendar,
       regexBridge: globalThis.__hewSandboxCompileRegex,
+      unicodeBridge: globalThis.__hewSandboxUnicode,
+      cryptoBridge: globalThis.__hewSandboxExecuteCrypto,
+      urlBridge: globalThis.__hewSandboxExecuteUrl,
     });
     assert.equal(trace.result, "sandbox_rejected");
     assert.deepEqual(trace.final_state.stdout, []);
@@ -1374,5 +1399,81 @@ test("regex arm bindings preserve Unicode text and optional participation", asyn
   assert.equal(
     result.stdout,
     "Hello, Zoë 🦀!\nskip\nno greeting\nÉté: none\nÉté: some []\nÉté: some [fin]\nnone / none / []\nsome [a] / some [8] / [xx]\n",
+  );
+});
+
+test("unicode scalar classification and case bridges match native semantics", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/string-indexed-unicode.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  assert.equal(result.stdout, "222:407\n222:407\nindexed Unicode preserved\n");
+});
+
+test("std.crypto.hash digests, hmac, and constant_time_eq run via Wasm bridge while random_bytes stays refused", async () => {
+  const source = `
+    import std.crypto.hash;
+    fn main() {
+      let msg = "hew".to_bytes();
+      println(hash.sha256(msg).len());
+      println(hash.sha384(msg).len());
+      println(hash.sha512(msg).len());
+      println(hash.hmac_sha256("key".to_bytes(), msg).len());
+      println(hash.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
+      println(hash.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
+      println(hash.constant_time_eq("abc".to_bytes(), "abcd".to_bytes()));
+    }
+  `;
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  assert.equal(result.stdout, "32\n48\n64\n32\ntrue\nfalse\nfalse\n");
+
+  const randomSource = `
+    import std.crypto.hash;
+    fn main() {
+      println("before refuse");
+      let _ = hash.random_bytes(8);
+    }
+  `;
+  const refused = await runProgram(randomSource, "");
+  assert.equal(refused.status, "sandbox_rejected");
+  assert.equal(refused.stdout, "");
+});
+
+test("std.net.url parser, getters, resolve, and close run via Wasm bridge", async () => {
+  const source = `
+    import std.net.url;
+    fn main() {
+      let parsed = url.parse("https://example.com:8443/v1/items?page=2#top").expect("valid url");
+      println(parsed.scheme());
+      println(parsed.host());
+      match parsed.port() {
+        .Some(p) => println(p),
+        .None => println(-1),
+      }
+      println(parsed.path());
+      println(parsed.query());
+      println(parsed.fragment());
+      println(parsed.to_string());
+      let resolved = parsed.resolve("../next?ok=1").expect("resolved url");
+      println(resolved.to_string());
+      resolved.close();
+      parsed.close();
+      match url.parse("not a valid url") {
+        .Ok(_) => panic("unexpected parse success"),
+        .Err(_) => println("invalid rejected"),
+      }
+    }
+  `;
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  assert.equal(
+    result.stdout,
+    "https\nexample.com\n8443\n/v1/items\npage=2\ntop\nhttps://example.com:8443/v1/items?page=2#top\nhttps://example.com:8443/next?ok=1\ninvalid rejected\n",
   );
 });

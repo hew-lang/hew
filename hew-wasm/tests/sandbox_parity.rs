@@ -2671,3 +2671,157 @@ fn language_cohort_default_argument_authority() {
         "refused defaults must not produce executable bytecode"
     );
 }
+
+#[cfg(unix)]
+fn assert_inline_source_parity(test_name: &str, source: &str) {
+    let tempdir = tempfile::tempdir().expect("inline parity tempdir");
+    let source_path = tempdir.path().join("main.hew");
+    std::fs::write(&source_path, source).expect("write inline parity source");
+    let env = BTreeMap::new();
+    let native = run_native(&source_path, "", &env);
+    let sandbox_compile = compile_to_sandbox_bytecode_with_inputs(
+        source,
+        Some(SANDBOX_PROFILE),
+        hew_compile::SourceSet::in_memory(),
+    )
+    .expect("compile inline parity source");
+    let case = ParityCase {
+        test_name: "inline_wasm_bridge_parity",
+        source_rel: "inline",
+    };
+    assert!(
+        sandbox_compile
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != "error"),
+        "{test_name} sandbox diagnostics: {:?}",
+        sandbox_compile.diagnostics
+    );
+    let bytecode = sandbox_compile.bytecode.expect("sandbox bytecode");
+    let bytecode_path = tempdir.path().join("bytecode.json");
+    let stdin_path = tempdir.path().join("stdin.txt");
+    std::fs::write(
+        &bytecode_path,
+        serde_json::to_string_pretty(&bytecode).expect("serialize bytecode"),
+    )
+    .expect("write bytecode");
+    std::fs::write(&stdin_path, "").expect("write stdin");
+    let sandbox = run_sandbox(&bytecode_path, &stdin_path, &env);
+    assert_exit_code_parity(&case, &native, &sandbox);
+    assert_stdout_parity(&case, &native, &sandbox);
+    assert_stderr_parity(&case, &native, &sandbox);
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{test_name}: {}",
+        describe_output(&native)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wasm_bridges_match_native_unicode_crypto_and_url() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    assert_case(
+        &ParityCase {
+            test_name: "string_indexed_unicode",
+            source_rel: "tests/core-acceptance/cases/string-indexed-unicode.hew",
+        },
+        "",
+    );
+
+    assert_inline_source_parity(
+        "unicode_edge_scalars",
+        r#"
+fn show_char(ch: char) {
+    println(f"{ch.is_digit()}:{ch.is_letter()}:{ch.is_alphanumeric()}:{ch.is_whitespace()}:{ch.is_upper()}:{ch.is_lower()}:{ch.is_punctuation()}:{ch.is_control()}:{ch.is_ascii()}:{ch.to_upper() == ch}:{ch.to_lower() == ch}:{ch.to_title()}");
+}
+fn main() {
+    show_char('5');
+    show_char('٥');
+    show_char('A');
+    show_char('é');
+    show_char('—');
+    show_char('\t');
+    show_char('ǆ');
+    show_char('ß');
+    show_char('İ');
+    show_char('ᾀ');
+    show_char('ა');
+}
+"#,
+    );
+
+    assert_inline_source_parity(
+        "crypto_hash_bridge",
+        r#"
+import std.crypto.hash;
+fn dump(xs: bytes) {
+    println(xs.len());
+    for i in 0..xs.len() {
+        println(xs[i]);
+    }
+}
+fn main() {
+    let empty: bytes = bytes [];
+    dump(hash.sha256(empty));
+    dump(hash.sha384("abc".to_bytes()));
+    dump(hash.sha512("hew-wasm-bridge".to_bytes()));
+    dump(hash.hmac_sha256("secret-key".to_bytes(), "Hi There".to_bytes()));
+    println(hash.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
+    println(hash.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
+    println(hash.constant_time_eq("abc".to_bytes(), "abcd".to_bytes()));
+    println(hash.constant_time_eq(empty, empty));
+}
+"#,
+    );
+
+    assert_inline_source_parity(
+        "net_url_bridge",
+        r#"
+import std.net.url;
+fn show_port(u: url.Url) -> i64 {
+    match u.port() {
+        .Some(p) => p,
+        .None => -1,
+    }
+}
+fn main() {
+    let parsed = url.parse("https://user@example.com:8443/v1/items?page=2&q=a#top").expect("valid");
+    println(parsed.scheme());
+    println(parsed.host());
+    println(show_port(parsed));
+    println(parsed.path());
+    println(parsed.query());
+    println(parsed.fragment());
+    println(parsed.to_string());
+    let joined = parsed.resolve("../next?x=1").expect("joined");
+    println(joined.to_string());
+    joined.close();
+    parsed.close();
+
+    let default_port = url.parse("https://example.com:443").expect("default port");
+    println(show_port(default_port));
+    println(default_port.path());
+    println(default_port.query());
+    println(default_port.fragment());
+    default_port.close();
+
+    let mailto = url.parse("mailto:user@example.com").expect("mailto");
+    println(mailto.scheme());
+    println(mailto.host());
+    println(show_port(mailto));
+    println(mailto.path());
+    mailto.close();
+
+    match url.parse("not a valid url") {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("invalid-url"),
+    }
+}
+"#,
+    );
+}

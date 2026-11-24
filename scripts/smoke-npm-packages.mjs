@@ -68,6 +68,14 @@ for (const [name, source, stdout] of [
     codecBridge: compiler.module.executeCodec,
     calendarBridge: compiler.module.executeCalendar,
     regexBridge: compiler.module.compileSandboxRegex,
+    unicodeBridge: {
+      charProperties: compiler.module.charProperties,
+      charToUpper: compiler.module.charToUpper,
+      charToLower: compiler.module.charToLower,
+      charToTitle: compiler.module.charToTitle,
+    },
+    cryptoBridge: compiler.module.executeCrypto,
+    urlBridge: compiler.module.executeUrl,
   });
   assert.equal(trace.result, "ok", `${name}: ${JSON.stringify(trace.final_state)}`);
   assert.equal(trace.final_state.exit_code, 0, `${name}: unsuccessful exit`);

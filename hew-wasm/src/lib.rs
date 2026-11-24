@@ -34,10 +34,16 @@ use std::fmt;
 use serde::{de::DeserializeOwned, Serialize};
 mod calendar;
 mod codec;
+mod crypto;
 mod encoding_values;
 mod regex_patterns;
+mod unicode;
+mod url;
 pub use calendar::execute_calendar;
+pub use crypto::execute_crypto;
 pub use regex_patterns::{compile_sandbox_regex, SandboxRegex};
+pub use unicode::{char_properties, char_to_lower, char_to_title, char_to_upper};
+pub use url::execute_url;
 mod inputs;
 pub use codec::execute_codec;
 

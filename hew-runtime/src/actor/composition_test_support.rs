@@ -84,6 +84,7 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: None,
+        parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
     }))
 }
 

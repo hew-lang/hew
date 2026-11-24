@@ -11,25 +11,45 @@
 //! `.lock_or_recover()` on the map is unreachable by type from outside
 //! this module.
 //!
-//! # Sharding decision
+//! # Sharding and lock ordering
 //!
-//! `LiveActors` uses a single shard (`PoisonSafe<Option<HashMap<…>>>`),
-//! matching the original layout and keeping the module simple.
-//! `LINK_TABLE` and `MONITOR_TABLE` use 16 shards because their hot paths
-//! are keyed by a single `actor_id` and rarely contend across shards.
-//! `LiveActors` still uses one shard because the module primarily protects
-//! liveness probes and teardown bookkeeping. Hot by-ID send/ask paths resolve
-//! the pointer under the registry lock, then drop it before touching mailboxes.
+//! `LiveActors` partitions actor IDs across 16 independent shards
+//! (`LIVE_ACTOR_SHARDS`), matching `LINK_TABLE` and `MONITOR_TABLE`.
 //!
-//! SHIM: no bench suite exists to validate a 5% regression threshold. When
-//! `cargo bench -p hew-runtime` becomes available, re-evaluate whether
-//! 16-shard `LiveActors` reduces hot-path contention.
+//! **Single-shard lock invariant**: no operation in this module ever holds more
+//! than one shard lock at a time. Point operations (`track_actor`,
+//! `untrack_actor`, `take_actor_by_id`, `pin_actor_by_id`,
+//! `with_live_actor_by_id`, `get_actor_ptr_by_id`,
+//! `swap_slot_under_registry_lock`) acquire only `shards[actor_id % 16]`.
+//! Whole-registry scans (`with_live_actor`, `has_drain_blocking_suspended_actor`,
+//! `snapshot_live_actor_*`, `drain_all_for_cleanup`) visit shards `0..16` one
+//! shard at a time, releasing shard `i` before acquiring shard `i + 1`. Because
+//! an actor's `id` is immutable for its lifetime, its shard is fixed, so
+//! per-actor serialization (`pin_actor_by_id` vs `untrack_actor`, and
+//! `has_drain_blocking_suspended_actor` vs `swap_slot_under_registry_lock`)
+//! synchronizes on that single shard lock with zero possibility of cross-shard
+//! deadlock.
 
 use rustc_hash::FxHashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
+
+/// Number of shards for the live-actor registry, matching `LINK_TABLE` and
+/// `MONITOR_TABLE`. Must remain a power of two.
+const LIVE_ACTOR_SHARDS: usize = 16;
+
+#[inline]
+fn shard_index(actor_id: u64) -> usize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..16)"
+    )]
+    {
+        (actor_id as usize) & (LIVE_ACTOR_SHARDS - 1)
+    }
+}
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
 ///
@@ -62,8 +82,11 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
 
 /// Runtime-owned actor-liveness state.
 pub(crate) struct LiveActors {
-    /// Map of live actor id -> pointer. Single shard (see module doc).
-    map: PoisonSafe<Option<FxHashMap<u64, LiveActor>>>,
+    /// Sharded maps of live actor id -> pointer (16 shards; see module doc).
+    shards: [PoisonSafe<Option<FxHashMap<u64, LiveActor>>>; LIVE_ACTOR_SHARDS],
+    /// Exact count of tracked actors across all shards, maintained under each
+    /// shard's lock on insert, remove, and drain.
+    len: AtomicUsize,
     /// Background teardown threads that hold raw actor/supervisor pointers.
     #[cfg(not(target_arch = "wasm32"))]
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
@@ -73,25 +96,30 @@ impl LiveActors {
     /// Construct an empty liveness registry for a runtime.
     pub(crate) const fn new() -> Self {
         Self {
-            map: PoisonSafe::new(None),
+            shards: [const { PoisonSafe::new(None) }; LIVE_ACTOR_SHARDS],
+            len: AtomicUsize::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
         }
     }
 }
 
-/// Run `f` with mutable access to the active runtime's live-actor map.
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R) -> R {
-    crate::platform::executor::current_live_actors()
-        .map
-        .access(f)
+/// Run `f` with mutable access to the shard owning `actor_id`.
+fn with_shard<R>(
+    actor_id: u64,
+    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
+) -> R {
+    let actors = crate::platform::executor::current_live_actors();
+    actors.shards[shard_index(actor_id)].access(|map| f(map, &actors.len))
 }
 
-/// Run `f` with mutable access to the active runtime's live-actor map when installed.
-fn with_live_actors_opt<R>(
-    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R,
+/// Run `f` with mutable access to the shard owning `actor_id` when a runtime is installed.
+fn with_shard_opt<R>(
+    actor_id: u64,
+    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
 ) -> Option<R> {
-    crate::platform::executor::current_live_actors_opt().map(|actors| actors.map.access(f))
+    crate::platform::executor::current_live_actors_opt()
+        .map(|actors| actors.shards[shard_index(actor_id)].access(|map| f(map, &actors.len)))
 }
 
 /// Register an actor in the live tracking map.
@@ -107,22 +135,24 @@ fn with_live_actors_opt<R>(
 pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and initialised.
     let id = unsafe { (*actor).id };
-    with_live_actors(
-        |map| match map.get_or_insert_with(FxHashMap::default).entry(id) {
+    with_shard(id, |map, len| {
+        match map.get_or_insert_with(FxHashMap::default).entry(id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(LiveActor {
                     actor: ActorPtr(actor),
                 });
+                len.fetch_add(1, Ordering::AcqRel);
                 true
             }
             std::collections::hash_map::Entry::Occupied(_) => false,
-        },
-    )
+        }
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn actor_count_for_test() -> usize {
-    with_live_actors_opt(|map| map.as_ref().map_or(0, FxHashMap::len)).unwrap_or(0)
+    crate::platform::executor::current_live_actors_opt()
+        .map_or(0, |actors| actors.len.load(Ordering::Acquire))
 }
 
 /// Remove an actor from the live tracking map.
@@ -133,11 +163,12 @@ pub(crate) fn actor_count_for_test() -> usize {
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
-    let removed = with_live_actors_opt(|map| {
+    let removed = with_shard_opt(id, |map, len| {
         if let Some(m) = map.as_mut() {
             if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
                 if entry.get().actor.0 == actor {
                     entry.remove();
+                    len.fetch_sub(1, Ordering::AcqRel);
                     return true;
                 }
             }
@@ -154,15 +185,16 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
-    let actor = with_live_actors_opt(|map| {
-        let tracked = map.as_mut()?.remove(&actor_id)?;
-        if tracked.actor.0 == expected {
-            Some(tracked.actor.0)
-        } else {
-            map.get_or_insert_with(FxHashMap::default)
-                .insert(actor_id, tracked);
-            None
+    let actor = with_shard_opt(actor_id, |map, len| {
+        let m = map.as_mut()?;
+        if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(actor_id) {
+            if entry.get().actor.0 == expected {
+                let tracked = entry.remove();
+                len.fetch_sub(1, Ordering::AcqRel);
+                return Some(tracked.actor.0);
+            }
         }
+        None
     })
     .flatten();
     if let Some(actor) = actor {
@@ -176,34 +208,44 @@ pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option
 /// Calls `f` with a shared reference to the actor and returns `Some(f(..))`
 /// if `actor` is in the live map.  Returns `None` otherwise.
 ///
-/// The `LIVE_ACTORS` lock is held across `f`, preventing concurrent frees
-/// from reclaiming the allocation while `f` runs.
+/// The owning shard's lock is held across `f`, preventing concurrent frees
+/// from reclaiming the allocation while `f` runs. Shards are probed one at a
+/// time so no two shard locks are ever held simultaneously.
 pub(crate) fn with_live_actor<R>(
     actor: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors_opt(|map| {
-        if map
-            .as_ref()
-            .is_some_and(|m| m.values().any(|ptr| ptr.actor.0 == actor))
-        {
-            // SAFETY: `actor` is tracked in LIVE_ACTORS; concurrent frees
-            // must remove it before reclaiming the allocation.
-            Some(f(unsafe { &*actor }))
-        } else {
-            None
+    let actors = crate::platform::executor::current_live_actors_opt()?;
+    let mut f = Some(f);
+    for shard in &actors.shards {
+        let result = shard.access(|map| {
+            if map
+                .as_ref()
+                .is_some_and(|m| m.values().any(|ptr| ptr.actor.0 == actor))
+            {
+                let func = f.take().expect("closure runs at most once");
+                // SAFETY: `actor` is tracked in this shard; concurrent frees
+                // must remove it under this same shard lock before reclaiming
+                // the allocation.
+                Some(func(unsafe { &*actor }))
+            } else {
+                None
+            }
+        });
+        if result.is_some() {
+            return result;
         }
-    })
-    .flatten()
+    }
+    None
 }
 
 /// Return whether any tracked actor still owns a parked continuation that
 /// represents IN-FLIGHT work the shutdown drain must wait for.
 ///
-/// The liveness lock is held while reading each actor state, so a concurrent
-/// free cannot reclaim an allocation beneath the scan. Shutdown uses this as
-/// source-agnostic drain authority: TCP, timer, ask, stream, and other await
-/// implementations all converge on `HewActorState::Suspended`.
+/// The liveness shard lock is held while reading each actor state, so a
+/// concurrent free cannot reclaim an allocation beneath the scan. Shutdown uses
+/// this as source-agnostic drain authority: TCP, timer, ask, stream, and other
+/// await implementations all converge on `HewActorState::Suspended`.
 ///
 /// A `Suspended` actor whose currently-dispatching `ask` was ABANDONED by its
 /// caller is NOT in-flight work: the `await … | after d` deadline (or a task
@@ -214,36 +256,39 @@ pub(crate) fn with_live_actor<R>(
 /// channel's `cancelled` flag, reached through the actor's independently
 /// retained [`crate::actor::HewActor::parked_ask_channel`] gate reference —
 /// safe to dereference here because every release site swaps that slot to
-/// null under THIS registry lock before dropping the reference
-/// (`scheduler::release_parked_ask_channel`).
+/// null under THIS actor's shard lock before dropping the reference
+/// (`activation::release_parked_ask_channel`).
 ///
-/// Swap `slot` to null under the live-actors registry lock.
+/// Swap `slot` to null under the owning actor's live-actors shard lock.
 ///
 /// Serialization primitive for pointer slots that the shutdown drain scan
 /// dereferences under this lock ([`has_drain_blocking_suspended_actor`]): a
 /// releaser swaps here first, so a scan that observed a non-null pointer holds
-/// the lock the swap needs and the backing allocation cannot be freed beneath
-/// the dereference. The actual release of the swapped-out reference belongs
-/// OUTSIDE the lock (it may run reply destructors). Falls back to a bare swap
-/// when no runtime is installed — the scan resolves through the same runtime
-/// slot, so no scan can be racing in that case.
+/// the shard lock the swap needs and the backing allocation cannot be freed
+/// beneath the dereference. The actual release of the swapped-out reference
+/// belongs OUTSIDE the lock (it may run reply destructors). Falls back to a
+/// bare swap when no runtime is installed — the scan resolves through the same
+/// runtime slot, so no scan can be racing in that case.
 pub(crate) fn swap_slot_under_registry_lock(
+    actor_id: u64,
     slot: &std::sync::atomic::AtomicPtr<std::ffi::c_void>,
 ) -> *mut std::ffi::c_void {
-    with_live_actors_opt(|_| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
-        .unwrap_or_else(|| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
+    with_shard_opt(actor_id, |_, _| {
+        slot.swap(std::ptr::null_mut(), Ordering::AcqRel)
+    })
+    .unwrap_or_else(|| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
 }
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
 ///
 /// Returns `Some(f(..))` if `actor_id` maps to `expected`; `None` otherwise.
-/// The `LIVE_ACTORS` lock is held across `f`.
+/// The owning shard's lock is held across `f`.
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors_opt(|map| {
+    with_shard_opt(actor_id, |map, _| {
         if map
             .as_ref()
             .and_then(|m| m.get(&actor_id))
@@ -268,7 +313,7 @@ pub(crate) fn with_live_actor_by_id<R>(
 /// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
 /// instead so the actor cannot be freed between lookup and dereference.
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
-    with_live_actors_opt(|map| {
+    with_shard_opt(actor_id, |map, _| {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
             .filter(|ptr| !ptr.is_null())
@@ -323,12 +368,12 @@ impl ActorPin {
 /// or user work. Existing mailbox submission keeps its pin only for that
 /// submission operation.
 pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
-    let ptr = with_live_actors_opt(|map| {
+    let ptr = with_shard_opt(actor_id, |map, _| {
         let ptr = map
             .as_ref()
             .and_then(|m| m.get(&actor_id).map(|p| p.actor.0))
             .filter(|p| !p.is_null())?;
-        // SAFETY: the pointer is tracked under the liveness lock. Incrementing
+        // SAFETY: the pointer is tracked under the owning shard lock. Incrementing
         // before releasing the lock is mutually exclusive with untracking.
         unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
         Some(ptr)
@@ -562,85 +607,110 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 ///
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::{
-        retire_actor_route, with_live_actors_opt, ActorPtr, FxHashMap, HewActor, Ordering,
-    };
+    use super::{retire_actor_route, ActorPtr, FxHashMap, HewActor, Ordering};
     use crate::runtime::{rt_current, rt_current_opt};
     use std::collections::HashMap;
 
     pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
-        with_live_actors_opt(|map| {
-            map.as_ref().is_some_and(|actors| {
-                actors.values().any(|entry| {
-                    let actor = &entry.actor.0;
-                    // SAFETY: the pointer remains tracked under the liveness lock;
-                    // every free path must untrack it before reclaiming the box.
-                    let a = unsafe { &**actor };
-                    if a.actor_state.load(Ordering::Acquire)
-                        != crate::internal::types::HewActorState::Suspended as i32
-                    {
-                        return false;
-                    }
-                    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
-                        return true;
-                    }
-                    let gate = a.parked_ask_channel.load(Ordering::Acquire);
-                    if gate.is_null() {
-                        return true;
-                    }
-                    // SAFETY: the gate slot owns a retained channel reference that
-                    // is released only after a swap performed under this same
-                    // registry lock.
-                    let cancelled = unsafe {
-                        (*gate.cast::<crate::reply_channel::HewReplyChannel>())
-                            .cancelled
-                            .load(Ordering::Acquire)
-                    };
-                    !cancelled
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return false;
+        };
+        for shard in &actors.shards {
+            let blocked = shard.access(|map| {
+                map.as_ref().is_some_and(|entries| {
+                    entries.values().any(|entry| {
+                        let actor = &entry.actor.0;
+                        // SAFETY: the pointer remains tracked under its owning shard lock;
+                        // every free path must untrack it before reclaiming the box.
+                        let a = unsafe { &**actor };
+                        if a.actor_state.load(Ordering::Acquire)
+                            != crate::internal::types::HewActorState::Suspended as i32
+                        {
+                            return false;
+                        }
+                        if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+                            return true;
+                        }
+                        let gate = a.parked_ask_channel.load(Ordering::Acquire);
+                        if gate.is_null() {
+                            return true;
+                        }
+                        // SAFETY: the gate slot owns a retained channel reference that
+                        // is released only after a swap performed under this same
+                        // actor's shard lock.
+                        let cancelled = unsafe {
+                            (*gate.cast::<crate::reply_channel::HewReplyChannel>())
+                                .cancelled
+                                .load(Ordering::Acquire)
+                        };
+                        !cancelled
+                    })
                 })
-            })
-        })
-        .unwrap_or(false)
+            });
+            if blocked {
+                return true;
+            }
+        }
+        false
     }
 
     /// Safe to call only once worker threads are joined: the returned pointers
     /// are unpinned, so a concurrent free would dangle them.
     pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
-        with_live_actors_opt(|map| {
-            map.as_ref()
-                .map(|m| m.values().map(|entry| entry.actor.0).collect())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return Vec::new();
+        };
+        let mut ptrs = Vec::new();
+        for shard in &actors.shards {
+            shard.access(|map| {
+                if let Some(m) = map.as_ref() {
+                    ptrs.extend(m.values().map(|entry| entry.actor.0));
+                }
+            });
+        }
+        ptrs
     }
 
     /// Copy identities while workers are live. Resolve each through a fresh pin
     /// before accessing its allocation; an actor may retire after this snapshot.
     pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
-        with_live_actors_opt(|map| {
-            map.as_ref()
-                .map(|actors| actors.keys().copied().collect())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        for shard in &actors.shards {
+            shard.access(|map| {
+                if let Some(m) = map.as_ref() {
+                    ids.extend(m.keys().copied());
+                }
+            });
+        }
+        ids
     }
 
     /// Take all currently tracked actors out of the live map.
     pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
-        let drained = with_live_actors_opt(|map| match map.as_mut() {
-            Some(m) => std::mem::take(m),
-            None => FxHashMap::default(),
-        })
-        .unwrap_or_default();
-        for (&actor_id, entry) in &drained {
-            if !entry.actor.0.is_null() {
-                retire_actor_route(entry.actor.0, actor_id);
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return HashMap::new();
+        };
+        let mut drained = HashMap::new();
+        for shard in &actors.shards {
+            let taken = shard.access(|map| match map.as_mut() {
+                Some(m) => {
+                    let entries = std::mem::take(m);
+                    actors.len.fetch_sub(entries.len(), Ordering::AcqRel);
+                    entries
+                }
+                None => FxHashMap::default(),
+            });
+            for (actor_id, entry) in taken {
+                if !entry.actor.0.is_null() {
+                    retire_actor_route(entry.actor.0, actor_id);
+                }
+                drained.insert(actor_id, entry.actor);
             }
         }
         drained
-            .into_iter()
-            .map(|(id, entry)| (id, entry.actor))
-            .collect()
     }
 
     pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
@@ -699,49 +769,58 @@ pub(crate) use native::{
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_guest {
-    use super::{with_live_actors_opt, ActorIncarnation, Ordering};
+    use super::{ActorIncarnation, Ordering};
 
     /// Retained guest snapshots require every actor turn and its cleanup to finish.
     pub(crate) fn has_active_guest_actor() -> bool {
         use crate::internal::types::HewActorState;
 
-        with_live_actors_opt(|map| {
-            map.as_ref().is_some_and(|actors| {
-                actors.values().any(|entry| {
-                    // SAFETY: the liveness registry retains the allocation during
-                    // this inspection; the guest has one execution thread.
-                    let actor = unsafe { &*entry.actor.0 };
-                    let state = actor.actor_state.load(Ordering::Acquire);
-                    ![
-                        HewActorState::Idle,
-                        HewActorState::Stopped,
-                        HewActorState::Crashed,
-                    ]
-                    .iter()
-                    .any(|idle| state == *idle as i32)
-                        || !actor.checked_invocation.load(Ordering::Acquire).is_null()
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return false;
+        };
+        for shard in &actors.shards {
+            let active = shard.access(|map| {
+                map.as_ref().is_some_and(|entries| {
+                    entries.values().any(|entry| {
+                        // SAFETY: the liveness shard retains the allocation during
+                        // this inspection; the guest has one execution thread.
+                        let actor = unsafe { &*entry.actor.0 };
+                        let state = actor.actor_state.load(Ordering::Acquire);
+                        ![
+                            HewActorState::Idle,
+                            HewActorState::Stopped,
+                            HewActorState::Crashed,
+                        ]
+                        .iter()
+                        .any(|idle| state == *idle as i32)
+                            || !actor.checked_invocation.load(Ordering::Acquire).is_null()
+                    })
                 })
-            })
-        })
-        .unwrap_or(false)
+            });
+            if active {
+                return true;
+            }
+        }
+        false
     }
 
     /// Copy exact incarnations before cooperative cleanup advances the driver.
     pub(crate) fn snapshot_live_incarnations() -> Vec<ActorIncarnation> {
-        with_live_actors_opt(|map| {
-            map.as_ref()
-                .map(|actors| {
-                    actors
-                        .values()
-                        .map(|entry| {
-                            // SAFETY: the registry lock retains this tracked allocation.
-                            unsafe { ActorIncarnation::of(entry.actor.0) }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+        let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+            return Vec::new();
+        };
+        let mut incarnations = Vec::new();
+        for shard in &actors.shards {
+            shard.access(|map| {
+                if let Some(entries) = map.as_ref() {
+                    incarnations.extend(entries.values().map(|entry| {
+                        // SAFETY: the shard lock retains this tracked allocation.
+                        unsafe { ActorIncarnation::of(entry.actor.0) }
+                    }));
+                }
+            });
+        }
+        incarnations
     }
 }
 
@@ -839,5 +918,95 @@ mod tests {
         release.store(true, Ordering::Release);
         drain_deferred_teardown_threads();
         assert_eq!(deferred_teardown_thread_count(), 0);
+    }
+
+    /// Multi-threaded stress test covering all 16 shards: concurrent tracking,
+    /// pinning, pointer/ID lookups, slot swaps against drain scans, untracking,
+    /// and final cross-shard cleanup drain must maintain exact counts with zero
+    /// deadlock.
+    #[test]
+    fn sharded_live_actors_concurrent_stress_across_all_shards() {
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 8;
+        const ACTORS_PER_THREAD: usize = 32; // spans all 16 shards twice per thread
+
+        let _rt = crate::scheduler::NoWorkerSchedulerForTest::install();
+        assert_eq!(actor_count_for_test(), 0);
+
+        // Allocate actors up front so raw pointers outlive every worker thread.
+        let mut owned: Vec<Box<HewActor>> = Vec::with_capacity(THREADS * ACTORS_PER_THREAD);
+        for idx in 0..(THREADS * ACTORS_PER_THREAD) {
+            let mut actor = Box::new(crate::test_actor::stub_actor());
+            actor.id = (idx as u64) + 1;
+            actor.spawn_serial = actor.id;
+            owned.push(actor);
+        }
+
+        let ptrs: Arc<Vec<usize>> = Arc::new(
+            owned
+                .iter_mut()
+                .map(|actor| (&raw mut **actor) as usize)
+                .collect(),
+        );
+        let start = Arc::new(Barrier::new(THREADS + 1));
+
+        let mut workers = Vec::with_capacity(THREADS);
+        for tid in 0..THREADS {
+            let ptrs = Arc::clone(&ptrs);
+            let start = Arc::clone(&start);
+            workers.push(std::thread::spawn(move || {
+                let base = tid * ACTORS_PER_THREAD;
+                start.wait();
+                for offset in 0..ACTORS_PER_THREAD {
+                    let raw = ptrs[base + offset] as *mut HewActor;
+                    let id = (base + offset) as u64 + 1;
+                    // SAFETY: `owned` remains live until all threads join.
+                    assert!(unsafe { track_actor(raw) });
+                    // Duplicate registration on the same shard must fail closed.
+                    // SAFETY: as above.
+                    assert!(!unsafe { track_actor(raw) });
+
+                    assert!(is_actor_live(raw));
+                    assert!(is_actor_live_with_id(id, raw));
+                    assert_eq!(get_actor_ptr_by_id(id), Some(raw));
+
+                    let pin = pin_actor_by_id(id).expect("tracked actor must pin");
+                    assert_eq!(pin.actor().id, id);
+                    drop(pin);
+
+                    // Exercise shard-serialized slot swap concurrently with scans.
+                    // SAFETY: `raw` is live until threads join.
+                    let slot = unsafe { &(*raw).parked_ask_channel };
+                    let _ = swap_slot_under_registry_lock(id, slot);
+
+                    // Leave half of each thread's actors tracked for drain_all_for_cleanup.
+                    if offset % 2 == 0 {
+                        assert!(untrack_actor(raw));
+                        assert!(!is_actor_live_with_id(id, raw));
+                    }
+                }
+            }));
+        }
+
+        // Concurrent whole-registry scans while workers mutate all 16 shards.
+        start.wait();
+        for _ in 0..64 {
+            let _ = has_drain_blocking_suspended_actor();
+            let _ = snapshot_live_actor_ids();
+        }
+
+        for worker in workers {
+            worker.join().expect("live_actors stress worker panicked");
+        }
+
+        let expected_remaining = (THREADS * ACTORS_PER_THREAD) / 2;
+        assert_eq!(actor_count_for_test(), expected_remaining);
+        assert_eq!(snapshot_live_actor_ptrs().len(), expected_remaining);
+
+        let drained = drain_all_for_cleanup();
+        assert_eq!(drained.len(), expected_remaining);
+        assert_eq!(actor_count_for_test(), 0);
+        assert!(snapshot_live_actor_ids().is_empty());
     }
 }

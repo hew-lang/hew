@@ -47,33 +47,46 @@ use crate::actor::HewActor;
 use crate::cont::{self, ResumePoll};
 use crate::internal::types::ContTag;
 
-/// Test-only: when set, `resume_park` yields the thread N times in the
-/// `Resuming` window — between the `Parked → Resuming` CAS and the actual
-/// `hew_cont_resume` call — so a concurrent `destroy_parked` reliably lands
-/// inside the guarded window. Loaded with `Acquire` before each resume; a
-/// value > 0 means "yield that many times". Reset to 0 by the caller after
-/// the probe turn that needs the extended window.
-///
-/// WHY: The `Barrier`-aligned probe is too short to guarantee a concurrent
-/// destroy lands INSIDE the Resuming window without an injected delay; on a
-/// fast machine the resume thread blows past the window before the destroy
-/// thread is even scheduled. This hook makes the window controllably wide.
-///
-/// WHEN: Remove (or keep as `0` forever) once a real scheduler hook replaces
-/// this test scaffold.
-///
-/// REAL: A production `yield_point` ABI inside the actor executor that allows
-/// cooperative pre-emption at known safe points between `begin_resume` and
-/// the continuation call.
+/// Test-only deterministic rendezvous hook inside the `Resuming` window —
+/// between the `Parked → Resuming` CAS and `hew_cont_resume` — keyed by the
+/// target actor's address so sibling tests calling `resume_park` concurrently
+/// on other actors never observe it.
 #[cfg(test)]
-static RESUMING_WINDOW_YIELD_COUNT: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+type ResumingWindowHook = Option<(
+    usize,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+)>;
 
-/// Set the number of yields injected into the Resuming window for the next
-/// [`resume_park`] call. A value of 0 (the default) disables the injection.
 #[cfg(test)]
-pub(crate) fn set_resuming_window_yield_count(n: u32) {
-    RESUMING_WINDOW_YIELD_COUNT.store(n, Ordering::Release);
+static RESUMING_WINDOW_HOOK: std::sync::Mutex<ResumingWindowHook> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+struct ResumingWindowHookGuard;
+
+#[cfg(test)]
+impl ResumingWindowHookGuard {
+    fn install(
+        actor: &HewActor,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) -> Self {
+        let mut guard = RESUMING_WINDOW_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(guard.is_none(), "resuming window hook already installed");
+        *guard = Some((ptr::from_ref(actor) as usize, entered, release));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ResumingWindowHookGuard {
+    fn drop(&mut self) {
+        *RESUMING_WINDOW_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 /// Outcome of an executor guard transition. A `Refused` is fail-closed: the
@@ -277,14 +290,27 @@ pub unsafe fn resume_park(a: &HewActor) -> Option<ResumePoll> {
     if !begin_resume(a).is_ok() {
         return None;
     }
-    // Test-only: inject a yield in the Resuming window so a concurrent
-    // destroy_parked reliably arrives while the tag is Resuming. In
-    // production builds this block is compiled out entirely.
+    // Test-only: pause deterministically inside the Resuming window when a
+    // rendezvous hook is armed for this actor so a concurrent `destroy_parked`
+    // is guaranteed to observe `ContTag::Resuming`. Compiled out in production.
     #[cfg(test)]
     {
-        let yields = RESUMING_WINDOW_YIELD_COUNT.swap(0, Ordering::AcqRel);
-        for _ in 0..yields {
-            std::thread::yield_now();
+        let hook = {
+            let mut guard = RESUMING_WINDOW_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard
+                .as_ref()
+                .is_some_and(|(target, _, _)| *target == ptr::from_ref(a) as usize)
+            {
+                guard.take().map(|(_, entered, release)| (entered, release))
+            } else {
+                None
+            }
+        };
+        if let Some((entered, release)) = hook {
+            entered.wait();
+            release.wait();
         }
     }
     // SAFETY: the tag is now `Resuming` (we hold the only resume permit), the
@@ -802,6 +828,7 @@ mod tests {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         })
     }
 
@@ -1247,6 +1274,7 @@ mod forced_ordering_probe {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         })
     }
 
@@ -1423,44 +1451,32 @@ mod forced_ordering_probe {
         );
     }
 
-    /// FG2 forced-ordering: destroy is REFUSED while the tag is `Resuming`.
+    /// FG2 forced-ordering: destroy is deterministically REFUSED while the tag
+    /// is `Resuming`.
     ///
-    /// This is the STRENGTHENED probe requested by the security reviewer:
-    ///
-    /// 1. The `RESUMING_WINDOW_YIELD_COUNT` hook widens the `Resuming` window
-    ///    (between the `Parked → Resuming` CAS and `hew_cont_resume`) by
-    ///    injecting N `yield_now` calls, so the destroy thread reliably lands
-    ///    INSIDE the window — not after the resume has already settled.
+    /// 1. `RESUMING_WINDOW_HOOK` holds the resume thread at a two-barrier
+    ///    rendezvous between the `Parked → Resuming` CAS and `hew_cont_resume`,
+    ///    guaranteeing the destroy thread observes `ContTag::Resuming` on every
+    ///    round with zero yield/sleep timing dependence.
     ///
     /// 2. `ScratchFrame::heap_guard` is a real `Box<u64>` the destroy outline
-    ///    FREES. If FG2 regresses (the `Resuming → Destroyed` arm is added to
-    ///    `destroy_parked`), the destroy outline drops the `heap_guard` box while
-    ///    the resume outline is mid-flight touching it — a genuine UAF that
-    ///    `MallocScribble=1 MallocPreScribble=1 MallocGuardEdges=1` surfaces as
-    ///    an abort.
+    ///    FREES. If FG2 regresses (a `Resuming → Destroyed` arm is added to
+    ///    `destroy_parked`), the destroy outline drops `heap_guard` before the
+    ///    resume thread is released into `scratch_resume`, surfacing a UAF.
     ///
-    /// Under the CORRECT guard (no `Resuming → Destroyed` arm):
-    /// - Resume wins `Parked → Resuming`; destroy finds the tag `Resuming` and
-    ///   REFUSES every iteration.
-    /// - `heap_guard` is freed only AFTER the resume settles and `destroy_parked`
-    ///   wins from `Parked` or `Done` — never concurrently with the resume.
-    ///
-    /// MUTATION TEST (manually verified, never land the break):
-    /// Adding `ContTag::Resuming => cas_tag(a, ContTag::Resuming, ContTag::Destroyed),`
-    /// to `destroy_parked` breaks FG2. Under `MallocScribble=1 MallocPreScribble=1
-    /// MallocGuardEdges=1` this probe aborts with an allocator fault because
-    /// `scratch_resume` reads through `heap_guard` AFTER `scratch_destroy` freed
-    /// it. Verified: the probe FAILS (abort/fault) within 10 rounds on a broken
-    /// guard, as opposed to the prior probe (pure `debug_assert`) which PASSED
-    /// 5/5 on the same broken guard.
+    /// Under the correct guard:
+    /// - Resume wins `Parked → Resuming` and parks on `entered`.
+    /// - Destroy wakes after `entered`, observes `Resuming`, and returns
+    ///   `ExecGuard::Refused` on every single round without freeing `heap_guard`.
+    /// - Destroy releases `release`; resume completes `hew_cont_resume` cleanly
+    ///   and settles back to `Parked`.
     #[test]
     fn fg2_destroy_refused_in_resuming_window_with_real_free() {
         const ROUNDS: usize = 100;
         for round in 0..ROUNDS {
             let actor = probe_actor();
-            // suspends_before_done = 5: the frame never reaches Done in the
-            // race window, so the resume always settles back to Parked (Pending)
-            // and the destroy must find the tag NOT Resuming when it finally wins.
+            // suspends_before_done = 5: the frame never reaches Done in this
+            // round, so the resume settles back to Parked (Pending).
             let frame = ScratchFrameOwner::new(5);
             let handle = frame.handle();
 
@@ -1468,60 +1484,60 @@ mod forced_ordering_probe {
             // SAFETY: scratch frame outlives both threads (joined below).
             unsafe { finish_park(&actor, handle) };
 
-            // Widen the Resuming window: the resume thread will yield 200 times
-            // between the Parked → Resuming CAS and hew_cont_resume, giving the
-            // destroy thread ample time to arrive and attempt its CAS.
-            set_resuming_window_yield_count(200);
-
-            let barrier = Arc::new(Barrier::new(2));
+            let entered = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            let _hook = ResumingWindowHookGuard::install(
+                &actor,
+                Arc::clone(&entered),
+                Arc::clone(&release),
+            );
             let ap = ActorPtr(&raw const *actor);
 
-            // Resume thread: sets tag to Resuming, yields 200 times, then drives
-            // hew_cont_resume (which touches heap_guard in scratch_resume).
-            let b_resume = Arc::clone(&barrier);
+            // Resume thread: transitions Parked → Resuming, pauses at `entered`
+            // inside the Resuming window, then drives hew_cont_resume after `release`.
             let resume_h = std::thread::spawn(move || {
                 let ap = ap;
-                b_resume.wait();
                 // SAFETY: actor outlives the join; guards are atomic.
                 let a = unsafe { &*ap.0 };
                 // SAFETY: parked handle is live; resume_park enforces FG2.
                 unsafe { resume_park(a) }
             });
 
-            // Destroy thread: waits for both threads to be scheduled, then
-            // attempts destroy. With the yield injection the resume tag is
-            // `Resuming` when this arrives — FG2 must refuse it.
-            let b_destroy = Arc::clone(&barrier);
-            let destroy_h = std::thread::spawn(move || {
-                let ap = ap;
-                b_destroy.wait();
-                // Yield a few times first so the resume thread is more likely
-                // to have advanced into the Resuming window.
-                for _ in 0..50 {
-                    std::thread::yield_now();
-                }
-                // SAFETY: actor outlives the join; guards are atomic.
-                let a = unsafe { &*ap.0 };
-                // SAFETY: FG2: if the tag is Resuming this MUST refuse.
-                unsafe { destroy_parked(a) }
-            });
+            // Wait until resume_park is guaranteed to be inside the Resuming window.
+            entered.wait();
+            assert_eq!(load_tag(&actor), ContTag::Resuming);
 
+            // Attempt destroy while tag is guaranteed to be Resuming — FG2 MUST refuse.
+            // SAFETY: FG2: tag is Resuming, so destroy_parked must return Refused.
+            let destroy_outcome = unsafe { destroy_parked(&actor) };
+            assert_eq!(
+                destroy_outcome,
+                ExecGuard::Refused,
+                "round {round}: destroy_parked must refuse while tag is Resuming (FG2)"
+            );
+            assert_eq!(
+                frame.destroyed.load(Ordering::Acquire),
+                0,
+                "round {round}: refused destroy must not reclaim frame"
+            );
+
+            // Release resume_park to finish hew_cont_resume and settle back to Parked.
+            release.wait();
             let resume_outcome = resume_h.join().expect("resume thread panicked");
-            let destroy_outcome = destroy_h.join().expect("destroy thread panicked");
+            assert_eq!(
+                resume_outcome,
+                Some(ResumePoll::Pending),
+                "round {round}: resume must settle to Pending after refused destroy"
+            );
 
-            // The heap_guard must NOT be freed by a concurrent resume+destroy.
-            // If destroy_parked ran while the tag was Resuming and freed the box,
-            // MallocScribble would have aborted above. Reaching here means either:
-            //   - destroy was Refused (correct: FG2 held), OR
-            //   - destroy won from Parked AFTER the resume settled (also correct).
-            // In no case should destroy have run at the same time as resume.
-
-            // Ensure the frame is reclaimed exactly once so the probe does not leak.
-            let destroyed_now = frame.destroyed.load(Ordering::Acquire);
-            if destroyed_now == 0 {
-                // SAFETY: resume settled (thread joined); tag is Parked or Done.
-                let _ = unsafe { destroy_parked(&actor) };
-            }
+            // Now that resume settled back to Parked, destroy succeeds exactly once.
+            // SAFETY: resume thread joined; tag is Parked.
+            let destroy_outcome = unsafe { destroy_parked(&actor) };
+            assert_eq!(
+                destroy_outcome,
+                ExecGuard::Ok,
+                "round {round}: destroy must succeed once resume has settled"
+            );
             assert_eq!(
                 frame.destroyed.load(Ordering::Acquire),
                 1,
@@ -1529,8 +1545,6 @@ mod forced_ordering_probe {
             );
             assert_eq!(load_tag(&actor), ContTag::Destroyed);
             assert!(actor.suspended_cont.load(Ordering::Acquire).is_null());
-
-            let _ = (resume_outcome, destroy_outcome);
         }
     }
 }

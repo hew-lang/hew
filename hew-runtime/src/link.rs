@@ -99,7 +99,7 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
     let shard_index_a = get_shard_index(id_a);
     let shard_index_b = get_shard_index(id_b);
 
-    match shard_index_a.cmp(&shard_index_b) {
+    let result = match shard_index_a.cmp(&shard_index_b) {
         std::cmp::Ordering::Equal => LINK_TABLE[shard_index_a].access(|shard| {
             let a_terminal_reason = terminal_exit_reason(shard, id_a, actor_a);
             let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
@@ -146,7 +146,11 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
                 (a_terminal_reason, b_terminal_reason, inserted)
             })
         }),
+    };
+    if result.2 {
+        crate::tracing::record_substrate_event(id_a, crate::tracing::SPAN_LINK_CREATED, 0);
     }
+    result
 }
 
 /// Link the current actor to a local target. Status zero is `Ok`; a target
@@ -455,6 +459,11 @@ fn send_exit_notification(
                     data_size,
                 );
             }
+            crate::tracing::record_substrate_event(
+                linked_actor_id,
+                crate::tracing::SPAN_LINK_EXIT,
+                reason,
+            );
         }
 
         #[cfg(test)]
@@ -796,6 +805,7 @@ mod tests {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         }
     }
 

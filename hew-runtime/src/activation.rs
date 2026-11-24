@@ -1636,7 +1636,8 @@ pub(crate) static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false
 /// Idempotent (the swap yields null on a second visit), so overlapping
 /// abandon routes settle to exactly one release.
 pub(crate) fn release_parked_ask_channel(a: &HewActor) {
-    let ch = crate::lifetime::live_actors::swap_slot_under_registry_lock(&a.parked_ask_channel);
+    let ch =
+        crate::lifetime::live_actors::swap_slot_under_registry_lock(a.id, &a.parked_ask_channel);
     if !ch.is_null() {
         // SAFETY: the gate slot owned this retained reference, taken on the
         // suspend edge; the swap above transferred it to this call.

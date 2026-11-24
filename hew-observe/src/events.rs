@@ -203,66 +203,8 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Internal,
         actionable: false,
     },
-    // SHIM: pending native-M3 producer-side emission. These are intentionally
-    // non-actionable until the runtime emits QUIC lifecycle trace spans.
-    TraceEventMeta {
-        name: "quic_endpoint_lifecycle",
-        label: "quic endpoint lifecycle",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_connection_lifecycle",
-        label: "quic connection lifecycle",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_stream_open",
-        label: "quic stream open",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_stream_close",
-        label: "quic stream close",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_datagram_send",
-        label: "quic datagram send",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_datagram_recv",
-        label: "quic datagram recv",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    TraceEventMeta {
-        name: "quic_error_raise",
-        label: "quic error raise",
-        glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Channel,
-        actionable: false,
-    },
-    // SHIM: pending native-M3 producer-side emission. D24-2 cancellation token
-    // substrate exists, but cancel/check points do not emit trace spans yet.
+    // Runtime-emitted cancellation substrate spans (non-actionable until
+    // dedicated Observe UI views exist).
     TraceEventMeta {
         name: "cancellation_fired",
         label: "cancellation fired",
@@ -287,29 +229,53 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Internal,
         actionable: false,
     },
-    // SHIM: pending native-M3 producer-side emission. Auto-injected lock
-    // substrate is tracked for v1 observability, but lock spans are absent.
+    // Runtime-emitted link, monitor, heap-cap, and cluster partition spans
+    // (kept non-actionable until Observe adds dedicated drill-down views).
     TraceEventMeta {
-        name: "lock_acquire",
-        label: "lock acquire",
+        name: "link_created",
+        label: "link created",
         glyph: '\u{00B7}',
         tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Internal,
+        group: TraceEventGroup::Lifecycle,
         actionable: false,
     },
     TraceEventMeta {
-        name: "lock_release",
-        label: "lock release",
+        name: "link_exit",
+        label: "link exit",
         glyph: '\u{00B7}',
-        tone: TraceEventTone::Primary,
-        group: TraceEventGroup::Internal,
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
         actionable: false,
     },
     TraceEventMeta {
-        name: "lock_poison",
-        label: "lock poison",
+        name: "monitor_created",
+        label: "monitor created",
         glyph: '\u{00B7}',
         tone: TraceEventTone::Primary,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "monitor_down",
+        label: "monitor down",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Warning,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "max_heap_exceeded",
+        label: "max heap exceeded",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Error,
+        group: TraceEventGroup::Lifecycle,
+        actionable: false,
+    },
+    TraceEventMeta {
+        name: "partition_detected",
+        label: "partition detected",
+        glyph: '\u{00B7}',
+        tone: TraceEventTone::Error,
         group: TraceEventGroup::Internal,
         actionable: false,
     },
@@ -370,13 +336,6 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         group: TraceEventGroup::Lifecycle,
         actionable: true,
     },
-    // SHIM: pending native-M3 producer-side emission. WHY: partition
-    // detection, max_heap enforcement, and link/monitor substrates have no
-    // runtime trace spans yet (SPAN_PARTITION, SPAN_MAX_HEAP, SPAN_LINK, or
-    // SPAN_MONITOR). WHEN obsolete: after the native-M3 milestone lands
-    // canonical substrate trace events for them. WHAT: add concrete
-    // TraceEventMeta rows only for runtime-emitted event names, keeping them
-    // non-actionable until the observe UI has deliberate handling.
 ];
 
 pub const UNKNOWN_TRACE_EVENT_META: TraceEventMeta = TraceEventMeta {
@@ -526,7 +485,11 @@ mod tests {
 
     #[test]
     fn trace_metadata_matches_runtime_and_protocol() {
-        for (_, event_type) in hew_runtime::tracing::EVENT_TYPE_NAMES {
+        let runtime_names: std::collections::BTreeSet<_> = hew_runtime::tracing::EVENT_TYPE_NAMES
+            .iter()
+            .map(|(_, event_type)| *event_type)
+            .collect();
+        for event_type in &runtime_names {
             let meta = trace_event_meta(event_type);
             assert_eq!(
                 meta.name, *event_type,
@@ -535,8 +498,21 @@ mod tests {
             assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
         }
 
-        // Metadata also covers older producers and reserved future events.
-        // Compare actionability with the protocol, without closing its taxonomy.
+        // Metadata reflects runtime producers 1:1, plus the two v1-protocol
+        // lambda compatibility rows. No speculative placeholder rows are kept.
+        let v1_compat: std::collections::BTreeSet<_> =
+            ["lambda_spawned", "lambda_released"].into_iter().collect();
+        let metadata_names: std::collections::BTreeSet<_> = CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .map(|meta| meta.name)
+            .collect();
+        let expected_names: std::collections::BTreeSet<_> =
+            runtime_names.union(&v1_compat).copied().collect();
+        assert_eq!(
+            metadata_names, expected_names,
+            "Observe metadata must match runtime EVENT_TYPE_NAMES 1:1 (plus v1 lambda compat)"
+        );
+
         let actionable: std::collections::BTreeSet<_> = CURRENT_TRACE_EVENT_METADATA
             .iter()
             .filter(|meta| meta.is_actionable())
@@ -569,8 +545,33 @@ mod tests {
     }
 
     #[test]
-    fn deferred_future_trace_categories_are_present_but_not_actionable() {
-        let deferred_events = [
+    fn runtime_substrate_events_have_concrete_non_actionable_metadata() {
+        let substrate_events = [
+            "cancellation_fired",
+            "cancellation_scope_cancelled",
+            "cancellation_cooperate_checked",
+            "link_created",
+            "link_exit",
+            "monitor_created",
+            "monitor_down",
+            "max_heap_exceeded",
+            "partition_detected",
+        ];
+
+        for event_type in substrate_events {
+            let meta = trace_event_meta(event_type);
+            assert_eq!(meta.name, event_type);
+            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
+            assert!(
+                !meta.is_actionable(),
+                "{event_type} stays non-actionable until Observe adds dedicated handling"
+            );
+        }
+    }
+
+    #[test]
+    fn unemitted_future_event_names_fall_back_to_unknown() {
+        for unemitted in [
             "quic_endpoint_lifecycle",
             "quic_connection_lifecycle",
             "quic_stream_open",
@@ -578,21 +579,14 @@ mod tests {
             "quic_datagram_send",
             "quic_datagram_recv",
             "quic_error_raise",
-            "cancellation_fired",
-            "cancellation_scope_cancelled",
-            "cancellation_cooperate_checked",
             "lock_acquire",
             "lock_release",
             "lock_poison",
-        ];
-
-        for event_type in deferred_events {
-            let meta = trace_event_meta(event_type);
-            assert_eq!(meta.name, event_type);
-            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
-            assert!(
-                !meta.is_actionable(),
-                "{event_type} must remain non-actionable until producer emission lands"
+        ] {
+            let meta = trace_event_meta(unemitted);
+            assert_eq!(
+                meta, UNKNOWN_TRACE_EVENT_META,
+                "unemitted event {unemitted} must fall back to UNKNOWN_TRACE_EVENT_META"
             );
         }
     }

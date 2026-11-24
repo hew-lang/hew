@@ -62,7 +62,8 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     unsafe {
         crate::platform::host_io::unregister_actor_names(actor_id);
     }
-    crate::parse_error_slot::clear_all_for_actor(actor_id);
+    // SAFETY: caller guarantees the actor is valid and quiescent.
+    unsafe { (*actor).parse_errors.clear_all() };
 }
 
 /// Remove semantic relationships after actor retirement and pin drain.
@@ -1516,16 +1517,12 @@ pub unsafe extern "C" fn hew_actor_register_type(
     crate::profiler::actor_registry::register_dispatch_type_addr(dispatch as usize, name);
 }
 
-/// No-op stub for non-profiler native builds.
+/// No-op C-ABI stub for non-profiler builds.
 ///
-/// The symbol must exist so that codegen can emit unconditional calls to
-/// `hew_actor_register_type` without needing to know whether the profiler
-/// feature is enabled.  In non-profiler builds this is a near-zero-cost no-op.
-///
-/// SHIM: WHY: Codegen cannot conditionally emit calls based on Rust feature flags.
-///       WHEN: Remove if we add a build-system mechanism to communicate the profiler
-///       feature flag to the codegen.
-///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+/// Exported unconditionally (`scripts/cabi-surface.json`, native and
+/// `wasm32-wasip1`) so codegen can emit actor-type registration calls without
+/// coupling compiled binaries to whether `libhew_runtime` was built with the
+/// `profiler` feature.
 ///
 /// # Safety
 ///
@@ -1578,12 +1575,12 @@ pub unsafe extern "C" fn hew_register_handler_name(
     );
 }
 
-/// No-op stub for non-profiler native builds.
+/// No-op C-ABI stub for non-profiler builds.
 ///
-/// SHIM: WHY: Codegen emits unconditional calls; profiler feature determines
-///       whether the body does anything.
-///       WHEN: Remove if a build-system mechanism can communicate feature flags to codegen.
-///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+/// Exported unconditionally (`scripts/cabi-surface.json`, native and
+/// `wasm32-wasip1`) so codegen can emit handler-name registration calls
+/// without coupling compiled binaries to whether `libhew_runtime` was built
+/// with the `profiler` feature.
 ///
 /// # Safety
 ///

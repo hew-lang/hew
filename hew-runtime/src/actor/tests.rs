@@ -1503,6 +1503,7 @@ fn make_stop_test_actor_with_id(
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
             pending_external_trap_code: AtomicI32::new(0),
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         }));
         (actor, mailbox)
     }
@@ -7007,9 +7008,8 @@ fn spawn_with_restart_state_alloc_failure_returns_null_and_sets_error() {
 
 /// Freeing an actor via `hew_actor_free` must remove all parse-error slot
 /// entries for that actor across every parser kind.
-///
-/// This guards against unbounded growth of the global parse-error map on
-/// long-running nodes that spawn and reap many actors.
+/// `prepare_quiescent_actor_for_cleanup` clears the actor-owned parse-error
+/// slots before `hew_actor_free` reclaims the `HewActor` allocation.
 ///
 /// Run 3× to satisfy the flake gate.
 #[test]
@@ -7020,57 +7020,56 @@ fn hew_actor_free_clears_parse_error_slots() {
         // SAFETY: null state, valid dispatch.
         let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
-        // SAFETY: actor is valid — returned by hew_actor_spawn.
-        let actor_id = unsafe { (*actor).id };
 
-        // Inject errors for all four error kinds.
-        crate::parse_error_slot::__set_error_for_actor(
-            actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Xml,
-            "XML error",
-        );
-        crate::parse_error_slot::__set_error_for_actor(
-            actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Yaml,
-            "yaml error",
-        );
-        crate::parse_error_slot::__set_error_for_actor(
-            actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Toml,
-            "toml error",
-        );
-        crate::parse_error_slot::__set_error_for_actor(
-            actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Json,
-            "json error",
-        );
+        {
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor,
+                ..Default::default()
+            });
+            crate::parse_error_slot::set_error(
+                crate::parse_error_slot::ErrorSlotKind::Xml,
+                "XML error",
+            );
+            crate::parse_error_slot::set_error(
+                crate::parse_error_slot::ErrorSlotKind::Yaml,
+                "yaml error",
+            );
+            crate::parse_error_slot::set_error(
+                crate::parse_error_slot::ErrorSlotKind::Toml,
+                "toml error",
+            );
+            crate::parse_error_slot::set_error(
+                crate::parse_error_slot::ErrorSlotKind::Json,
+                "json error",
+            );
 
-        // Verify they are present before free.
-        assert!(crate::parse_error_slot::__get_error_for_actor(
-            actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Xml
-        )
-        .is_some());
+            assert_eq!(
+                crate::parse_error_slot::get_error(crate::parse_error_slot::ErrorSlotKind::Xml)
+                    .as_deref(),
+                Some("XML error")
+            );
 
-        // Free the actor — this calls prepare_quiescent_actor_for_cleanup
-        // which calls parse_error_slot::clear_all_for_actor.
+            // Quiescent cleanup clears every actor-owned error slot before free.
+            // SAFETY: actor is valid and quiescent (never sent a message).
+            unsafe { prepare_quiescent_actor_for_cleanup(actor) };
+
+            for kind in [
+                crate::parse_error_slot::ErrorSlotKind::Xml,
+                crate::parse_error_slot::ErrorSlotKind::Yaml,
+                crate::parse_error_slot::ErrorSlotKind::Toml,
+                crate::parse_error_slot::ErrorSlotKind::Json,
+            ] {
+                assert_eq!(
+                    crate::parse_error_slot::get_error(kind),
+                    None,
+                    "error slot for {kind:?} must be cleared during actor cleanup"
+                );
+            }
+        }
+
         // SAFETY: actor is valid and was spawned by hew_actor_spawn above.
         let rc = unsafe { hew_actor_free(actor) };
         assert_eq!(rc, 0, "hew_actor_free must succeed");
-
-        // All four slots must now be empty.
-        for kind in [
-            crate::parse_error_slot::ErrorSlotKind::Xml,
-            crate::parse_error_slot::ErrorSlotKind::Yaml,
-            crate::parse_error_slot::ErrorSlotKind::Toml,
-            crate::parse_error_slot::ErrorSlotKind::Json,
-        ] {
-            assert_eq!(
-                crate::parse_error_slot::__get_error_for_actor(actor_id, kind),
-                None,
-                "error slot for {kind:?} must be cleared after actor free"
-            );
-        }
     }
 }
 

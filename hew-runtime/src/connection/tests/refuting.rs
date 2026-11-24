@@ -452,6 +452,7 @@ fn reading_actor(
             Some(count_routed),
             HEW_FEATURE_SUPPORTS_GOSSIP,
             channel,
+            None,
             true,
         );
     }));

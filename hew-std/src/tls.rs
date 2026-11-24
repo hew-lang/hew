@@ -2485,9 +2485,8 @@ pub(crate) mod tests {
 
             // SAFETY: test_actor was spawned above and not yet stopped/freed.
             unsafe { actor::hew_actor_stop(test_actor) };
-            // hew_actor_free reaps every parse_error_slot entry for this
-            // actor via parse_error_slot::clear_all_for_actor — no manual
-            // clear needed.
+            // hew_actor_free reaps every actor-owned parse_errors slot via
+            // prepare_quiescent_actor_for_cleanup — no manual clear needed.
             // SAFETY: test_actor is stopped immediately above; free reclaims
             // it exactly once.
             assert_eq!(unsafe { actor::hew_actor_free(test_actor) }, 0);

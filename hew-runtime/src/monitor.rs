@@ -1317,6 +1317,15 @@ pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMess
             data_size,
         )
     };
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "HewDownMessage::reason_kind is a small enum discriminant (0..=4)"
+    )]
+    crate::tracing::record_substrate_event(
+        watcher_actor_id,
+        crate::tracing::SPAN_MONITOR_DOWN,
+        down_data.reason_kind as i32,
+    );
 
     #[cfg(test)]
     run_notify_monitors_hook();
@@ -1465,6 +1474,8 @@ unsafe fn register_local_monitor(
             None
         }
     });
+
+    crate::tracing::record_substrate_event(target_id, crate::tracing::SPAN_MONITOR_CREATED, 0);
 
     if let Some(reason) = terminal_reason {
         let down = HewDownMessage::local(ref_id, target_id, reason.end, reason.crash_kind);
@@ -2332,6 +2343,7 @@ mod tests {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         }
     }
 

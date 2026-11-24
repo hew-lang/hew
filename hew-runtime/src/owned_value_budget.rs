@@ -132,6 +132,11 @@ impl ValueOwner {
         let Some(identity) = self.0.incarnation.get().copied() else {
             return;
         };
+        crate::tracing::record_substrate_event(
+            identity.actor_id(),
+            crate::tracing::SPAN_MAX_HEAP_EXCEEDED,
+            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+        );
         let _ = crate::lifetime::live_actors::with_live_incarnation(identity, |pin| {
             // SAFETY: the exact-incarnation pin outlives the external trap request.
             unsafe {

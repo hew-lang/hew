@@ -1018,7 +1018,17 @@ pub unsafe extern "C" fn hew_checked_scope_cancel(scope: *mut HewTaskScope) {
     unsafe {
         let token = (*scope).cancel_token;
         let reason = crate::cancel_token::cancel_token_reason(token);
-        hew_cancel_token_cancel(token, if reason == 0 { 1 } else { reason });
+        let effective_reason = if reason == 0 { 1 } else { reason };
+        let actor_id = match (*scope).actor_turn.actor_id() {
+            0 => crate::tracing::current_actor_id_or_zero(),
+            id => id,
+        };
+        crate::tracing::record_substrate_event(
+            actor_id,
+            crate::tracing::SPAN_CANCELLATION_SCOPE_CANCELLED,
+            effective_reason,
+        );
+        hew_cancel_token_cancel(token, effective_reason);
     }
 }
 

@@ -450,6 +450,7 @@ mod tests {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         }
     }
 
@@ -593,54 +594,9 @@ mod tests {
         };
         assert!(!mb.is_null());
 
-        let actor = TrackedActor::install(HewActor {
-            sched_link_next: AtomicPtr::new(ptr::null_mut()),
-            id: actor_id,
-            state: ptr::null_mut(),
-            state_size: 0,
-            dispatch: None,
-            mailbox: mb.cast(),
-            actor_state: AtomicI32::new(HewActorState::Idle as i32),
-            budget: AtomicI32::new(HEW_MSG_BUDGET),
-            init_state: ptr::null_mut(),
-            init_state_size: 0,
-            coalesce_match_fn: None,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            terminate_called: AtomicBool::new(false),
-            terminate_finished: AtomicBool::new(false),
-            dispatch_active: AtomicBool::new(false),
-            error_code: AtomicI32::new(0),
-            supervisor: ptr::null_mut(),
-            supervisor_child_index: -1,
-            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-            idle_count: AtomicI32::new(0),
-            hibernation_threshold: AtomicI32::new(0),
-            hibernating: AtomicI32::new(0),
-            prof_messages_processed: AtomicU64::new(0),
-            prof_processing_time_ns: AtomicU64::new(0),
-            arena: ptr::null_mut(),
-            suspended_cont: AtomicPtr::new(ptr::null_mut()),
-            cont_tag: AtomicI32::new(0),
-            pending_wake: AtomicBool::new(false),
-            suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
-            suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
-            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: crate::platform::executor::RuntimeHandle::null(),
-            send_pin_count: std::sync::atomic::AtomicU32::new(0),
-            local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
-            spawn_serial: actor_id,
-            sys_dispatch: None,
-            state_drop_consumed: AtomicBool::new(false),
-            state_drop_borrowed: AtomicBool::new(false),
-            parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
-            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
-            #[cfg(not(target_arch = "wasm32"))]
-            pending_external_trap_code: AtomicI32::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_completion: None,
-        });
+        let mut raw_actor = stub_actor(actor_id, HewActorState::Idle);
+        raw_actor.mailbox = mb.cast();
+        let actor = TrackedActor::install(raw_actor);
 
         // Fill the mailbox to capacity (capacity = 1).
         let msg: i32 = 42;

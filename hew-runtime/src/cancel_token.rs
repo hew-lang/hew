@@ -170,6 +170,11 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     // Publish the winning reason before making cancellation observable. A
     // competing requester may publish the state, but cannot replace the reason.
     if state::request(&t.state, &t.reason, reason) {
+        crate::tracing::record_substrate_event(
+            crate::tracing::current_actor_id_or_zero(),
+            crate::tracing::SPAN_CANCELLATION_FIRED,
+            reason,
+        );
         let observers = {
             let mut registered = t.observers.lock_or_recover();
             std::mem::take(&mut *registered)
@@ -224,10 +229,18 @@ unsafe fn cancel_token_is_requested_raw(mut token: *mut HewCancellationToken) ->
 #[no_mangle]
 pub unsafe extern "C" fn hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> i32 {
     cabi_guard!(token.is_null(), 0);
-    i32::from(
+    let requested = i32::from(
         // SAFETY: caller guarantees `token` is valid.
         unsafe { cancel_token_is_requested_raw(token) },
-    )
+    );
+    if requested != 0 {
+        crate::tracing::record_substrate_event(
+            crate::tracing::current_actor_id_or_zero(),
+            crate::tracing::SPAN_CANCELLATION_COOPERATE_CHECKED,
+            requested,
+        );
+    }
+    requested
 }
 
 /// Read the reason of the nearest requested cancellation boundary.

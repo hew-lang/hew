@@ -31,13 +31,11 @@ use tungstenite::{Message, WebSocket};
 
 mod native_io;
 
-/// Test-only drop counter for the outer `HewWsConn` Box.
+/// Test-only drop counter for the outer `HewWsConn` `Box`.
 ///
-/// WHY: Validates that `hew_ws_close` reclaims the outer Box on every close
-///      path (attached and unattached). Only enabled in `#[cfg(test)]` so
-///      there is zero overhead in production builds.
-/// WHEN: Remove when the counter is no longer needed for leak detection.
-/// WHAT: A production alternative is an external allocator hook.
+/// Compiled only under `#[cfg(test)]` (zero production overhead) so unit tests
+/// can assert that `hew_ws_close` reclaims the outer handle on both attached
+/// and unattached close paths.
 #[cfg(test)]
 static OUTER_CONN_DROPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
@@ -58,27 +56,22 @@ struct HewWsConnInner {
     /// only; user sends go through `write_ws` when available.  In non-attached
     /// (recv) mode the single mutex covers both directions as before.
     ws: PlMutex<Option<HewWs>>,
-    /// Separate write-only WebSocket for plain-TCP connections.
+    /// Separate write-only WebSocket framer for plain-TCP connections.
     ///
-    /// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
-    ///      that holds the mutex for up to `READER_READ_TIMEOUT` (250 ms).
-    ///      `hew_ws_send_text`/`hew_ws_send_binary` acquire the same mutex, so
-    ///      each send used to stall on the reader framer in attached mode.
-    ///      Plain TCP sends now use a separate framer plus `write_operation_gate`
-    ///      so they avoid reader-framer mutex contention while still serializing
-    ///      complete tungstenite write operations. Fix #1324/#1632.
-    /// WHEN: This split is only possible for plain TCP; TLS connections still
-    ///       use the single `ws` mutex (the TLS record layer is not thread-safe
-    ///       across two independently-created contexts).
-    /// WHAT: A proper TLS split would require a mutex-protected TLS write half
-    ///       that the two WebSocket frames share — out of scope for this change.
+    /// `tungstenite::WebSocket` is single-owner and its blocking `read()` holds
+    /// `ws` for up to `READER_READ_TIMEOUT` (250 ms) per cycle in attached
+    /// mode. Plain-TCP connections clone the underlying socket into a second
+    /// framer coordinated by `write_operation_gate` so sends avoid stalling on
+    /// the reader while keeping complete WebSocket write operations serialized.
     ///
-    /// Both `ws` and `write_ws` use `parking_lot::Mutex` because
-    /// `hew_ws_recv_timeout` needs `try_lock_for(Duration)` to bound the wait
-    /// for the reader thread (which may hold the lock for up to
-    /// `READER_READ_TIMEOUT` (250 ms) per cycle). `parking_lot::Mutex` does
-    /// not poison, so the previous `lock_or_recover` recovery is unnecessary
-    /// for these locks and is replaced with `pl_lock`.
+    /// TLS connections leave `write_ws` as `None` and share `ws` across reads
+    /// and writes because `rustls::StreamOwned` owns stateful record-layer
+    /// framing that cannot be split across two independent `WebSocket`
+    /// instances.
+    ///
+    /// Both `ws` and `write_ws` use `parking_lot::Mutex` so
+    /// `hew_ws_recv_timeout` can bound lock waits with `try_lock_for(Duration)`
+    /// without lock-poison recovery.
     write_ws: Option<PlMutex<Option<HewWs>>>,
     /// Plain-TCP split-framer serialization gate.
     ///

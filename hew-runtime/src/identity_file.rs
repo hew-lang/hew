@@ -50,6 +50,8 @@ fn validate(file: &File) -> io::Result<()> {
 }
 
 #[cfg(windows)]
+pub(crate) use windows::{is_owned_by_current_user, CurrentUserSecurityDescriptor};
+#[cfg(windows)]
 use windows::{open, validate};
 
 #[cfg(not(any(unix, windows)))]

@@ -687,13 +687,23 @@ mod session_journal {
                 ));
             }
             path_wide.push(0);
-            // SAFETY: path_wide is NUL-terminated for this CreateFileW call.
+            let security = if create {
+                Some(crate::identity_file::CurrentUserSecurityDescriptor::new()?)
+            } else {
+                None
+            };
+            let attributes = security
+                .as_ref()
+                .map(crate::identity_file::CurrentUserSecurityDescriptor::as_security_attributes);
+            let attributes_ptr = attributes.as_ref().map_or(ptr::null(), std::ptr::from_ref);
+            // SAFETY: path_wide is NUL-terminated and any security descriptor
+            // remains live through this CreateFileW call.
             let handle = unsafe {
                 CreateFileW(
                     path_wide.as_ptr(),
                     FILE_GENERIC_READ | FILE_GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    ptr::null(),
+                    attributes_ptr,
                     if create { CREATE_NEW } else { OPEN_EXISTING },
                     FILE_ATTRIBUTE_NORMAL
                         | FILE_FLAG_OPEN_REPARSE_POINT
@@ -719,6 +729,12 @@ mod session_journal {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "node session journal must be a regular file, never a reparse point",
+                ));
+            }
+            if !crate::identity_file::is_owned_by_current_user(&file)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "node session journal must be a regular file owned by the current user",
                 ));
             }
             Ok(file)
@@ -861,9 +877,10 @@ mod session_journal {
             path: path.to_path_buf(),
             source,
         })?;
-        if file_length == 0 {
-            sync_journal_parent(path)?;
-        }
+        // Sync the parent directory unconditionally so a failed directory sync
+        // on initial creation cannot be skipped by a retry once the file is
+        // non-empty.
+        sync_journal_parent(path)?;
         Ok(incarnation)
     }
 
@@ -1095,6 +1112,25 @@ mod session_journal {
                 assert!(
                     NodeSessionLease::acquire(&fifo_key, identity(13)).is_err(),
                     "FIFO at journal path must be rejected"
+                );
+            }
+
+            #[cfg(windows)]
+            {
+                let key_path = temp.path().join("owner_only.key");
+                let lease = NodeSessionLease::acquire(&key_path, identity(10)).unwrap();
+                let journal = File::open(lease.journal_path()).unwrap();
+                assert!(
+                    crate::identity_file::is_owned_by_current_user(&journal).unwrap(),
+                    "newly created journal must be owned by the current user"
+                );
+                drop(journal);
+                drop(lease);
+
+                let nul_key = temp.path().join("bad\0name.key");
+                assert!(
+                    NodeSessionLease::acquire(&nul_key, identity(14)).is_err(),
+                    "NUL in journal path must be rejected"
                 );
             }
         }

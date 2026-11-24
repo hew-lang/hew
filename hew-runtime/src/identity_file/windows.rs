@@ -13,9 +13,10 @@ use windows_sys::Win32::Security::Authorization::{
     SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsWellKnownSid, TokenUser,
-    WinCreatorOwnerRightsSid, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsWellKnownSid,
+    TokenOwner, TokenUser, WinCreatorOwnerRightsSid, ACCESS_ALLOWED_ACE, ACL,
+    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
+    TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileType, MoveFileExW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
@@ -43,36 +44,47 @@ impl Drop for Token {
     }
 }
 
+fn open_current_token() -> io::Result<Token> {
+    let mut token = ptr::null_mut();
+    // SAFETY: writable output and a valid process pseudo-handle.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Token(token))
+}
+
+fn query_token_info(token: &Token, class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<usize>> {
+    let mut length = 0;
+    // SAFETY: null buffer requests its required size.
+    unsafe { GetTokenInformation(token.0, class, ptr::null_mut(), 0, &raw mut length) };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buffer = vec![0; (length as usize).div_ceil(size_of::<usize>())];
+    // SAFETY: the aligned buffer has at least the requested byte capacity.
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            class,
+            buffer.as_mut_ptr().cast(),
+            length,
+            &raw mut length,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(buffer)
+}
+
 struct User(Vec<usize>);
 impl User {
+    fn from_token(token: &Token) -> io::Result<Self> {
+        Ok(Self(query_token_info(token, TokenUser)?))
+    }
+
     fn current() -> io::Result<Self> {
-        let mut token = ptr::null_mut();
-        // SAFETY: writable output and a valid process pseudo-handle.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let token = Token(token);
-        let mut length = 0;
-        // SAFETY: null buffer requests its required size.
-        unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &raw mut length) };
-        if length == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut user = Self(vec![0; (length as usize).div_ceil(size_of::<usize>())]);
-        // SAFETY: the aligned buffer has at least the requested byte capacity.
-        if unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenUser,
-                user.0.as_mut_ptr().cast(),
-                length,
-                &raw mut length,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(user)
+        Self::from_token(&open_current_token()?)
     }
 
     fn sid(&self) -> *mut c_void {
@@ -119,14 +131,87 @@ impl User {
     }
 }
 
-pub(super) fn open(path: &Path, create: bool) -> io::Result<File> {
-    let user = User::current()?;
-    let descriptor = user.descriptor()?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap(),
-        lpSecurityDescriptor: descriptor.0,
-        bInheritHandle: 0,
+struct DefaultOwner(Vec<usize>);
+impl DefaultOwner {
+    fn from_token(token: &Token) -> io::Result<Self> {
+        Ok(Self(query_token_info(token, TokenOwner)?))
+    }
+
+    fn sid(&self) -> *mut c_void {
+        // SAFETY: GetTokenInformation initialized this aligned TOKEN_OWNER buffer.
+        unsafe { (*self.0.as_ptr().cast::<TOKEN_OWNER>()).Owner }
+    }
+}
+
+/// Owned current-user-only security descriptor (`O:{sid}D:P(A;;FA;;;{sid})`).
+pub(crate) struct CurrentUserSecurityDescriptor(Local);
+
+impl CurrentUserSecurityDescriptor {
+    pub(crate) fn new() -> io::Result<Self> {
+        User::current()?.descriptor().map(Self)
+    }
+
+    pub(crate) fn as_security_attributes(&self) -> SECURITY_ATTRIBUTES {
+        SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap(),
+            lpSecurityDescriptor: self.0 .0,
+            bInheritHandle: 0,
+        }
+    }
+}
+
+fn sid_matches_current_process(
+    owner: *mut c_void,
+    user: &User,
+    default_owner: &DefaultOwner,
+) -> bool {
+    if owner.is_null() {
+        return false;
+    }
+    // SAFETY: `owner` is non-null and both token SIDs remain alive in `user`
+    // and `default_owner` for these comparisons.
+    unsafe { EqualSid(owner, user.sid()) != 0 || EqualSid(owner, default_owner.sid()) != 0 }
+}
+
+/// Return whether `file`'s security owner SID belongs to the current process
+/// token (`TokenUser` or `TokenOwner`).
+///
+/// For non-elevated users `TokenOwner == TokenUser`. In elevated Administrator
+/// sessions Windows assigns `TokenOwner` (`BUILTIN\Administrators`) to files
+/// created with default security attributes, while explicit owner descriptors
+/// assign `TokenUser`; accepting both mirrors Unix `metadata.uid() == geteuid()`
+/// without trusting any other account.
+pub(crate) fn is_owned_by_current_user(file: &File) -> io::Result<bool> {
+    let token = open_current_token()?;
+    let user = User::from_token(&token)?;
+    let default_owner = DefaultOwner::from_token(&token)?;
+    let mut owner = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: the file handle is live and both output pointers are writable.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &raw mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
     };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(
+            i32::try_from(status).unwrap_or(i32::MAX),
+        ));
+    }
+    let _descriptor = Local(descriptor);
+    Ok(sid_matches_current_process(owner, &user, &default_owner))
+}
+
+pub(super) fn open(path: &Path, create: bool) -> io::Result<File> {
+    let descriptor = CurrentUserSecurityDescriptor::new()?;
+    let attributes = descriptor.as_security_attributes();
     let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     if path_wide.contains(&0) {
         return Err(invalid("identity path contains NUL"));
@@ -247,4 +332,62 @@ pub(super) fn publish(temporary: tempfile::NamedTempFile, path: &Path) -> io::Re
     }
     temporary_path.disable_cleanup(true);
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::Security::{CreateWellKnownSid, WinWorldSid, SECURITY_MAX_SID_SIZE};
+
+    #[test]
+    fn sid_owner_check_accepts_current_token_and_rejects_foreign_or_null_sids() {
+        let token = open_current_token().expect("open current process token");
+        let user = User::from_token(&token).expect("query TokenUser");
+        let default_owner = DefaultOwner::from_token(&token).expect("query TokenOwner");
+
+        assert!(sid_matches_current_process(
+            user.sid(),
+            &user,
+            &default_owner
+        ));
+        assert!(sid_matches_current_process(
+            default_owner.sid(),
+            &user,
+            &default_owner
+        ));
+        assert!(!sid_matches_current_process(
+            ptr::null_mut(),
+            &user,
+            &default_owner
+        ));
+
+        let mut world_sid = vec![0_u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut size = u32::try_from(world_sid.len()).expect("sid buffer size fits u32");
+        // SAFETY: `world_sid` has `size` writable bytes for CreateWellKnownSid.
+        let created = unsafe {
+            CreateWellKnownSid(
+                WinWorldSid,
+                ptr::null_mut(),
+                world_sid.as_mut_ptr().cast(),
+                &raw mut size,
+            )
+        };
+        assert_ne!(created, 0, "CreateWellKnownSid(WinWorldSid) should succeed");
+        assert!(
+            !sid_matches_current_process(world_sid.as_mut_ptr().cast(), &user, &default_owner),
+            "Everyone SID must not satisfy the current-user owner check"
+        );
+    }
+
+    #[test]
+    fn current_user_owned_file_passes_owner_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("owned.dat");
+        std::fs::write(&path, b"ok").expect("write test file");
+        let file = File::open(&path).expect("open test file");
+        assert!(
+            is_owned_by_current_user(&file).expect("query owner"),
+            "file created by current process must pass owner check"
+        );
+    }
 }

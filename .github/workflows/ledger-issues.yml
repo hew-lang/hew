@@ -20,6 +20,10 @@ permissions:
   contents: read
   issues: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ledger-issues:
     # Issue reports read trusted main code; issue text is never executed.

@@ -208,9 +208,15 @@ ratchet_platform() {
 # already parses, so read_expected_failures needs no format of its own.
 generate_expected_failures_file() {
     local suite="$1" out
+    local -a xtask_cmd
     out="$(mktemp)"
     RATCHET_GENERATED_FILES="${RATCHET_GENERATED_FILES:-}${out}"$'\n'
-    (cd "$REPO_ROOT" && cargo run --quiet -p xtask -- ratchet rows \
+    if [[ -n "${HEW_XTASK_BIN:-}" && -x "${HEW_XTASK_BIN}" ]]; then
+        xtask_cmd=("$HEW_XTASK_BIN")
+    else
+        xtask_cmd=(cargo run --quiet -p xtask --)
+    fi
+    (cd "$REPO_ROOT" && "${xtask_cmd[@]}" ratchet rows \
         --suite "$suite" --platform "$(ratchet_platform)") >"$out" || {
         echo "error: cargo xtask ratchet rows --suite $suite failed" >&2
         exit 1

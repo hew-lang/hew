@@ -3379,6 +3379,68 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move_release(
     unsafe { set_owned_release(v, index, data, false) }
 }
 
+/// Release an owned value that was never installed into a destination slot
+/// (for example on an out-of-bounds trap unwind).
+///
+/// Synchronous layouts drain through [`release_walker::hew_release_sync`].
+/// Resumable `release_start` destructors must never enter `hew_release_sync`
+/// (which aborts the process); during an actor dispatch unwind they enqueue onto
+/// the actor's native cleanup queue so scheduler teardown drives
+/// `release_start` asynchronously, with a local `ReleaseDriver` fallback when
+/// no open native cleanup inbox is attached.
+///
+/// # Safety
+///
+/// `ptr` must be non-null and hold an initialized value matching `layout` whose
+/// sole ownership was transferred to this cleanup path.
+unsafe fn release_abandoned_value(ptr: *const c_void, layout: HewValueLayout) {
+    // SAFETY: caller transfers sole ownership of the initialized value at `ptr`.
+    let cursor = unsafe { HewReleaseCursor::detached(ptr.cast_mut(), layout) };
+    if cursor.is_null() {
+        return;
+    }
+    if layout.release_start.is_none() {
+        // SAFETY: `release_start` is absent, so synchronous release is sound.
+        unsafe { crate::release_walker::hew_release_sync(cursor) };
+        return;
+    }
+    let owner = crate::owned_value_budget::current_owner();
+    let actor = crate::actor::hew_actor_self();
+    if !actor.is_null() {
+        // SAFETY: `hew_actor_self()` returns the live actor currently installed
+        // on this dispatch thread's execution context.
+        if let Some(completion) = unsafe { (*actor).native_completion.as_ref() } {
+            if completion.cleanup.register() {
+                let cleanup_owner = owner.or_else(|| completion.cleanup.value_owner.clone());
+                // SAFETY: `cursor` was detached above and is exclusively owned here.
+                unsafe { (*cursor).set_value_owner(cleanup_owner) };
+                completion.cleanup.enqueue(cursor);
+                return;
+            }
+        }
+    }
+    // Fallback for test or non-native unwind contexts without an open native
+    // cleanup inbox: drive the detached cursor via a local `ReleaseDriver` so
+    // `release_start` completes without aborting the process or leaking.
+    let (readiness, waker) = crate::wake::blocking::Readiness::new();
+    let mut driver = release_walker::ReleaseDriver::with_value_owner(cursor, owner);
+    // SAFETY: `waker.descriptor()` stays valid until `state` is freed below.
+    let state =
+        unsafe { crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut()) };
+    if state.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: `driver` and `state` remain exclusively owned until completion.
+    unsafe {
+        while !driver.poll(state) {
+            readiness.wait();
+        }
+        let fault = driver.take_fault();
+        crate::fault::hew_fault_drop(fault);
+        crate::coro_state::hew_coro_state_free(state);
+    }
+}
+
 struct OwnedScratchGuard {
     ptr: *mut u8,
     layout: HewValueLayout,
@@ -3391,9 +3453,7 @@ impl Drop for OwnedScratchGuard {
         if !self.ptr.is_null() {
             if self.live {
                 // SAFETY: `self.ptr` holds an initialized value matching `self.layout`.
-                let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast(), self.layout) };
-                // SAFETY: synchronous vec set owns this scratch value if unwinding before publish.
-                unsafe { release_walker::hew_release_sync(cursor) };
+                unsafe { release_abandoned_value(self.ptr.cast(), self.layout) };
             }
             // SAFETY: allocated with hew_alloc(scratch_size, layout.align) for this scratch slot.
             unsafe {
@@ -3417,9 +3477,7 @@ impl Drop for MovedValueGuard {
     fn drop(&mut self) {
         if self.armed && !self.ptr.is_null() {
             // SAFETY: `self.ptr` holds the caller-transferred owner that was not installed.
-            let cursor = unsafe { HewReleaseCursor::detached(self.ptr.cast_mut(), self.layout) };
-            // SAFETY: synchronous release drops the moved owner if OOB or CoW clone unwinds.
-            unsafe { crate::release_walker::hew_release_sync(cursor) };
+            unsafe { release_abandoned_value(self.ptr, self.layout) };
         }
     }
 }
@@ -6461,6 +6519,277 @@ mod vec_owned_tests {
                 hew_cabi::managed::UNDESCRIBED
             );
             hew_vec_free_owned(v_drop);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static RESUMABLE_TEST_POLLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resumable_test_layout() -> &'static HewValueLayout {
+        #[repr(C)]
+        struct CleanupFrame {
+            resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+            destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+            owner: OwnedElem,
+            state: *mut crate::coro_state::HewCoroState,
+        }
+
+        unsafe extern "C-unwind" fn resume_cleanup(frame: *mut c_void) {
+            // SAFETY: frame came from `hew_cont_frame_alloc` and owns `owner`.
+            unsafe {
+                let frame = &mut *frame.cast::<CleanupFrame>();
+                RESUMABLE_TEST_POLLS.fetch_add(1, Ordering::SeqCst);
+                drop_thunk((&raw mut frame.owner).cast());
+                crate::coro_state::hew_coro_state_finish(frame.state, 0);
+                frame.resume = None;
+            }
+        }
+
+        unsafe extern "C-unwind" fn destroy_cleanup(frame: *mut c_void) {
+            // SAFETY: frame completed `resume_cleanup` and is freed once.
+            unsafe {
+                assert!((*frame.cast::<CleanupFrame>()).resume.is_none());
+                crate::cont::hew_cont_frame_free(frame);
+            }
+        }
+
+        unsafe extern "C" fn start_cleanup(
+            slot: *mut c_void,
+            _fault: *mut *mut c_void,
+            state: *mut c_void,
+        ) -> *mut c_void {
+            // SAFETY: `slot` transfers one initialized `OwnedElem`; `state` stays live.
+            unsafe {
+                let owner = ptr::replace(
+                    slot.cast::<OwnedElem>(),
+                    OwnedElem {
+                        payload: ptr::null_mut(),
+                    },
+                );
+                let frame = crate::cont::hew_cont_frame_alloc(size_of::<CleanupFrame>() as u64)
+                    .cast::<CleanupFrame>();
+                frame.write(CleanupFrame {
+                    resume: Some(resume_cleanup),
+                    destroy: Some(destroy_cleanup),
+                    owner,
+                    state: state.cast(),
+                });
+                let waker = crate::coro_state::hew_coro_state_waker(state.cast());
+                ((*waker).wake)((*waker).context);
+                frame.cast()
+            }
+        }
+
+        static RESUMABLE_LAYOUT: HewValueLayout = HewValueLayout {
+            code_owner: ptr::null(),
+            managed: ptr::null(),
+            size: size_of::<OwnedElem>(),
+            align: align_of::<OwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: Some(start_cleanup),
+        };
+        &RESUMABLE_LAYOUT
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn moved_value_guard_drop_with_resumable_destructor_runs_fallback() {
+        let _guard = reset_counters();
+        RESUMABLE_TEST_POLLS.store(0, Ordering::SeqCst);
+
+        let layout = *resumable_test_layout();
+        let mut actor = crate::test_actor::stub_actor();
+        let mut ctx = crate::execution_context::HewExecutionContext {
+            actor: &raw mut actor,
+            actor_id: actor.id,
+            flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
+            ..crate::execution_context::HewExecutionContext::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut ctx);
+
+        // `replacement` is initialized for `layout`; simulated unwind drops
+        // `MovedValueGuard` cleanly via `release_abandoned_value`'s fallback driver.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let replacement = make_source(33);
+            let _guard = MovedValueGuard {
+                ptr: (&raw const replacement).cast(),
+                layout,
+                armed: true,
+            };
+            panic!("simulated unwind before installation");
+        }));
+        let _ = crate::execution_context::set_current_context(previous);
+
+        assert!(unwound.is_err());
+        assert_eq!(RESUMABLE_TEST_POLLS.load(Ordering::SeqCst), 1);
+        assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(live_allocations(), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "OOB trap inspects C symtab shims (hew_debug_has_debug_info), which Miri cannot call"
+    )]
+    #[test]
+    fn oob_set_move_release_with_resumable_destructor_unwinds_and_releases_fallback() {
+        let _guard = reset_counters();
+        RESUMABLE_TEST_POLLS.store(0, Ordering::SeqCst);
+
+        let layout = resumable_test_layout();
+        let mut actor = crate::test_actor::stub_actor();
+        let mut ctx = crate::execution_context::HewExecutionContext {
+            actor: &raw mut actor,
+            actor_id: actor.id,
+            flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
+            ..crate::execution_context::HewExecutionContext::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut ctx);
+
+        // SAFETY: `v` uses `resumable_test_layout()`; OOB unwinds `HewPanic` inside the
+        // installed execution context and drops `MovedValueGuard` via the fallback driver.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let v = hew_vec_new_with_elem_layout(layout);
+            let replacement = make_source(55);
+            let _ = hew_vec_set_owned_move_release(v, 0, (&raw const replacement).cast());
+        }));
+        let _ = crate::execution_context::set_current_context(previous);
+
+        let payload = unwound.expect_err("OOB set must unwind with HewPanic");
+        assert_eq!(
+            payload
+                .downcast_ref::<crate::actor::HewPanic>()
+                .map(|p| p.code),
+            Some(HEW_TRAP_INDEX_OUT_OF_BOUNDS)
+        );
+        assert_eq!(
+            actor.error_code.load(Ordering::Acquire),
+            HEW_TRAP_INDEX_OUT_OF_BOUNDS
+        );
+        assert_eq!(RESUMABLE_TEST_POLLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            DROP_CALLS.load(Ordering::SeqCst),
+            1,
+            "resumable destructor must release the moved replacement once on OOB unwind"
+        );
+        assert_eq!(
+            live_allocations(),
+            0,
+            "moved replacement payload must not leak on OOB unwind"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "OOB trap inspects C symtab shims (hew_debug_has_debug_info), which Miri cannot call"
+    )]
+    #[test]
+    fn supervised_actor_oob_set_move_release_with_resumable_destructor_cleans_up_and_restarts() {
+        struct VecDropGuard(*mut HewVec);
+        impl Drop for VecDropGuard {
+            fn drop(&mut self) {
+                // SAFETY: `self.0` was allocated as an empty owned vec in `child_dispatch`.
+                unsafe { hew_vec_free_owned(self.0) };
+            }
+        }
+
+        unsafe extern "C-unwind" fn oob_child_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _data_size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            // SAFETY: triggers an OOB `hew_vec_set_owned_move_release` with a resumable layout.
+            unsafe {
+                let v = hew_vec_new_with_elem_layout(resumable_test_layout());
+                let _vec_guard = VecDropGuard(v);
+                let replacement = make_source(77);
+                let _ = hew_vec_set_owned_move_release(v, 5, (&raw const replacement).cast());
+            }
+            ptr::null_mut()
+        }
+
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let _guard = reset_counters();
+        RESUMABLE_TEST_POLLS.store(0, Ordering::SeqCst);
+
+        // SAFETY: `hew_supervisor_new` initializes a valid supervisor handle.
+        let sup = unsafe {
+            crate::supervisor::hew_supervisor_new(crate::supervisor::STRATEGY_ONE_FOR_ONE, 3, 60)
+        };
+        assert!(!sup.is_null());
+
+        let spec = crate::supervisor::HewChildSpec {
+            name: ptr::null(),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            dispatch: Some(oob_child_dispatch),
+            restart_policy: crate::supervisor::RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: crate::internal::types::HewOverflowPolicy::DropNew as i32,
+            coalesce_match_fn: None,
+            coalesce_fallback: crate::internal::types::HewOverflowPolicy::DropNew as i32,
+            message_drop_fn: None,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
+            sys_dispatch: None,
+        };
+        // SAFETY: `sup` and `spec` remain valid until `hew_supervisor_stop`.
+        unsafe {
+            assert_eq!(
+                crate::supervisor::hew_supervisor_add_child_spec(sup, &raw const spec),
+                0
+            );
+            assert_eq!(crate::supervisor::hew_supervisor_start(sup), 0);
+            let child = crate::supervisor::hew_supervisor_get_child(sup, 0);
+            assert!(!child.is_null());
+            (*child).native_completion = Some(std::sync::Arc::new(
+                crate::actor_native::NativeActorCompletion::default(),
+            ));
+            let initial_child_id = (*child).id;
+            assert_eq!(
+                crate::mailbox::hew_mailbox_send((*child).mailbox.cast(), 1, ptr::null_mut(), 0),
+                0
+            );
+            (*child).actor_state.store(
+                crate::internal::types::HewActorState::Runnable as i32,
+                Ordering::Release,
+            );
+            // Activation 1: handler traps OOB, unwinds, enqueues `MovedValueGuard` cursor
+            // onto `native_completion.cleanup`, and begins terminal cleanup.
+            crate::scheduler::activate_actor_for_test(child);
+            assert_eq!(
+                (*child).error_code.load(Ordering::Acquire),
+                HEW_TRAP_INDEX_OUT_OF_BOUNDS
+            );
+            assert_eq!(live_allocations(), 1);
+            // Activation 2 & 3: `drive_actor_cleanup` starts the resumable release frame,
+            // resumes it after its self-wake, frees the replacement, and notifies `sup`.
+            crate::scheduler::activate_actor_for_test(child);
+            crate::scheduler::activate_actor_for_test(child);
+            assert_eq!(RESUMABLE_TEST_POLLS.load(Ordering::SeqCst), 1);
+            assert_eq!(DROP_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!(live_allocations(), 0);
+
+            // Drive supervisor's system message so it restarts the crashed child.
+            let sup_actor = (*sup).self_actor();
+            assert!(!sup_actor.is_null());
+            crate::scheduler::activate_actor_for_test(sup_actor);
+            let restarted = crate::supervisor::hew_supervisor_get_child(sup, 0);
+            assert!(!restarted.is_null());
+            assert_ne!((*restarted).id, initial_child_id);
+            crate::supervisor::hew_supervisor_stop(sup);
         }
     }
 }

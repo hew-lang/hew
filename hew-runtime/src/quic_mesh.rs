@@ -799,10 +799,17 @@ impl QuicMeshTransport {
     /// setup-error poison) from its frozen snapshot, before `listen` (D14).
     /// Idempotent replace; call once per node start.
     fn install_auth(&self, auth: InstalledMeshAuth) {
+        let has_identity = auth.identity.is_some();
         *self
             .installed_auth
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = auth;
+        if has_identity {
+            *self
+                .identity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
     }
 
     /// Ensure a TLS identity (cert + SPKI) is minted and cached for this
@@ -1366,13 +1373,17 @@ unsafe extern "C" fn quic_mesh_send(
     data: *const c_void,
     len: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || data.is_null() {
+    if impl_ptr.is_null() || data.is_null() || len > isize::MAX as usize {
         return -1;
     }
     // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
     let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
-    // SAFETY: data checked non-null above; caller guarantees len readable bytes.
-    let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
+    let slice = if len == 0 {
+        &[]
+    } else {
+        // SAFETY: data checked non-null and len <= isize::MAX above; caller guarantees len readable bytes.
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }
+    };
 
     let Some(mesh_conn) = qmt.get_conn(conn) else {
         return -1;
@@ -1406,13 +1417,17 @@ unsafe extern "C" fn quic_mesh_recv(
     buf: *mut c_void,
     buf_size: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || buf.is_null() {
+    if impl_ptr.is_null() || buf.is_null() || buf_size > isize::MAX as usize {
         return -1;
     }
     // SAFETY: impl_ptr checked non-null above; it is allocated by hew_transport_quic_mesh_new.
     let qmt = unsafe { &*impl_ptr.cast::<QuicMeshTransport>() };
-    // SAFETY: buf checked non-null above; caller guarantees buf_size writable bytes.
-    let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
+    let slice = if buf_size == 0 {
+        &mut []
+    } else {
+        // SAFETY: buf checked non-null and buf_size <= isize::MAX above; caller guarantees buf_size writable bytes.
+        unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) }
+    };
 
     let Some(mesh_conn) = qmt.get_conn(conn) else {
         return -1;
@@ -1518,9 +1533,9 @@ pub(crate) fn finish_departure(transport: &HewTransport, conn: c_int) {
 
 /// The `quic_mesh` arm of [`crate::transport::hew_transport_cancel_io`].
 pub(crate) fn cancel_io(transport: &HewTransport) {
-    if std::ptr::eq(transport.ops, &raw const QUIC_MESH_OPS) {
+    if std::ptr::eq(transport.ops, &raw const QUIC_MESH_OPS) && !transport.r#impl.is_null() {
         // SAFETY: the ops check guarantees the impl pointer is a
-        // QuicMeshTransport, and the caller checked it non-null.
+        // QuicMeshTransport, and the null check above guards the cast.
         unsafe { &*transport.r#impl.cast::<QuicMeshTransport>() }.cancel_all();
     }
 }
@@ -3313,6 +3328,165 @@ mod tests {
                 -1
             );
             let _ = Box::from_raw(null_impl);
+        }
+    }
+
+    #[test]
+    fn quic_mesh_oversized_and_zero_lengths_fail_closed() {
+        // SAFETY: tests null/zero/oversized C-ABI guards against a live quic_mesh transport.
+        unsafe {
+            let transport = hew_transport_quic_mesh_new();
+            assert!(!transport.is_null());
+            let impl_ptr = (*transport).r#impl;
+            let byte = 0_u8;
+            let mut slot = 0_u8;
+            assert_eq!(
+                quic_mesh_send(impl_ptr, -1, (&raw const byte).cast(), 0),
+                -1
+            );
+            assert_eq!(
+                quic_mesh_send(
+                    impl_ptr,
+                    -1,
+                    (&raw const byte).cast(),
+                    isize::MAX as usize + 1
+                ),
+                -1
+            );
+            assert_eq!(quic_mesh_recv(impl_ptr, -1, (&raw mut slot).cast(), 0), -1);
+            assert_eq!(
+                quic_mesh_recv(
+                    impl_ptr,
+                    -1,
+                    (&raw mut slot).cast(),
+                    isize::MAX as usize + 1
+                ),
+                -1
+            );
+            hew_transport_quic_mesh_free(transport);
+        }
+    }
+
+    #[test]
+    fn install_auth_with_stable_identity_replaces_cached_ephemeral_identity() {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let qmt = QuicMeshTransport::new(rt);
+        let (_, ephemeral_spki) = qmt.ensure_identity().expect("mint ephemeral identity");
+
+        // Installing peer allowlist without an identity preserves the cached identity.
+        qmt.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
+            identity: None,
+            allowed_peer_spkis: HashSet::new(),
+            setup_error: None,
+        });
+        let (_, preserved_spki) = qmt.ensure_identity().expect("keep cached identity");
+        assert_eq!(preserved_spki, ephemeral_spki);
+
+        // Installing a stable persisted identity must supersede the cached ephemeral one.
+        let (stable_tls, stable_spki) =
+            MeshTls::self_signed(vec!["stable-node".into()]).expect("mint stable identity");
+        assert_ne!(stable_spki, ephemeral_spki);
+        qmt.install_auth(InstalledMeshAuth {
+            cluster_admission: true,
+            identity: Some((stable_tls, stable_spki.clone())),
+            allowed_peer_spkis: HashSet::new(),
+            setup_error: None,
+        });
+        let (_, adopted_spki) = qmt.ensure_identity().expect("adopt installed identity");
+        assert_eq!(adopted_spki, stable_spki);
+    }
+
+    #[test]
+    fn mesh_identity_load_or_create_hardening_races_and_rejects_unsafe_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mesh.key");
+
+        // Concurrent creators must converge on the exact same validated identity.
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    mesh_identity_load_or_create(&path).expect("create or adopt mesh identity")
+                })
+            })
+            .collect();
+        let identities: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let first_spki = identities[0].spki().to_vec();
+        assert!(
+            identities.iter().all(|id| id.spki() == first_spki),
+            "all racing creators must adopt the same winning SPKI"
+        );
+        let original = Zeroizing::new(std::fs::read(&path).unwrap());
+
+        // Debug redaction: neither field name nor raw PKCS#8 key bytes may appear.
+        let (tls, _) = mesh_tls_from_material(&identities[0]);
+        let debug = format!("{tls:?}");
+        assert!(!debug.contains("private_key_pkcs8"));
+        let key_sample = format!("{:?}", &tls.private_key_pkcs8[..16]);
+        assert!(
+            !debug.contains(&key_sample),
+            "MeshTls Debug must not expose private key bytes"
+        );
+
+        // Reject directory paths without clobbering anything.
+        assert!(mesh_identity_load_or_create(dir.path()).is_err());
+
+        // Corrupt existing file must fail closed and never be silently rotated.
+        let mut corrupt = original.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xFF;
+        std::fs::write(&path, &corrupt).unwrap();
+        assert!(mesh_identity_load_or_create(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), *corrupt);
+        std::fs::write(&path, &original).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            assert!(
+                mesh_identity_load_or_create(&path).is_err(),
+                "group-readable mesh keyfile must be rejected"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), *original);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            let link = dir.path().join("linked.key");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(
+                mesh_identity_load_or_create(&link).is_err(),
+                "symlinked mesh keyfile must be rejected"
+            );
+
+            let missing = dir.path().join("missing.key");
+            let dangling = dir.path().join("dangling.key");
+            std::os::unix::fs::symlink(&missing, &dangling).unwrap();
+            assert!(
+                mesh_identity_load_or_create(&dangling).is_err(),
+                "dangling symlink must be rejected"
+            );
+            assert!(
+                !missing.exists(),
+                "dangling symlink rejection must not create the target"
+            );
+
+            let fifo = dir.path().join("fifo.key");
+            let fifo_name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: NUL-terminated path and valid mode bits.
+            assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+            assert!(
+                mesh_identity_load_or_create(&fifo).is_err(),
+                "FIFO must be rejected as a mesh keyfile"
+            );
         }
     }
 }

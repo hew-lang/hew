@@ -417,7 +417,9 @@ impl std::error::Error for InvalidLocation {}
 #[cfg(not(target_arch = "wasm32"))]
 mod session_journal {
     use std::fmt;
-    use std::fs::{File, OpenOptions, TryLockError};
+    #[cfg(any(not(windows), test))]
+    use std::fs::OpenOptions;
+    use std::fs::{File, TryLockError};
     use std::io::{self, Read, Seek, SeekFrom, Write};
     use std::path::{Path, PathBuf};
 
@@ -450,17 +452,11 @@ mod session_journal {
         /// identity mismatch, or counter exhaustion.
         pub fn acquire(identity_path: &Path, node_id: NodeId) -> Result<Self, SessionJournalError> {
             let journal_path = journal_path(identity_path);
-            let file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false)
-                .open(&journal_path)
-                .map_err(|source| SessionJournalError::Io {
-                    operation: "open",
-                    path: journal_path.clone(),
-                    source,
-                })?;
+            let file = open_journal(&journal_path).map_err(|source| SessionJournalError::Io {
+                operation: "open",
+                path: journal_path.clone(),
+                source,
+            })?;
             let mut file_lock = SessionFileLock::try_acquire(file, &journal_path)?;
             let incarnation = advance_journal(file_lock.file_mut(), &journal_path, node_id)?;
             Ok(Self {
@@ -628,6 +624,134 @@ mod session_journal {
         }
     }
 
+    #[cfg(unix)]
+    fn open_journal(path: &Path) -> io::Result<File> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+        fn open_one(path: &Path, create: bool) -> io::Result<File> {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(create)
+                .mode(0o600)
+                // O_NOFOLLOW rejects symlinks; O_NONBLOCK prevents a hostile FIFO
+                // from blocking before metadata validation.
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+                .open(path)?;
+            if create {
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            let metadata = file.metadata()?;
+            // SAFETY: geteuid has no preconditions.
+            let current_user = unsafe { libc::geteuid() };
+            if !metadata.is_file() || metadata.uid() != current_user {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "node session journal must be a regular file owned by the current user",
+                ));
+            }
+            Ok(file)
+        }
+
+        match open_one(path, false) {
+            Ok(file) => Ok(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => match open_one(path, true) {
+                Ok(file) => Ok(file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => open_one(path, false),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(windows)]
+    fn open_journal(path: &Path) -> io::Result<File> {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::fs::MetadataExt;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use std::ptr;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, GetFileType, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
+        };
+
+        fn open_one(path: &Path, create: bool) -> io::Result<File> {
+            let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+            if path_wide.contains(&0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "node session journal path contains NUL",
+                ));
+            }
+            path_wide.push(0);
+            // SAFETY: path_wide is NUL-terminated for this CreateFileW call.
+            let handle = unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    if create { CREATE_NEW } else { OPEN_EXISTING },
+                    FILE_ATTRIBUTE_NORMAL
+                        | FILE_FLAG_OPEN_REPARSE_POINT
+                        | FILE_FLAG_BACKUP_SEMANTICS,
+                    ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: this newly opened handle is uniquely owned by `File`.
+            let file = unsafe { File::from_raw_handle(handle) };
+            // SAFETY: `file` owns this live handle.
+            if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "node session journal must be a disk file",
+                ));
+            }
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "node session journal must be a regular file, never a reparse point",
+                ));
+            }
+            Ok(file)
+        }
+
+        match open_one(path, false) {
+            Ok(file) => Ok(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => match open_one(path, true) {
+                Ok(file) => Ok(file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => open_one(path, false),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn open_journal(path: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "node session journal must be a regular file",
+            ));
+        }
+        Ok(file)
+    }
+
     /// Return the journal path paired with an identity/key path.
     #[must_use]
     pub fn journal_path(identity_path: &Path) -> PathBuf {
@@ -737,7 +861,34 @@ mod session_journal {
             path: path.to_path_buf(),
             source,
         })?;
+        if file_length == 0 {
+            sync_journal_parent(path)?;
+        }
         Ok(incarnation)
+    }
+
+    #[cfg(unix)]
+    fn sync_journal_parent(path: &Path) -> Result<(), SessionJournalError> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|source| SessionJournalError::Io {
+                operation: "sync parent",
+                path: parent.to_path_buf(),
+                source,
+            })
+    }
+
+    #[cfg(not(unix))]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "Unix syncs the parent directory; non-Unix shares the fallible signature"
+    )]
+    fn sync_journal_parent(_path: &Path) -> Result<(), SessionJournalError> {
+        Ok(())
     }
 
     fn encode_record(record: JournalRecord) -> [u8; RECORD_SIZE] {
@@ -884,6 +1035,68 @@ mod session_journal {
 
             let error = NodeSessionLease::acquire(&key_path, identity(8)).unwrap_err();
             assert!(matches!(error, SessionJournalError::InvalidRecords(_)));
+        }
+
+        #[test]
+        fn journal_rejects_directories_and_unsafe_paths() {
+            let temp = tempdir().unwrap();
+            let dir_key = temp.path().join("dir.key");
+            fs::create_dir(journal_path(&dir_key)).unwrap();
+            assert!(
+                NodeSessionLease::acquire(&dir_key, identity(9)).is_err(),
+                "directory at journal path must be rejected"
+            );
+
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::fs::PermissionsExt;
+
+                let key_path = temp.path().join("owner_only.key");
+                let lease = NodeSessionLease::acquire(&key_path, identity(10)).unwrap();
+                let mode = fs::metadata(lease.journal_path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o600, "newly created journal must be owner-only");
+                drop(lease);
+
+                // Live symlink to an existing file must not be followed or modified.
+                let victim = temp.path().join("victim.txt");
+                fs::write(&victim, b"do not clobber").unwrap();
+                let link_key = temp.path().join("symlink.key");
+                std::os::unix::fs::symlink(&victim, journal_path(&link_key)).unwrap();
+                assert!(
+                    NodeSessionLease::acquire(&link_key, identity(11)).is_err(),
+                    "symlink at journal path must be rejected"
+                );
+                assert_eq!(fs::read(&victim).unwrap(), b"do not clobber");
+
+                // Dangling symlink must not create its target.
+                let missing_target = temp.path().join("never_created.txt");
+                let dangling_key = temp.path().join("dangling.key");
+                std::os::unix::fs::symlink(&missing_target, journal_path(&dangling_key)).unwrap();
+                assert!(
+                    NodeSessionLease::acquire(&dangling_key, identity(12)).is_err(),
+                    "dangling symlink at journal path must be rejected"
+                );
+                assert!(
+                    !missing_target.exists(),
+                    "dangling symlink rejection must not create target file"
+                );
+
+                // Named pipe (FIFO) must be rejected without blocking.
+                let fifo_key = temp.path().join("fifo.key");
+                let fifo_path = journal_path(&fifo_key);
+                let c_fifo = CString::new(fifo_path.as_os_str().as_encoded_bytes()).unwrap();
+                // SAFETY: NUL-terminated path and valid mode bits.
+                assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
+                assert!(
+                    NodeSessionLease::acquire(&fifo_key, identity(13)).is_err(),
+                    "FIFO at journal path must be rejected"
+                );
+            }
         }
     }
 }

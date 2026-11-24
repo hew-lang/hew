@@ -3414,6 +3414,13 @@ params = []
 release-symbol = ""
 discharge-depth = "none"
 
+[[ownership.contracts]]
+symbol = "hew_errno_kind"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
 # streams and sinks — hew-runtime/src/stream.rs. hew_stream_channel and
 # hew_tcp_stream_from_conn hand back a Box'd HewStreamPair whose free also
 # drops unextracted handles (deep). hew_stream_pair_sink/_stream (and _bytes

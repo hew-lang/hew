@@ -1477,3 +1477,30 @@ test("std.net.url parser, getters, resolve, and close run via Wasm bridge", asyn
     "https\nexample.com\n8443\n/v1/items\npage=2\ntop\nhttps://example.com:8443/v1/items?page=2#top\nhttps://example.com:8443/next?ok=1\ninvalid rejected\n",
   );
 });
+
+test("std.fs and std.net raw errno helpers classify errors inside confined actors", async () => {
+  const source = `
+    import std.fs;
+    import std.net;
+
+    #[confined]
+    fn classify() -> string {
+      let a = to_string(fs.io_error_from_errno(2));
+      let b = to_string(fs.io_error_from_errno(183));
+      let c = to_string(fs.io_error_from_kind(7, 89));
+      let d = to_string(net.net_error_from_errno(111));
+      let e = to_string(net.net_error_from_errno(10048));
+      f"{a} {b} {c} {d} {e}"
+    }
+
+    fn main() {
+      println(classify());
+    }
+  `;
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+  assert.equal(
+    result.stdout,
+    "NotFound(2) AlreadyExists(183) Cancelled(89) ConnectionRefused(111) AddressInUse(10048)\n",
+  );
+});

@@ -199,73 +199,74 @@ pub const fn builtin_named_types() -> &'static [BuiltinNamedTypeInfo] {
 
 #[must_use]
 pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
-    match crate::lookup_builtin_type(name) {
-        Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
-        Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(
-            BuiltinType::CancellationToken
-            | BuiltinType::Option
-            | BuiltinType::Result
-            | BuiltinType::Vec
-            | BuiltinType::HashMap
-            | BuiltinType::HashSet
-            | BuiltinType::VecIter
-            | BuiltinType::HashMapIter
-            | BuiltinType::Task
-            | BuiltinType::ActorCall
-            | BuiltinType::SupervisorPool
-            | BuiltinType::Generator
-            | BuiltinType::Range
-            | BuiltinType::Rc
-            | BuiltinType::Weak
-            | BuiltinType::NodeId
-            | BuiltinType::Location
-            | BuiltinType::HewActor
-            | BuiltinType::BoxedActor
-            | BuiltinType::ActorState
-            | BuiltinType::MachineState
-            | BuiltinType::ActorHandle
-            | BuiltinType::ActorFn
-            | BuiltinType::CrashInfo
-            | BuiltinType::CrashAction
-            | BuiltinType::CrashNotification
-            | BuiltinType::CrashKind
-            | BuiltinType::MonitorId
-            | BuiltinType::DownTarget
-            | BuiltinType::DownReason
-            | BuiltinType::DownNotification
-            | BuiltinType::SendError
-            | BuiltinType::NodeError
-            | BuiltinType::LookupError
-            | BuiltinType::LinkError
-            | BuiltinType::MonitorRef
-            | BuiltinType::Iterator
-            | BuiltinType::Unit
-            | BuiltinType::Duration
-            | BuiltinType::Instant
-            | BuiltinType::Timestamp
-            | BuiltinType::Trap
-            | BuiltinType::JsonValue
-            | BuiltinType::YamlValue
-            | BuiltinType::TomlValue
-            | BuiltinType::I8
-            | BuiltinType::I16
-            | BuiltinType::I32
-            | BuiltinType::I64
-            | BuiltinType::U8
-            | BuiltinType::U16
-            | BuiltinType::U32
-            | BuiltinType::U64
-            | BuiltinType::Isize
-            | BuiltinType::Usize
-            | BuiltinType::F32
-            | BuiltinType::F64
-            | BuiltinType::Bool
-            | BuiltinType::Char
-            | BuiltinType::String
-            | BuiltinType::Bytes,
-        )
-        | None => None,
+    builtin_named_kind(crate::lookup_builtin_type(name)?)
+}
+
+pub(crate) fn builtin_named_kind(kind: BuiltinType) -> Option<BuiltinNamedType> {
+    match kind {
+        BuiltinType::Stream => Some(BuiltinNamedType::Stream),
+        BuiltinType::Sink => Some(BuiltinNamedType::Sink),
+        BuiltinType::CancellationToken
+        | BuiltinType::Option
+        | BuiltinType::Result
+        | BuiltinType::Vec
+        | BuiltinType::HashMap
+        | BuiltinType::HashSet
+        | BuiltinType::VecIter
+        | BuiltinType::HashMapIter
+        | BuiltinType::Task
+        | BuiltinType::ActorCall
+        | BuiltinType::SupervisorPool
+        | BuiltinType::Generator
+        | BuiltinType::Range
+        | BuiltinType::Rc
+        | BuiltinType::Weak
+        | BuiltinType::NodeId
+        | BuiltinType::Location
+        | BuiltinType::HewActor
+        | BuiltinType::BoxedActor
+        | BuiltinType::ActorState
+        | BuiltinType::MachineState
+        | BuiltinType::ActorHandle
+        | BuiltinType::ActorFn
+        | BuiltinType::CrashInfo
+        | BuiltinType::CrashAction
+        | BuiltinType::CrashNotification
+        | BuiltinType::CrashKind
+        | BuiltinType::MonitorId
+        | BuiltinType::DownTarget
+        | BuiltinType::DownReason
+        | BuiltinType::DownNotification
+        | BuiltinType::SendError
+        | BuiltinType::NodeError
+        | BuiltinType::LookupError
+        | BuiltinType::LinkError
+        | BuiltinType::MonitorRef
+        | BuiltinType::Iterator
+        | BuiltinType::Unit
+        | BuiltinType::Duration
+        | BuiltinType::Instant
+        | BuiltinType::Timestamp
+        | BuiltinType::Trap
+        | BuiltinType::JsonValue
+        | BuiltinType::YamlValue
+        | BuiltinType::TomlValue
+        | BuiltinType::I8
+        | BuiltinType::I16
+        | BuiltinType::I32
+        | BuiltinType::I64
+        | BuiltinType::U8
+        | BuiltinType::U16
+        | BuiltinType::U32
+        | BuiltinType::U64
+        | BuiltinType::Isize
+        | BuiltinType::Usize
+        | BuiltinType::F32
+        | BuiltinType::F64
+        | BuiltinType::Bool
+        | BuiltinType::Char
+        | BuiltinType::String
+        | BuiltinType::Bytes => None,
     }
 }
 

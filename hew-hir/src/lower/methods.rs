@@ -319,8 +319,8 @@ impl LowerCtx<'_> {
 
         let key = self.mk_key(&span);
         let enum_ctor_type_name = match self.method_call_receiver_kinds.get(&key) {
-            Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) => {
-                Some(type_name.clone())
+            Some(MethodCallReceiverKind::EnumConstructorPath { head }) => {
+                Some(head.registry_key().to_string())
             }
             // Builtin generic enums (`Option`, `Result`) carry no `type_defs` entry, so
             // recover their canonical variant owner from the checked result type when

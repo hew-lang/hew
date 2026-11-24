@@ -1970,7 +1970,6 @@ impl Checker {
                 Ty::U8
             }
             Ty::Named { head, args } => {
-                let name = head.registry_key();
                 if let Some(index_trait) = self
                     .lang_trait(crate::LangItem::Index)
                     .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
@@ -1989,7 +1988,7 @@ impl Checker {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 // Bracket indexing via a named type's `.get()` method is no longer
                 // supported. Use the explicit method call instead.
-                if self.lookup_named_method_sig(name, args, "get").is_some() {
+                if self.lookup_named_method_sig(*head, args, "get").is_some() {
                     self.report_error_with_suggestions(
                         TypeErrorKind::InvalidOperation,
                         span,

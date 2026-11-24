@@ -4017,26 +4017,6 @@ impl Checker {
         self.select_wire_actor_codecs();
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 
-        // Compute the set of monomorphic builtin enum names that landed in
-        // `type_defs` via internal pre-registration (e.g.
-        // `register_builtins_hew_impls`) without a matching user-source
-        // TypeDecl. Sandbox-WASM emit consults this to suppress its eager
-        // `type_defs` sweep for builtin shapes the user did not author.
-        let internal_builtin_enum_names: HashSet<String> = {
-            use crate::builtin_enums::monomorphic_builtin_enums;
-            monomorphic_builtin_enums()
-                .iter()
-                .filter(|spec| {
-                    spec.suppress_from_sandbox_emit
-                        && TypeDefView::new(&self.defs, &resolved_type_defs)
-                            .at_path(spec.name)
-                            .is_some()
-                        && !self.source_type_defs.contains(spec.name)
-                })
-                .map(|spec| spec.name.to_string())
-                .collect()
-        };
-
         // W4.047 P1.1 — build the typed `resolved_expr_types` handoff map.
         //
         // Run the single authorised `Ty -> ResolvedTy` conversion over every
@@ -4303,7 +4283,6 @@ impl Checker {
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
             resolved_type_aliases,
-            internal_builtin_enum_names,
             defs,
             resolutions,
             shorthand_field_labels,
@@ -4384,6 +4363,7 @@ impl Checker {
             // Publish after the remaining pattern/signature finalization has
             // finished crediting lexical and implementation-provider routes.
             used_imports: self.scopes.take_used_imports(),
+            scopes: std::sync::Arc::new(self.scopes.clone()),
         };
 
         // Detect actor reference cycles and emit warnings.

@@ -499,8 +499,8 @@ fn use_widget(w: Widget) -> i64 {
             .values()
             .any(|kind| matches!(
                 kind,
-                hew_types::MethodCallReceiverKind::NamedTypeInstance { type_name }
-                    if type_name == "Widget"
+                hew_types::MethodCallReceiverKind::NamedTypeInstance { head }
+                    if Some(*head) == output.root_type_head("Widget")
             )),
         "expected named-type method call receiver metadata, got: {:?}",
         output.method_call_receiver_kinds

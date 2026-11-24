@@ -1774,7 +1774,14 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
     );
 
     let sig = checker
-        .lookup_named_method_sig("Speaker", &[], "hello")
+        .lookup_named_method_sig(
+            checker
+                .named_ty_for_key("Speaker", Vec::new())
+                .head()
+                .unwrap(),
+            &[],
+            "hello",
+        )
         .expect("type_defs method should resolve");
     assert_eq!(sig.return_type, Ty::String);
 }
@@ -2041,7 +2048,14 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     );
 
     let sig = checker
-        .lookup_named_method_sig("Wrapper", &[Ty::String], "value")
+        .lookup_named_method_sig(
+            checker
+                .named_ty_for_key("Wrapper", Vec::new())
+                .head()
+                .unwrap(),
+            &[Ty::String],
+            "value",
+        )
         .expect("fn_sigs fallback should resolve");
     assert_eq!(
         sig.params,

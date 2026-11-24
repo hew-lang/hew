@@ -49,7 +49,7 @@ impl Checker {
 
     pub(in crate::check) fn lookup_named_method_sig(
         &self,
-        type_name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
@@ -57,14 +57,14 @@ impl Checker {
             &self.defs,
             &self.type_defs,
             self.sigs(),
-            type_name,
+            head,
             type_args,
             method,
         )
         .or_else(|| {
             let target = self
                 .type_aliases
-                .get(&self.lookup_declaration(type_name)?)?
+                .get(&head.nominal()?.declaration())?
                 .instantiate(type_args)?;
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
@@ -76,7 +76,7 @@ impl Checker {
         })
         .or_else(|| {
             self.module_registry
-                .resolve_handle_method_sig(type_name, method)
+                .resolve_handle_method_sig(head.registry_key(), method)
                 .map(|(_c_symbol, params, return_type, canonical_owner)| {
                     // The registry's own projection sees only the loaded
                     // module and its imports, so a nominal that module
@@ -248,7 +248,7 @@ impl Checker {
                 if matches!(receiver_ty, Ty::Named { .. }) =>
             {
                 (
-                    self.lookup_named_method_sig(&canonical_name, type_args, method)?,
+                    self.lookup_named_method_sig(receiver_ty.head()?, type_args, method)?,
                     None,
                 )
             }
@@ -415,7 +415,6 @@ impl Checker {
     ) -> Ty {
         if let Some(ty) = self.try_resolve_source_method(receiver_ty, method_name, args, span) {
             if let Ty::Named { head, .. } = receiver_ty {
-                let name = head.registry_key();
                 // If the receiver type is a registered actor declaration AND
                 // the resolved method is a receive handler (tracked in
                 // `actor_receive_methods`), this dispatch crosses the
@@ -434,18 +433,14 @@ impl Checker {
                 if let Some(handler) = actor_handler {
                     self.record_method_call_receiver_kind(
                         span,
-                        MethodCallReceiverKind::ActorInstance {
-                            actor_name: name.to_string(),
-                        },
+                        MethodCallReceiverKind::ActorInstance { head: *head },
                     );
                     self.enforce_actor_method_send_args(args);
                     return self.record_actor_method_dispatch(span, handler, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
                     span,
-                    MethodCallReceiverKind::NamedTypeInstance {
-                        type_name: name.to_string(),
-                    },
+                    MethodCallReceiverKind::NamedTypeInstance { head: *head },
                 );
             }
             self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, args, span);

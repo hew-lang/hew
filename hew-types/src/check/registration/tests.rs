@@ -78,7 +78,7 @@ mod canonical_type_publication_tests {
 
         let methods = &checker
             .type_def_view()
-            .at_path("greeting.Dog")
+            .of(crate::TypeHead::of_declaration(&checker.defs, __id))
             .unwrap()
             .methods;
         assert!(methods.contains_key("greet"));

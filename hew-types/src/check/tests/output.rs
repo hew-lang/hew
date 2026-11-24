@@ -1334,10 +1334,11 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
         end: 20,
         module_idx: 0,
     };
+    let foo = checker.test_declaration("Foo");
     checker.method_call_receiver_kinds.insert(
         span.clone(),
         MethodCallReceiverKind::NamedTypeInstance {
-            type_name: "Foo".to_string(),
+            head: crate::TypeHead::of_declaration(&checker.defs, foo),
         },
     );
     checker
@@ -1350,7 +1351,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     // type_defs must include "Foo" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry after validate_method_call_output_contract passes it.
     let mut type_defs = HashMap::from([(
-        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Foo")),
+        foo,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Foo".to_string(),
@@ -1394,6 +1395,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
 fn checker_output_contract_prunes_orphaned_method_call_metadata() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Insert metadata keyed to spans that have NO corresponding expr_types entry.
+    let bar = checker.test_declaration("Bar");
     checker.method_call_receiver_kinds.insert(
         SpanKey {
             start: 10,
@@ -1401,7 +1403,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             module_idx: 0,
         },
         MethodCallReceiverKind::NamedTypeInstance {
-            type_name: "Bar".to_string(),
+            head: crate::TypeHead::of_declaration(&checker.defs, bar),
         },
     );
     checker.method_call_rewrites.insert(
@@ -1470,20 +1472,22 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
 
     // The leaked span has an unresolved inference var — validate_expr_output_contract
     // will strip it from expr_types, so the method-call metadata must follow.
+    let bad = checker.test_declaration("Bad");
     checker.method_call_receiver_kinds.insert(
         leaked_span.clone(),
         MethodCallReceiverKind::NamedTypeInstance {
-            type_name: "Bad".to_string(),
+            head: crate::TypeHead::of_declaration(&checker.defs, bad),
         },
     );
     checker
         .method_call_rewrites
         .insert(leaked_span.clone(), MethodCallRewrite::CopyCloneNoop);
     // The good span carries a fully-resolved type and its metadata should survive.
+    let good = checker.test_declaration("Good");
     checker.method_call_receiver_kinds.insert(
         good_span.clone(),
         MethodCallReceiverKind::NamedTypeInstance {
-            type_name: "Good".to_string(),
+            head: crate::TypeHead::of_declaration(&checker.defs, good),
         },
     );
     checker
@@ -1499,7 +1503,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     // type_defs must include "Good" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry for the good span after the span-based pruner passes it.
     let mut type_defs = HashMap::from([(
-        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Good")),
+        good,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Good".to_string(),

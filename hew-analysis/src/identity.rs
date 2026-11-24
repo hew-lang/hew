@@ -49,6 +49,13 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
             (key, ty)
         })
         .collect();
+    output.resolved_annotation_types = std::mem::take(&mut output.resolved_annotation_types)
+        .into_iter()
+        .map(|(mut key, ty)| {
+            swap(&mut key);
+            (key, ty)
+        })
+        .collect();
     output.input_references = std::mem::take(&mut output.input_references)
         .into_iter()
         .map(|(mut key, input)| {

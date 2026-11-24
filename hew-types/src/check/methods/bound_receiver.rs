@@ -47,9 +47,7 @@ impl Checker {
         );
         self.record_method_call_receiver_kind(
             span,
-            MethodCallReceiverKind::NamedTypeInstance {
-                type_name: head.registry_key().to_string(),
-            },
+            MethodCallReceiverKind::NamedTypeInstance { head: *head },
         );
         self.record_selected_method_rewrite(receiver, "at", declaration, &signature, span);
         Some(self.project_assoc_types(&applied.return_type))
@@ -115,7 +113,7 @@ impl Checker {
             self.record_method_call_receiver_kind(
                 span,
                 MethodCallReceiverKind::NamedTypeInstance {
-                    type_name: name.to_string(),
+                    head: crate::TypeHead::Param(*parameter),
                 },
             );
             if trait_sig.consumes_receiver {

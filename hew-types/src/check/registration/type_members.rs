@@ -1271,7 +1271,8 @@ impl Checker {
             return;
         };
         let declaration_name = self.defs.path(declaration).to_string();
-        let head = self.head_of_declaration(crate::NominalId::of_declaration(declaration));
+        let nominal = crate::NominalId::of_declaration(declaration);
+        let head = self.head_of_declaration(nominal);
         let return_type = Ty::named_head(head, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
@@ -1342,38 +1343,19 @@ impl Checker {
             tuple_field_types
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
-        self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            type_param_names.clone(),
-        );
+        self.registry.register_type(head, field_types);
+        self.registry
+            .register_type_params(head, type_param_names.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
-        self.registry.register_record_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-        );
+        self.registry.register_record_type(head);
 
         self.register_record_serial_layout(
             &declaration_name,
             matches!(rd.kind, RecordKind::Tuple(_)),
             &type_def,
         );
-        self.file_type_def(crate::NominalId::of_declaration(declaration), type_def);
+        self.file_type_def(nominal, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }

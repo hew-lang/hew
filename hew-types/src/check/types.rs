@@ -681,29 +681,13 @@ pub struct TypeCheckOutput {
     pub type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Fully expanded alias targets keyed by their source declaration.
     pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
-    /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
-    /// pre-registered into `type_defs` from `std/builtins.hew` for use in
-    /// pattern-matching dispatch (`match Err(LookupError::NotFound) { … }`)
-    /// but whose declarations are NOT part of the user program's authored
-    /// source.
-    ///
-    /// Consumers that emit per-program "everything in `type_defs`" outputs
-    /// (e.g. the sandbox-WASM bytecode descriptor table) must filter out
-    /// these names UNLESS a user `TypeDecl` with the same name was also
-    /// registered (in which case the user declaration is the source of
-    /// truth and the entry is no longer internal-only).
-    ///
-    /// Populated from
-    /// [`crate::builtin_enums::monomorphic_builtin_enums`] at checker
-    /// startup so the marker stays in lockstep with the IR-substrate
-    /// catalog consumed by MIR's
-    /// `register_builtin_monomorphic_enum_layouts`.
-    pub internal_builtin_enum_names: HashSet<String>,
     /// The compile's declaration table: the single module and declaration
     /// identity authority. Root, import, and alias routes converge before
     /// later stages look up an exact declaration occurrence; every `DefId` in
     /// this output indexes it.
     pub defs: std::sync::Arc<crate::DefTable>,
+    /// The semantic scopes used to resolve this compilation's source names.
+    pub scopes: std::sync::Arc<super::scope::Scopes>,
     /// Every path segment the checker resolved, keyed by the segment's span:
     /// the identity `Scope::resolve` answered. HIR and tooling read it rather
     /// than resolving a spelling again.
@@ -1741,10 +1725,30 @@ impl TypeCheckOutput {
         TypeDefView::new(&self.defs, &self.type_defs)
     }
 
-    /// The type definition filed under a declaration path (used by tests).
+    /// Resolve a type name in the root file for editor queries on incomplete source.
+    #[must_use]
+    pub fn root_type_head(&self, path: &str) -> Option<crate::TypeHead> {
+        let file = self.defs.root_module()?;
+        let segments: Vec<_> = path.split('.').collect();
+        match self.scopes.lookup_type_path(file, &segments)? {
+            super::scope::Resolution::Nominal(id) => {
+                Some(crate::TypeHead::of_declaration(&self.defs, id))
+            }
+            super::scope::Resolution::Builtin(builtin) => Some(crate::TypeHead::Builtin(builtin)),
+            _ => None,
+        }
+    }
+
+    /// Find a fixture definition by its declared path.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
     #[must_use]
     pub fn type_def_at_path(&self, path: &str) -> Option<&TypeDef> {
-        self.types().at_path(path)
+        let nominal = self
+            .type_defs
+            .keys()
+            .find(|id| self.defs.path(id.declaration()) == path)?;
+        self.type_defs.get(nominal)
     }
 
     /// The function signatures, read by the keys callers spell.
@@ -1991,13 +1995,13 @@ pub enum MethodCallReceiverKind {
     /// consumes this identity to lower `Type.Variant(args)` without treating
     /// `Type` as a runtime receiver or rediscovering an owner from its leaf.
     EnumConstructorPath {
-        type_name: String,
+        head: crate::TypeHead,
     },
     NamedTypeInstance {
-        type_name: String,
+        head: crate::TypeHead,
     },
     ActorInstance {
-        actor_name: String,
+        head: crate::TypeHead,
     },
     HandleInstance {
         type_name: String,
@@ -2723,15 +2727,6 @@ impl<'a> TypeDefView<'a> {
             defs: TABLE.get_or_init(crate::DefTable::new),
             type_defs,
         }
-    }
-
-    /// The definition filed under a declaration path.
-    ///
-    /// TRANSITION(A2): deleted when the class and fact tables are keyed by
-    /// declaration instead of by rendered path.
-    #[must_use]
-    pub fn at_path(self, path: &str) -> Option<&'a TypeDef> {
-        self.type_defs.get(&self.defs.lookup_nominal(path)?)
     }
 }
 

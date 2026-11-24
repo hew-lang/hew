@@ -896,15 +896,8 @@ impl Checker {
     /// that still exists in the resolved program environment, then pruning any that
     /// do not.
     ///
-    /// - `NamedTypeInstance { type_name }` entries are retained if the type is
-    ///   present in the resolved `type_defs` (user-defined type), the name is
-    ///   module-qualified (contains `'.'`, i.e., a stdlib handle type such as
-    ///   `json.Value` or `http.Client` which live in the module registry rather
-    ///   than `type_defs`), or the name is a generic type parameter from a
-    ///   function signature (trait-bounded type-parameter dispatch records the
-    ///   type-parameter name as a `NamedTypeInstance`).
-    /// - `TraitObject { trait_name }` entries are retained only if the trait name
-    ///   is still present in the checker's trait registry.
+    /// A named receiver retains its resolved declaration, builtin, or binder
+    /// identity. Nominals and binders must still have their checked facts.
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
         &mut self,
         type_defs: &HashMap<crate::NominalId, TypeDef>,
@@ -919,34 +912,36 @@ impl Checker {
             .map(|id| self.defs.path(*id).to_string())
             .collect();
 
-        // Collect all type parameter names from the resolved function signatures
-        // so we can retain `NamedTypeInstance` entries produced by trait-bounded
-        // type-parameter method dispatch (e.g. `T` in `fn f<T: Show>(t: T)`).
-        // NOTE: we receive `fn_sigs` as a parameter because the production path
-        // drains `self.fn_sigs` via `std::mem::take` before this validator runs.
-        let known_type_params: HashSet<&str> = fn_sigs
+        let known_type_params: HashSet<_> = fn_sigs
             .values()
-            .flat_map(|sig| {
-                sig.type_params
-                    .iter()
-                    .map(|parameter| parameter.spelling.as_str())
-            })
+            .flat_map(|sig| sig.type_params.iter().map(|parameter| parameter.id))
             .collect();
+        let opaque_types = &self.opaque_type_ids;
+        let aliases = &self.type_aliases;
 
         let mut receiver_kinds = std::mem::take(&mut self.method_call_receiver_kinds);
         receiver_kinds.retain(|_, kind| match kind {
             MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
             MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
-            MethodCallReceiverKind::EnumConstructorPath { type_name } => types
-                .at_path(type_name)
-                .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
-            MethodCallReceiverKind::NamedTypeInstance { type_name } => {
-                types.at_path(type_name).is_some()
-                    || type_name.contains('.')
-                    || known_type_params.contains(type_name.as_str())
+            MethodCallReceiverKind::EnumConstructorPath { head } => {
+                matches!(
+                    head.builtin(),
+                    Some(BuiltinType::Option | BuiltinType::Result)
+                ) || types
+                    .of(*head)
+                    .is_some_and(|def| def.kind == TypeDefKind::Enum)
             }
-            MethodCallReceiverKind::ActorInstance { actor_name } => types
-                .at_path(actor_name)
+            MethodCallReceiverKind::NamedTypeInstance { head } => match head {
+                crate::TypeHead::Builtin(_) => true,
+                crate::TypeHead::Param(param) => known_type_params.contains(&param.id),
+                crate::TypeHead::Nominal(nominal) | crate::TypeHead::Actor(nominal) => {
+                    type_defs.contains_key(&nominal.id)
+                        || opaque_types.contains(&nominal.id)
+                        || aliases.contains_key(&nominal.id.declaration())
+                }
+            },
+            MethodCallReceiverKind::ActorInstance { head } => types
+                .of(*head)
                 .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
             MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
             MethodCallReceiverKind::TraitObject { trait_name } => {
@@ -2592,21 +2587,23 @@ mod tests {
             module_idx: 0,
         };
 
+        let widget = checker_nominal(&mut checker, "Widget");
         checker.method_call_receiver_kinds.insert(
             known_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
-                type_name: "Widget".to_string(),
+                head: crate::TypeHead::of_declaration(&checker.defs, widget),
             },
         );
+        let phantom = checker_nominal(&mut checker, "Phantom");
         checker.method_call_receiver_kinds.insert(
             unknown_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
-                type_name: "Phantom".to_string(),
+                head: crate::TypeHead::of_declaration(&checker.defs, phantom),
             },
         );
 
         let mut type_defs = HashMap::from([(
-            checker_nominal(&mut checker, "Widget"),
+            widget,
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
@@ -2652,7 +2649,7 @@ mod tests {
     /// Module-qualified type names (e.g. `json.Value`) are retained even though
     /// they are not present in `type_defs` — they live in the module registry.
     #[test]
-    fn validate_method_call_receiver_kinds_retains_qualified_handle_type_entries() {
+    fn validate_method_call_receiver_kinds_retains_builtin_handle_type_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
         let handle_key = SpanKey {
@@ -2663,7 +2660,7 @@ mod tests {
         checker.method_call_receiver_kinds.insert(
             handle_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
-                type_name: "json.Value".to_string(),
+                head: crate::TypeHead::Builtin(BuiltinType::JsonValue),
             },
         );
 
@@ -2777,7 +2774,7 @@ mod tests {
         checker.method_call_receiver_kinds.insert(
             param_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
-                type_name: "T".to_string(),
+                head: crate::TypeHead::Param(crate::ParamHead::for_test("T")),
             },
         );
 

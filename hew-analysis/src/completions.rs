@@ -613,32 +613,13 @@ fn direct_type_head_at<'a>(
     let name = trailing_identifier(before)?;
     let prefix = before[..before.len() - name.len()].trim_end();
     let module_qualified = prefix.ends_with('.');
-    let qualified = if let Some(module_prefix) = prefix.strip_suffix('.') {
+    let head = if let Some(module_prefix) = prefix.strip_suffix('.') {
         let binding = trailing_identifier(module_prefix.trim_end())?;
-        let owner = tc
-            .module_import_bindings
-            .get(&(None, 0, binding.to_string()))?;
-        Some(format!("{owner}.{name}"))
+        tc.root_type_head(&format!("{binding}.{name}"))
     } else {
-        tc.import_type_name_aliases
-            .get(&(None, 0, name.to_string()))
-            .cloned()
+        tc.root_type_head(name)
     };
-    let direct = tc.defs.lookup_nominal(name);
-    let nominal = if module_qualified {
-        qualified
-            .as_deref()
-            .and_then(|path| tc.defs.lookup_nominal(path))
-    } else {
-        direct
-            .filter(|id| tc.defs.declared_builtin(id.declaration()).is_none())
-            .or_else(|| {
-                qualified
-                    .as_deref()
-                    .and_then(|path| tc.defs.lookup_nominal(path))
-            })
-            .or(direct)
-    };
+    let nominal = head.and_then(|head| head.declaration(&tc.defs));
     Some((name, nominal, module_qualified))
 }
 
@@ -701,10 +682,13 @@ fn try_struct_init_completions(
             (tc.type_defs.get(&id).cloned()?, Some(id))
         }
         Some(_) => return None,
-        None => (
-            method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
-            tc.defs.lookup_nominal(type_name),
-        ),
+        None => {
+            let head = tc.root_type_head(type_name)?;
+            (
+                method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?,
+                head.declaration(&tc.defs),
+            )
+        }
     };
     if type_def.fields.is_empty() {
         return None;
@@ -751,7 +735,8 @@ fn try_enum_variant_completions(
 
     let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
+    let head = tc.root_type_head(type_name)?;
+    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?;
     if type_def.kind != TypeDefKind::Enum {
         return None;
     }

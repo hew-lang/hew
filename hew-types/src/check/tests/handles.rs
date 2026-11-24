@@ -309,7 +309,14 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
         Some("vendor_a.shared.Handle".to_string())
     );
     let a_sig = checker
-        .lookup_named_method_sig("vendor_a.shared.Handle", &[], "peer")
+        .lookup_named_method_sig(
+            checker
+                .named_ty_for_key("vendor_a.shared.Handle", Vec::new())
+                .head()
+                .unwrap(),
+            &[],
+            "peer",
+        )
         .expect("exact vendor_a method should resolve");
     assert_eq!(
         a_sig.return_type, b_ty,

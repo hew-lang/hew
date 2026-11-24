@@ -3575,7 +3575,7 @@ fn main() {
     let dispatched_via_named = super::root_values(&output.method_call_receiver_kinds).any(|kind| {
         matches!(
             kind,
-            MethodCallReceiverKind::NamedTypeInstance { type_name } if type_name == "Foo"
+            MethodCallReceiverKind::NamedTypeInstance { head } if head.spelling() == "Foo"
         )
     });
     let leaked_into_primitive_table = super::root_values(&output.method_call_receiver_kinds)

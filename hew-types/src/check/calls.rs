@@ -2072,7 +2072,7 @@ impl Checker {
                                 .as_ref()
                                 .and_then(|ty| match ty {
                                     Ty::Named { head, args } => self.lookup_named_method_sig(
-                                        head.registry_key(),
+                                        *head,
                                         args,
                                         field.0.name.as_str(),
                                     ),

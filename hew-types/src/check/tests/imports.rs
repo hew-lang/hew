@@ -37,6 +37,12 @@ fn selected_actor_import(path: &[&str], alias: Option<&str>, actor_source: &str)
     )
 }
 
+fn test_type_def<'a>(checker: &'a Checker, path: &str) -> Option<&'a TypeDef> {
+    checker.type_defs.iter().find_map(|(id, definition)| {
+        (checker.defs.path(id.declaration()) == path).then_some(definition)
+    })
+}
+
 #[test]
 fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
@@ -633,9 +639,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
         "the nested impl return must retain the exact source owner"
     );
     assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.closableerr.CloseError")
-            .is_some(),
+        test_type_def(&checker, "hew.closableerr.CloseError").is_some(),
         "source declaration must be registered under its canonical owner"
     );
 }
@@ -715,11 +719,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         "imported i32 actor ask must typecheck: {:#?}",
         output.errors
     );
-    assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.testffi.Db")
-            .is_some()
-    );
+    assert!(test_type_def(&checker, "hew.testffi.Db").is_some());
     assert!(checker
         .module_type_exports
         .get("hew.testffi")
@@ -970,11 +970,8 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
-    assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.testffi.TestResult")
-            .is_some_and(|result| result.methods.contains_key("echo_len"))
-    );
+    assert!(test_type_def(&checker, "hew.testffi.TestResult")
+        .is_some_and(|result| result.methods.contains_key("echo_len")));
     let echo_id = output
         .impl_method_declaration_ids
         .get("hew.testffi.TestResult::echo_len")
@@ -1386,6 +1383,8 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
         module_doc: None,
     });
 
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+
     assert_eq!(
         checker.published_bare_type_qualified("R"),
         Some("myapp.mod_a.Reply".to_string()),
@@ -1394,9 +1393,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     // The reconstructed `myapp.mod_a.R` must never exist as a registered def — the bug
     // was binding it (or failing closed) instead of the real source type.
     assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("myapp.mod_a.R")
-            .is_none(),
+        test_type_def(&checker, "myapp.mod_a.R").is_none(),
         "no `myapp.mod_a.R` def should exist; the alias binds the source `Reply`"
     );
 }
@@ -1508,17 +1505,11 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker
-            .type_def_view()
-            .at_path("std.net.websocket.Server")
-            .is_some(),
+        test_type_def(&checker, "std.net.websocket.Server").is_some(),
         "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
-    assert!(checker
-        .type_def_view()
-        .at_path("websocket.Server")
-        .is_none());
-    assert!(checker.type_def_view().at_path("Server").is_none());
+    assert!(test_type_def(&checker, "websocket.Server").is_none());
+    assert!(test_type_def(&checker, "Server").is_none());
     assert!(
         checker
             .module_type_exports
@@ -1758,9 +1749,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         "a private type referenced bare within its nested declaring module must be accessible: {:?}",
         checker.errors
     );
-    let holder = checker
-        .type_def_view()
-        .at_path("std.net.tls.Holder")
+    let holder = test_type_def(&checker, "std.net.tls.Holder")
         .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { head, .. }) => assert_eq!(

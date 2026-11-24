@@ -359,12 +359,12 @@ impl Checker {
                             span,
                         )
                     });
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::EnumConstructorPath {
-                        type_name: head.canonical_type.clone(),
-                    },
-                );
+                if let Some(head) = self.subst.resolve(&result).head() {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::EnumConstructorPath { head },
+                    );
+                }
                 Some(result)
             }
             // A record variant called like a function: name the braced form.
@@ -457,12 +457,12 @@ impl Checker {
                     .or_else(|| self.check_builtin_variant_call(constructor, args, span))
                     .expect("builtin enum variants are Some, None, Ok and Err");
                 self.record_construct_call(span);
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::EnumConstructorPath {
-                        type_name: head.canonical_type.clone(),
-                    },
-                );
+                if let Some(head) = self.subst.resolve(&result).head() {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::EnumConstructorPath { head },
+                    );
+                }
                 result
             }
         };

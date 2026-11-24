@@ -120,9 +120,15 @@ fn reap_child(child: &mut Child, index: usize) {
                 return;
             }
             None if started.elapsed() >= CHILD_DEADLINE => {
-                hew_testutil::terminate_process_group(child, "verify-only child")
-                    .expect("terminate timed-out verify-only child");
-                panic!("verify-only child {index} exceeded {CHILD_DEADLINE:?}");
+                let group_killed =
+                    hew_testutil::terminate_process_group(child, "verify-only child")
+                        .expect("terminate timed-out verify-only child");
+                let cleanup_note = if group_killed {
+                    ""
+                } else {
+                    " (partial cleanup: process-group kill fell back to direct child only; grandchildren may remain)"
+                };
+                panic!("verify-only child {index} exceeded {CHILD_DEADLINE:?}{cleanup_note}");
             }
             None => std::thread::sleep(POLL_INTERVAL),
         }

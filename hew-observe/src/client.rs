@@ -651,6 +651,29 @@ impl ProfilerClient {
 /// connect errors (stale/missing socket path) from I/O failures and
 /// unexpected server responses.
 fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, ClientError> {
+    unix_get_response_limited(socket_path, path, MAX_UNIX_RESPONSE_BYTES)
+}
+
+/// Upper bound on one unix-socket response, counting the status line,
+/// headers, and body together. Profiler snapshots are small JSON documents;
+/// the cap keeps a misbehaving peer from exhausting the observer's memory.
+#[cfg(unix)]
+const MAX_UNIX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+
+#[cfg(unix)]
+fn response_too_large(limit: u64) -> ClientError {
+    ClientError::Read(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("response exceeds {limit} bytes"),
+    ))
+}
+
+#[cfg(unix)]
+fn unix_get_response_limited(
+    socket_path: &Path,
+    path: &str,
+    limit: u64,
+) -> Result<HttpResponse, ClientError> {
     let mut stream = UnixStream::connect(socket_path).map_err(ClientError::Connect)?;
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -665,7 +688,9 @@ fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, Cli
         .map_err(ClientError::Write)?;
 
     // Read the HTTP response: status line, headers, blank line, body.
-    let mut reader = std::io::BufReader::new(stream);
+    // Every byte read below comes through this budget, so neither an endless
+    // header line nor an unterminated body can grow without bound.
+    let mut reader = std::io::BufReader::new(stream.take(limit));
 
     // Status line: "HTTP/1.1 200 OK\r\n"
     let mut status_line = String::new();
@@ -695,25 +720,38 @@ fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, Cli
         }
     }
 
-    // Read body.
-    if let Some(len) = content_length {
-        let mut body = vec![0u8; len];
-        reader.read_exact(&mut body).map_err(ClientError::Read)?;
-        Ok(HttpResponse {
-            status,
-            status_code,
-            body,
-        })
+    // Read body. Content-Length is untrusted: never preallocate from it.
+    let body = if let Some(len) = content_length {
+        let len = u64::try_from(len).map_err(|_| response_too_large(limit))?;
+        if len > limit {
+            return Err(response_too_large(limit));
+        }
+        let mut body = Vec::new();
+        (&mut reader)
+            .take(len)
+            .read_to_end(&mut body)
+            .map_err(ClientError::Read)?;
+        if u64::try_from(body.len()) != Ok(len) {
+            return Err(ClientError::Read(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("response body ended after {} of {len} bytes", body.len()),
+            )));
+        }
+        body
     } else {
         // No Content-Length — read until EOF (Connection: close).
         let mut body = Vec::new();
         reader.read_to_end(&mut body).map_err(ClientError::Read)?;
-        Ok(HttpResponse {
-            status,
-            status_code,
-            body,
-        })
-    }
+        if reader.get_ref().limit() == 0 {
+            return Err(response_too_large(limit));
+        }
+        body
+    };
+    Ok(HttpResponse {
+        status,
+        status_code,
+        body,
+    })
 }
 
 /// Multi-node client wrapping one `ProfilerClient` per node.
@@ -1495,6 +1533,66 @@ mod tests {
             matches!(client.last_error, Some(ClientError::BadStatus(ref s)) if s.contains("404")),
             "expected ClientError::BadStatus with '404', got {:?}",
             client.last_error
+        );
+    }
+
+    // ── hostile response sizes ────────────────────────────────────────────
+
+    #[test]
+    fn oversized_content_length_is_rejected_without_allocating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("huge_length.sock");
+
+        // A peer may advertise any Content-Length. Preallocating it used to
+        // abort the observer with a capacity-overflow panic.
+        serve_once(
+            &sock,
+            "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\n{}",
+        );
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let result = client.fetch_metrics();
+
+        assert!(result.is_none(), "expected None on oversized body");
+        assert!(
+            matches!(client.last_error, Some(ClientError::Read(ref e)) if e.kind() == io::ErrorKind::InvalidData),
+            "expected ClientError::Read(InvalidData), got {:?}",
+            client.last_error
+        );
+        assert_eq!(client.status, ConnectionStatus::Disconnected);
+    }
+
+    #[test]
+    fn short_body_for_content_length_is_a_read_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("short_body.sock");
+
+        serve_once(&sock, "HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n{}");
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        assert!(client.fetch_metrics().is_none());
+        assert!(
+            matches!(client.last_error, Some(ClientError::Read(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof),
+            "expected ClientError::Read(UnexpectedEof), got {:?}",
+            client.last_error
+        );
+    }
+
+    #[test]
+    fn unbounded_response_without_content_length_is_capped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("unbounded.sock");
+
+        serve_once(
+            &sock,
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789abcdefghijklmnopqrstuvwxyz",
+        );
+
+        let error = unix_get_response_limited(&sock, "/api/metrics", 48)
+            .expect_err("a response past the byte budget must fail");
+        assert!(
+            matches!(error, ClientError::Read(ref e) if e.kind() == io::ErrorKind::InvalidData),
+            "expected ClientError::Read(InvalidData), got {error:?}"
         );
     }
 

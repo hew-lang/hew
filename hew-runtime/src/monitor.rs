@@ -2332,6 +2332,7 @@ mod tests {
             pending_external_trap_code: AtomicI32::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
+            parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
         }
     }
 

@@ -955,12 +955,24 @@ pub extern "C" fn hew_actor_current_id() -> i64 {
     actor_id_from_context(ctx)
 }
 
+/// Silent variant of [`hew_actor_self`]: return the currently dispatched actor
+/// pointer, or null outside any actor context, WITHOUT writing the generic
+/// `LAST_ERROR` slot when no execution context is installed.
+pub(crate) fn current_actor_silent() -> *mut HewActor {
+    let ctx = crate::execution_context::current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).actor }
+}
+
 /// Silent variant of [`hew_actor_current_id`]: returns the current actor id,
 /// or -1 outside any actor context, WITHOUT writing the generic `LAST_ERROR`
 /// slot when no execution context is installed. Use this for identity-routing
-/// decisions (e.g. the `parse_error_slot` non-actor fallback) where "no actor"
-/// is an expected, non-error condition — not for paths where an absent context
-/// is itself a diagnosable failure.
+/// decisions where "no actor" is an expected, non-error condition — not for
+/// paths where an absent context is itself a diagnosable failure.
 pub(crate) fn hew_actor_current_id_silent() -> i64 {
     let ctx = crate::execution_context::current_context();
     actor_id_from_context(ctx)
@@ -1387,6 +1399,10 @@ pub struct HewActor {
     ///
     /// Appended at the tail so codegen-mirrored offsets remain stable.
     pub pending_external_trap_code: AtomicI32,
+    /// Per-actor parse/FFI last-error slots (lazy; zero heap allocation until
+    /// an error is recorded). Appended at the tail so codegen-mirrored offsets
+    /// (`id`, `state`) remain fixed.
+    pub(crate) parse_errors: crate::parse_error_slot::ActorParseErrors,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.

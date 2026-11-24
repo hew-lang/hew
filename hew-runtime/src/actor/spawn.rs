@@ -306,6 +306,7 @@ fn build_spawned_actor(
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: config.native_completion,
+        parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
     })
 }
 

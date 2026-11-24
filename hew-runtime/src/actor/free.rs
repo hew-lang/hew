@@ -62,7 +62,8 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     unsafe {
         crate::platform::host_io::unregister_actor_names(actor_id);
     }
-    crate::parse_error_slot::clear_all_for_actor(actor_id);
+    // SAFETY: caller guarantees the actor is valid and quiescent.
+    unsafe { (*actor).parse_errors.clear_all() };
 }
 
 /// Remove semantic relationships after actor retirement and pin drain.

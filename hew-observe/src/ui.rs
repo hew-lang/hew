@@ -834,7 +834,6 @@ fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     clippy::similar_names,
     clippy::too_many_lines,
     reason = "timeline pixel math involves safe small-range conversions; inherently verbose"
@@ -878,9 +877,11 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(0);
     let window_ns = app.timeline_window_ns;
-    let center_ns = (latest_ns as i64 + app.timeline_offset_ns).max(0) as u64;
+    // Correlated times derive from the producer's clock anchor, so they may
+    // sit anywhere in u64. Signed casts here wrapped or overflowed.
+    let center_ns = latest_ns.saturating_add_signed(app.timeline_offset_ns);
     let window_start = center_ns.saturating_sub(window_ns / 2);
-    let window_end = window_start + window_ns;
+    let window_end = window_start.saturating_add(window_ns);
 
     // Left margin for node labels
     let label_width: u16 = 10;
@@ -1798,6 +1799,47 @@ mod tests {
         assert_eq!(format_relative_ms(0), "—");
         assert_eq!(format_relative_ms(987), "987ms ago");
         assert_eq!(format_relative_ms(4_500), "4.5s ago");
+    }
+
+    /// Count `glyph` across the rendered frame. The legend draws each glyph
+    /// once, so more than one occurrence means the chart plotted events.
+    fn rendered_glyph_count(app: &mut App, glyph: char) -> usize {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|frame| super::draw(frame, app))
+            .expect("timeline must render");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.symbol().starts_with(glyph))
+            .count()
+    }
+
+    /// Correlated times come from a producer-supplied clock anchor. Values at
+    /// or past `i64::MAX` overflowed the signed window maths (a debug panic)
+    /// or wrapped to an empty window at epoch zero.
+    #[test]
+    fn timeline_window_handles_correlated_times_past_i64_range() {
+        let spawn = crate::events::trace_event_meta("spawn").glyph;
+        let near_signed_max = u64::try_from(i64::MAX).expect("i64::MAX fits in u64");
+
+        let past_signed_max = (1u64 << 63) + 1_000_000_000_000;
+        for (latest, offset_ns) in [(near_signed_max, 1_250_000_000), (past_signed_max, 0)] {
+            let mut app = App::new_demo();
+            app.active_tab = crate::app::Tab::Timeline;
+            app.timeline_offset_ns = offset_ns;
+            for event in &mut app.trace_events {
+                event.correlated_unix_ns = latest;
+            }
+
+            assert!(
+                rendered_glyph_count(&mut app, spawn) > 1,
+                "events at {latest} with offset {offset_ns} must stay in the window"
+            );
+        }
     }
 
     #[test]

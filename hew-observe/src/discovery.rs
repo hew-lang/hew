@@ -146,12 +146,16 @@ fn parse_discovery_file(path: &Path) -> Option<DiscoveredProfiler> {
     let contents = fs::read_to_string(path).ok()?;
     let val: serde_json::Value = serde_json::from_str(&contents).ok()?;
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "PID values fit in u32 on all supported platforms"
-    )]
+    let pid = val.get("pid")?.as_u64()?;
+    // Reject PIDs `kill(2)` cannot address as one process: 0 names the
+    // caller's process group, and values past `i32::MAX` wrap to negative
+    // group or broadcast targets. Truncating them would probe the wrong PID.
+    if pid == 0 || i32::try_from(pid).is_err() {
+        return None;
+    }
+
     Some(DiscoveredProfiler {
-        pid: val.get("pid")?.as_u64()? as u32,
+        pid: u32::try_from(pid).ok()?,
         socket_path: PathBuf::from(val.get("socket")?.as_str()?),
         started: val.get("started")?.as_u64().unwrap_or(0),
         program: val
@@ -163,13 +167,17 @@ fn parse_discovery_file(path: &Path) -> Option<DiscoveredProfiler> {
 }
 
 fn is_pid_alive(pid: u32) -> bool {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "PID values fit in i32 on all supported platforms"
-    )]
+    // `kill(0, 0)` and negative PIDs address process groups, which would
+    // report a stale descriptor as alive.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
     // SAFETY: kill(pid, 0) checks if the process exists without sending a
     // signal. No preconditions beyond a valid signal number (0 is valid).
-    let result = unsafe { libc::kill(pid as i32, 0) };
+    let result = unsafe { libc::kill(pid, 0) };
     result == 0
 }
 
@@ -227,5 +235,33 @@ mod tests {
         // calling process's group, not what we want to test. Use a very
         // large PID that almost certainly doesn't exist.
         assert!(!is_pid_alive(4_000_000));
+    }
+
+    #[test]
+    fn is_pid_alive_rejects_process_group_targets() {
+        // kill(0, 0) probes the caller's own process group and kill(-1, 0)
+        // probes every signalable process; both succeed, so neither may be
+        // read as "this profiler is alive".
+        assert!(!is_pid_alive(0));
+        assert!(!is_pid_alive(u32::MAX));
+        assert!(!is_pid_alive(1u32 << 31));
+    }
+
+    #[test]
+    fn parse_rejects_pids_kill_cannot_address() {
+        let tmp = tempfile::tempdir().unwrap();
+        let self_pid = u64::from(std::process::id());
+        for pid in [0, u64::from(u32::MAX), (1u64 << 32) + self_pid] {
+            let path = tmp.path().join(format!("{pid}.json"));
+            fs::write(
+                &path,
+                format!(r#"{{"pid":{pid},"socket":"/tmp/x.sock","started":1}}"#),
+            )
+            .unwrap();
+            assert!(
+                parse_discovery_file(&path).is_none(),
+                "pid {pid} must not parse (it would alias another process or group)"
+            );
+        }
     }
 }

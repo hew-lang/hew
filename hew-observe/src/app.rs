@@ -617,9 +617,16 @@ impl App {
     }
 
     /// Filter messages by the `actor_id` of the currently scrolled-to event.
+    ///
+    /// Reads the same list the Messages view draws: the paused snapshot while
+    /// paused, so the pick matches what is on screen even after newer events
+    /// merge into (or are capped out of) the live buffer.
     pub fn messages_filter_selected(&mut self) {
-        let events: Vec<&ObservedTraceEvent> = self
-            .trace_events
+        let source = self
+            .trace_pause_events
+            .as_deref()
+            .unwrap_or(&self.trace_events);
+        let events: Vec<&ObservedTraceEvent> = source
             .iter()
             .filter(|e| {
                 self.trace_filter_actor.as_ref().is_none_or(|filter| {
@@ -2133,6 +2140,48 @@ mod tests {
             .expect("paused view keeps snapshot");
         assert_eq!(frozen.len(), 1);
         assert_eq!(frozen[0].endpoint, "node-a");
+    }
+
+    #[test]
+    fn paused_messages_filter_selects_the_displayed_event() {
+        let producer_a = "0000000000000000000000000000000a";
+        let producer_b = "0000000000000000000000000000000b";
+        let mut app = App::build(None, "test".to_owned(), false, false);
+        let mut shown = trace_page(
+            "shown",
+            1,
+            producer_a,
+            "000000000000000000000000000000a1",
+            TraceContinuity::Initial,
+        );
+        shown.batch.clock_anchor.unix_epoch_ns = 2_000;
+        app.ingest_trace_pages(vec![("node-a".to_owned(), shown)]);
+        app.messages_toggle_pause();
+
+        // A newer page from another producer sorts ahead of the frozen row in
+        // the live buffer, so live index 0 no longer names what is on screen.
+        let mut hidden = trace_page(
+            "hidden",
+            1,
+            producer_b,
+            "000000000000000000000000000000b1",
+            TraceContinuity::Initial,
+        );
+        hidden.batch.clock_anchor.unix_epoch_ns = 1_000;
+        app.ingest_trace_pages(vec![("node-b".to_owned(), hidden)]);
+        assert_eq!(app.trace_events[0].producer_instance_id, producer_b);
+
+        app.trace_scroll = 0;
+        app.messages_filter_selected();
+
+        let filter = app
+            .trace_filter_actor
+            .as_ref()
+            .expect("selecting a displayed event sets a filter");
+        assert_eq!(
+            filter.producer_instance_id, producer_a,
+            "filter must follow the paused snapshot shown on screen"
+        );
     }
 
     #[test]

@@ -20,8 +20,10 @@ fn environment(name: &str) -> PathBuf {
 }
 
 fn runtime() -> PathBuf {
+    // Cargo emits the shared runtime as `hew_native`; only staged SDKs
+    // rename it to `libhew`. Match the Makefile's `LIVE_SDK_RUNTIME`.
     environment("HEW_LIVE_RUNTIME_DIR").join(format!(
-        "{}hew{}",
+        "{}hew_native{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ))
@@ -86,6 +88,19 @@ struct Editor {
     replies: mpsc::Receiver<String>,
 }
 impl Editor {
+    /// Send one verbatim protocol line and return its decoded reply.
+    fn raw(&mut self, line: &[u8]) -> Value {
+        let stdin = self.process.0.stdin.as_mut().unwrap();
+        stdin.write_all(line).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+        let line = self
+            .replies
+            .recv_timeout(Duration::from_secs(90))
+            .expect("editor reply to a malformed request");
+        serde_json::from_str(&line).expect("stdout must contain only JSON replies")
+    }
+
     fn request(&mut self, mut request: Value, success: bool) -> Value {
         request["id"] = json!(42);
         writeln!(self.process.0.stdin.as_mut().unwrap(), "{request}").unwrap();
@@ -326,6 +341,28 @@ fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     drop(observe_listener);
     let service = observed_server(root, &module, &client_id, &address, Some(&observe));
     let mut client = editor(root, &module, &server_id, &address);
+    assert_eq!(client.request(json!({"op":"status"}), true)["epoch"], 0);
+    // Malformed editor input fails only that request; the session survives.
+    for (line, id) in [
+        (&b"not json"[..], Value::Null),
+        (&b"\xff\xfe"[..], Value::Null),
+        (&br#"{"id":7,"op":"unknown"}"#[..], json!(7)),
+        (
+            &br#"{"id":"s","op":"replace","digest":"00"}"#[..],
+            json!("s"),
+        ),
+    ] {
+        let reply = client.raw(line);
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["id"], id, "{reply}");
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid request"),
+            "{reply}"
+        );
+    }
     assert_eq!(client.request(json!({"op":"status"}), true)["epoch"], 0);
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/router.hew");
     let digest =

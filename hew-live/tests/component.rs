@@ -693,6 +693,20 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
     assert_eq!(committed.snapshot.accepted, 44);
     assert_eq!(committed.epoch, 3);
     committed.retirement.await.unwrap().unwrap();
+    // An unrepresentable deadline still closes the attempt it announced.
+    let announced = observation.0.lock().unwrap().len();
+    assert!(matches!(
+        deployment.replace(prepared.clone(), 3, Duration::MAX).await,
+        Err(Error::InvalidDeadline)
+    ));
+    assert_eq!(
+        observation.0.lock().unwrap()[announced..]
+            .iter()
+            .map(|event| event.phase.as_str())
+            .collect::<Vec<_>>(),
+        ["preparing", "rejected"]
+    );
+    assert_eq!(deployment.epoch().await, 3);
     assert!(matches!(
         deployment
             .replace(prepared, 1, Duration::from_secs(5))

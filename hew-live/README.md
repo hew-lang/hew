@@ -330,6 +330,9 @@ A new authenticated session for the same authorized identity can reconnect.
 `attach` reads and writes JSON lines for a local editor. Its remote operations
 use the typed control actor. Every request has `id` and `op`; successful replies
 have the same `id`, `ok: true` and `result`. Failures have `ok: false` and `error`.
+A line that is not a valid request, including one naming an unknown operation,
+fails only that request: its reply carries the request's `id` when one can be
+read, otherwise `null`, and the session keeps serving later lines.
 Standard output contains only protocol replies. The operations are:
 
 - `context`: `source` names the ordinary source entry. This local operation

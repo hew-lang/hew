@@ -51,11 +51,12 @@
 use std::ffi::{c_int, CString};
 
 use hew_runtime::sim_transport::{
-    sim_transport_free, sim_transport_new, sim_transport_recv_classified,
-    sim_transport_send_classified, sim_transport_set_partition, SimConfig, SimRecvOutcome,
-    SimSendOutcome,
+    sim_transport_advance_time_ms, sim_transport_free, sim_transport_new,
+    sim_transport_next_delivery_ms, sim_transport_now_ms, sim_transport_recv_classified,
+    sim_transport_send_classified, sim_transport_set_partition, sim_transport_try_recv_classified,
+    sim_transport_wait_until_accept_parked, SimConfig, SimRecvOutcome, SimSendOutcome,
 };
-use hew_runtime::transport::HewTransport;
+use hew_runtime::transport::{HewTransport, HEW_CONN_INVALID};
 use proptest::prelude::*;
 
 /// RAII guard that destroys the transport on drop. Mirrors the
@@ -275,5 +276,215 @@ proptest! {
              violates HEW-DIST-SPEC §14.3");
 
         // Drop guard releases the transport before the next proptest case.
+    }
+
+    /// Seeded delivery delay bounds and bit-identical replay under virtual ticks.
+    ///
+    /// For any seed and any `min_delay_ms <= max_delay_ms`, every sent frame is
+    /// delivered at a virtual tick in `[min_delay_ms, max_delay_ms]`, never
+    /// before `min_delay_ms`, and two independent transports constructed with
+    /// the same seed produce the exact same `(arrival_tick, frame_id)` schedule.
+    #[test]
+    fn seeded_delay_bounds_and_replay_determinism(
+        seed in any::<u64>(),
+        min_delay_ms in 0u64..=30,
+        delay_span_ms in 0u64..=30,
+        msg_count in 1usize..=20,
+        case_id in any::<u32>(),
+    ) {
+        let max_delay_ms = min_delay_ms + delay_span_ms;
+        let cfg = SimConfig {
+            seed,
+            drop_rate_ppm: 0,
+            min_delay_ms,
+            max_delay_ms,
+            ..SimConfig::default()
+        };
+        let run_once = |suffix: &str| -> Result<Vec<(u64, u32)>, TestCaseError> {
+            let t = OwnedTransport::new(cfg);
+            let addr = format!("sim://delay-replay/{case_id}/{suffix}");
+            let (client, server) = paired_conns(t.ptr(), &addr);
+
+            for id in 0..msg_count {
+                let bytes = u32::try_from(id).expect("msg_count fits u32").to_le_bytes();
+                // SAFETY: `t.ptr()` is live and `bytes` is stack-owned.
+                let send = unsafe { sim_transport_send_classified(t.ptr(), client, &bytes) };
+                prop_assert_eq!(send, SimSendOutcome::Sent { bytes_sent: 4 });
+            }
+
+            if min_delay_ms > 0 {
+                // SAFETY: `t.ptr()` is live.
+                let next_ms = unsafe { sim_transport_next_delivery_ms(t.ptr(), server) };
+                prop_assert!(
+                    next_ms.is_some_and(|ms| ms >= min_delay_ms && ms <= max_delay_ms),
+                    "earliest scheduled delivery {next_ms:?} outside [{min_delay_ms}, {max_delay_ms}]"
+                );
+                let mut early_buf = [0u8; 4];
+                // SAFETY: `t.ptr()` is live and `early_buf` is writable.
+                let early =
+                    unsafe { sim_transport_try_recv_classified(t.ptr(), server, &mut early_buf) };
+                prop_assert!(
+                    early.is_none(),
+                    "frame must not arrive at t=0 when min_delay_ms={min_delay_ms}: {early:?}"
+                );
+            }
+
+            let mut trace = Vec::with_capacity(msg_count);
+            for tick in 0..=max_delay_ms {
+                if tick > 0 {
+                    // SAFETY: `t.ptr()` is live.
+                    let now = unsafe { sim_transport_advance_time_ms(t.ptr(), 1) };
+                    prop_assert_eq!(now, tick);
+                }
+                loop {
+                    let mut buf = [0u8; 4];
+                    // SAFETY: `t.ptr()` is live and `buf` is writable.
+                    match unsafe { sim_transport_try_recv_classified(t.ptr(), server, &mut buf) } {
+                        Some(SimRecvOutcome::Received { bytes_received: 4 }) => {
+                            prop_assert!(
+                                tick >= min_delay_ms && tick <= max_delay_ms,
+                                "delivery tick {tick} outside [{min_delay_ms}, {max_delay_ms}]"
+                            );
+                            trace.push((tick, u32::from_le_bytes(buf)));
+                        }
+                        None => break,
+                        other => {
+                            prop_assert!(false, "unexpected recv outcome at tick {tick}: {other:?}");
+                        }
+                    }
+                }
+            }
+
+            prop_assert_eq!(
+                trace.len(),
+                msg_count,
+                "every frame must arrive by max_delay_ms={}",
+                max_delay_ms
+            );
+            let mut ids: Vec<u32> = trace.iter().map(|&(_, id)| id).collect();
+            ids.sort_unstable();
+            let expected_ids: Vec<u32> = (0..msg_count)
+                .map(|id| u32::try_from(id).expect("msg_count fits u32"))
+                .collect();
+            prop_assert_eq!(ids, expected_ids, "every sent frame must be delivered once");
+            Ok(trace)
+        };
+
+        let first = run_once("a")?;
+        let second = run_once("b")?;
+        prop_assert_eq!(
+            first, second,
+            "identical seed and send sequence must produce identical delivery ticks and order"
+        );
+    }
+
+    /// Reconnect `accept(timeout_ms)` honours virtual-clock deadlines and
+    /// recovers cleanly when a partition heals before expiry.
+    #[test]
+    fn reconnect_accept_honours_virtual_timeout_and_recovers(
+        seed in any::<u64>(),
+        timeout_ms in 10i32..=120,
+        heal_offset_ms in 0u64..=150,
+        case_id in any::<u32>(),
+    ) {
+        let t = OwnedTransport::new(SimConfig {
+            seed,
+            ..SimConfig::default()
+        });
+        let addr = format!("sim://reconnect-prop/{case_id}");
+        let caddr = CString::new(addr).expect("valid addr");
+        let t_addr = t.ptr() as usize;
+
+        // SAFETY: `t.ptr()` is live for the duration of this case; `caddr` is live.
+        unsafe {
+            let tref = &*t.ptr();
+            let ops = &*tref.ops;
+            prop_assert_eq!(ops.listen.unwrap()(tref.r#impl, caddr.as_ptr()), 0);
+            sim_transport_set_partition(t.ptr(), true);
+        }
+
+        let accept_thread = std::thread::spawn(move || {
+            let t_local = t_addr as *mut HewTransport;
+            // SAFETY: `t_local` remains live until `accept_thread` is joined below.
+            unsafe {
+                let tref = &*t_local;
+                let ops = &*tref.ops;
+                ops.accept.unwrap()(tref.r#impl, timeout_ms)
+            }
+        });
+
+        // Wait until the acceptor is deterministically registered on `cv`.
+        // SAFETY: `t.ptr()` is live.
+        let accept_parked = unsafe { sim_transport_wait_until_accept_parked(t.ptr()) };
+        prop_assert!(accept_parked);
+        #[expect(clippy::cast_sign_loss, reason = "timeout_ms is in 10..=120")]
+        let timeout_u64 = timeout_ms as u64;
+
+        if heal_offset_ms < timeout_u64 {
+            // Heal before the deadline and reconnect cleanly.
+            // SAFETY: `t.ptr()` is live and `caddr` is live.
+            let client = unsafe {
+                sim_transport_advance_time_ms(t.ptr(), heal_offset_ms);
+                prop_assert_eq!(sim_transport_now_ms(t.ptr()), heal_offset_ms);
+                sim_transport_set_partition(t.ptr(), false);
+                let tref = &*t.ptr();
+                let ops = &*tref.ops;
+                ops.connect.unwrap()(tref.r#impl, caddr.as_ptr())
+            };
+            prop_assert!(client > 0, "reconnect after heal must yield a valid client conn");
+            let server = accept_thread.join().expect("accept thread panicked");
+            prop_assert!(
+                server > 0,
+                "accept must succeed when partition heals at {heal_offset_ms} < {timeout_u64}"
+            );
+            // SAFETY: `t.ptr()` is live; buffers are stack-owned.
+            unsafe {
+                prop_assert_eq!(
+                    sim_transport_send_classified(t.ptr(), client, b"reconnected"),
+                    SimSendOutcome::Sent { bytes_sent: 11 }
+                );
+                let mut buf = [0u8; 16];
+                prop_assert_eq!(
+                    sim_transport_recv_classified(t.ptr(), server, &mut buf),
+                    SimRecvOutcome::Received { bytes_received: 11 }
+                );
+                prop_assert_eq!(&buf[..11], b"reconnected");
+            }
+        } else {
+            // Advance past the virtual timeout while partitioned -> must expire.
+            // SAFETY: `t.ptr()` is live.
+            unsafe {
+                sim_transport_advance_time_ms(t.ptr(), timeout_u64);
+            }
+            let expired = accept_thread.join().expect("accept thread panicked");
+            prop_assert_eq!(
+                expired,
+                HEW_CONN_INVALID,
+                "accept must time out when partition lasts through virtual deadline {}",
+                timeout_u64
+            );
+
+            // Healing afterwards and calling a fresh accept recovers cleanly.
+            // SAFETY: `t.ptr()` is live and `caddr` is live.
+            unsafe {
+                sim_transport_set_partition(t.ptr(), false);
+                let tref = &*t.ptr();
+                let ops = &*tref.ops;
+                let client = ops.connect.unwrap()(tref.r#impl, caddr.as_ptr());
+                prop_assert!(client > 0);
+                let server = ops.accept.unwrap()(tref.r#impl, 0);
+                prop_assert!(server > 0);
+                prop_assert_eq!(
+                    sim_transport_send_classified(t.ptr(), client, b"recovered"),
+                    SimSendOutcome::Sent { bytes_sent: 9 }
+                );
+                let mut buf = [0u8; 16];
+                prop_assert_eq!(
+                    sim_transport_recv_classified(t.ptr(), server, &mut buf),
+                    SimRecvOutcome::Received { bytes_received: 9 }
+                );
+                prop_assert_eq!(&buf[..9], b"recovered");
+            }
+        }
     }
 }

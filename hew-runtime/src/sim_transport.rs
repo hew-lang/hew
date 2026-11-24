@@ -59,21 +59,28 @@
 //!   calls `cv.notify_all()`, so any blocked `recv` wakes and exits
 //!   before its `Arc` clone is dropped — no parked thread leak.
 //!
-//! ## Determinism model (slice 1)
+//! ## Determinism model
 //!
-//! - `SimConfig::seed` seeds an `rngs::SmallRng` for drop decisions. Two
-//!   instances with the same seed and the same send sequence produce
-//!   bit-identical drop choices.
-//! - `partition` is an `AtomicBool`. While set, every `send` and `recv`
-//!   returns `HEW_ERR_TRANSPORT` immediately and never fabricates success.
-//!   `recv` is woken from any blocked wait so the test never hangs.
-//! - `min_delay_ms` / `max_delay_ms` are reserved fields. Slice 1 does not
-//!   wire them; the two §14 invariants this slice ships do not need them
-//!   and wiring them would require a simulation-time-aware delivery queue
-//!   that belongs in a follow-on slice (see `// TODO(sim-transport delay)`).
-//! - Reorder, duplicate, clock-skew, and bandwidth knobs are intentionally
-//!   absent from `SimConfig`. They will arrive with the §14 invariants
-//!   that need them.
+//! - `SimConfig::seed` seeds domain-separated `rngs::SmallRng` streams for
+//!   drop and delivery-delay decisions. Two instances with the same seed,
+//!   config, and send sequence produce bit-identical drop choices and delivery
+//!   schedules.
+//! - `partition` is guarded by the transport's coordinated `Mutex<SimCore>`.
+//!   While set, every `send` and `recv` returns `HEW_ERR_TRANSPORT`
+//!   immediately and never fabricates success. Any blocked `recv` is woken
+//!   immediately so tests never hang.
+//! - `min_delay_ms` / `max_delay_ms` schedule accepted frames onto a
+//!   per-instance virtual clock (`clock_ms`, starting at `0` and advanced via
+//!   [`sim_transport_advance_time_ms`]). Frames are held in a per-connection
+//!   min-heap ordered by `(deliver_at_ms, send_seq)` so zero or constant
+//!   delays preserve strict FIFO while variable delays produce deterministic
+//!   reordering.
+//! - `accept(timeout_ms)` honours `timeout_ms` against the same per-instance
+//!   virtual clock (`0` polls without blocking, `> 0` waits until a peer
+//!   connects or virtual time reaches `start_ms + timeout_ms`, `< 0` waits
+//!   until a peer connects or the transport shuts down).
+//! - Duplicate, clock-skew, and bandwidth knobs are intentionally absent from
+//!   `SimConfig`. They will arrive with the §14 invariants that need them.
 
 #![cfg(all(any(test, feature = "sim-transport"), not(target_family = "wasm")))]
 #![allow(
@@ -81,7 +88,8 @@
     reason = "type names mirror the existing TcpTransport / QuicTransport convention"
 )]
 
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -89,7 +97,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
-use crate::lifetime::poison_safe::PoisonSafe;
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -117,18 +124,16 @@ const MAX_FRAME_SIZE: usize = crate::transport::MAX_FRAME_SIZE;
 // Public configuration
 // ---------------------------------------------------------------------------
 
-/// Slice-1 configuration knobs for [`sim_transport_new`].
+/// Configuration knobs for [`sim_transport_new`].
 ///
-/// Reorder, duplicate, clock-skew, and bandwidth controls are deliberately
-/// absent; the two slice-2 invariants do not need them and adding them now
-/// would expand the surface beyond the current design. New fields land alongside
-/// the §14 invariants that need them; tests should construct `SimConfig`
-/// via `SimConfig { seed, ..SimConfig::default() }` so future fields gain
-/// a default without churning every call site.
+/// Duplicate, clock-skew, and bandwidth controls are deliberately absent; new
+/// fields land alongside the §14 invariants that need them. Tests should
+/// construct `SimConfig` via `SimConfig { seed, ..SimConfig::default() }` so
+/// future fields gain a default without churning every call site.
 #[derive(Debug, Clone, Copy)]
 pub struct SimConfig {
-    /// PRNG seed for drop decisions. The same seed produces the same drop
-    /// pattern for the same send sequence.
+    /// PRNG seed for drop and delivery-delay decisions. The same seed produces
+    /// the same drop and delay schedule for the same send sequence.
     pub seed: u64,
     /// Drop probability per send, expressed in parts-per-million. Zero means
     /// "never drop". Values above `1_000_000` are saturated to `1_000_000`.
@@ -137,11 +142,15 @@ pub struct SimConfig {
     /// `HEW_ERR_TRANSPORT` immediately. Toggle at runtime via
     /// [`sim_transport_set_partition`].
     pub partition: bool,
-    /// Reserved for future slices — minimum simulated delivery delay.
-    /// **Not wired in slice 1.**
+    /// Minimum simulated delivery delay in virtual milliseconds. Zero means
+    /// frames can be delivered at the current virtual tick without advancing
+    /// time.
     pub min_delay_ms: u64,
-    /// Reserved for future slices — maximum simulated delivery delay.
-    /// **Not wired in slice 1.**
+    /// Maximum simulated delivery delay in virtual milliseconds. Clamped to at
+    /// least `min_delay_ms`. When `max_delay_ms > min_delay_ms`, each accepted
+    /// frame draws a deterministic delay in `min_delay_ms..=max_delay_ms` from
+    /// the seeded PRNG, allowing later frames with shorter delays to overtake
+    /// earlier ones.
     pub max_delay_ms: u64,
 }
 
@@ -215,12 +224,39 @@ pub enum SimRecvOutcome {
 // Internal state
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Eq, PartialEq)]
+struct ScheduledFrame {
+    deliver_at_ms: u64,
+    seq: u64,
+    payload: Vec<u8>,
+}
+
+impl Ord for ScheduledFrame {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        // Min-heap ordering: earliest virtual delivery timestamp first, then
+        // enqueue sequence for deterministic FIFO tie-breaking.
+        other
+            .deliver_at_ms
+            .cmp(&self.deliver_at_ms)
+            .then_with(|| other.seq.cmp(&self.seq))
+            .then_with(|| other.payload.cmp(&self.payload))
+    }
+}
+
+impl PartialOrd for ScheduledFrame {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Debug)]
 struct ConnState {
     /// Peer connection id; `HEW_CONN_INVALID` once the peer detaches.
     peer: c_int,
-    /// Inbound frames not yet read by `recv`.
-    inbox: VecDeque<Vec<u8>>,
+    /// Inbound frames scheduled on the per-instance virtual clock.
+    inbox: BinaryHeap<ScheduledFrame>,
+    /// Monotonic enqueue sequence for deterministic same-tick tie-breaking.
+    next_seq: u64,
     /// Set when `close_conn` is called or the transport drops.
     closed: bool,
 }
@@ -229,7 +265,8 @@ impl ConnState {
     fn new(peer: c_int) -> Self {
         Self {
             peer,
-            inbox: VecDeque::new(),
+            inbox: BinaryHeap::new(),
+            next_seq: 0,
             closed: false,
         }
     }
@@ -239,125 +276,56 @@ impl ConnState {
 struct ConnTable {
     /// Allocated conn id → state.
     conns: HashMap<c_int, ConnState>,
-    /// Listening address → queue of server-side conn ids waiting on `accept`.
-    listeners: HashMap<String, VecDeque<c_int>>,
+    /// Listening addresses bound via `listen`.
+    listeners: HashSet<String>,
+    /// Server-side conn ids waiting on `accept`, in deterministic arrival order.
+    pending_accepts: VecDeque<c_int>,
 }
 
-/// Test-only proof that a `recv` loop has reached its real parked wait
-/// — the `cv.wait_timeout` / `cv.wait_while` registration in the
-/// `Empty` arm of `sim_recv`'s loop — before a test proceeds to
-/// destroy the transport. Gated on `cfg(test)`: the `sim-transport`
-/// feature build used outside `cargo test` allocates and touches none
-/// of this, so recv-loop production behavior is unchanged; production
-/// keeps its original per-call, throwaway `Mutex::new(())` "yielder".
-///
-/// This reuses the *same mutex* the recv loop passes into
-/// `cv.wait_timeout` / `cv.wait_while` (`state`, shared per-instance
-/// instead of per-call) rather than a side-channel flag notified
-/// before the loop actually waits. That distinction matters:
-/// `Condvar::wait*` unlocks its mutex only as it atomically registers
-/// the calling thread as a waiter — no other implementation is
-/// possible without risking a lost wakeup. So once a test thread has
-/// itself acquired `state` after observing `parked == true`, the recv
-/// loop is *provably* already registered on `cv` (not merely
-/// scheduled, and not merely past a table/partition check) — the
-/// mutex could not have been released any other way. A prior version
-/// of this handshake set a side-channel flag immediately before the
-/// recv loop took its own fresh lock; that left a window where a test
-/// could observe the flag, destroy the transport, and have
-/// `shutdown`'s `notify_all` fire before the recv loop's
-/// `cv.wait_timeout` call began — a lost wakeup papered over by the
-/// loop's 5ms self-timeout, falsely passing the test on the very
-/// pre-notify schedule it was meant to rule out.
-///
-/// Registration alone is still not sufficient proof of a *destroy*
-/// wake: a bounded `cv.wait_timeout` can resolve via its own watchdog
-/// on the very cycle a test thread is racing to destroy the
-/// transport, and merely *delaying* when the recv loop is allowed to
-/// act on that resolution (e.g. by a test thread holding the shared
-/// mutex across the destroy call) does not change *why* the wait
-/// resolved — it only changes when the loop finds out. A prior
-/// version of this handshake tried to prove a destroy wake that way
-/// and was rightly rejected: the recv loop's own watchdog could still
-/// have fired first, with the delayed reacquire only coincidentally
-/// observing a destroy-side flag that had *since* been set — proving
-/// ordering of observation, not causality of wake.
-///
-/// The only implementation that actually proves the wake was
-/// destroy-caused is to remove the watchdog from the equation
-/// entirely for this proof: `strict_destroy_wake`, once set, makes
-/// the recv loop block on `cv.wait_while(state, |s| !s.destroyed)` —
-/// unbounded, re-checking the predicate under `state`'s lock on every
-/// wake (real or spurious) — and `destroyed` is a predicate *only*
-/// `shutdown()` can ever set, under this same lock, immediately
-/// before calling `cv.notify_all()`. In this mode there is no other
-/// exit from the wait: no fuse to race, no stale flag to
-/// misattribute, no schedule under which the recv loop can resume for
-/// any reason other than a genuine destroy-side notify.
-#[cfg(test)]
-struct ParkHandshake {
-    /// Doubles as the recv loop's `cv.wait_timeout` / `cv.wait_while`
-    /// mutex in test builds — the same mutex `cv` is paired with, so a
-    /// test thread proves genuine registration by acquiring it only
-    /// once the recv loop has released it into the wait.
-    state: Mutex<ParkState>,
-    /// Separate from `cv` — used only to wake a test thread blocked
-    /// waiting for `state.parked` to flip, never touched by
-    /// production wake paths (`send` / `close_conn` / `shutdown` /
-    /// `Drop`).
-    parked_cv: Condvar,
-    /// Opt-in: false by default, preserving the bounded
-    /// `cv.wait_timeout` path every other `cfg(test)` test in this
-    /// module relies on. `destroy_wakes_blocked_recv` sets this before
-    /// spawning its recv thread to switch that one test's recv loop
-    /// onto the unbounded, predicate-only `cv.wait_while` path.
-    strict_destroy_wake: AtomicBool,
+/// Domain-separated seeded PRNGs for drop and delay rolls so enabling delivery
+/// delay does not shift the drop sequence for a given [`SimConfig::seed`].
+struct SimRng {
+    drop: SmallRng,
+    delay: SmallRng,
 }
 
-/// Shared predicate state guarded by [`ParkHandshake::state`].
-#[cfg(test)]
-#[derive(Default)]
-struct ParkState {
-    /// `true` for the span of exactly one parking attempt: set
-    /// immediately before the recv loop hands this guard to
-    /// `cv.wait_timeout` / `cv.wait_while`, reset to `false`
-    /// immediately after that call returns (whatever the cause) so the
-    /// flag never outlives the attempt it describes ("reset it per
-    /// receive").
-    parked: bool,
-    /// The *only* destroy-side predicate transition, and the *only*
-    /// exit condition `cv.wait_while` accepts in strict mode:
-    /// `shutdown()` (`cfg(test)` only) sets this to `true`, under
-    /// `state`'s lock, immediately before calling `cv.notify_all()`.
-    /// Never reset — `shutdown` is terminal.
-    destroyed: bool,
-}
+impl SimRng {
+    const DELAY_SEED_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
-#[cfg(test)]
-impl ParkHandshake {
-    fn new() -> Self {
+    fn from_seed(seed: u64) -> Self {
         Self {
-            state: Mutex::new(ParkState::default()),
-            parked_cv: Condvar::new(),
-            strict_destroy_wake: AtomicBool::new(false),
+            drop: SmallRng::seed_from_u64(seed),
+            delay: SmallRng::seed_from_u64(seed ^ Self::DELAY_SEED_SALT),
         }
     }
+}
 
-    /// Block until the recv loop has locked `state`, set `parked`,
-    /// and (by the time this returns) necessarily released `state`
-    /// into `cv.wait_timeout` / `cv.wait_while` — the only path by
-    /// which this call can regain the lock once the flag is observed
-    /// true. Returns the held guard so the caller can choose exactly
-    /// when to release it. The test runner's timeout is the hang guard.
-    fn wait_until_parked(&self) -> std::sync::MutexGuard<'_, ParkState> {
-        let guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.parked_cv
-            .wait_while(guard, |s| !s.parked)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+/// All wait-predicate state coordinated under one [`Mutex`] paired directly
+/// with [`SimTransportState::cv`].
+///
+/// Guarding `table`, `clock_ms`, `partition`, and `destroyed` under the exact
+/// mutex handed to `Condvar::wait` rules out lost wakeups for both `sim_recv`
+/// and `sim_accept` without any real-time polling timeout fuse.
+#[derive(Debug)]
+struct SimCore {
+    table: ConnTable,
+    /// Per-instance virtual clock in milliseconds, advanced via
+    /// [`sim_transport_advance_time_ms`].
+    clock_ms: u64,
+    /// Active network-partition fault flag.
+    partition: bool,
+    /// Terminal teardown marker set by [`SimTransportState::shutdown`].
+    destroyed: bool,
+    /// Number of threads currently parked inside `sim_recv`'s `cv.wait`.
+    parked_recvs: usize,
+    /// Test-only count of `sim_recv` wakes observed after `cv.wait` returns.
+    #[cfg(test)]
+    recv_wakes: usize,
+    /// Number of threads currently parked inside `sim_accept`'s `cv.wait`.
+    parked_accepts: usize,
+    /// Test-only count of `sim_accept` wakes observed after `cv.wait` returns.
+    #[cfg(test)]
+    accept_wakes: usize,
 }
 
 /// Internal heavy state for a `SimTransport`. Held behind an `Arc`
@@ -365,39 +333,46 @@ impl ParkHandshake {
 /// dropped (i.e. after `sim_destroy` has tombstoned the shell *and*
 /// every in-flight vtable call has returned).
 struct SimTransportState {
-    table: PoisonSafe<ConnTable>,
+    core: Mutex<SimCore>,
     cv: Condvar,
+    /// Condvar notified whenever `parked_recvs` / `parked_accepts` increments
+    /// right before handing `core` into `cv.wait`, or when `shutdown` sets
+    /// `destroyed`.
+    parked_cv: Condvar,
     next_conn: AtomicI32,
-    partition: AtomicBool,
     drop_rate_ppm: u32,
-    /// PRNG for drop decisions. Locked separately from the conn table so a
-    /// blocked `recv` does not stall a concurrent `send`'s drop roll.
-    rng: Mutex<SmallRng>,
-    // Reserved configuration fields — see `SimConfig`.
-    // TODO(sim-transport delay): wire `_min_delay_ms` / `_max_delay_ms`
-    // through a simulation-time-aware delivery queue when a follow-on slice
-    // ships an invariant that requires it (HEW-DIST-SPEC §14 invariants 5/6).
-    _min_delay_ms: u64,
-    _max_delay_ms: u64,
-    /// Test-only recv-park proof — see [`ParkHandshake`].
-    #[cfg(test)]
-    recv_park: ParkHandshake,
+    min_delay_ms: u64,
+    max_delay_ms: u64,
+    /// Leaf PRNG mutex for drop and delay rolls. Never acquired across
+    /// `core` lock acquisition (strict lock order: `core` → `rng`).
+    rng: Mutex<SimRng>,
 }
 
 impl SimTransportState {
     fn new(cfg: SimConfig) -> Self {
+        let min_delay_ms = cfg.min_delay_ms;
+        let max_delay_ms = cfg.max_delay_ms.max(min_delay_ms);
         Self {
-            table: PoisonSafe::new(ConnTable::default()),
+            core: Mutex::new(SimCore {
+                table: ConnTable::default(),
+                clock_ms: 0,
+                partition: cfg.partition,
+                destroyed: false,
+                parked_recvs: 0,
+                #[cfg(test)]
+                recv_wakes: 0,
+                parked_accepts: 0,
+                #[cfg(test)]
+                accept_wakes: 0,
+            }),
             cv: Condvar::new(),
+            parked_cv: Condvar::new(),
             // Start at 1 so a default-zero conn id is never valid.
             next_conn: AtomicI32::new(1),
-            partition: AtomicBool::new(cfg.partition),
             drop_rate_ppm: cfg.drop_rate_ppm.min(1_000_000),
-            rng: Mutex::new(SmallRng::seed_from_u64(cfg.seed)),
-            _min_delay_ms: cfg.min_delay_ms,
-            _max_delay_ms: cfg.max_delay_ms,
-            #[cfg(test)]
-            recv_park: ParkHandshake::new(),
+            min_delay_ms,
+            max_delay_ms,
+            rng: Mutex::new(SimRng::from_seed(cfg.seed)),
         }
     }
 
@@ -413,44 +388,138 @@ impl SimTransportState {
         }
     }
 
+    /// Sample whether an accepted send should be dropped by `drop_rate_ppm`.
+    fn roll_drop(&self) -> bool {
+        if self.drop_rate_ppm == 0 {
+            return false;
+        }
+        let mut rng = self
+            .rng
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        rng.drop.random_range(0..1_000_000) < self.drop_rate_ppm
+    }
+
+    /// Sample a deterministic virtual delivery delay in `min_delay_ms..=max_delay_ms`.
+    fn sample_delay_ms(&self) -> u64 {
+        if self.min_delay_ms == self.max_delay_ms {
+            return self.min_delay_ms;
+        }
+        let mut rng = self
+            .rng
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        rng.delay
+            .random_range(self.min_delay_ms..=self.max_delay_ms)
+    }
+
     /// Mark the transport as terminally torn-down: forces every later
     /// `send` / `recv` / `accept` to fail closed, and wakes any thread
-    /// currently parked inside `sim_recv`'s `cv.wait_timeout`.
+    /// currently parked inside `sim_recv` or `sim_accept`.
     ///
     /// Idempotent: safe to call from both [`sim_destroy`] and from the
-    /// `Drop` impl (the second call sees an already-empty conn table
-    /// and an already-`true` partition flag and only re-issues
-    /// `notify_all`, which is harmless).
+    /// `Drop` impl.
     fn shutdown(&self) {
-        self.partition.store(true, Ordering::Release);
-        // PoisonSafe::access recovers from poison transparently.
-        self.table.access(|t| {
-            for state in t.conns.values_mut() {
+        {
+            let mut core = self
+                .core
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            core.partition = true;
+            core.destroyed = true;
+            for state in core.table.conns.values_mut() {
                 state.closed = true;
                 state.inbox.clear();
             }
-            t.conns.clear();
-            t.listeners.clear();
-        });
-        // The only destroy-side predicate transition a test can
-        // observe — see `ParkHandshake`. Stamped under `recv_park.state`
-        // immediately before the wake so `strict_destroy_wake` mode's
-        // `cv.wait_while(state, |s| !s.destroyed)` has a predicate to
-        // resolve on. The test thread must have already released this
-        // lock (it only ever holds it transiently, to prove
-        // registration) — by the time `shutdown` runs, the recv loop
-        // is either genuinely parked in the wait or not yet started, so
-        // this cannot deadlock.
-        #[cfg(test)]
-        {
-            let mut state = self
-                .recv_park
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.destroyed = true;
+            core.table.conns.clear();
+            core.table.listeners.clear();
+            core.table.pending_accepts.clear();
         }
         self.cv.notify_all();
+        self.parked_cv.notify_all();
+    }
+
+    /// Block until at least one `sim_recv` call has acquired `core`,
+    /// incremented `parked_recvs`, and atomically released `core` into
+    /// `cv.wait` (or the transport is destroyed). Returns `true` if a live
+    /// receiver is parked, `false` if destroyed.
+    fn wait_until_recv_parked(&self) -> bool {
+        let guard = self
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .parked_cv
+            .wait_while(guard, |core| core.parked_recvs == 0 && !core.destroyed)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !guard.destroyed
+    }
+
+    /// Snapshot how many `sim_recv` wakes have occurred so a test can wait for
+    /// a parked receiver to re-evaluate the predicate and re-park.
+    #[cfg(test)]
+    fn recv_wakes(&self) -> usize {
+        self.core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_wakes
+    }
+
+    /// Wait until a parked `sim_recv` has woken past `wakes_before`, checked
+    /// the updated state, and parked back inside `cv.wait`.
+    #[cfg(test)]
+    fn wait_until_recv_reparked(&self, wakes_before: usize) {
+        let guard = self
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self
+            .parked_cv
+            .wait_while(guard, |core| {
+                !core.destroyed && (core.recv_wakes <= wakes_before || core.parked_recvs == 0)
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+
+    /// Block until at least one `sim_accept` call is genuinely registered
+    /// inside `cv.wait` (or the transport is destroyed). Returns `true` if a
+    /// live acceptor is parked, `false` if destroyed.
+    fn wait_until_accept_parked(&self) -> bool {
+        let guard = self
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .parked_cv
+            .wait_while(guard, |core| core.parked_accepts == 0 && !core.destroyed)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !guard.destroyed
+    }
+
+    /// Snapshot how many `sim_accept` wakes have occurred so a test can wait
+    /// for a parked acceptor to observe an intermediate tick and re-park.
+    #[cfg(test)]
+    fn accept_wakes(&self) -> usize {
+        self.core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accept_wakes
+    }
+
+    /// Wait until a parked `sim_accept` has woken past `wakes_before`, checked
+    /// the updated virtual clock, and parked back inside `cv.wait`.
+    #[cfg(test)]
+    fn wait_until_accept_reparked(&self, wakes_before: usize) {
+        let guard = self
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self
+            .parked_cv
+            .wait_while(guard, |core| {
+                !core.destroyed && (core.accept_wakes <= wakes_before || core.parked_accepts == 0)
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
 
@@ -458,7 +527,7 @@ impl Drop for SimTransportState {
     fn drop(&mut self) {
         // `shutdown` is the single source of truth for "wake every
         // waiter and release queued frames" (`cleanup-all-exits`).
-        // `sim_destroy` calls it explicitly so blocked recvs wake
+        // `sim_destroy` calls it explicitly so blocked recvs/accepts wake
         // *before* their `Arc<SimTransportState>` clones are dropped;
         // this `Drop` call is the safety net for the case where the
         // last `Arc` is held by something other than `sim_destroy`
@@ -519,35 +588,46 @@ unsafe extern "C" fn sim_connect(impl_ptr: *mut c_void, address: *const c_char) 
         return HEW_CONN_INVALID;
     };
 
-    if st.partition.load(Ordering::Acquire) {
-        set_last_error("sim_connect: transport partitioned");
-        return HEW_CONN_INVALID;
+    let result = {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if core.destroyed || core.partition {
+            Err("sim_connect: transport partitioned")
+        } else if !core.table.listeners.contains(addr_str) {
+            Err("sim_connect: no listener bound")
+        } else {
+            let client_id = st.alloc_conn_id();
+            let server_id = st.alloc_conn_id();
+            if client_id == HEW_CONN_INVALID || server_id == HEW_CONN_INVALID {
+                Err("sim_connect: connection-id space exhausted")
+            } else {
+                core.table
+                    .conns
+                    .insert(client_id, ConnState::new(server_id));
+                core.table
+                    .conns
+                    .insert(server_id, ConnState::new(client_id));
+                core.table.pending_accepts.push_back(server_id);
+                Ok(client_id)
+            }
+        }
+    };
+    match result {
+        Ok(client_id) => {
+            st.cv.notify_all();
+            client_id
+        }
+        Err(msg) => {
+            if msg == "sim_connect: no listener bound" {
+                set_last_error(format!("sim_connect: no listener bound at {addr_str}"));
+            } else {
+                set_last_error(msg);
+            }
+            HEW_CONN_INVALID
+        }
     }
-
-    let client_id = st.alloc_conn_id();
-    let server_id = st.alloc_conn_id();
-    if client_id == HEW_CONN_INVALID || server_id == HEW_CONN_INVALID {
-        set_last_error("sim_connect: connection-id space exhausted");
-        return HEW_CONN_INVALID;
-    }
-
-    let installed = st.table.access(|t| {
-        // Fail closed if the listener is unknown — mirrors `tcp_connect`'s
-        // `connect refused` rather than fabricating a half-open conn.
-        let Some(queue) = t.listeners.get_mut(addr_str) else {
-            return false;
-        };
-        t.conns.insert(client_id, ConnState::new(server_id));
-        t.conns.insert(server_id, ConnState::new(client_id));
-        queue.push_back(server_id);
-        true
-    });
-    if !installed {
-        set_last_error(format!("sim_connect: no listener bound at {addr_str}"));
-        return HEW_CONN_INVALID;
-    }
-    st.cv.notify_all();
-    client_id
 }
 
 unsafe extern "C" fn sim_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
@@ -562,9 +642,15 @@ unsafe extern "C" fn sim_listen(impl_ptr: *mut c_void, address: *const c_char) -
         set_last_error("sim_listen: transport destroyed or stale");
         return -1;
     };
-    st.table.access(|t| {
-        t.listeners.entry(addr_str.to_owned()).or_default();
-    });
+    let mut core = st
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if core.destroyed {
+        set_last_error("sim_listen: transport destroyed");
+        return -1;
+    }
+    core.table.listeners.insert(addr_str.to_owned());
     0
 }
 
@@ -576,19 +662,45 @@ unsafe extern "C" fn sim_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
         return HEW_CONN_INVALID;
     };
 
-    // Non-blocking poll suffices for the slice-2 property tests: the test
-    // driver always calls `connect` before `accept`. We still honour the
-    // timeout argument so future invariants (reconnect-gap) can rely on it.
-    let _ = timeout_ms; // TODO(sim-transport): wire timeout for reconnect tests.
+    let mut core = st
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let deadline_ms = if timeout_ms < 0 {
+        None
+    } else {
+        #[expect(clippy::cast_sign_loss, reason = "guarded by timeout_ms >= 0")]
+        Some(core.clock_ms.saturating_add(timeout_ms as u64))
+    };
 
-    st.table.access(|t| {
-        for queue in t.listeners.values_mut() {
-            if let Some(conn) = queue.pop_front() {
+    loop {
+        if core.destroyed {
+            drop(core);
+            set_last_error("sim_accept: transport destroyed");
+            return HEW_CONN_INVALID;
+        }
+        if !core.partition {
+            if let Some(conn) = core.table.pending_accepts.pop_front() {
                 return conn;
             }
         }
-        HEW_CONN_INVALID
-    })
+        if deadline_ms.is_some_and(|deadline| core.clock_ms >= deadline) {
+            drop(core);
+            set_last_error("sim_accept: timed out waiting for connection");
+            return HEW_CONN_INVALID;
+        }
+        core.parked_accepts += 1;
+        st.parked_cv.notify_all();
+        core = st
+            .cv
+            .wait(core)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core.parked_accepts -= 1;
+        #[cfg(test)]
+        {
+            core.accept_wakes += 1;
+        }
+    }
 }
 
 unsafe extern "C" fn sim_send(
@@ -604,28 +716,12 @@ unsafe extern "C" fn sim_send(
         return HEW_ERR_TRANSPORT;
     };
 
-    if st.partition.load(Ordering::Acquire) {
-        set_last_error("sim_send: partition active");
-        return HEW_ERR_TRANSPORT;
-    }
     if len > MAX_FRAME_SIZE {
         set_last_error(format!(
             "sim_send: frame {len} exceeds MAX_FRAME_SIZE ({MAX_FRAME_SIZE})"
         ));
         return HEW_ERR_TRANSPORT;
     }
-
-    // Drop roll happens before we touch the conn table so two sends with
-    // the same seed and the same send order produce the same drop pattern.
-    let dropped = if st.drop_rate_ppm == 0 {
-        false
-    } else {
-        let mut rng = st
-            .rng
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        rng.random_range(0..1_000_000) < st.drop_rate_ppm
-    };
 
     let payload: Vec<u8> = if len == 0 {
         Vec::new()
@@ -634,29 +730,46 @@ unsafe extern "C" fn sim_send(
         unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec()
     };
 
-    let outcome = st.table.access(|t| {
-        let Some(sender) = t.conns.get(&conn) else {
-            return SendInternal::InvalidConn;
-        };
-        if sender.closed {
-            return SendInternal::InvalidConn;
+    let outcome = {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if core.destroyed || core.partition {
+            SendInternal::Partitioned
+        } else {
+            let now_ms = core.clock_ms;
+            let peer_id = match core.table.conns.get(&conn) {
+                None => None,
+                Some(sender) if sender.closed => None,
+                Some(sender) => Some(sender.peer),
+            };
+            match peer_id {
+                None => SendInternal::InvalidConn,
+                Some(HEW_CONN_INVALID) => SendInternal::PeerClosed,
+                Some(peer_id) => match core.table.conns.get_mut(&peer_id) {
+                    None => SendInternal::PeerClosed,
+                    Some(peer_state) if peer_state.closed => SendInternal::PeerClosed,
+                    Some(peer_state) => {
+                        if st.roll_drop() {
+                            SendInternal::Dropped
+                        } else {
+                            let delay_ms = st.sample_delay_ms();
+                            let deliver_at_ms = now_ms.saturating_add(delay_ms);
+                            let seq = peer_state.next_seq;
+                            peer_state.next_seq = peer_state.next_seq.saturating_add(1);
+                            peer_state.inbox.push(ScheduledFrame {
+                                deliver_at_ms,
+                                seq,
+                                payload,
+                            });
+                            SendInternal::Delivered
+                        }
+                    }
+                },
+            }
         }
-        let peer_id = sender.peer;
-        if peer_id == HEW_CONN_INVALID {
-            return SendInternal::PeerClosed;
-        }
-        let Some(peer_state) = t.conns.get_mut(&peer_id) else {
-            return SendInternal::PeerClosed;
-        };
-        if peer_state.closed {
-            return SendInternal::PeerClosed;
-        }
-        if dropped {
-            return SendInternal::Dropped;
-        }
-        peer_state.inbox.push_back(payload);
-        SendInternal::Delivered
-    });
+    };
 
     match outcome {
         SendInternal::Delivered => {
@@ -671,21 +784,22 @@ unsafe extern "C" fn sim_send(
                 len as c_int
             }
         }
+        SendInternal::Partitioned => {
+            set_last_error("sim_send: partition active");
+            HEW_ERR_TRANSPORT
+        }
         SendInternal::Dropped => {
-            // Caller sees a successful "0 bytes sent — frame ate by the
-            // network" condition converted to a typed transport failure
-            // rather than fabricating a positive ack. The classifier maps
-            // the sim-only `HEW_ERR_SIM_DROPPED` code to `DroppedByPolicy`
-            // so it can never collide with a peer-close or partition.
+            // Caller sees a typed transport failure rather than fabricating a
+            // positive ack. The classifier maps the sim-only
+            // `HEW_ERR_SIM_DROPPED` code to `DroppedByPolicy` so it can never
+            // collide with a peer-close or partition.
             set_last_error("sim_send: frame dropped by drop_rate policy");
             HEW_ERR_SIM_DROPPED
         }
         SendInternal::PeerClosed => {
             // Peer endpoint was closed (or our own conn's peer link was
-            // detached by `close_conn` on the other side). This is terminal
-            // for the connection and must NOT be reported as a transient
-            // drop or a network partition (see review: drop-bucket and
-            // buffer-too-small must not swallow peer-close).
+            // detached by `close_conn` on the other side). Terminal for the
+            // connection and distinct from a drop or network partition.
             set_last_error("sim_send: peer endpoint closed or detached");
             HEW_ERR_SIM_PEER_CLOSED
         }
@@ -699,9 +813,48 @@ unsafe extern "C" fn sim_send(
 #[derive(Debug, Clone, Copy)]
 enum SendInternal {
     Delivered,
+    Partitioned,
     Dropped,
     PeerClosed,
     InvalidConn,
+}
+
+fn poll_recv_locked(core: &mut SimCore, conn: c_int, buf_size: usize) -> RecvInternal {
+    if core.destroyed || core.partition {
+        return RecvInternal::Partitioned;
+    }
+    let now_ms = core.clock_ms;
+    let Some(state) = core.table.conns.get_mut(&conn) else {
+        return RecvInternal::InvalidConn;
+    };
+    // Local side closed (we called `close_conn` on this conn). Even if the
+    // inbox still holds data, the conn is no longer readable — fail-closed
+    // (`cleanup-all-exits`).
+    if state.closed {
+        return RecvInternal::PeerClosed;
+    }
+    if let Some(head) = state.inbox.peek() {
+        if head.deliver_at_ms <= now_ms {
+            if head.payload.len() > buf_size {
+                // Leave the frame in place so the caller can retry with a
+                // larger buffer — fail-closed without losing data.
+                return RecvInternal::BufferTooSmall;
+            }
+            let frame = state.inbox.pop().expect("peeked frame must be present");
+            return RecvInternal::Frame(frame.payload);
+        }
+        // In-flight delayed frame is still travelling on the simulated wire;
+        // wait for virtual time to reach `deliver_at_ms` before surfacing
+        // `PeerClosed` if the peer has since detached.
+        return RecvInternal::Empty;
+    }
+    // Inbox is empty. If the peer endpoint is gone, this is terminal: no
+    // further frames can ever arrive, and a blocked recv must wake and surface
+    // a typed close failure rather than spin forever.
+    if state.peer == HEW_CONN_INVALID {
+        return RecvInternal::PeerClosed;
+    }
+    RecvInternal::Empty
 }
 
 unsafe extern "C" fn sim_recv(
@@ -717,77 +870,21 @@ unsafe extern "C" fn sim_recv(
         return HEW_ERR_TRANSPORT;
     };
 
-    // Acquire the table lock and wait on `cv` until a frame is available,
-    // partition activates, or the conn is closed. This mirrors the blocking
-    // semantics of `tcp_recv` / `quic_recv` while remaining bounded — every
-    // wakeup channel (partition, close, frame arrival, drop) calls
-    // `notify_all`, so the loop terminates.
-    //
-    // We use the inner `Mutex` of `PoisonSafe<ConnTable>` directly here
-    // because `Condvar::wait` requires a `MutexGuard` and PoisonSafe only
-    // exposes closure-style access. The unsafe cast below is sound: PoisonSafe
-    // is `#[repr(transparent)]` over `Mutex<T>` (asserted by the field-only
-    // ctor at construction; see `lifetime/poison_safe.rs`).
-    //
-    // To avoid that cast we instead do a short closure-bounded poll: the
-    // table lock is held briefly inside `access`, releases between iterations
-    // (which lets `send` make progress), and we yield via `cv.wait_timeout`
-    // on a separate per-call mutex. This keeps the slice-1 surface free of
-    // private re-exports from `lifetime/`.
-    //
-    // For the slice-2 invariants, the test driver always sends before
-    // recv'ing, so the loop body usually finds a frame on the first pass.
-    //
-    // The `#[cfg(not(test))]` throwaway mutex below is production's only
-    // path: a fresh, unshared `Mutex<()>` exists solely to satisfy
-    // `Condvar::wait_timeout`'s API (it guards no real data — the actual
-    // wake conditions live in `partition` / `table`). `cfg(test)` builds
-    // use the per-instance `recv_park` handshake instead so a test can
-    // deterministically prove this loop reached its real parked wait —
-    // see [`ParkHandshake`].
-    #[cfg(not(test))]
-    let yielder = Mutex::new(());
+    let mut core = st
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
-        if st.partition.load(Ordering::Acquire) {
-            set_last_error("sim_recv: partition active");
-            return HEW_ERR_TRANSPORT;
-        }
-        let outcome = st.table.access(|t| {
-            let Some(state) = t.conns.get_mut(&conn) else {
-                return RecvInternal::InvalidConn;
-            };
-            // Local side closed (we called `close_conn` on this conn). Even
-            // if the inbox still holds data, the conn is no longer readable
-            // — fail-closed (`cleanup-all-exits`).
-            if state.closed {
-                return RecvInternal::PeerClosed;
-            }
-            if let Some(frame) = state.inbox.pop_front() {
-                if frame.len() > buf_size {
-                    // Put it back so the caller can retry with a bigger buffer
-                    // — fail-closed without losing data.
-                    state.inbox.push_front(frame);
-                    return RecvInternal::BufferTooSmall;
-                }
-                return RecvInternal::Frame(frame);
-            }
-            // Inbox is empty. If the peer endpoint is gone, this is terminal:
-            // no further frames can ever arrive, and a blocked recv must wake
-            // and surface a typed close failure rather than spin forever
-            // (review item 1: peer-close must wake waiters and surface a
-            // terminal typed transport/closed failure).
-            if state.peer == HEW_CONN_INVALID {
-                return RecvInternal::PeerClosed;
-            }
-            RecvInternal::Empty
-        });
-        match outcome {
+        match poll_recv_locked(&mut core, conn, buf_size) {
             RecvInternal::Frame(frame) => {
+                drop(core);
                 let n = frame.len();
-                // SAFETY: caller guarantees `buf` is valid for `buf_size`
-                // bytes and `n <= buf_size` was checked under the table lock.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(frame.as_ptr(), buf.cast::<u8>(), n);
+                if n > 0 {
+                    // SAFETY: caller guarantees `buf` is valid for `buf_size`
+                    // bytes and `n <= buf_size` was checked under `core`.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(frame.as_ptr(), buf.cast::<u8>(), n);
+                    }
                 }
                 #[expect(
                     clippy::cast_possible_truncation,
@@ -798,79 +895,37 @@ unsafe extern "C" fn sim_recv(
                     return n as c_int;
                 }
             }
+            RecvInternal::Partitioned => {
+                drop(core);
+                set_last_error("sim_recv: partition active");
+                return HEW_ERR_TRANSPORT;
+            }
             RecvInternal::PeerClosed => {
+                drop(core);
                 set_last_error("sim_recv: peer endpoint closed or detached");
                 return HEW_ERR_SIM_PEER_CLOSED;
             }
             RecvInternal::InvalidConn => {
+                drop(core);
                 set_last_error(format!("sim_recv: invalid conn {conn}"));
                 return -1;
             }
             RecvInternal::BufferTooSmall => {
+                drop(core);
                 set_last_error("sim_recv: caller buffer too small for next frame");
                 return HEW_ERR_SIM_BUFFER_TOO_SMALL;
             }
             RecvInternal::Empty => {
-                // Park briefly with a bounded timeout. `notify_all` from
-                // `send` / `close_conn` / `Drop` / partition setter wakes us
-                // immediately; the timeout only matters as a deadlock fuse.
-                //
-                // `cfg(test)` builds lock+flag+release the *shared*
-                // `recv_park.state` mutex into `cv.wait_timeout` (or, in
-                // `strict_destroy_wake` mode, `cv.wait_while`) instead of
-                // a fresh per-call mutex, so a test thread can prove real
-                // registration on `cv` by successfully acquiring that
-                // same mutex after observing the flag — see
-                // [`ParkHandshake`]. Production (`cfg(not(test))`) is
-                // byte-for-byte the original throwaway-mutex path.
+                core.parked_recvs += 1;
+                st.parked_cv.notify_all();
+                core = st
+                    .cv
+                    .wait(core)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                core.parked_recvs -= 1;
                 #[cfg(test)]
                 {
-                    let mut guard = st
-                        .recv_park
-                        .state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    guard.parked = true;
-                    st.recv_park.parked_cv.notify_all();
-                    if st.recv_park.strict_destroy_wake.load(Ordering::Acquire) {
-                        // Regression mode (`destroy_wakes_blocked_recv`
-                        // only): block until `shutdown()` sets
-                        // `destroyed` under this same lock and calls
-                        // `cv.notify_all()`. No timeout, no other exit —
-                        // `wait_while` re-checks the predicate under the
-                        // lock on every real or spurious wake, so the
-                        // only way this call can ever return is a
-                        // genuine destroy-side notify.
-                        guard = st
-                            .cv
-                            .wait_while(guard, |s| !s.destroyed)
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    } else {
-                        let (next_guard, _) = st
-                            .cv
-                            .wait_timeout(guard, std::time::Duration::from_millis(5))
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard = next_guard;
-                    }
-                    // Reset per receive: this attempt's parked window has
-                    // ended (whatever caused the wait to return), so the
-                    // flag must not read as a currently-active park on
-                    // the next Empty-arm visit.
-                    guard.parked = false;
-                    drop(guard);
-                }
-                #[cfg(not(test))]
-                {
-                    let guard = yielder
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let _ = st
-                        .cv
-                        .wait_timeout(guard, std::time::Duration::from_millis(5))
-                        .unwrap_or_else(|e| {
-                            let (g, t) = e.into_inner();
-                            (g, t)
-                        });
+                    core.recv_wakes += 1;
                 }
             }
         }
@@ -880,6 +935,7 @@ unsafe extern "C" fn sim_recv(
 #[derive(Debug)]
 enum RecvInternal {
     Frame(Vec<u8>),
+    Partitioned,
     Empty,
     PeerClosed,
     InvalidConn,
@@ -893,16 +949,20 @@ unsafe extern "C" fn sim_close_conn(impl_ptr: *mut c_void, conn: c_int) {
         set_last_error("sim_close_conn: transport destroyed or stale");
         return;
     };
-    st.table.access(|t| {
-        if let Some(state) = t.conns.get_mut(&conn) {
+    {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(state) = core.table.conns.get_mut(&conn) {
             state.closed = true;
             state.inbox.clear();
             let peer = state.peer;
-            if let Some(peer_state) = t.conns.get_mut(&peer) {
+            if let Some(peer_state) = core.table.conns.get_mut(&peer) {
                 peer_state.peer = HEW_CONN_INVALID;
             }
         }
-    });
+    }
     st.cv.notify_all();
 }
 
@@ -1122,8 +1182,236 @@ pub unsafe fn sim_transport_set_partition(transport: *mut HewTransport, partitio
         set_last_error("sim_transport_set_partition: transport destroyed or stale");
         return;
     };
-    st.partition.store(partitioned, Ordering::Release);
+    {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !core.destroyed {
+            core.partition = partitioned;
+        }
+    }
     st.cv.notify_all();
+}
+
+/// Read the current per-instance virtual clock (in milliseconds) for a
+/// `SimTransport`. Returns `0` for null or destroyed/stale pointers.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process.
+#[must_use]
+pub unsafe fn sim_transport_now_ms(transport: *mut HewTransport) -> u64 {
+    if transport.is_null() {
+        return 0;
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return 0;
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_now_ms: transport destroyed or stale");
+        return 0;
+    };
+    let now = st
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clock_ms;
+    now
+}
+
+/// Advance the per-instance virtual clock of a `SimTransport` by `delta_ms`
+/// (saturating at `u64::MAX`), wake any parked `recv` or `accept` waiters, and
+/// return the updated virtual timestamp in milliseconds. Returns `0` for null
+/// or destroyed/stale pointers.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process.
+pub unsafe fn sim_transport_advance_time_ms(transport: *mut HewTransport, delta_ms: u64) -> u64 {
+    if transport.is_null() {
+        return 0;
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return 0;
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_advance_time_ms: transport destroyed or stale");
+        return 0;
+    };
+    let now = {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core.clock_ms = core.clock_ms.saturating_add(delta_ms);
+        core.clock_ms
+    };
+    st.cv.notify_all();
+    now
+}
+
+/// Block until at least one `accept` call is parked waiting on this
+/// transport's virtual clock/connect condvar, or until the transport is
+/// destroyed. Returns `true` if a live acceptor is parked, `false` for null or
+/// destroyed transports.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process.
+#[must_use]
+pub unsafe fn sim_transport_wait_until_accept_parked(transport: *mut HewTransport) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return false;
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_wait_until_accept_parked: transport destroyed or stale");
+        return false;
+    };
+    st.wait_until_accept_parked()
+}
+
+/// Block until at least one `recv` call is parked waiting on this transport's
+/// virtual clock/delivery condvar, or until the transport is destroyed.
+/// Returns `true` if a live receiver is parked, `false` for null or destroyed
+/// transports.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process.
+#[must_use]
+pub unsafe fn sim_transport_wait_until_recv_parked(transport: *mut HewTransport) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return false;
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_wait_until_recv_parked: transport destroyed or stale");
+        return false;
+    };
+    st.wait_until_recv_parked()
+}
+
+/// Inspect the earliest scheduled virtual delivery timestamp (in milliseconds)
+/// for a connection's inbound queue, or `None` if no frames are queued, the
+/// connection is closed/invalid, or the transport is partitioned/destroyed.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process.
+#[must_use]
+pub unsafe fn sim_transport_next_delivery_ms(
+    transport: *mut HewTransport,
+    conn: c_int,
+) -> Option<u64> {
+    if transport.is_null() {
+        return None;
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return None;
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let st = unsafe { shell_state(shell.inner.r#impl) }?;
+    let core = st
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if core.destroyed || core.partition {
+        return None;
+    }
+    let state = core.table.conns.get(&conn)?;
+    if state.closed {
+        return None;
+    }
+    state.inbox.peek().map(|frame| frame.deliver_at_ms)
+}
+
+/// Non-blocking classified receive at the transport's current virtual clock.
+///
+/// Returns `None` when the connection is healthy and unpartitioned but no
+/// frame is deliverable at the current virtual timestamp (either the inbox is
+/// empty or all queued frames have `deliver_at_ms > now_ms`). Returns
+/// `Some(outcome)` immediately for delivered frames, partitions, peer close,
+/// invalid connections, or undersized buffers.
+///
+/// # Safety
+///
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process, and `buf` must be valid for
+/// `buf.len()` writable bytes.
+pub unsafe fn sim_transport_try_recv_classified(
+    transport: *mut HewTransport,
+    conn: c_int,
+    buf: &mut [u8],
+) -> Option<SimRecvOutcome> {
+    if transport.is_null() {
+        return Some(SimRecvOutcome::InvalidConn);
+    }
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
+        return Some(SimRecvOutcome::InvalidConn);
+    }
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_try_recv_classified: transport destroyed or stale");
+        return Some(SimRecvOutcome::Partitioned);
+    };
+    let outcome = {
+        let mut core = st
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        poll_recv_locked(&mut core, conn, buf.len())
+    };
+    match outcome {
+        RecvInternal::Frame(frame) => {
+            let n = frame.len();
+            buf[..n].copy_from_slice(&frame);
+            Some(SimRecvOutcome::Received { bytes_received: n })
+        }
+        RecvInternal::Empty => None,
+        RecvInternal::Partitioned => {
+            set_last_error("sim_recv: partition active");
+            Some(SimRecvOutcome::Partitioned)
+        }
+        RecvInternal::PeerClosed => {
+            set_last_error("sim_recv: peer endpoint closed or detached");
+            Some(SimRecvOutcome::PeerClosed)
+        }
+        RecvInternal::InvalidConn => {
+            set_last_error(format!("sim_recv: invalid conn {conn}"));
+            Some(SimRecvOutcome::InvalidConn)
+        }
+        RecvInternal::BufferTooSmall => {
+            set_last_error("sim_recv: caller buffer too small for next frame");
+            Some(SimRecvOutcome::BufferTooSmall)
+        }
+    }
 }
 
 /// Classified send helper for property tests. Wraps the vtable's `send` fn
@@ -1387,7 +1675,7 @@ mod tests {
             });
 
             // Wait until the recv loop has parked on the empty connection.
-            drop(state.recv_park.wait_until_parked());
+            assert!(state.wait_until_recv_parked());
             drop(state);
 
             // Close the client side — this should wake the blocked recv via
@@ -1833,55 +2121,29 @@ mod tests {
     }
 
     /// Security regression: a `sim_transport_free` must wake any
-    /// recv parked inside `cv.wait_timeout` so the parked thread's
+    /// recv parked inside `cv.wait` so the parked thread's
     /// `Arc<SimTransportState>` clone is dropped promptly and the
-    /// heavy state can be reclaimed. Without the explicit
-    /// `shutdown()` call inside `sim_destroy`, the parked thread
-    /// would keep the heavy state alive until its own watchdog
-    /// timer fired.
+    /// heavy state can be reclaimed.
     ///
-    /// This test opts the recv loop into `strict_destroy_wake` mode
-    /// (see [`ParkHandshake`]): the loop blocks on
-    /// `cv.wait_while(state, |s| !s.destroyed)` with no timeout, and
-    /// `destroyed` is a predicate only `shutdown()` can ever set,
-    /// under the same lock `cv` is paired with, immediately before
-    /// `cv.notify_all()`. There is no fuse to race and no stale flag
-    /// to misattribute — the only way the recv loop can ever resume is
-    /// a genuine destroy-side notify, so the deterministic outcome
-    /// (`Partitioned`, since `shutdown` sets `partition` before
-    /// touching anything else) is itself the proof. Every other test
-    /// in this module keeps the default bounded `cv.wait_timeout`
-    /// path untouched.
+    /// Because `sim_recv` uses an unbounded `cv.wait` paired directly with the
+    /// `core` mutex that `shutdown()` updates before calling `cv.notify_all()`,
+    /// there is no polling fuse to race — the only way the recv loop can resume
+    /// is a genuine destroy-side notify, so the deterministic outcome
+    /// (`Partitioned`) is itself the proof.
     #[test]
     fn destroy_wakes_blocked_recv() {
         use std::thread;
 
-        // SAFETY: we leak `t` to the recv thread via a usize and
+        // SAFETY: we pass `t` to the recv thread via a usize and
         // call sim_transport_free from the main thread; the recv
         // thread only holds an `Arc` clone of the heavy state, so
-        // dropping the outer pointer's tombstone is safe.
+        // tombstoning the outer pointer is safe.
         unsafe {
             let t = sim_transport_new(SimConfig::default());
             let (_client, server) = make_pair(t, "sim://destroy-wake:0");
             let t_addr = t as usize;
 
-            // `shell_state` only clones the Arc — it does not touch
-            // `sim_destroy`'s take-and-shutdown sequence (that only
-            // drops the shell's own reference) — so this clone is safe
-            // to hold just long enough to opt this transport's recv
-            // loop into strict mode and drive the park handshake; it
-            // does not change what the destroy path observes.
             let state = shell_state((*t).r#impl).expect("transport must be live");
-
-            // Opt-in, *before* spawning the recv thread: this
-            // transport's recv loop will block on the unbounded
-            // `cv.wait_while` predicate path instead of the default
-            // bounded `cv.wait_timeout` fuse every other test relies
-            // on — see `ParkHandshake::strict_destroy_wake`.
-            state
-                .recv_park
-                .strict_destroy_wake
-                .store(true, Ordering::Release);
 
             let recv_handle = thread::spawn(move || {
                 let mut buf = [0u8; 32];
@@ -1894,49 +2156,366 @@ mod tests {
                 }
             });
 
-            // Block until *this test thread* has itself acquired
-            // `recv_park.state` after observing `parked == true`.
-            // `Condvar::wait_timeout_while` only ever unlocks its mutex
-            // as part of atomically registering the calling thread as
-            // a waiter on `parked_cv` — that is the only way this lock
-            // could become available to us once the flag reads true.
-            // Symmetrically, the recv loop can only have released
-            // `state` (so we can reacquire it) by handing it into
-            // `cv.wait_while` — the *same* mutex `destroyed` is guarded
-            // by. So a successful, non-timing-out return here proves
-            // the recv loop is already blocked inside `cv.wait_while`,
-            // not merely scheduled and not merely past a
-            // table/partition check.
-            let park_guard = state.recv_park.wait_until_parked();
-
-            // Release before destroying: the recv loop is *already*
-            // parked inside `cv.wait_while` at this point (proven
-            // above) — it is not waiting on `state` itself, so there is
-            // no window in which dropping this guard could let the
-            // recv loop race ahead and resolve for any reason other
-            // than `shutdown()`'s predicate flip. `shutdown()` needs
-            // this exact lock to stamp `destroyed`, so it must be
-            // released first.
-            drop(park_guard);
+            assert!(state.wait_until_recv_parked());
             drop(state);
 
             sim_transport_free(t);
 
             let outcome = recv_handle.join().expect("recv thread panicked");
-
-            // In strict mode there is exactly one possible outcome:
-            // `shutdown()` sets `partition` before it touches anything
-            // else, and the only way the recv loop's `cv.wait_while`
-            // can ever return is `shutdown()` having already stamped
-            // `destroyed` and called `notify_all` — no self-timeout, no
-            // spurious wake, no stale-flag misattribution is possible.
-            // A widened Partitioned-or-InvalidConn accept is no longer
-            // needed: the predicate design itself rules out every
-            // schedule this test exists to catch (#1945).
             assert!(
                 matches!(outcome, SimRecvOutcome::Partitioned),
-                "expected a destroy wake (Partitioned) proven by the strict \
-                 destroyed predicate, got {outcome:?}"
+                "expected a destroy wake (Partitioned), got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_delay_holds_frame_until_exact_virtual_tick() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            // `max_delay_ms < min_delay_ms` clamps to a fixed `min_delay_ms` delay.
+            let cfg = SimConfig {
+                seed: 11,
+                min_delay_ms: 25,
+                max_delay_ms: 0,
+                ..SimConfig::default()
+            };
+            let t = sim_transport_new(cfg);
+            let (client, server) = make_pair(t, "sim://fixed-delay:0");
+            assert_eq!(sim_transport_now_ms(t), 0);
+
+            assert_eq!(
+                sim_transport_send_classified(t, client, b"delayed"),
+                SimSendOutcome::Sent { bytes_sent: 7 }
+            );
+            assert_eq!(sim_transport_next_delivery_ms(t, server), Some(25));
+
+            let mut buf = [0u8; 16];
+            assert_eq!(sim_transport_try_recv_classified(t, server, &mut buf), None);
+
+            assert_eq!(sim_transport_advance_time_ms(t, 24), 24);
+            assert_eq!(sim_transport_try_recv_classified(t, server, &mut buf), None);
+
+            assert_eq!(sim_transport_advance_time_ms(t, 1), 25);
+            assert_eq!(
+                sim_transport_try_recv_classified(t, server, &mut buf),
+                Some(SimRecvOutcome::Received { bytes_received: 7 })
+            );
+            assert_eq!(&buf[..7], b"delayed");
+            assert_eq!(sim_transport_next_delivery_ms(t, server), None);
+
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn blocking_recv_waits_for_virtual_clock_delay_then_delivers() {
+        use std::thread;
+
+        // SAFETY: `t` outlives the spawned recv thread, which is joined before free.
+        unsafe {
+            let cfg = SimConfig {
+                seed: 17,
+                min_delay_ms: 30,
+                max_delay_ms: 30,
+                ..SimConfig::default()
+            };
+            let t = sim_transport_new(cfg);
+            let (client, server) = make_pair(t, "sim://blocking-delay:0");
+            assert_eq!(
+                sim_transport_send_classified(t, client, b"on-time"),
+                SimSendOutcome::Sent { bytes_sent: 7 }
+            );
+
+            let state = shell_state((*t).r#impl).expect("transport must be live");
+            let t_addr = t as usize;
+            let recv_handle = thread::spawn(move || {
+                let mut buf = [0u8; 16];
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(unused_unsafe, reason = "explicit unsafe block at FFI call site")]
+                // SAFETY: `t_local` remains live until joined below.
+                let outcome = unsafe { sim_transport_recv_classified(t_local, server, &mut buf) };
+                (outcome, buf)
+            });
+
+            assert!(state.wait_until_recv_parked());
+            let wakes = state.recv_wakes();
+            assert_eq!(sim_transport_advance_time_ms(t, 29), 29);
+            state.wait_until_recv_reparked(wakes);
+            drop(state);
+
+            assert_eq!(sim_transport_advance_time_ms(t, 1), 30);
+            let (outcome, buf) = recv_handle.join().expect("recv thread panicked");
+            assert_eq!(outcome, SimRecvOutcome::Received { bytes_received: 7 });
+            assert_eq!(&buf[..7], b"on-time");
+
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn variable_delay_reorders_frames_deterministically_by_seed() {
+        fn run_trace(seed: u64) -> Vec<(u64, u32)> {
+            // SAFETY: standard test construction / destruction.
+            unsafe {
+                let cfg = SimConfig {
+                    seed,
+                    drop_rate_ppm: 0,
+                    min_delay_ms: 5,
+                    max_delay_ms: 50,
+                    ..SimConfig::default()
+                };
+                let t = sim_transport_new(cfg);
+                let (client, server) = make_pair(t, "sim://reorder:0");
+
+                for id in 0u32..24 {
+                    let bytes = id.to_le_bytes();
+                    assert_eq!(
+                        sim_transport_send_classified(t, client, &bytes),
+                        SimSendOutcome::Sent { bytes_sent: 4 }
+                    );
+                }
+
+                let mut trace = Vec::with_capacity(24);
+                for tick in 0u64..=50 {
+                    if tick > 0 {
+                        assert_eq!(sim_transport_advance_time_ms(t, 1), tick);
+                    }
+                    loop {
+                        let mut buf = [0u8; 4];
+                        match sim_transport_try_recv_classified(t, server, &mut buf) {
+                            Some(SimRecvOutcome::Received { bytes_received: 4 }) => {
+                                assert!(
+                                    (5..=50).contains(&tick),
+                                    "frame delivered at {tick}, outside [5, 50]"
+                                );
+                                trace.push((tick, u32::from_le_bytes(buf)));
+                            }
+                            None => break,
+                            other => panic!("unexpected recv outcome at tick {tick}: {other:?}"),
+                        }
+                    }
+                }
+                assert_eq!(trace.len(), 24);
+                sim_transport_free(t);
+                trace
+            }
+        }
+
+        let first = run_trace(0xC0FF_EE42);
+        let second = run_trace(0xC0FF_EE42);
+        assert_eq!(
+            first, second,
+            "same seed must replay bit-identical delivery ticks and frame ordering"
+        );
+        let ids: Vec<u32> = first.iter().map(|&(_, id)| id).collect();
+        let in_order: Vec<u32> = (0u32..24).collect();
+        assert_ne!(
+            ids, in_order,
+            "variable delay in [5, 50] ms across 24 frames should observe packet reordering"
+        );
+    }
+
+    #[test]
+    fn delayed_frames_survive_peer_close_until_virtual_delivery() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            let cfg = SimConfig {
+                seed: 5,
+                min_delay_ms: 15,
+                max_delay_ms: 15,
+                ..SimConfig::default()
+            };
+            let t = sim_transport_new(cfg);
+            let (client, server) = make_pair(t, "sim://delay-close:0");
+            assert_eq!(
+                sim_transport_send_classified(t, client, b"last-word"),
+                SimSendOutcome::Sent { bytes_sent: 9 }
+            );
+            let tref = &*t;
+            let ops = &*tref.ops;
+            ops.close_conn.unwrap()(tref.r#impl, client);
+
+            let mut buf = [0u8; 16];
+            assert_eq!(sim_transport_advance_time_ms(t, 14), 14);
+            assert_eq!(sim_transport_try_recv_classified(t, server, &mut buf), None);
+
+            assert_eq!(sim_transport_advance_time_ms(t, 1), 15);
+            assert_eq!(
+                sim_transport_try_recv_classified(t, server, &mut buf),
+                Some(SimRecvOutcome::Received { bytes_received: 9 })
+            );
+            assert_eq!(&buf[..9], b"last-word");
+
+            // Once all in-flight frames are drained, PeerClosed surfaces.
+            assert_eq!(
+                sim_transport_try_recv_classified(t, server, &mut buf),
+                Some(SimRecvOutcome::PeerClosed)
+            );
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn accept_zero_timeout_polls_without_blocking() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let caddr = CString::new("sim://poll-accept:0").unwrap();
+            let tref = &*t;
+            let ops = &*tref.ops;
+            assert_eq!(ops.listen.unwrap()(tref.r#impl, caddr.as_ptr()), 0);
+            assert_eq!(ops.accept.unwrap()(tref.r#impl, 0), HEW_CONN_INVALID);
+            let client = ops.connect.unwrap()(tref.r#impl, caddr.as_ptr());
+            assert!(client > 0);
+            let server = ops.accept.unwrap()(tref.r#impl, 0);
+            assert!(server > 0);
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn accept_timeout_expires_at_exact_virtual_deadline() {
+        use std::thread;
+
+        // SAFETY: `t` outlives the acceptor thread joined below.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let caddr = CString::new("sim://accept-timeout:0").unwrap();
+            let tref = &*t;
+            let ops = &*tref.ops;
+            assert_eq!(ops.listen.unwrap()(tref.r#impl, caddr.as_ptr()), 0);
+
+            let state = shell_state(tref.r#impl).expect("transport must be live");
+            let t_addr = t as usize;
+            let accept_handle = thread::spawn(move || {
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(unused_unsafe, reason = "explicit unsafe block at FFI call site")]
+                // SAFETY: `t_local` remains live until joined below.
+                unsafe {
+                    let tref = &*t_local;
+                    let ops = &*tref.ops;
+                    ops.accept.unwrap()(tref.r#impl, 200)
+                }
+            });
+
+            assert!(state.wait_until_accept_parked());
+            let wakes = state.accept_wakes();
+            assert_eq!(sim_transport_advance_time_ms(t, 199), 199);
+            state.wait_until_accept_reparked(wakes);
+            drop(state);
+
+            assert_eq!(sim_transport_advance_time_ms(t, 1), 200);
+            assert_eq!(
+                accept_handle.join().expect("accept thread panicked"),
+                HEW_CONN_INVALID
+            );
+
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn accept_reconnect_recovers_after_partition_heal_before_timeout() {
+        use std::thread;
+
+        // SAFETY: `t` outlives the acceptor thread joined below.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let addr = "sim://reconnect-heal:0";
+            let caddr = CString::new(addr).unwrap();
+            let (client1, server1) = make_pair(t, addr);
+
+            // Simulate partition breaking session 1.
+            sim_transport_set_partition(t, true);
+            assert_eq!(
+                sim_transport_send_classified(t, client1, b"lost"),
+                SimSendOutcome::Partitioned
+            );
+            let tref = &*t;
+            let ops = &*tref.ops;
+            ops.close_conn.unwrap()(tref.r#impl, client1);
+            ops.close_conn.unwrap()(tref.r#impl, server1);
+
+            let state = shell_state(tref.r#impl).expect("transport must be live");
+            let t_addr = t as usize;
+            let accept_handle = thread::spawn(move || {
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(unused_unsafe, reason = "explicit unsafe block at FFI call site")]
+                // SAFETY: `t_local` remains live until joined below.
+                unsafe {
+                    let tref = &*t_local;
+                    let ops = &*tref.ops;
+                    ops.accept.unwrap()(tref.r#impl, 300)
+                }
+            });
+
+            assert!(state.wait_until_accept_parked());
+            // While still partitioned at t=100, client reconnect fails closed.
+            let wakes = state.accept_wakes();
+            assert_eq!(sim_transport_advance_time_ms(t, 100), 100);
+            state.wait_until_accept_reparked(wakes);
+            assert_eq!(
+                ops.connect.unwrap()(tref.r#impl, caddr.as_ptr()),
+                HEW_CONN_INVALID
+            );
+            drop(state);
+
+            // Heal before deadline (t=150 < 300) and reconnect.
+            sim_transport_set_partition(t, false);
+            assert_eq!(sim_transport_advance_time_ms(t, 50), 150);
+            let client2 = ops.connect.unwrap()(tref.r#impl, caddr.as_ptr());
+            assert!(client2 > 0);
+            let server2 = accept_handle.join().expect("accept thread panicked");
+            assert!(server2 > 0);
+
+            assert_eq!(
+                sim_transport_send_classified(t, client2, b"recovered"),
+                SimSendOutcome::Sent { bytes_sent: 9 }
+            );
+            let mut buf = [0u8; 16];
+            assert_eq!(
+                sim_transport_recv_classified(t, server2, &mut buf),
+                SimRecvOutcome::Received { bytes_received: 9 }
+            );
+            assert_eq!(&buf[..9], b"recovered");
+
+            sim_transport_free(t);
+        }
+    }
+
+    #[test]
+    fn destroy_wakes_blocked_accept() {
+        use std::thread;
+
+        // SAFETY: `t` points to a leaked shell; acceptor thread is joined before return.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let caddr = CString::new("sim://destroy-accept:0").unwrap();
+            let tref = &*t;
+            let ops = &*tref.ops;
+            assert_eq!(ops.listen.unwrap()(tref.r#impl, caddr.as_ptr()), 0);
+
+            let state = shell_state(tref.r#impl).expect("transport must be live");
+            let t_addr = t as usize;
+            let accept_handle = thread::spawn(move || {
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(unused_unsafe, reason = "explicit unsafe block at FFI call site")]
+                // SAFETY: `t_local` points to a leaked TransportShell.
+                unsafe {
+                    let tref = &*t_local;
+                    let ops = &*tref.ops;
+                    ops.accept.unwrap()(tref.r#impl, -1)
+                }
+            });
+
+            assert!(state.wait_until_accept_parked());
+            drop(state);
+
+            sim_transport_free(t);
+            assert_eq!(
+                accept_handle.join().expect("accept thread panicked"),
+                HEW_CONN_INVALID
             );
         }
     }

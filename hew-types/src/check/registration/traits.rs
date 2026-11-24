@@ -989,12 +989,14 @@ impl Checker {
             }
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name: tn,
                 assoc_name,
             } => {
                 let new_base = self.substitute_trait_sig_for_impl(base, impl_self, trait_param_map);
                 self.project_assoc_types(&Ty::AssocType {
                     base: Box::new(new_base),
+                    trait_id: *trait_id,
                     trait_name: tn.clone(),
                     assoc_name: assoc_name.clone(),
                 })

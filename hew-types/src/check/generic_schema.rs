@@ -84,6 +84,7 @@ impl AssociatedTypeSchemas {
                 }
                 Ty::AssocType {
                     base: Box::new(base.clone()),
+                    trait_id,
                     trait_name: defs.path(trait_id).into(),
                     assoc_name: associated.as_str().into(),
                 }
@@ -94,16 +95,14 @@ impl AssociatedTypeSchemas {
         };
         let Ty::AssocType {
             base,
-            trait_name,
+            trait_id,
             assoc_name,
+            ..
         } = &projected
         else {
             return projected;
         };
-        let Some(trait_id) = defs.lookup_path(trait_name) else {
-            return projected;
-        };
-        let Some(binding) = self.implementation(base, trait_id, Symbol::intern(assoc_name)) else {
+        let Some(binding) = self.implementation(base, *trait_id, Symbol::intern(assoc_name)) else {
             return projected;
         };
         if !expanding.insert(projected.clone()) {
@@ -164,6 +163,7 @@ impl AssociatedTypeSchemas {
                         {
                             return Ty::AssocType {
                                 base: Box::new(receiver.arg.clone()),
+                                trait_id: *trait_id,
                                 trait_name: defs.path(*trait_id).into(),
                                 assoc_name: associated.as_str().into(),
                             };
@@ -321,8 +321,9 @@ impl Checker {
     fn associated_schema_key(&self, ty: &Ty) -> Option<(crate::ParamHead, crate::DefId, Symbol)> {
         let Ty::AssocType {
             base,
-            trait_name,
+            trait_id,
             assoc_name,
+            ..
         } = ty
         else {
             return None;
@@ -337,8 +338,7 @@ impl Checker {
         if !args.is_empty() || parameter.is_receiver() {
             return None;
         }
-        let trait_id = self.assoc_carrier_trait(trait_name)?;
-        let owners = self.associated_type_owners(trait_id, assoc_name);
+        let owners = self.associated_type_owners(*trait_id, assoc_name);
         let [owner] = owners.as_slice() else {
             return None;
         };

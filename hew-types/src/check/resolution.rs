@@ -2034,6 +2034,7 @@ impl Checker {
             }
             [trait_id] => Some(Ty::AssocType {
                 base: Box::new(Ty::param(param)),
+                trait_id: *trait_id,
                 trait_name: self.defs.path(*trait_id).into(),
                 assoc_name: assoc_name.into(),
             }),
@@ -2057,31 +2058,14 @@ impl Checker {
         }
     }
 
-    /// The trait a `Ty::AssocType` carrier names.
-    ///
-    /// TRANSITION(A1c4): WHY the carrier holds the trait's path render, and
-    /// the module registry's signature mirror a prelude spelling. WHEN the
-    /// carrier holds the trait's `DefId`, this is a field read. WHAT:
-    /// `AssocType` by id.
-    pub(super) fn assoc_carrier_trait(&self, trait_name: &str) -> Option<crate::DefId> {
-        self.lookup_declaration(trait_name)
-            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
-            .or_else(
-                || match self.scopes.prelude_binding(Symbol::intern(trait_name)) {
-                    Some(super::scope::Binding::Trait(id)) => Some(id),
-                    _ => None,
-                },
-            )
-    }
-
-    /// Walk a `Ty` and collapse `Ty::AssocType { base, trait_name, assoc_name }`
-    /// carriers whose `base` resolves to either an in-scope type parameter
-    /// with a where-clause associated-type binding or a concrete impl target
-    /// for which an impl is registered. Carriers whose base is still abstract
-    /// and unconstrained (a generic type param without a matching associated-
-    /// type binding, an unresolved inference variable, another
-    /// `Ty::AssocType`, etc.) pass through unchanged so they can be diagnosed
-    /// or collapsed later when more substitutions arrive.
+    /// Walk a `Ty` and collapse `Ty::AssocType` carriers whose `base` resolves
+    /// to either an in-scope type parameter with a where-clause associated-type
+    /// binding or a concrete impl target for which an impl is registered.
+    /// Carriers whose base is still abstract and unconstrained (a generic type
+    /// param without a matching associated-type binding, an unresolved
+    /// inference variable, another `Ty::AssocType`, etc.) pass through
+    /// unchanged so they can be diagnosed or collapsed later when more
+    /// substitutions arrive.
     ///
     /// Lookup goes through `AssociatedTypeSchemas`, populated at impl-
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
@@ -2095,19 +2079,18 @@ impl Checker {
         match ty {
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name,
                 assoc_name,
             } => {
                 let projected_base = self.project_assoc_types_inner(base, expanding);
                 let carrier = || Ty::AssocType {
                     base: Box::new(projected_base.clone()),
+                    trait_id: *trait_id,
                     trait_name: trait_name.clone(),
                     assoc_name: assoc_name.clone(),
                 };
-                let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
-                    return carrier();
-                };
-                let owners = self.associated_type_owners(trait_id, assoc_name);
+                let owners = self.associated_type_owners(*trait_id, assoc_name);
                 let [trait_id] = owners.as_slice() else {
                     return carrier();
                 };
@@ -2141,6 +2124,7 @@ impl Checker {
         let resolved_base = self.subst.resolve(base);
         let carrier = Ty::AssocType {
             base: Box::new(resolved_base.clone()),
+            trait_id,
             trait_name: self.defs.path(trait_id).into(),
             assoc_name: associated.as_str().into(),
         };
@@ -2733,6 +2717,7 @@ impl Checker {
                 };
                 Ty::AssocType {
                     base: Box::new(base),
+                    trait_id: *owner,
                     trait_name: self.defs.path(*owner).into(),
                     assoc_name: assoc_name.name.as_str().into(),
                 }
@@ -2843,6 +2828,7 @@ impl Checker {
                         };
                         return Ty::AssocType {
                             base: Box::new(Ty::param(crate::ParamHead::receiver(trait_id))),
+                            trait_id: *owner,
                             trait_name: self.defs.path(*owner).into(),
                             assoc_name: alias_name.into(),
                         };

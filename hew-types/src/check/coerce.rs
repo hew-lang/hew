@@ -123,6 +123,7 @@ impl Checker {
         for (assoc_name, binding_ty) in &bound.assoc_bindings {
             let projected = self.project_assoc_types(&Ty::AssocType {
                 base: Box::new(concrete_type.clone()),
+                trait_id,
                 trait_name: self.defs.path(trait_id).into(),
                 assoc_name: assoc_name.clone().into_boxed_str(),
             });

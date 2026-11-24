@@ -660,8 +660,9 @@ pub enum Ty {
         /// at registration time; may become a concrete `Ty` after
         /// monomorphisation substitutes the type-arg).
         base: Box<Ty>,
-        /// Trait that declares the associated type. Required for
-        /// disambiguation when `base` has multiple bounds.
+        /// Trait declaration that declares the associated type.
+        trait_id: crate::DefId,
+        /// Display name of the declaring trait.
         trait_name: Box<str>,
         /// Associated type name (e.g. `"Item"`).
         assoc_name: Box<str>,
@@ -2174,10 +2175,12 @@ impl Ty {
             Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name,
                 assoc_name,
             } => Ty::AssocType {
                 base: Box::new(f(base)),
+                trait_id: *trait_id,
                 trait_name: trait_name.clone(),
                 assoc_name: assoc_name.clone(),
             },

@@ -299,6 +299,7 @@ impl Checker {
                     .projection_for_id(param)
                     .map(|(base, trait_id, associated)| Ty::AssocType {
                         base: Box::new(Ty::param(base)),
+                        trait_id,
                         trait_name: self.defs.path(trait_id).into(),
                         assoc_name: associated.as_str().into(),
                     })
@@ -322,16 +323,14 @@ impl Checker {
         }
         let Ty::AssocType {
             base,
-            trait_name,
+            trait_id,
             assoc_name,
+            ..
         } = ty
         else {
             return Vec::new();
         };
-        let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
-            return Vec::new();
-        };
-        self.declared_associated_bounds(base, trait_id, Symbol::intern(assoc_name))
+        self.declared_associated_bounds(base, *trait_id, Symbol::intern(assoc_name))
             .into_iter()
             .flat_map(|bound| self.applied_trait_closure(&bound, Some(ty)))
             .collect()

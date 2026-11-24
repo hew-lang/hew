@@ -63,17 +63,13 @@ impl Checker {
         sig.return_type = sig
             .return_type
             .substitute_type_params_parallel(&substitutions);
-        // TRANSITION(A1c4): WHY `Ty::AssocType` names its trait by the
-        // declaration's path render, a carrier HIR also reads. WHEN the carrier
-        // holds the trait's `DefId`, this compares ids. WHAT: `AssocType` by id.
         for owner in self.trait_closure(trait_id) {
-            let trait_key = self.defs.path(owner);
             for param_ty in &mut sig.params {
                 *param_ty =
-                    param_ty.map(|ty| substitute_trait_object_assoc_bindings(ty, trait_key, bound));
+                    param_ty.map(|ty| substitute_trait_object_assoc_bindings(ty, owner, bound));
             }
             sig.return_type =
-                substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
+                substitute_trait_object_assoc_bindings(&sig.return_type, owner, bound);
         }
         // Providers are ordinary generic functions with an explicit receiver
         // type argument. Keep that substitution separate from the method's
@@ -89,11 +85,7 @@ impl Checker {
         for provider in sig.param_defaults.iter_mut().flatten() {
             for argument in &mut provider.type_args {
                 for owner in self.trait_closure(trait_id) {
-                    *argument = substitute_trait_object_assoc_bindings(
-                        argument,
-                        self.defs.path(owner),
-                        bound,
-                    );
+                    *argument = substitute_trait_object_assoc_bindings(argument, owner, bound);
                 }
                 *argument = argument.substitute_type_params_parallel(&substitutions);
             }
@@ -699,6 +691,7 @@ impl Checker {
                 }
                 let actual = self.project_assoc_types(&Ty::AssocType {
                     base: Box::new(resolved_arg.clone()),
+                    trait_id: bound.trait_id,
                     trait_name: self.defs.path(bound.trait_id).into(),
                     assoc_name: assoc_name.as_str().into(),
                 });
@@ -728,6 +721,7 @@ impl Checker {
                 }
                 let actual = self.project_assoc_types(&Ty::AssocType {
                     base: Box::new(resolved_arg.clone()),
+                    trait_id: bound.trait_id,
                     trait_name: self.defs.path(bound.trait_id).into(),
                     assoc_name: assoc_name.as_str().into(),
                 });
@@ -1586,15 +1580,16 @@ impl Checker {
 
 fn substitute_trait_object_assoc_bindings(
     ty: &Ty,
-    trait_name: &str,
+    trait_id: crate::DefId,
     bound: &crate::ty::TraitObjectBound,
 ) -> Ty {
     match ty {
         Ty::AssocType {
             base,
-            trait_name: projected_trait,
+            trait_id: projected_trait,
             assoc_name,
-        } if projected_trait.as_ref() == trait_name
+            ..
+        } if *projected_trait == trait_id
             && matches!(
                 base.as_ref(),
                 Ty::Named { head, args } if matches!(head, crate::TypeHead::Param(parameter) if parameter.is_receiver()) && args.is_empty()
@@ -1607,23 +1602,25 @@ fn substitute_trait_object_assoc_bindings(
                 .map_or_else(
                     || ty.clone(),
                     |(_, binding_ty)| {
-                        substitute_trait_object_assoc_bindings(binding_ty, trait_name, bound)
+                        substitute_trait_object_assoc_bindings(binding_ty, trait_id, bound)
                     },
                 )
         }
         Ty::AssocType {
             base,
-            trait_name: projected_trait,
+            trait_id: projected_trait,
+            trait_name: projected_trait_name,
             assoc_name,
         } => Ty::AssocType {
             base: Box::new(substitute_trait_object_assoc_bindings(
-                base, trait_name, bound,
+                base, trait_id, bound,
             )),
-            trait_name: projected_trait.clone(),
+            trait_id: *projected_trait,
+            trait_name: projected_trait_name.clone(),
             assoc_name: assoc_name.clone(),
         },
         _ => ty.map_children_pub(&|child| {
-            substitute_trait_object_assoc_bindings(child, trait_name, bound)
+            substitute_trait_object_assoc_bindings(child, trait_id, bound)
         }),
     }
 }

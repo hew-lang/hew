@@ -3,8 +3,9 @@
 #[cfg(test)]
 use std::cell::RefCell;
 use std::io;
+use std::io::Read;
 #[cfg(unix)]
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
@@ -618,27 +619,44 @@ impl ProfilerClient {
     fn fetch_response_inner(&self, path: &str) -> Result<HttpResponse, ClientError> {
         match &self.transport {
             Transport::Tcp { base_url, http } => {
-                let url = format!("{base_url}{path}");
-                let resp = http
-                    .get(&url)
-                    .send()
-                    .map_err(|e| ClientError::Connect(io::Error::other(e)))?;
-                let status_code = resp.status().as_u16();
-                let status = resp.status().to_string();
-                let body = resp
-                    .bytes()
-                    .map_err(|e| ClientError::Read(io::Error::other(e)))?
-                    .to_vec();
-                Ok(HttpResponse {
-                    status,
-                    status_code,
-                    body,
-                })
+                tcp_get_response_limited(http, &format!("{base_url}{path}"), MAX_RESPONSE_BYTES)
             }
             #[cfg(unix)]
             Transport::Unix { socket_path } => unix_get_response(socket_path, path),
         }
     }
+}
+
+/// Blocking GET through the TCP transport, reading at most `limit` body bytes.
+///
+/// A remote profiler is as untrusted as a local socket peer: neither its
+/// declared length nor an unterminated body may exhaust the observer's memory.
+fn tcp_get_response_limited(
+    http: &reqwest::blocking::Client,
+    url: &str,
+    limit: u64,
+) -> Result<HttpResponse, ClientError> {
+    let resp = http
+        .get(url)
+        .send()
+        .map_err(|e| ClientError::Connect(io::Error::other(e)))?;
+    let status_code = resp.status().as_u16();
+    let status = resp.status().to_string();
+    if resp.content_length().is_some_and(|len| len > limit) {
+        return Err(response_too_large(limit));
+    }
+    let mut body = Vec::new();
+    resp.take(limit.saturating_add(1))
+        .read_to_end(&mut body)
+        .map_err(ClientError::Read)?;
+    if !u64::try_from(body.len()).is_ok_and(|len| len <= limit) {
+        return Err(response_too_large(limit));
+    }
+    Ok(HttpResponse {
+        status,
+        status_code,
+        body,
+    })
 }
 
 #[cfg(unix)]
@@ -651,16 +669,15 @@ impl ProfilerClient {
 /// connect errors (stale/missing socket path) from I/O failures and
 /// unexpected server responses.
 fn unix_get_response(socket_path: &Path, path: &str) -> Result<HttpResponse, ClientError> {
-    unix_get_response_limited(socket_path, path, MAX_UNIX_RESPONSE_BYTES)
+    unix_get_response_limited(socket_path, path, MAX_RESPONSE_BYTES)
 }
 
-/// Upper bound on one unix-socket response, counting the status line,
-/// headers, and body together. Profiler snapshots are small JSON documents;
-/// the cap keeps a misbehaving peer from exhausting the observer's memory.
-#[cfg(unix)]
-const MAX_UNIX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+/// Upper bound on one profiler response: the TCP body, or the whole
+/// unix-socket response including its status line and headers. Profiler
+/// snapshots are small JSON documents; the cap keeps a misbehaving peer from
+/// exhausting the observer's memory.
+const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
-#[cfg(unix)]
 fn response_too_large(limit: u64) -> ClientError {
     ClientError::Read(io::Error::new(
         io::ErrorKind::InvalidData,
@@ -1594,6 +1611,41 @@ mod tests {
             matches!(error, ClientError::Read(ref e) if e.kind() == io::ErrorKind::InvalidData),
             "expected ClientError::Read(InvalidData), got {error:?}"
         );
+    }
+
+    #[test]
+    fn tcp_responses_share_the_response_byte_budget() {
+        let (listener, addr) = bind_ephemeral_profiler_listener();
+        std::thread::spawn(move || {
+            for response in [
+                // A declared length past the budget fails before any body.
+                "HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n",
+                // So does an undeclared body that keeps going.
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+                 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz",
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            ] {
+                let (mut conn, _) = listener.accept().expect("accept test request");
+                let mut buf = [0u8; 1024];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(response.as_bytes());
+            }
+        });
+        let base_url = format!("http://{addr}");
+        let http = build_tcp_http_client(&base_url).expect("build TCP client");
+        let url = format!("{base_url}/api/metrics");
+        for _ in 0..2 {
+            let error = tcp_get_response_limited(&http, &url, 48)
+                .expect_err("a TCP response past the byte budget must fail");
+            assert!(
+                matches!(error, ClientError::Read(ref e) if e.kind() == io::ErrorKind::InvalidData),
+                "expected ClientError::Read(InvalidData), got {error:?}"
+            );
+        }
+        let response =
+            tcp_get_response_limited(&http, &url, 48).expect("a response within budget succeeds");
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body, b"{}");
     }
 
     // ── parse error ───────────────────────────────────────────────────────

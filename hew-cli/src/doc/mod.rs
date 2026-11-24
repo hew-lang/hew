@@ -17,25 +17,55 @@ pub use render::{
 };
 pub use template::{not_found_page, wrap_page_with_sidebar};
 
+fn resolve_root_name(root: &std::path::Path) -> String {
+    let manifest_path = root.join("hew.toml");
+    if manifest_path.is_file() {
+        if let Ok(manifest) = hew_pkg::manifest::parse_manifest(&manifest_path) {
+            return manifest.package.name.replace('.', "::");
+        }
+    }
+
+    if let Some(name) = root.file_name().and_then(|s| s.to_str()) {
+        return name.to_string();
+    }
+
+    let resolved = std::fs::canonicalize(root).ok().or_else(|| {
+        if root.as_os_str() == "." || root.as_os_str().is_empty() {
+            std::env::current_dir().ok()
+        } else {
+            None
+        }
+    });
+    resolved
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 /// Derive a module name from a file path relative to a root directory.
 ///
 /// Includes the root directory name as the first component to produce
 /// fully-qualified names. If the file stem matches its immediate parent
 /// directory, the redundant component is collapsed:
 /// `std/encoding/json/json.hew` → `std::encoding::json`.
+#[cfg(test)]
 fn derive_module_name(file_path: &std::path::Path, root: &std::path::Path) -> String {
+    derive_module_name_with_root(file_path, root, &resolve_root_name(root))
+}
+
+fn derive_module_name_with_root(
+    file_path: &std::path::Path,
+    root: &std::path::Path,
+    root_name: &str,
+) -> String {
     let relative = file_path.strip_prefix(root).unwrap_or(file_path);
     let stem = relative
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let parent = relative.parent().unwrap_or(std::path::Path::new(""));
-
-    // Start with the root directory name
-    let root_name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
 
     let mut parts: Vec<&str> = vec![root_name];
     parts.extend(parent.components().filter_map(|c| c.as_os_str().to_str()));
@@ -65,6 +95,12 @@ fn collect_hew_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>)
     for entry in sorted {
         let p = entry.path();
         if p.is_dir() {
+            if matches!(
+                p.file_name().and_then(|s| s.to_str()),
+                Some(".git" | "target" | ".hew")
+            ) {
+                continue;
+            }
             collect_hew_files(&p, files);
         } else if p.extension().is_some_and(|e| e == "hew") {
             files.push(p);
@@ -112,10 +148,11 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
     for path_str in &input_paths {
         let path = std::path::Path::new(path_str);
         if path.is_dir() {
+            let root_name = resolve_root_name(path);
             let mut files = Vec::new();
             collect_hew_files(path, &mut files);
             for file in files {
-                let name = derive_module_name(&file, path);
+                let name = derive_module_name_with_root(&file, path, &root_name);
                 if site_config.includes(&name) {
                     entries.push((file, name));
                 }
@@ -348,5 +385,54 @@ mod tests {
             std::path::Path::new("std"),
         );
         assert_eq!(name, "std::log");
+    }
+
+    #[test]
+    fn resolve_root_name_handles_dot_and_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected_dir = dir
+            .path()
+            .file_name()
+            .and_then(|s| s.to_str())
+            .expect("dir name");
+        let main_file = dir.path().join("main.hew");
+        std::fs::write(&main_file, "fn main() {}\n").expect("write");
+
+        let dot_relative = dir.path().join(".");
+        assert_eq!(
+            derive_module_name(&dot_relative.join("main.hew"), &dot_relative),
+            format!("{expected_dir}::main")
+        );
+
+        std::fs::write(
+            dir.path().join("hew.toml"),
+            "[package]\nname = \"logscope\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+        assert_eq!(
+            derive_module_name(&dot_relative.join("main.hew"), &dot_relative),
+            "logscope::main"
+        );
+        assert_eq!(
+            derive_module_name(&dot_relative.join("logscope.hew"), &dot_relative),
+            "logscope"
+        );
+    }
+
+    #[test]
+    fn collect_hew_files_skips_ignored_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("mkdir .git");
+        std::fs::create_dir_all(dir.path().join("target")).expect("mkdir target");
+        std::fs::create_dir_all(dir.path().join(".hew")).expect("mkdir .hew");
+        std::fs::write(dir.path().join("src/app.hew"), "fn main() {}\n").expect("write app");
+        std::fs::write(dir.path().join(".git/ignored.hew"), "").expect("write .git");
+        std::fs::write(dir.path().join("target/ignored.hew"), "").expect("write target");
+        std::fs::write(dir.path().join(".hew/ignored.hew"), "").expect("write .hew");
+
+        let mut files = Vec::new();
+        collect_hew_files(dir.path(), &mut files);
+        assert_eq!(files, vec![dir.path().join("src/app.hew")]);
     }
 }

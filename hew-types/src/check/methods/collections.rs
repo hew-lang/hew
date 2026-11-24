@@ -1714,10 +1714,26 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error(
+                let iter_help = match method {
+                    "enumerate" | "rev" | "count" | "collect" | "sum" | "product" => {
+                        vec![format!(
+                            "`{method}` is in `std.iter`; import `std.iter` and call `iter.{method}(vec.iter())`"
+                        )]
+                    }
+                    "take" | "skip" | "any" | "all" | "find" => {
+                        vec![format!(
+                            "`{method}` is in `std.iter`; import `std.iter` and call `iter.{method}(vec.iter(), ...)`"
+                        )]
+                    }
+                    _ => Vec::new(),
+                };
+                self.report_error_with_spelling_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
+                    None,
                     format!("no method `{method}` on Vec"),
+                    Vec::new(),
+                    iter_help,
                 );
                 Ty::Error
             }

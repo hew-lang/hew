@@ -4082,3 +4082,30 @@ fn collection_updates_require_the_declared_generic_bounds() {
         }
     }
 }
+
+#[test]
+fn vec_unknown_iter_method_suggests_std_iter() {
+    for (call, expected_example) in [
+        ("xs.enumerate()", "iter.enumerate(vec.iter())"),
+        ("xs.take(2)", "iter.take(vec.iter(), ...)"),
+    ] {
+        let source = format!("fn main() {{ let xs = [1, 2, 3]; let _ = {call}; }}");
+        let output = check_source_with_stdlib(&source);
+        let err = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::UndefinedMethod)
+            .expect("expected UndefinedMethod");
+        assert!(
+            err.suggestions
+                .iter()
+                .any(|s| s.contains("std.iter") && s.contains(expected_example)),
+            "expected std.iter hint `{expected_example}` in {:?}",
+            err.suggestions
+        );
+        assert!(
+            err.fixes.is_empty(),
+            "prose hint must not produce code fixes"
+        );
+    }
+}

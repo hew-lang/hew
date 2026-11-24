@@ -585,6 +585,8 @@ impl Checker {
         if let Some(ret_ty) =
             self.try_dispatch_ufcs_primitive_trait_method(trait_id, method, args, span)
         {
+            let trait_path = self.defs.path(trait_id).to_string();
+            self.promote_dotted_static_call_rewrite(span, &format!("{trait_path}::{method}"));
             return ret_ty;
         }
         if let Some(sig) = self.lookup_trait_method_inner(trait_id, method, false) {

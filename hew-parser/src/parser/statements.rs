@@ -131,6 +131,8 @@ impl Parser<'_> {
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             // Try to parse as statement first.
+            let stmt_start_pos = self.pos;
+            let stmt_start_errors = self.errors.len();
             if let Some(stmt) = self.parse_stmt() {
                 // If this is the last item in the block (`}` follows immediately, no
                 // semicolon consumed), and the statement is a value-bearing form (`if`,
@@ -174,6 +176,11 @@ impl Parser<'_> {
                 continue;
             }
 
+            if self.pos > stmt_start_pos || self.errors.len() > stmt_start_errors {
+                self.recover_failed_block_statement(stmt_start_pos);
+                continue;
+            }
+
             // A block-like expression at statement start ends at its closing
             // `}`, as `if`, `match` and the loops do: what follows begins the
             // next statement, so a `.Ok(x)` tail on the next line is its own
@@ -208,6 +215,49 @@ impl Parser<'_> {
             stmts,
             trailing_expr,
         })
+    }
+
+    fn recover_failed_block_statement(&mut self, stmt_start_pos: usize) {
+        let mut brace_depth = 0usize;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::LeftBrace) => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                Some(Token::RightBrace) => {
+                    if brace_depth == 0 {
+                        break;
+                    }
+                    brace_depth -= 1;
+                    self.advance();
+                    if brace_depth == 0 {
+                        break;
+                    }
+                }
+                Some(Token::Semicolon) if brace_depth == 0 => {
+                    self.advance();
+                    break;
+                }
+                Some(
+                    Token::Let
+                    | Token::Var
+                    | Token::For
+                    | Token::While
+                    | Token::Loop
+                    | Token::Defer
+                    | Token::Fn,
+                ) if brace_depth == 0 && self.pos > stmt_start_pos => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        if self.pos == stmt_start_pos && !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            self.advance();
+        }
     }
 
     /// Parse an expression or assignment in a block.
@@ -401,7 +451,7 @@ impl Parser<'_> {
         }
         let start = self.peek_span().start;
         let block = self.parse_block()?;
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
         Some(Box::new((Expr::Block(block), start..end)))
     }
 
@@ -660,7 +710,7 @@ impl Parser<'_> {
 
                     self.expect(&Token::Semicolon)?;
 
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     return Some((
                         Stmt::Var {
                             name,
@@ -976,7 +1026,7 @@ impl Parser<'_> {
                 let expr = if self.peek() == Some(&Token::LeftBrace) {
                     let start = self.peek_span().start;
                     let block = self.parse_block()?;
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     (Expr::Block(block), start..end)
                 } else {
                     let expr = self.parse_expr()?;
@@ -994,11 +1044,7 @@ impl Parser<'_> {
             }
         };
 
-        let end = if matches!(stmt, Stmt::Match { .. }) {
-            self.last_token_end
-        } else {
-            self.peek_span().start
-        };
+        let end = self.last_token_end;
         Some((stmt, start..end))
     }
 
@@ -1069,11 +1115,7 @@ impl Parser<'_> {
             }
         };
 
-        let end = if matches!(stmt, Stmt::Match { .. }) {
-            self.last_token_end
-        } else {
-            self.peek_span().start
-        };
+        let end = self.last_token_end;
         Some((stmt, start..end))
     }
 

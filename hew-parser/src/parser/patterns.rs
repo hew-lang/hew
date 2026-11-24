@@ -375,7 +375,7 @@ impl Parser<'_> {
             }
         };
 
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
         Some((pattern, start..end))
     }
 

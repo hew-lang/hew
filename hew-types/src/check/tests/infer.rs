@@ -884,12 +884,12 @@ mod binary_chain_facts {
         let output = check_source(source);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
         for (fragment, prefix, whole, ty) in
-            [("1 + 2 + c", 6, 9, Ty::I32), ("1 + 2 + 3", 6, 9, Ty::I8)]
+            [("1 + 2 + c", 5, 9, Ty::I32), ("1 + 2 + 3", 5, 9, Ty::I8)]
         {
             assert_eq!(ty_at(&output, &span_of(source, fragment, prefix)), ty);
             assert_eq!(ty_at(&output, &span_of(source, fragment, whole)), ty);
-            // A literal's span runs to the next token.
-            assert_eq!(ty_at(&output, &span_of(source, fragment, 2)), ty);
+            // A literal's span ends immediately after the literal token.
+            assert_eq!(ty_at(&output, &span_of(source, fragment, 1)), ty);
         }
         let three = source.rfind("3;").expect("last literal");
         assert_eq!(ty_at(&output, &SpanKey::from(&(three..three + 1))), Ty::I8);
@@ -900,12 +900,12 @@ mod binary_chain_facts {
         let source = "fn f(a: i8, b: i8, c: i32) -> i32 {\n    a + b + c\n}\n";
         let output = check_source(source);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
-        let prefix = span_of(source, "a + b + c", 6);
+        let prefix = span_of(source, "a + b + c", 5);
         assert_eq!(ty_at(&output, &prefix), Ty::I8);
         assert_eq!(
             output.numeric_operand_coercions.get(&prefix),
             Some(&Ty::I32)
         );
-        assert_eq!(ty_at(&output, &span_of(source, "a + b + c", 10)), Ty::I32);
+        assert_eq!(ty_at(&output, &span_of(source, "a + b + c", 9)), Ty::I32);
     }
 }

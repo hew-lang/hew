@@ -372,6 +372,98 @@ impl string {
     }
 }
 
+/// Remove `prefix` from the start of the string if present.
+///
+/// # Examples
+///
+/// ```
+/// import std.string;
+///
+/// fn main() {
+///     if let .Some(rest) = "v1.2.3".strip_prefix("v") {
+///         println(rest);   // "1.2.3"
+///     }
+/// }
+/// ```
+impl string {
+    pub fn strip_prefix(self, prefix: string) -> Option<string> {
+        if !self.starts_with(prefix) {
+            return .None;
+        }
+        .Some(self[prefix.len()..self.len()])
+    }
+}
+
+/// Remove `suffix` from the end of the string if present.
+///
+/// # Examples
+///
+/// ```
+/// import std.string;
+///
+/// fn main() {
+///     if let .Some(rest) = "main.hew".strip_suffix(".hew") {
+///         println(rest);   // "main"
+///     }
+/// }
+/// ```
+impl string {
+    pub fn strip_suffix(self, suffix: string) -> Option<string> {
+        if !self.ends_with(suffix) {
+            return .None;
+        }
+        .Some(self[0 .. self.len() - suffix.len()])
+    }
+}
+
+/// Trim leading whitespace from the string.
+///
+/// # Examples
+///
+/// ```
+/// import std.string;
+///
+/// fn main() {
+///     println("  hello  ".trim_start());   // "hello  "
+/// }
+/// ```
+impl string {
+    pub fn trim_start(self) -> string {
+        let trimmed = self.trim();
+        if trimmed.is_empty() {
+            return "";
+        }
+        match self.find(trimmed) {
+            .Some(start) => self[start..self.len()],
+            .None => self,
+        }
+    }
+}
+
+/// Trim trailing whitespace from the string.
+///
+/// # Examples
+///
+/// ```
+/// import std.string;
+///
+/// fn main() {
+///     println("  hello  ".trim_end());   // "  hello"
+/// }
+/// ```
+impl string {
+    pub fn trim_end(self) -> string {
+        let trimmed = self.trim();
+        if trimmed.is_empty() {
+            return "";
+        }
+        match self.find(trimmed) {
+            .Some(start) => self[0 .. start + trimmed.len()],
+            .None => self,
+        }
+    }
+}
+
 /// Scalar-indexed UTF-8 string operations.
 impl string {
     #[extern_symbol(hew_string_byte_length)]

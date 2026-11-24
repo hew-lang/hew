@@ -82,6 +82,8 @@ impl Display for EnvError {
     }
 }
 
+impl Error for EnvError {}
+
 /// Set an environment variable for the current process.
 ///
 /// Environment names must be non-empty and cannot contain `=`.

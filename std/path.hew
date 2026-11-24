@@ -54,6 +54,8 @@ impl Display for PathError {
     }
 }
 
+impl Error for PathError {}
+
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
@@ -255,6 +257,30 @@ pub fn extension(p: string) -> string {
         return "";
     }
     base[dot_pos + 1 .. base.len()]
+}
+
+/// Return the filename component without its final extension.
+///
+/// Leading dots (such as `.gitignore`) are preserved as part of the stem.
+///
+/// # Examples
+///
+/// ```
+/// import std.path;
+///
+/// fn main() {
+///     println(path.stem("photo.jpg"));        // "photo"
+///     println(path.stem("archive.tar.gz"));   // "archive.tar"
+///     println(path.stem(".gitignore"));       // ".gitignore"
+/// }
+/// ```
+pub fn stem(p: string) -> string {
+    let base = basename(p);
+    let dot_pos = last_dot_pos(base);
+    if dot_pos <= 0 || base == ".." {
+        return base;
+    }
+    base[0..dot_pos]
 }
 
 /// Test whether a path exists on the filesystem.

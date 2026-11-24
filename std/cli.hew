@@ -428,7 +428,11 @@ impl Command {
         if let .Some(tail) = self.tail {
             text = text + f" [{tail}...]";
         }
-        text = text + f"\n\n{self.about}\n\nOptions:\n  -h, --help  Show this help\n";
+        text = text + f"\n\n{self.about}\n\nOptions:\n";
+        let help_label = "-h, --help";
+        var opt_width = help_label.len();
+        var opt_labels: Vec<string> = Vec.new();
+        var opt_descs: Vec<string> = Vec.new();
         for argument in self.arguments {
             var label = f"--{argument.name}";
             if let .Some(short) = argument.short {
@@ -444,12 +448,36 @@ impl Command {
             if let .Choice(_, choices) = argument.kind {
                 description = description + f" (choices: {choice_names(choices)})";
             }
-            text = text + f"  {label}  {description}\n";
+            if label.len() > opt_width {
+                opt_width = label.len();
+            }
+            opt_labels.push(label);
+            opt_descs.push(description);
+        }
+        text = text + f"  {help_label.pad_right(opt_width, ' ')}  Show this help\n";
+        for i in 0..opt_labels.len() {
+            let label = opt_labels[i];
+            let description = opt_descs[i];
+            if description.is_empty() {
+                text = text + f"  {label}\n";
+            } else {
+                text = text + f"  {label.pad_right(opt_width, ' ')}  {description}\n";
+            }
         }
         if !self.commands.is_empty() {
             text = text + "\nCommands:\n";
+            var cmd_width = 0;
             for command in self.commands {
-                text = text + f"  {command.name}  {command.about}\n";
+                if command.name.len() > cmd_width {
+                    cmd_width = command.name.len();
+                }
+            }
+            for command in self.commands {
+                if command.about.is_empty() {
+                    text = text + f"  {command.name}\n";
+                } else {
+                    text = text + f"  {command.name.pad_right(cmd_width, ' ')}  {command.about}\n";
+                }
             }
         }
         text

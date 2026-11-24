@@ -301,3 +301,34 @@ fn test_split_returns_exact_element_values_for_nonempty_separator() {
     expected.push("blue");
     assert_string_vec_eq(("red,green,blue").split(","), expected);
 }
+
+#[test]
+fn test_strip_prefix_and_suffix() {
+    assert("v1.2.3".strip_prefix("v") == .Some("1.2.3"));
+    assert("v1.2.3".strip_prefix("") == .Some("v1.2.3"));
+    assert("v1.2.3".strip_prefix("v1.2.3") == .Some(""));
+    assert("v1.2.3".strip_prefix("x") == .None);
+    assert("café!".strip_prefix("caf") == .Some("é!"));
+    assert("café!".strip_prefix("café") == .Some("!"));
+    assert("main.hew".strip_suffix(".hew") == .Some("main"));
+    assert("main.hew".strip_suffix("") == .Some("main.hew"));
+    assert("main.hew".strip_suffix("main.hew") == .Some(""));
+    assert("main.hew".strip_suffix(".rs") == .None);
+    assert("café".strip_suffix("é") == .Some("caf"));
+    assert("é".strip_suffix("café") == .None);
+}
+
+#[test]
+fn test_trim_start_and_trim_end() {
+    assert("  hello  ".trim_start() == "hello  ");
+    assert("  hello  ".trim_end() == "  hello");
+    assert("\t\n café \r\n".trim_start() == "café \r\n");
+    assert("\t\n café \r\n".trim_end() == "\t\n café");
+    assert("   \t\n  ".trim_start() == "");
+    assert("   \t\n  ".trim_end() == "");
+    assert("".trim_start() == "");
+    assert("".trim_end() == "");
+    let heap = "  " + "alpha beta" + "  ";
+    assert(heap.trim_start() == "alpha beta  ");
+    assert(heap.trim_end() == "  alpha beta");
+}

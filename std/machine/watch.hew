@@ -37,6 +37,8 @@ impl Display for SubscribeError {
     }
 }
 
+impl Error for SubscribeError {}
+
 impl Display for Lag {
     fn fmt(self) -> string {
         f"observation lagged after {self.last_seen}; available from {self.available_from}"

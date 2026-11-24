@@ -40,6 +40,8 @@ impl Display for ObserveError {
     }
 }
 
+impl Error for ObserveError {}
+
 /// Returns an error when called from an actor turn or when the native runtime's
 /// bounded 30-second internal wait expires.
 pub fn barrier() -> Result<(), ObserveError> {

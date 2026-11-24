@@ -340,6 +340,8 @@ impl Display for ProcessError {
     }
 }
 
+impl Error for ProcessError {}
+
 fn take_output(handle: ChildHandle, which: i32) -> Result<stream.Stream<bytes>, ProcessError> {
     unsafe {
         let pair = hew_process_take_pipe(handle, which);

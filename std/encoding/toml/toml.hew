@@ -45,6 +45,8 @@ impl Display for ParseError {
     }
 }
 
+impl Error for ParseError {}
+
 /// A value cannot be written as a TOML document. Carries the native message.
 pub enum EncodeError {
     Invalid(string);
@@ -76,6 +78,8 @@ impl Display for AccessError {
         }
     }
 }
+
+impl Error for AccessError {}
 
 /// An owning TOML value. Assignment and extraction produce independent values.
 /// Cleanup is automatic; the representation remains private.

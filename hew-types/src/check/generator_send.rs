@@ -28,6 +28,7 @@ impl Checker {
         demands: &HashMap<SpanKey, Vec<Ty>>,
         output: &mut effects::SuspensionEffects,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+        graph: &effects::EffectGraph,
     ) {
         let mut proven_demands = HashSet::new();
         for obligation in obligations {
@@ -66,6 +67,7 @@ impl Checker {
                         candidates,
                         MarkerTrait::Send,
                         flows,
+                        Some(graph),
                     );
                     requirements.extend(nested);
                     proven

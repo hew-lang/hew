@@ -1,9 +1,9 @@
 use super::cleanup_effects::CleanupTarget;
-use super::effects::EffectBody;
+use super::effects::{EffectBody, EffectCallSite, EffectGraph};
 use super::types::PendingCallableTarget;
 use super::{
-    CallableArgumentFlow, CallableCandidate, Checker, IndirectCallCandidates, SpanKey,
-    TypeErrorKind,
+    CallTarget, CallableArgumentFlow, CallableCandidate, Checker, IndirectCallCandidates,
+    MethodCallRewrite, SpanKey, TypeErrorKind,
 };
 use crate::env::TypeBindingId;
 use hew_parser::ast::{Block, Expr, Span, Spanned};
@@ -82,10 +82,29 @@ pub(super) struct ValueOrigin {
 #[derive(Clone)]
 struct OriginEnvironment {
     bindings: Actuals,
+    types: HashMap<crate::ParamHead, crate::Ty>,
     parent: Option<usize>,
 }
 
-type EnvironmentKey = (Option<usize>, Vec<(TypeBindingId, ActualSource)>);
+type EnvironmentKey = (
+    Option<usize>,
+    Vec<(TypeBindingId, ActualSource)>,
+    Vec<(crate::ParamHead, crate::Ty)>,
+);
+
+#[derive(Clone, Copy)]
+enum RecursiveCall {
+    None,
+    Exact(usize),
+    Expanding,
+}
+
+struct CallTargetBinding<'a> {
+    owner: &'a EffectBody,
+    callee_actuals: usize,
+    arguments: Vec<(TypeBindingId, ActualSource)>,
+    call_types: HashMap<crate::ParamHead, crate::Ty>,
+}
 
 #[derive(Clone, Copy)]
 enum OriginCarrierQuery {
@@ -143,7 +162,7 @@ impl OriginGraph {
         candidate: &CallableCandidate,
         projections: &[Projection],
         actuals: usize,
-    ) -> Vec<ValueOrigin> {
+    ) -> (Vec<ValueOrigin>, bool) {
         let request = (candidate.clone(), projections.to_vec(), actuals);
         let mut query = request.clone();
         if !self.identities.contains_key(&query) {
@@ -182,10 +201,17 @@ impl OriginGraph {
         if let Some(current) = self.current {
             self.nodes[id].dependents.insert(current);
         }
-        self.nodes[id].origins.iter().cloned().collect()
+        let node = &self.nodes[id];
+        (node.origins.iter().cloned().collect(), node.incomplete)
     }
 
-    fn recursive_call_context(&self, owner: &EffectBody, current: usize) -> Option<usize> {
+    fn recursive_call_context(
+        &self,
+        owner: &EffectBody,
+        call_types: &HashMap<crate::ParamHead, crate::Ty>,
+        current: usize,
+        values: &[OriginEnvironment],
+    ) -> RecursiveCall {
         let mut pending: VecDeque<_> = self.nodes[current].dependents.iter().copied().collect();
         let mut seen = HashSet::from([current]);
         while let Some(id) = pending.pop_front() {
@@ -193,16 +219,28 @@ impl OriginGraph {
                 continue;
             }
             if let Some(contexts) = self.call_contexts.get(&id) {
-                if let Some((_, actuals)) = contexts
-                    .iter()
-                    .find(|((candidate, _), _)| candidate == owner)
-                {
-                    return Some(*actuals);
+                for ((candidate, _), context) in contexts {
+                    if candidate != owner {
+                        continue;
+                    }
+                    let previous_types = &values[*context].types;
+                    if previous_types == call_types {
+                        return RecursiveCall::Exact(*context);
+                    }
+                    if previous_types.len() == call_types.len()
+                        && previous_types.iter().all(|(param, old)| {
+                            call_types.get(param).is_some_and(|ty| {
+                                super::effects::effect_solver::contains_type(ty, old)
+                            })
+                        })
+                    {
+                        return RecursiveCall::Expanding;
+                    }
                 }
             }
             pending.extend(self.nodes[id].dependents.iter().copied());
         }
-        None
+        RecursiveCall::None
     }
 
     fn invalidate_environment(&mut self, actuals: usize) {
@@ -276,7 +314,9 @@ impl OriginEnvironments {
         }
         let current = &self.values[current];
         let previous = &self.values[previous];
-        if current.bindings.len() != previous.bindings.len() {
+        if current.bindings.len() != previous.bindings.len()
+            || current.types.len() != previous.types.len()
+        {
             return false;
         }
         let mut grew = false;
@@ -288,6 +328,15 @@ impl OriginEnvironments {
                 return false;
             }
             grew |= source.actuals != old.actuals;
+        }
+        for (param, ty) in &current.types {
+            let Some(old) = previous.types.get(param) else {
+                return false;
+            };
+            if !super::effects::effect_solver::contains_type(ty, old) {
+                return false;
+            }
+            grew |= ty != old;
         }
         match (current.parent, previous.parent) {
             (Some(current), Some(previous)) => {
@@ -322,19 +371,30 @@ impl OriginEnvironments {
         false
     }
 
-    fn intern(&mut self, actuals: Actuals, parent: Option<usize>) -> usize {
+    fn intern(
+        &mut self,
+        actuals: Actuals,
+        types: HashMap<crate::ParamHead, crate::Ty>,
+        parent: Option<usize>,
+    ) -> usize {
         let mut identity: Vec<_> = actuals
             .iter()
             .map(|(binding, candidates)| (*binding, candidates.clone()))
             .collect();
         identity.sort_by_key(|(binding, _)| binding.0);
-        let identity = (parent, identity);
+        let mut type_key: Vec<_> = types
+            .iter()
+            .map(|(param, ty)| (*param, ty.clone()))
+            .collect();
+        type_key.sort_by_key(|(param, _)| param.id);
+        let identity = (parent, identity, type_key);
         if let Some(id) = self.identities.get(&identity) {
             return *id;
         }
         let id = self.values.len();
         self.values.push(OriginEnvironment {
             bindings: actuals,
+            types,
             parent,
         });
         self.identities.insert(identity, id);
@@ -369,8 +429,22 @@ impl Checker {
     ) -> OriginEnvironments {
         let mut environments = OriginEnvironments::default();
         Self::seed_value_sources(flows, &mut environments);
-        environments.intern(Actuals::new(), None);
+        environments.intern(Actuals::new(), HashMap::new(), None);
         environments
+    }
+
+    pub(super) fn origin_type_environment(
+        types: &HashMap<crate::ParamHead, crate::Ty>,
+        actuals: usize,
+        environments: &mut OriginEnvironments,
+    ) -> usize {
+        if types.is_empty() || environments.values[actuals].types == *types {
+            return actuals;
+        }
+        let existing = environments.values[actuals].clone();
+        let mut merged_types = existing.types;
+        merged_types.extend(types.iter().map(|(param, ty)| (*param, ty.clone())));
+        environments.intern(existing.bindings, merged_types, existing.parent)
     }
 
     pub(super) fn resolve_callable_values(
@@ -378,8 +452,9 @@ impl Checker {
         candidates: &IndirectCallCandidates,
         actuals: usize,
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> (Vec<ValueOrigin>, bool) {
-        self.solve_task_origins(candidates, actuals, environments);
+        self.solve_task_origins(candidates, actuals, environments, graph);
         let incomplete = environments.incomplete;
         let values = Self::task_value_origins(candidates, actuals, &[], environments);
         (values, incomplete == environments.incomplete)
@@ -390,12 +465,40 @@ impl Checker {
         candidates: &IndirectCallCandidates,
         actuals: usize,
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> (Vec<ValueOrigin>, bool) {
         let projections = &[Projection::ErasureBoundary];
-        self.solve_value_origins(candidates, actuals, projections, environments);
+        self.solve_value_origins(candidates, actuals, projections, environments, graph);
         let incomplete = environments.incomplete;
         let values = Self::task_value_origins(candidates, actuals, projections, environments);
         (values, incomplete == environments.incomplete)
+    }
+
+    fn generic_call_arguments(
+        &self,
+        owner: &EffectBody,
+        site: &SpanKey,
+        actuals: usize,
+    ) -> Vec<(TypeBindingId, ActualSource)> {
+        let Some(formals) = self.callable_formals.get(owner) else {
+            return Vec::new();
+        };
+        self.generic_trait_call_arguments
+            .get(site)
+            .into_iter()
+            .flatten()
+            .filter_map(|actual| {
+                formals.get(actual.slot).map(|formal| {
+                    (
+                        *formal,
+                        ActualSource {
+                            candidates: actual.candidates.clone(),
+                            actuals,
+                        },
+                    )
+                })
+            })
+            .collect()
     }
 
     pub(super) fn callable_environment(
@@ -430,23 +533,8 @@ impl Checker {
             }
         }
         if arguments.is_empty() {
-            if let (Some(site), Some(formals)) = (site, self.callable_formals.get(owner)) {
-                for actual in self
-                    .generic_trait_call_arguments
-                    .get(site)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(formal) = formals.get(actual.slot) {
-                        arguments.push((
-                            *formal,
-                            ActualSource {
-                                candidates: actual.candidates.clone(),
-                                actuals,
-                            },
-                        ));
-                    }
-                }
+            if let Some(site) = site {
+                arguments = self.generic_call_arguments(owner, site, actuals);
             }
         }
         let parameters = match owner {
@@ -497,7 +585,7 @@ impl Checker {
             }
         }
         let parent = matches!(owner, EffectBody::Closure(_)).then_some(actuals);
-        environments.intern(arguments.into_iter().collect(), parent)
+        environments.intern(arguments.into_iter().collect(), types.clone(), parent)
     }
 
     fn effect_origin_carrier_type(
@@ -723,7 +811,7 @@ impl Checker {
                 .or_default()
                 .push(flow.candidates.clone());
         }
-        let actuals = environments.intern(Actuals::new(), None);
+        let actuals = environments.intern(Actuals::new(), HashMap::new(), None);
         let mut escapes = std::mem::take(&mut self.task_lifetimes.escapes);
         // A checkpoint's dependencies settled their own escapes without an
         // error. Unless a root callable reaches a dependency formal, a root
@@ -751,7 +839,7 @@ impl Checker {
                     .or_else(|| self.expr_types.get(&escape.site))
                     .is_none_or(|ty| self.task_carrier_type(ty, &mut environments.task_carriers))
                 {
-                    self.solve_task_origins(&escape.candidates, actuals, &mut environments);
+                    self.solve_task_origins(&escape.candidates, actuals, &mut environments, None);
                 }
             }
         }
@@ -974,11 +1062,12 @@ impl Checker {
         candidates: &IndirectCallCandidates,
         marker: crate::traits::MarkerTrait,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+        graph: Option<&EffectGraph>,
     ) -> (bool, Vec<crate::Ty>) {
         let mut requirements = Vec::new();
         let mut environments = OriginEnvironments::default();
         Self::seed_value_sources(flows, &mut environments);
-        let actuals = environments.intern(Actuals::new(), None);
+        let actuals = environments.intern(Actuals::new(), HashMap::new(), None);
         let proven = self.value_marker(
             ty,
             candidates,
@@ -987,6 +1076,7 @@ impl Checker {
             &mut HashSet::new(),
             &mut environments,
             &mut requirements,
+            graph,
         );
         (proven, requirements)
     }
@@ -1005,6 +1095,7 @@ impl Checker {
         seen: &mut HashSet<(SpanKey, usize)>,
         environments: &mut OriginEnvironments,
         requirements: &mut Vec<crate::Ty>,
+        graph: Option<&EffectGraph>,
     ) -> bool {
         let ty = self.subst.resolve(ty);
         if !ty.contains_inferred_generator() && self.type_has_marker(&ty, marker) {
@@ -1032,6 +1123,7 @@ impl Checker {
                                 seen,
                                 environments,
                                 requirements,
+                                graph,
                             )
                         })
                     });
@@ -1051,7 +1143,7 @@ impl Checker {
                     && marker == crate::traits::MarkerTrait::Send =>
             {
                 let (origins, complete) =
-                    self.resolve_callable_values(candidates, actuals, environments);
+                    self.resolve_callable_values(candidates, actuals, environments, graph);
                 complete
                     && !origins.is_empty()
                     && origins.iter().all(|origin| {
@@ -1077,6 +1169,11 @@ impl Checker {
                         }
                         let proven = producers.iter().all(|producer| {
                             let substitutions = producer.arguments.iter().cloned().collect();
+                            let capture_actuals = Self::origin_type_environment(
+                                &substitutions,
+                                origin.actuals,
+                                environments,
+                            );
                             self.generator_capture_facts
                                 .get(&producer.body)
                                 .is_some_and(|captures| {
@@ -1087,10 +1184,11 @@ impl Checker {
                                                 .substitute_type_params_parallel(&substitutions),
                                             &capture.value_candidates,
                                             marker,
-                                            origin.actuals,
+                                            capture_actuals,
                                             seen,
                                             environments,
                                             requirements,
+                                            graph,
                                         )
                                     })
                                 })
@@ -1110,7 +1208,7 @@ impl Checker {
             }
             crate::Ty::Function { .. } | crate::Ty::GenericCallable { .. } => {
                 let (origins, complete) =
-                    self.resolve_callable_values(candidates, actuals, environments);
+                    self.resolve_callable_values(candidates, actuals, environments, graph);
                 complete
                     && !origins.is_empty()
                     && origins.iter().all(|origin| match &origin.candidate {
@@ -1135,6 +1233,7 @@ impl Checker {
                     seen,
                     environments,
                     requirements,
+                    graph,
                 )
             }),
             crate::Ty::Named { head, args } => {
@@ -1173,6 +1272,7 @@ impl Checker {
                             seen,
                             environments,
                             requirements,
+                            graph,
                         )
                     })
             }
@@ -1190,7 +1290,7 @@ impl Checker {
         if self.task_lifetimes.producers.is_empty() {
             return false;
         }
-        let mut pending = self.solve_task_origins(candidates, actuals, environments);
+        let mut pending = self.solve_task_origins(candidates, actuals, environments, None);
         let mut seen = HashSet::new();
         while let Some(origin) = pending.pop() {
             if !seen.insert(origin.clone()) {
@@ -1220,6 +1320,7 @@ impl Checker {
                                 &capture.value_candidates,
                                 origin.actuals,
                                 environments,
+                                None,
                             ));
                         }
                     }
@@ -1235,8 +1336,9 @@ impl Checker {
         candidates: &IndirectCallCandidates,
         actuals: usize,
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> Vec<ValueOrigin> {
-        self.solve_value_origins(candidates, actuals, &[], environments)
+        self.solve_value_origins(candidates, actuals, &[], environments, graph)
     }
 
     fn solve_value_origins(
@@ -1245,6 +1347,7 @@ impl Checker {
         actuals: usize,
         projections: &[Projection],
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> Vec<ValueOrigin> {
         Self::task_value_origins(candidates, actuals, projections, environments);
         while let Some(id) = environments.origins.pending.pop_front() {
@@ -1252,7 +1355,8 @@ impl Checker {
             let (candidate, projections, actuals) = environments.origins.nodes[id].query.clone();
             environments.origins.current = Some(id);
             let incomplete = environments.incomplete;
-            let origins = self.task_value_origin(&candidate, actuals, &projections, environments);
+            let origins =
+                self.task_value_origin(&candidate, actuals, &projections, environments, graph);
             let incomplete = environments.incomplete != incomplete;
             environments.origins.current = None;
             for origin in &origins {
@@ -1290,6 +1394,20 @@ impl Checker {
         Self::task_value_origins(candidates, actuals, projections, environments)
     }
 
+    /// Read a settled origin node and carry its incompleteness to the reader.
+    fn read_origins(
+        candidate: &CallableCandidate,
+        projections: &[Projection],
+        actuals: usize,
+        environments: &mut OriginEnvironments,
+    ) -> Vec<ValueOrigin> {
+        let (origins, incomplete) = environments.origins.read(candidate, projections, actuals);
+        if incomplete {
+            environments.incomplete += 1;
+        }
+        origins
+    }
+
     fn task_value_origins(
         candidates: &IndirectCallCandidates,
         actuals: usize,
@@ -1302,14 +1420,7 @@ impl Checker {
         let mut origins: Vec<_> = candidates
             .known
             .iter()
-            .flat_map(|candidate| {
-                let origins = environments.origins.read(candidate, projections, actuals);
-                let query = (candidate.clone(), projections.to_vec(), actuals);
-                if environments.origins.nodes[environments.origins.identities[&query]].incomplete {
-                    environments.incomplete += 1;
-                }
-                origins
-            })
+            .flat_map(|candidate| Self::read_origins(candidate, projections, actuals, environments))
             .collect();
         let mut unique = HashSet::new();
         origins.retain(|origin| unique.insert(origin.clone()));
@@ -1326,6 +1437,7 @@ impl Checker {
         actuals: usize,
         projections: &[Projection],
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> Vec<ValueOrigin> {
         let descendants = projections.last() == Some(&Projection::Descendants);
         match candidate {
@@ -1400,7 +1512,7 @@ impl Checker {
                     Self::task_value_origins(candidates, actuals, projections, environments)
                 }),
             CallableCandidate::CallResult(_) | CallableCandidate::CallWriteback(_) => {
-                self.task_call_origins(candidate, actuals, projections, environments)
+                self.task_call_origins(candidate, actuals, projections, environments, graph)
             }
             CallableCandidate::Field {
                 receiver,
@@ -1411,7 +1523,7 @@ impl Checker {
                 if !descendants {
                     path.push(Projection::Field(*owner, *index));
                 }
-                environments.origins.read(receiver, &path, actuals)
+                Self::read_origins(receiver, &path, actuals, environments)
             }
             CallableCandidate::AnyMember(receiver) => {
                 environments.incomplete += 1;
@@ -1419,10 +1531,11 @@ impl Checker {
                     candidate: candidate.clone(),
                     actuals,
                 }];
-                origins.extend(environments.origins.read(
+                origins.extend(Self::read_origins(
                     receiver,
                     &[Projection::Descendants],
                     actuals,
+                    environments,
                 ));
                 origins
             }
@@ -1431,14 +1544,14 @@ impl Checker {
                 if !descendants {
                     path.push(Projection::Element(*index));
                 }
-                environments.origins.read(receiver, &path, actuals)
+                Self::read_origins(receiver, &path, actuals, environments)
             }
             CallableCandidate::TaskResult(task) => {
                 let mut path = projections.to_vec();
                 if !descendants {
                     path.push(Projection::TaskResult);
                 }
-                environments.origins.read(task, &path, actuals)
+                Self::read_origins(task, &path, actuals, environments)
             }
             CallableCandidate::Sequence(values) => {
                 if let Some((Projection::Element(index), rest)) = projections.split_last() {
@@ -1542,16 +1655,47 @@ impl Checker {
         actuals: usize,
         projections: &[Projection],
         environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
     ) -> Vec<ValueOrigin> {
         let (site, receiver_output) = match candidate {
             CallableCandidate::CallResult(site) => (site, false),
             CallableCandidate::CallWriteback(site) => (site, true),
             _ => return Vec::new(),
         };
-        let Some(pending) = self.pending_callable_arguments.get(site) else {
-            environments.incomplete += 1;
-            return Vec::new();
-        };
+        if let Some(pending) = self.pending_callable_arguments.get(site) {
+            return self.task_pending_call_origins(
+                site,
+                receiver_output,
+                pending,
+                actuals,
+                projections,
+                environments,
+                graph,
+            );
+        }
+        self.task_static_trait_call_origins(
+            site,
+            receiver_output,
+            actuals,
+            projections,
+            environments,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards checked call context and projection state"
+    )]
+    fn task_pending_call_origins(
+        &self,
+        site: &SpanKey,
+        receiver_output: bool,
+        pending: &super::types::PendingCallableArguments,
+        actuals: usize,
+        projections: &[Projection],
+        environments: &mut OriginEnvironments,
+        graph: Option<&EffectGraph>,
+    ) -> Vec<ValueOrigin> {
         let callees = match &pending.callee {
             PendingCallableTarget::Declaration(id) => {
                 IndirectCallCandidates::single(CallableCandidate::Declaration(*id))
@@ -1561,42 +1705,166 @@ impl Checker {
         Self::task_value_origins(&callees, actuals, &[], environments)
             .into_iter()
             .flat_map(|callee| {
-                let owner = match callee.candidate {
-                    CallableCandidate::Declaration(id) => EffectBody::Declaration(id),
-                    CallableCandidate::Closure(site) => EffectBody::Closure(site),
+                let (owner, call_types) = match callee.candidate {
+                    CallableCandidate::Declaration(id) => {
+                        let caller_types = environments.values[actuals].types.clone();
+                        let receiver_ty = graph
+                            .and_then(|graph| {
+                                graph.calls.get(&EffectCallSite::Authored(site.clone()))
+                            })
+                            .and_then(|invocation| invocation.receiver.as_ref());
+                        let call_types = self.call_cleanup_substitutions(
+                            id,
+                            &EffectCallSite::Authored(site.clone()),
+                            receiver_ty,
+                            &caller_types,
+                        );
+                        (EffectBody::Declaration(id), call_types)
+                    }
+                    CallableCandidate::Closure(closure_site) => (
+                        EffectBody::Closure(closure_site),
+                        environments.values[callee.actuals].types.clone(),
+                    ),
                     CallableCandidate::AnyMember(_) => {
                         environments.incomplete += 1;
                         return vec![callee];
                     }
                     _ => return Vec::new(),
                 };
-                let outputs = if receiver_output {
-                    &self.callable_receiver_outputs
-                } else {
-                    &self.callable_return_candidates
-                };
-                let Some(returns) = outputs.get(&owner) else {
-                    environments.incomplete += 1;
-                    return Vec::new();
-                };
                 let arguments = self.task_call_arguments(&owner, pending, actuals);
-                let call_actuals =
-                    Self::task_call_context(&owner, callee.actuals, arguments, environments);
-                if !receiver_output
-                    && projections.is_empty()
-                    && returns
-                        .known
-                        .iter()
-                        .any(|candidate| matches!(candidate, CallableCandidate::Generator(_)))
-                {
-                    return vec![ValueOrigin {
-                        candidate: CallableCandidate::GeneratorCall(site.clone()),
-                        actuals: call_actuals,
-                    }];
-                }
-                Self::task_value_origins(returns, call_actuals, projections, environments)
+                self.resolve_call_target_origins(
+                    site,
+                    receiver_output,
+                    CallTargetBinding {
+                        owner: &owner,
+                        callee_actuals: callee.actuals,
+                        arguments,
+                        call_types,
+                    },
+                    projections,
+                    environments,
+                )
             })
             .collect()
+    }
+
+    fn task_static_trait_call_origins(
+        &self,
+        site: &SpanKey,
+        receiver_output: bool,
+        actuals: usize,
+        projections: &[Projection],
+        environments: &mut OriginEnvironments,
+    ) -> Vec<ValueOrigin> {
+        let Some((declaring_trait, method, receiver_param, trait_args)) =
+            (match self.method_call_rewrites.get(site) {
+                Some(MethodCallRewrite::StaticTraitDispatch {
+                    target:
+                        CallTarget::StaticTraitMethod {
+                            declaring_trait,
+                            method,
+                        },
+                    receiver_type_param,
+                    trait_args,
+                    ..
+                }) => Some((
+                    *declaring_trait,
+                    *method,
+                    *receiver_type_param,
+                    trait_args.as_slice(),
+                )),
+                Some(MethodCallRewrite::BinderStaticCall(call)) => {
+                    if let CallTarget::StaticTraitMethod {
+                        declaring_trait,
+                        method,
+                    } = call.target
+                    {
+                        Some((
+                            declaring_trait,
+                            method,
+                            call.self_param,
+                            call.trait_args.as_slice(),
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+        else {
+            environments.incomplete += 1;
+            return Vec::new();
+        };
+        let caller_types = environments.values[actuals].types.clone();
+        let Some((declaration, applied_types)) = self.instantiate_static_trait_target(
+            &EffectCallSite::Authored(site.clone()),
+            declaring_trait,
+            method,
+            &crate::Ty::param(receiver_param),
+            trait_args,
+            &caller_types,
+        ) else {
+            environments.incomplete += 1;
+            return Vec::new();
+        };
+        let owner = EffectBody::Declaration(declaration);
+        let arguments = self.generic_call_arguments(&owner, site, actuals);
+        self.resolve_call_target_origins(
+            site,
+            receiver_output,
+            CallTargetBinding {
+                owner: &owner,
+                callee_actuals: 0,
+                arguments,
+                call_types: applied_types,
+            },
+            projections,
+            environments,
+        )
+    }
+
+    fn resolve_call_target_origins(
+        &self,
+        site: &SpanKey,
+        receiver_output: bool,
+        binding: CallTargetBinding<'_>,
+        projections: &[Projection],
+        environments: &mut OriginEnvironments,
+    ) -> Vec<ValueOrigin> {
+        let CallTargetBinding {
+            owner,
+            callee_actuals,
+            arguments,
+            call_types,
+        } = binding;
+        let outputs = if receiver_output {
+            &self.callable_receiver_outputs
+        } else {
+            &self.callable_return_candidates
+        };
+        let Some(returns) = outputs.get(owner) else {
+            environments.incomplete += 1;
+            return Vec::new();
+        };
+        let Some(call_actuals) =
+            Self::task_call_context(owner, callee_actuals, arguments, call_types, environments)
+        else {
+            environments.incomplete += 1;
+            return Vec::new();
+        };
+        if !receiver_output
+            && projections.is_empty()
+            && returns
+                .known
+                .iter()
+                .any(|candidate| matches!(candidate, CallableCandidate::Generator(_)))
+        {
+            return vec![ValueOrigin {
+                candidate: CallableCandidate::GeneratorCall(site.clone()),
+                actuals: call_actuals,
+            }];
+        }
+        Self::task_value_origins(returns, call_actuals, projections, environments)
     }
 
     fn task_call_arguments(
@@ -1639,8 +1907,9 @@ impl Checker {
         owner: &EffectBody,
         actuals: usize,
         arguments: Vec<(TypeBindingId, ActualSource)>,
+        call_types: HashMap<crate::ParamHead, crate::Ty>,
         environments: &mut OriginEnvironments,
-    ) -> usize {
+    ) -> Option<usize> {
         let current = environments.origins.current.expect("call origin transfer");
         let context_key = (owner.clone(), actuals);
         if let Some(context) = environments
@@ -1649,10 +1918,15 @@ impl Checker {
             .get(&current)
             .and_then(|contexts| contexts.get(&context_key))
         {
-            return *context;
+            return Some(*context);
         }
-        let context =
-            if let Some(context) = environments.origins.recursive_call_context(owner, current) {
+        let context = match environments.origins.recursive_call_context(
+            owner,
+            &call_types,
+            current,
+            &environments.values,
+        ) {
+            RecursiveCall::Exact(context) => {
                 // Recursive applications add incoming edges to the existing context.
                 // Caller bindings and captured lexical environments retain their
                 // identities instead of being overwritten by a new invocation.
@@ -1677,16 +1951,19 @@ impl Checker {
                     environments.origins.invalidate_environment(context);
                 }
                 context
-            } else {
+            }
+            RecursiveCall::Expanding => return None,
+            RecursiveCall::None => {
                 let parent = matches!(owner, EffectBody::Closure(_)).then_some(actuals);
-                environments.intern(arguments.into_iter().collect(), parent)
-            };
+                environments.intern(arguments.into_iter().collect(), call_types, parent)
+            }
+        };
         environments
             .origins
             .call_contexts
             .entry(current)
             .or_default()
             .insert(context_key, context);
-        context
+        Some(context)
     }
 }

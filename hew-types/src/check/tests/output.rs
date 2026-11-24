@@ -2003,3 +2003,36 @@ fn tuple_index_deep_projection_widens_and_fails_closed_for_send() {
         output.errors
     );
 }
+
+#[test]
+fn incomplete_origin_propagates_across_element_and_field_reads_to_fail_closed() {
+    let source = "trait Opaque {\n\
+                      fn make(self) -> fn() -> i64;\n\
+                  }\n\
+                  type Impl {}\n\
+                  impl Opaque for Impl {\n\
+                      fn make(self) -> fn() -> i64 { || 1 }\n\
+                  }\n\
+                  type Boxed { f: fn() -> i64; }\n\
+                  fn test_opaque(flag: bool, d: dyn Opaque) {\n\
+                      let pair = if flag { (|| 1, 0) } else { (d.make(), 0) };\n\
+                      let b = Boxed { f: pair.0 };\n\
+                      let task = fork { (b.f)() };\n\
+                      let _ = await task;\n\
+                  }\n\
+                  fn main() {}\n";
+    let output = check_source(source);
+    assert!(
+        !output.errors.is_empty()
+            && output
+                .errors
+                .iter()
+                .all(|error| error.kind == TypeErrorKind::InvalidSend),
+        "incomplete CallResult joined with a pure branch must propagate through Element/Field reads and fail closed: {:#?}",
+        output.errors
+    );
+
+    let pure_source = source.replace("d.make()", "|| 2");
+    let pure_output = check_source(&pure_source);
+    assert!(pure_output.errors.is_empty(), "{:#?}", pure_output.errors);
+}

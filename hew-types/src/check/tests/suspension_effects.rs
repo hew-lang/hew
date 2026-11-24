@@ -1606,3 +1606,78 @@ fn tuple_index_preserves_precise_effects_and_send_soundness() {
         tainted_output.errors
     );
 }
+
+#[test]
+fn nested_generic_iterator_adapters_resolve_call_writebacks_soundly() {
+    let pure_source = "trait Cursor {\n\
+                           type Item;\n\
+                           fn next(var self) -> Option<Self.Item>;\n\
+                       }\n\
+                       type Leaf {\n\
+                           remaining: i64;\n\
+                       }\n\
+                       impl Cursor for Leaf {\n\
+                           type Item = i64;\n\
+                           fn next(var self) -> Option<i64> {\n\
+                               if self.remaining <= 0 { .None } else { self.remaining -= 1; .Some(self.remaining) }\n\
+                           }\n\
+                       }\n\
+                       type Map<I, A, B> {\n\
+                           iter: I;\n\
+                           f: fn(A) -> B;\n\
+                       }\n\
+                       impl<I, A, B> Cursor for Map<I, A, B> where I: Cursor<Item = A> {\n\
+                           type Item = B;\n\
+                           fn next(var self) -> Option<B> {\n\
+                               match self.iter.next() {\n\
+                                   .Some(x) => .Some((self.f)(x)),\n\
+                                   .None => .None,\n\
+                               }\n\
+                           }\n\
+                       }\n\
+                       fn collect<I, A>(consume it: I) -> Vec<A> where I: Cursor<Item = A> {\n\
+                           var out: Vec<A> = [];\n\
+                           var iter = it;\n\
+                           loop {\n\
+                               match iter.next() {\n\
+                                   .Some(x) => out.push(x),\n\
+                                   .None => break,\n\
+                               }\n\
+                           }\n\
+                           out\n\
+                       }\n\
+                       fn pure_nested() -> Vec<i64> {\n\
+                           let base = Leaf { remaining: 2 };\n\
+                           let inner = Map { iter: base, f: |x: i64| x + 1 };\n\
+                           let outer = Map { iter: inner, f: |x: i64| x * 2 };\n\
+                           collect(outer)\n\
+                       }\n\
+                       fn main() {\n\
+                           let f: fn() -> Vec<i64> = pure_nested;\n\
+                       }\n";
+    let pure_output = check_source(pure_source);
+    assert!(pure_output.errors.is_empty(), "{:#?}", pure_output.errors);
+
+    let suspending_source = pure_source.replace("x + 1", "{ sleep(1ms); x + 1 }");
+    let suspending_output = check_source(&suspending_source);
+    assert!(
+        suspending_output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("suspends via `sleep(...)`")),
+        "{:#?}",
+        suspending_output.errors
+    );
+}
+
+#[test]
+fn irrelevant_growing_generic_with_callable_keeps_finite_origin_environment() {
+    let source = "fn recurse<T>(n: i64, f: fn() -> i64) -> i64 {\n\
+                      if n > 0 { recurse<Vec<T>>(n - 1, f) } else { f() }\n\
+                  }\n\
+                  fn main() {\n\
+                      let g: fn() -> i64 = || recurse<i64>(1, || 42);\n\
+                  }\n";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

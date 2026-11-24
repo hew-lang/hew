@@ -20,7 +20,7 @@ struct Application<'a> {
     unknown: bool,
 }
 
-fn contains_type(ty: &Ty, needle: &Ty) -> bool {
+pub(in crate::check) fn contains_type(ty: &Ty, needle: &Ty) -> bool {
     let mut pending = vec![ty];
     while let Some(ty) = pending.pop() {
         if ty == needle {
@@ -753,10 +753,27 @@ impl<'a> EffectSolver<'a> {
                 self.checker
                     .complete_associated_schema_substitutions(&mut actuals);
             }
-            let body = self.intern(Self::instance(&obligation.body, &actuals, true, false));
-            let captures = obligation
-                .once
-                .then(|| self.intern(Self::instance(&obligation.body, &actuals, true, true)));
+            let mut instance = Self::instance(&obligation.body, &actuals, true, false);
+            let value_types = self.body_value_types(&obligation.body, &actuals);
+            if !value_types.is_empty() && self.value_parameters.contains(&obligation.body) {
+                instance.values = super::super::Checker::origin_type_environment(
+                    &value_types,
+                    0,
+                    &mut self.values.borrow_mut(),
+                );
+            }
+            let body = self.intern(instance);
+            let captures = obligation.once.then(|| {
+                let mut instance = Self::instance(&obligation.body, &actuals, true, true);
+                if !value_types.is_empty() && self.value_parameters.contains(&obligation.body) {
+                    instance.values = super::super::Checker::origin_type_environment(
+                        &value_types,
+                        0,
+                        &mut self.values.borrow_mut(),
+                    );
+                }
+                self.intern(instance)
+            });
             instances.push((boundary, body, captures));
         }
         self.solve();
@@ -858,6 +875,20 @@ impl<'a> EffectSolver<'a> {
         self.cleanup_dependency_inner(target, application, witness, result, &mut HashSet::new());
     }
 
+    fn body_value_types(&self, body: &EffectBody, types: &Actuals) -> Actuals {
+        let Some(demanded) = self.parameters.get(body) else {
+            return Actuals::new();
+        };
+        let mut filtered: Actuals = types
+            .iter()
+            .filter(|(parameter, _)| demanded.contains_key(parameter))
+            .map(|(parameter, ty)| (*parameter, ty.clone()))
+            .collect();
+        self.checker
+            .complete_associated_schema_substitutions(&mut filtered);
+        filtered
+    }
+
     fn cleanup_body_instance(
         &self,
         body: &EffectBody,
@@ -886,10 +917,11 @@ impl<'a> EffectSolver<'a> {
         let mut applied = application.types.clone();
         applied.extend(actuals);
         let mut instance = Self::instance(body, &applied, application.unknown, false);
+        let value_types = self.body_value_types(body, &applied);
         instance.values = self.checker.callable_environment(
             body,
             None,
-            (&applied, application.values),
+            (&value_types, application.values),
             Some(candidates),
             &mut self.values.borrow_mut(),
         );
@@ -934,12 +966,14 @@ impl<'a> EffectSolver<'a> {
                         &candidates,
                         values,
                         &mut self.values.borrow_mut(),
+                        Some(self.graph),
                     )
                 } else {
                     self.checker.resolve_callable_values(
                         &candidates,
                         values,
                         &mut self.values.borrow_mut(),
+                        Some(self.graph),
                     )
                 };
                 if !complete || origins.is_empty() {
@@ -1024,10 +1058,11 @@ impl<'a> EffectSolver<'a> {
                 ..
             }) => {
                 let mut instance = Self::instance(&identity, actuals, unknown, false);
+                let value_types = self.body_value_types(&identity, actuals);
                 instance.values = self.checker.callable_environment(
                     &identity,
                     site.authored_span(),
-                    (actuals, values),
+                    (&value_types, values),
                     None,
                     &mut self.values.borrow_mut(),
                 );
@@ -1084,10 +1119,11 @@ impl<'a> EffectSolver<'a> {
                 };
                 let body = EffectBody::Declaration(id);
                 let mut instance = Self::instance(&body, &applied, unknown, false);
+                let value_types = self.body_value_types(&body, &applied);
                 instance.values = self.checker.callable_environment(
                     &body,
                     site.authored_span(),
-                    (&applied, values),
+                    (&value_types, values),
                     None,
                     &mut self.values.borrow_mut(),
                 );

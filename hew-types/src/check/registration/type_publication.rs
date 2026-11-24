@@ -2152,10 +2152,12 @@ impl Checker {
         // the annotation, while the actor's legitimate `<T>` still resolves. This
         // mirrors the inline `Item::Actor` path for imported / flat-file actors.
         let actor_sig_scope = self.enter_primary_sig_scope(&[(Some(&ad.type_params), None)]);
+        let actor_decl = self
+            .named_item_declaration(ad.name)
+            .or_else(|| self.lookup_declaration(&identity));
         for rf in &ad.receive_fns {
-            self.register_receive_fn(&identity, rf);
+            self.register_receive_fn(actor_decl, &identity, rf);
         }
-        let actor_decl = self.lookup_declaration(&identity);
         for method in &ad.methods {
             let method_name = format!("{identity}::{}", method.name);
             let method_decl = actor_decl.and_then(|owner| {

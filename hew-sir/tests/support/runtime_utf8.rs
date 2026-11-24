@@ -15,7 +15,12 @@ use hew_types::{
 };
 
 pub(super) fn utf8_error_ty(path: &str) -> ResolvedTy {
-    ResolvedTy::user_for_test(path, Vec::new())
+    let nominal = hew_types::NominalId::for_test(path);
+    ResolvedTy::Named {
+        head: hew_types::TypeHead::Nominal(hew_types::NominalHead::new(nominal, path)),
+        args: Vec::new(),
+        is_opaque: false,
+    }
 }
 
 fn option_i64_ty() -> ResolvedTy {

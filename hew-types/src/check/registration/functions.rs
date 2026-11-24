@@ -380,8 +380,11 @@ impl Checker {
                 // `<T>` still resolves.
                 let actor_sig_scope =
                     self.enter_primary_sig_scope(&[(Some(&ad.type_params), None)]);
+                let actor_decl = self
+                    .named_item_declaration(ad.name)
+                    .or_else(|| self.lookup_declaration(&identity));
                 for rf in &ad.receive_fns {
-                    self.register_receive_fn(&identity, rf);
+                    self.register_receive_fn(actor_decl, &identity, rf);
                 }
                 let actor_parameters = self
                     .declaration_parameter_heads(ad.name)
@@ -392,7 +395,6 @@ impl Checker {
                 let previous_self = self
                     .current_self_type
                     .replace((identity.clone(), actor_self));
-                let actor_decl = self.lookup_declaration(&identity);
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
                     let method_decl = actor_decl.and_then(|owner| {
@@ -2131,7 +2133,12 @@ impl Checker {
         self.constructor_signatures.insert(declaration, signature);
     }
 
-    pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
+    pub(in crate::check) fn register_receive_fn(
+        &mut self,
+        actor_decl: Option<crate::DefId>,
+        actor_name: &str,
+        rf: &ReceiveFnDecl,
+    ) {
         let mut generic_bindings = std::collections::HashMap::new();
         for parameter in
             self.source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span)
@@ -2191,10 +2198,7 @@ impl Checker {
         };
 
         let method_name = format!("{}::{}", actor_name, rf.name);
-        // TRANSITION(A1c3): WHY the actor is still named by its registration
-        // key. WHEN actor registration passes the declaration id, the handler
-        // is its member directly. WHAT: registration by declaration.
-        let Some(handler) = self.lookup_declaration(actor_name).and_then(|actor| {
+        let Some(handler) = actor_decl.and_then(|actor| {
             self.defs
                 .member_of_kind(actor, rf.name.name, crate::DeclarationKind::ActorReceive)
         }) else {

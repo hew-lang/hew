@@ -1530,17 +1530,11 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    // TRANSITION(A1c3): WHY the shared method resolution still
-                    // reads signatures by the actor's rendered key. WHEN it reads
-                    // the handler's declaration, this render goes. WHAT:
-                    // `lookup_named_method_sig` by declaration.
                     let actor_identity = head
                         .nominal()
                         .map(|actor| self.defs.path(actor.declaration()).to_string());
                     if let (Some(handler), Some(actor_identity)) = (handler, actor_identity) {
-                        if let Some(sig) =
-                            self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
-                        {
+                        if let Some(sig) = self.selected_method_sig(inner, handler) {
                             // Route through the one application authority rather
                             // than checking args against `sig.params` directly: a
                             // generic `receive fn keep<T>(..)` needs its type

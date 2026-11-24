@@ -3,14 +3,6 @@
 use super::*;
 use strum::IntoEnumIterator;
 
-fn named_type(name: &str, builtin: Option<crate::BuiltinType>) -> ResolvedTy {
-    match builtin {
-        Some(crate::BuiltinType::ActorHandle) => ResolvedTy::actor_for_test(name, Vec::new()),
-        Some(builtin) => ResolvedTy::named_builtin(builtin, Vec::new()),
-        None => ResolvedTy::user_for_test(name, Vec::new()),
-    }
-}
-
 #[test]
 fn node_lookup_requires_nongeneric_discovery_metadata() {
     let contract = RuntimeCallFamily::NodeLookup.semantic_contract().unwrap();
@@ -34,25 +26,45 @@ fn node_lookup_requires_nongeneric_discovery_metadata() {
 
 #[test]
 fn utf8_decode_result_contract_requires_exact_nominal_error_identity() {
-    let exact_error = named_type("std.encoding.utf8.Utf8Error", None);
+    let mut defs = crate::DefTable::new();
+    let mint_nominal = |defs: &mut crate::DefTable, path: &str| {
+        let nominal = defs.mint_nominal_for_test(path);
+        ResolvedTy::Named {
+            head: crate::TypeHead::Nominal(crate::NominalHead::new(nominal, path)),
+            args: Vec::new(),
+            is_opaque: false,
+        }
+    };
+    let exact_error = mint_nominal(&mut defs, "std.encoding.utf8.Utf8Error");
     let exact_result = ResolvedTy::Named {
         args: vec![ResolvedTy::String, exact_error.clone()],
         head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
         is_opaque: false,
     };
-    assert!(RuntimeVariantResultKind::Utf8Decode.matches(&exact_result));
+    assert!(RuntimeVariantResultKind::Utf8Decode.matches(&defs, &exact_result));
 
-    let lookalike_error = named_type("application.Utf8Error", None);
+    let lookalike_error = mint_nominal(&mut defs, "application.Utf8Error");
     let lookalike_result = ResolvedTy::Named {
         args: vec![ResolvedTy::String, lookalike_error],
         head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
         is_opaque: false,
     };
-    assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&lookalike_result));
+    assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&defs, &lookalike_result));
 
-    let user_result =
-        ResolvedTy::named_for_test("application.Result", vec![ResolvedTy::String, exact_error]);
-    assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&user_result));
+    let user_result_nominal = mint_nominal(&mut defs, "application.Result");
+    let ResolvedTy::Named {
+        head: user_result_head,
+        ..
+    } = user_result_nominal
+    else {
+        unreachable!();
+    };
+    let user_result = ResolvedTy::Named {
+        args: vec![ResolvedTy::String, exact_error],
+        head: user_result_head,
+        is_opaque: false,
+    };
+    assert!(!RuntimeVariantResultKind::Utf8Decode.matches(&defs, &user_result));
 }
 
 #[test]
@@ -83,14 +95,21 @@ fn new_text_runtime_families_publish_closed_semantic_effects() {
     );
     assert_eq!(lossy.failures, &[RuntimeLogicalFailure::HeapExceeded]);
 
+    let mut defs = crate::DefTable::new();
+    let utf8_error = {
+        let path = "std.encoding.utf8.Utf8Error";
+        let nominal = defs.mint_nominal_for_test(path);
+        ResolvedTy::Named {
+            head: crate::TypeHead::Nominal(crate::NominalHead::new(nominal, path)),
+            args: Vec::new(),
+            is_opaque: false,
+        }
+    };
     assert!(decode.matches_signature(
-        &crate::DefTable::new(),
+        &defs,
         &[ResolvedTy::Bytes],
         &ResolvedTy::Named {
-            args: vec![
-                ResolvedTy::String,
-                named_type("std.encoding.utf8.Utf8Error", None),
-            ],
+            args: vec![ResolvedTy::String, utf8_error],
             head: crate::TypeHead::Builtin(crate::BuiltinType::Result),
             is_opaque: false
         },

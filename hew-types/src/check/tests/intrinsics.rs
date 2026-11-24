@@ -393,7 +393,10 @@ fn utf8_import_aliases_preserve_runtime_targets_and_nominal_result() {
                 .expr_types
                 .values()
                 .filter_map(|ty| crate::ResolvedTy::from_ty(ty).ok())
-                .any(|ty| crate::runtime_call::RuntimeVariantResultKind::Utf8Decode.matches(&ty)),
+                .any(|ty| {
+                    crate::runtime_call::RuntimeVariantResultKind::Utf8Decode
+                        .matches(&output.defs, &ty)
+                }),
             "the validating result must retain the canonical nominal error through an alias"
         );
     }

@@ -455,12 +455,14 @@ impl<'a> InstanceService<'a> {
         kind: hew_types::RuntimeVariantResultKind,
         result_ty: &ResolvedTy,
     ) -> Result<(), SirLoweringError> {
-        let (_, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
-            SirLoweringError::from(format!(
-                "runtime variant result contract does not admit `{}`",
-                result_ty.user_facing()
-            ))
-        })?;
+        let (_, error_ty) = kind
+            .payload_types(&self.module.defs, result_ty)
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "runtime variant result contract does not admit `{}`",
+                    result_ty.user_facing()
+                ))
+            })?;
         self.require_variant_shape(result_ty)?;
         let AggregateShapeRef::Record(error_shape) = self.require_aggregate_shape(error_ty)? else {
             return Err("runtime variant error must be an exact named record"

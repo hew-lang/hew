@@ -838,7 +838,7 @@ pub fn runtime_variant_shape_refs(
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
 ) -> Result<RuntimeVariantShapeRefs, String> {
-    let (ok_ty, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
+    let (ok_ty, error_ty) = kind.payload_types(defs, result_ty).ok_or_else(|| {
         format!(
             "runtime variant result contract does not admit `{}`",
             result_ty.user_facing()

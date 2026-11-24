@@ -1317,11 +1317,6 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let (module_name, method) = func_name.split_once("::")?;
-        // A trait-qualified call (`Trait::method`) is handled by the dedicated
-        // paths above and must not be re-interpreted as a module call.
-        if self.trait_spelled_here(module_name).is_some() {
-            return None;
-        }
         if method.contains("::") {
             return None;
         }
@@ -1969,6 +1964,46 @@ impl Checker {
         )
     }
 
+    fn resolve_callee_trait_qualifier(
+        &mut self,
+        expr: Option<&Spanned<Expr>>,
+    ) -> Option<(crate::DefId, String, String)> {
+        let expr = expr?;
+        let (path, method) = match &expr.0 {
+            Expr::FieldAccess { object, field } => {
+                let mut segments = Vec::new();
+                let mut cursor = object.as_ref();
+                loop {
+                    match &cursor.0 {
+                        Expr::Ident(ident) => {
+                            segments.push((*ident, cursor.1.clone()));
+                            break;
+                        }
+                        Expr::FieldAccess { object, field } => {
+                            segments.push((field.0, field.1.clone()));
+                            cursor = object.as_ref();
+                        }
+                        _ => return None,
+                    }
+                }
+                segments.reverse();
+                (hew_parser::ast::Path { segments }, field.0.name.to_string())
+            }
+            Expr::Ident(ident) => {
+                let (trait_name, method_name) = ident.name.as_str().split_once("::")?;
+                (
+                    hew_parser::ast::Path::single(Ident::new(trait_name), expr.1.clone()),
+                    method_name.to_string(),
+                )
+            }
+            _ => return None,
+        };
+        let trait_id = self
+            .resolve_trait_path(&path)
+            .filter(|trait_id| self.trait_info(*trait_id).is_some())?;
+        Some((trait_id, path.to_string(), method))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -2448,13 +2483,12 @@ impl Checker {
         // primitive / builtin-generic receivers; this preserves the
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
-        if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
-                if let Some(ret_ty) =
-                    self.try_dispatch_ufcs_primitive_trait_method(trait_id, method_name, args, span)
-                {
-                    return ret_ty;
-                }
+        let resolved_trait = self.resolve_callee_trait_qualifier(callee.expr());
+        if let Some((trait_id, _, method_name)) = resolved_trait.as_ref() {
+            if let Some(ret_ty) =
+                self.try_dispatch_ufcs_primitive_trait_method(*trait_id, method_name, args, span)
+            {
+                return ret_ty;
             }
         }
 
@@ -2762,32 +2796,30 @@ impl Checker {
         // Qualified trait method call: e.g. `Measurable::measure(item)`.
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
-        if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
-                // Use the full signature (receiver included) for qualified calls.
-                if let Some(sig) = self.lookup_trait_method_inner(trait_id, method_name, false) {
-                    // The trait sig includes all non-receiver params.
-                    // For qualified calls the first positional arg is the receiver.
-                    if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
-                        self.synthesize_call_arguments(args);
-                        return sig.return_type;
-                    }
-                    self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
-                    for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = sig.params.get(i) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &param_ty.ty);
-                        }
-                    }
+        if let Some((trait_id, trait_name, method_name)) = resolved_trait.as_ref() {
+            // Use the full signature (receiver included) for qualified calls.
+            if let Some(sig) = self.lookup_trait_method_inner(*trait_id, method_name, false) {
+                // The trait sig includes all non-receiver params.
+                // For qualified calls the first positional arg is the receiver.
+                if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
+                    self.synthesize_call_arguments(args);
                     return sig.return_type;
                 }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method_name}` in trait `{trait_name}`"),
-                );
-                return Ty::Error;
+                self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = sig.params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, &param_ty.ty);
+                    }
+                }
+                return sig.return_type;
             }
+            self.report_error(
+                TypeErrorKind::UndefinedMethod,
+                span,
+                format!("no method `{method_name}` in trait `{trait_name}`"),
+            );
+            return Ty::Error;
         }
 
         // Namespaced module-qualified call: `module::fn(args)` parses as a
@@ -2799,9 +2831,12 @@ impl Checker {
         // same signature, records the same module-qualified rewrite for HIR,
         // and applies the associated-type binding pins. The dot key is the
         // canonical registry identity for both surfaces.
-        if let Some(ret) = self.try_check_namespaced_module_call(&func_name, type_args, args, span)
-        {
-            return ret;
+        if resolved_trait.is_none() {
+            if let Some(ret) =
+                self.try_check_namespaced_module_call(&func_name, type_args, args, span)
+            {
+                return ret;
+            }
         }
 
         // Detect recursive closure self-reference in call position: if we are

@@ -480,7 +480,11 @@ impl RuntimeVariantResultKind {
     /// canonical result. Same-leaf user errors and user-defined `Result`
     /// records are rejected.
     #[must_use]
-    pub fn payload_types(self, ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
+    pub fn payload_types<'a>(
+        self,
+        defs: &crate::DefTable,
+        ty: &'a ResolvedTy,
+    ) -> Option<(&'a ResolvedTy, &'a ResolvedTy)> {
         match (self, ty) {
             (
                 Self::Utf8Decode,
@@ -491,12 +495,14 @@ impl RuntimeVariantResultKind {
                 },
             ) if args.len() == 2
                 && args[0] == ResolvedTy::String
-                // TRANSITION(A1 commit 3): the contract type is matched by its
-                // canonical path until the runtime table carries its identity.
                 && matches!(
                     &args[1],
-                    ResolvedTy::Named { head, args, .. }
-                        if args.is_empty() && head.registry_key() == "std.encoding.utf8.Utf8Error"
+                    ResolvedTy::Named {
+                        head: crate::TypeHead::Nominal(nominal),
+                        args,
+                        ..
+                    } if args.is_empty()
+                        && defs.path(nominal.id.declaration()) == "std.encoding.utf8.Utf8Error"
                 ) =>
             {
                 Some((&args[0], &args[1]))
@@ -506,8 +512,8 @@ impl RuntimeVariantResultKind {
     }
 
     #[must_use]
-    pub fn matches(self, ty: &ResolvedTy) -> bool {
-        self.payload_types(ty).is_some()
+    pub fn matches(self, defs: &crate::DefTable, ty: &ResolvedTy) -> bool {
+        self.payload_types(defs, ty).is_some()
     }
 }
 
@@ -824,7 +830,7 @@ impl RuntimeSemanticContract {
                     "runtime result has no matching canonical receiver binding".to_string()
                 })?
             }
-            RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(result_hint) => {
+            RuntimeResultEffect::FreshOwnedVariant(kind) if kind.matches(defs, result_hint) => {
                 result_hint.clone()
             }
             RuntimeResultEffect::FreshOwnedVariant(_) => {

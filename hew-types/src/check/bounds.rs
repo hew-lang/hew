@@ -1207,18 +1207,6 @@ impl Checker {
         }
     }
 
-    /// The declared trait a rendered callee qualifier (`Display` in
-    /// `Display::fmt`) names in the current file.
-    ///
-    /// TRANSITION(A1c3): WHY callees still arrive as rendered `Trait::method`
-    /// strings. WHEN calls resolve their written path through `Scope`, the
-    /// qualifier is that resolution. WHAT: callee `Path`s.
-    pub(in crate::check) fn trait_spelled_here(&mut self, spelling: &str) -> Option<crate::DefId> {
-        let path = hew_parser::ast::Path::single(Ident::new(spelling), 0..0);
-        self.resolve_trait_path(&path)
-            .filter(|trait_id| self.trait_info(*trait_id).is_some())
-    }
-
     /// Record the active impl block's conformance: `trait_ref` for its
     /// resolved target, and the methods the block writes.
     pub(in crate::check) fn record_trait_impl_from_decl(

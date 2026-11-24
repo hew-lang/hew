@@ -30,7 +30,7 @@ use hew_types::{
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
-use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
+use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind, HirDiagnosticSeverity};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
@@ -581,67 +581,23 @@ pub struct LowerOutput {
 
 impl LowerOutput {
     /// Converts `self` into `Ok(module)` when no fatal diagnostics are
-    /// present, or `Err(diagnostics)` when at least one fatal diagnostic
-    /// exists.
-    ///
-    /// **Fatal diagnostic kinds** (fail-closed set):
-    /// - [`HirDiagnosticKind::CheckerBoundaryViolation`] — a checker-authority
-    ///   invariant was violated (e.g. a leaked inference variable).
-    ///
-    /// - [`HirDiagnosticKind::TargetCoroutineUnsupported`] — the program uses
-    ///   actors/tasks/coroutines on a target that does not support them.
-    /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
-    ///   code; `sup.nested` field access on a nested supervisor now lowers
-    ///   via `hew_supervisor_nested_get` and never constructs this variant.
-    /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
-    ///   resolves to an item with no MIR body or runtime-ABI lowering.
-    /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
-    ///   has an unresolved callee with callable static type that the MIR
-    ///   producer cannot dispatch.
-    /// - [`HirDiagnosticKind::VecIndexElementTypeUnsupported`] — `xs[i]` on
-    ///   a `Vec<T>` whose element type `T` has no `hew_vec_get_T` getter.
-    /// - [`HirDiagnosticKind::VecSliceElementTypeUnsupported`] — `xs[a..b]`
-    ///   on a `Vec<T>` whose element type `T` has no
-    ///   `hew_vec_slice_range_T` runtime symbol.
-    /// - [`HirDiagnosticKind::MonomorphisationCallTypeArgsViolation`] — a
-    ///   generic-function call's `call_type_args` entry failed the
-    ///   `ResolvedTy::from_ty` boundary conversion (e.g. contained `Ty::Error`
-    ///   or an unresolved inference variable); passing a corrupt monomorphisation
-    ///   entry downstream produces an invalid MIR.
+    /// present, or `Err(diagnostics)` when at least one diagnostic has
+    /// [`HirDiagnosticSeverity::Fatal`] (per [`HirDiagnosticKind::severity`]).
     ///
     /// Callers that want to continue despite non-fatal diagnostics should
-    /// check `.diagnostics` directly.  This method is the recommended
+    /// check `.diagnostics` directly. This method is the recommended
     /// entry-point for production pipelines because it makes the fail-closed
     /// contract impossible to accidentally bypass.
     ///
     /// # Errors
     ///
-    /// Returns `Err(diagnostics)` when the output contains at least one fatal
-    /// diagnostic (see above).
-    ///
-    /// TODO: if more fail-closed diagnostic kinds are added, consider a
-    /// `severity()` method on `HirDiagnosticKind` returning `Fatal | NonFatal`
-    /// so this match does not need updating each time (approach (b)).
+    /// Returns `Err(diagnostics)` when the output contains at least one
+    /// [`HirDiagnosticSeverity::Fatal`] diagnostic.
     pub fn into_result(self) -> Result<HirModule, Vec<HirDiagnostic>> {
-        let has_fatal = self.diagnostics.iter().any(|d| {
-            matches!(
-                d.kind,
-                crate::HirDiagnosticKind::CheckerBoundaryViolation { .. }
-                    | crate::HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
-                    | crate::HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall { .. }
-                    | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
-                    | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
-                    | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
-                    | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
-                    | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-                    | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
-                    | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
-                    | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
-                    | crate::HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
-                    | crate::HirDiagnosticKind::CloneNotYetSupported { .. }
-                    | crate::HirDiagnosticKind::MonomorphisationCallTypeArgsViolation { .. }
-            )
-        });
+        let has_fatal = self
+            .diagnostics
+            .iter()
+            .any(|d| d.kind.severity() == HirDiagnosticSeverity::Fatal);
         if has_fatal {
             Err(self.diagnostics)
         } else {

@@ -330,17 +330,52 @@ impl LowerCtx<'_> {
         }
 
         let key = self.mk_key(&span);
-        if let Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) =
-            self.method_call_receiver_kinds.get(&key).cloned()
-        {
+        let enum_ctor_type_name = match self.method_call_receiver_kinds.get(&key) {
+            Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) => {
+                Some(type_name.clone())
+            }
+            // Builtin generic enums (`Option`, `Result`) carry no `type_defs` entry, so
+            // recover their canonical variant owner from the checked result type when
+            // `method_call_receiver_kinds` omits `EnumConstructorPath`.
+            None if !self.method_call_rewrites.contains_key(&key)
+                && matches!(&receiver.0, Expr::GenericApplySuffix { target, .. } if matches!(target.0, Expr::Ident(_)))
+                && self.checked_ty(&receiver.1).is_none() =>
+            {
+                match self.checker_expr_ty_if_present(&span).as_ref() {
+                    Some(ResolvedTy::Named {
+                        head:
+                            hew_types::TypeHead::Builtin(
+                                builtin @ (hew_types::BuiltinType::Option
+                                | hew_types::BuiltinType::Result),
+                            ),
+                        ..
+                    }) => Some(builtin.canonical_name().to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(type_name) = enum_ctor_type_name {
             let constructor = format!("{type_name}::{method}");
             let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
             let variant_kind = self
                 .lookup_variant_ctor(&constructor, checker_ctor_ty.as_ref())
                 .map(|(_, _, kind)| kind.clone());
-            if let Some(HirVariantKind::Tuple(_)) = variant_kind {
-                let lowered_args = self.lower_positional_call_args(args, &span);
-                return self.lower_variant_ctor_tuple_call(&constructor, lowered_args, &span);
+            match variant_kind {
+                Some(HirVariantKind::Tuple(_)) => {
+                    let lowered_args = self.lower_positional_call_args(args, &span);
+                    return self.lower_variant_ctor_tuple_call(&constructor, lowered_args, &span);
+                }
+                Some(kind) => {
+                    self.report_variant_ctor_call_shape_mismatch(&constructor, &kind, &span);
+                    return (
+                        HirExprKind::Unsupported(format!(
+                            "enum constructor `{constructor}` does not take positional call arguments"
+                        )),
+                        ResolvedTy::Unit,
+                    );
+                }
+                None => {}
             }
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {

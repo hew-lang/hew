@@ -565,28 +565,43 @@ impl LowerCtx<'_> {
         // the checker must also publish the module-qualified rewrite carrying
         // the exact callee symbol. Without that fact, lowering the field access
         // as an ordinary value call would leave an admitted HIR `Call` whose
-        // consumer would have to re-infer a target from strings.
-        if matches!(
-            &function.0,
-            Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Ident(_))
-        ) && matches!(
-            self.ordinary_call_target(span),
-            Some(CallTarget::User(_) | CallTarget::Runtime(_))
-        ) {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "module-qualified call".to_string(),
-                    reason: "missing module-qualified call rewrite".to_string(),
-                },
-                span.clone(),
-                "checker admitted a module-qualified call without its executable target fact",
-            ));
-            return (
-                HirExprKind::Unsupported(
-                    "module-qualified call has no checker rewrite".to_string(),
-                ),
-                ResolvedTy::Unit,
-            );
+        // consumer would have to re-infer a target from strings. Builtin static
+        // constructors (`Vec.new<T>()`, `HashMap.new<K, V>()`, `HashSet.new<T>()`)
+        // carry a runtime constructor family without a module binding and lower
+        // straight through `CallTarget::Runtime` below.
+        if let Expr::FieldAccess { object, .. } = &function.0 {
+            if matches!(object.0, Expr::Ident(_)) {
+                let target = self.ordinary_call_target(span);
+                let is_builtin_ctor = !matches!(
+                    self.resolutions.get(&self.mk_key(&object.1)),
+                    Some(Resolution::Module(_))
+                ) && matches!(
+                    target,
+                    Some(CallTarget::Runtime(
+                        hew_types::RuntimeCallFamily::VecNew
+                            | hew_types::RuntimeCallFamily::HashMapNew
+                            | hew_types::RuntimeCallFamily::HashSetNew
+                    ))
+                );
+                if !is_builtin_ctor
+                    && matches!(target, Some(CallTarget::User(_) | CallTarget::Runtime(_)))
+                {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "module-qualified call".to_string(),
+                            reason: "missing module-qualified call rewrite".to_string(),
+                        },
+                        span.clone(),
+                        "checker admitted a module-qualified call without its executable target fact",
+                    ));
+                    return (
+                        HirExprKind::Unsupported(
+                            "module-qualified call has no checker rewrite".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                }
+            }
         }
         if self.ordinary_call_target(span).is_none()
             && self.diagnose_poisoned_direct_call_type_args(function, span)
@@ -1256,45 +1271,96 @@ impl LowerCtx<'_> {
                             ResolvedTy::Unit,
                         )
                 }
-            } else if let Expr::Ident(name) = &function.0 {
-                let overload_endpoint = self.ordinary_call_target(&span).and_then(|target| {
-                    if let CallTarget::Builtin { endpoint } = target {
-                        stdlib_catalog::is_overloaded_builtin(&endpoint).then_some(endpoint)
-                    } else {
-                        None
+            } else {
+                let overload_endpoint = if let Expr::Ident(_) = &function.0 {
+                    self.ordinary_call_target(&span).and_then(|target| {
+                        if let CallTarget::Builtin { endpoint } = target {
+                            stdlib_catalog::is_overloaded_builtin(&endpoint).then_some(endpoint)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                // Variant constructor calls appear either as `Shape::Line(5)` /
+                // bare `Line(5)` (`Expr::Ident`) or as a generic-suffixed
+                // static constructor `Option.Some<i64>(5)` (`Expr::FieldAccess`
+                // on a non-value, non-module owner without an ordinary call target).
+                let ctor_name: Option<std::borrow::Cow<'_, str>> = match &function.0 {
+                    Expr::Ident(name) => Some(std::borrow::Cow::Borrowed(name.name.as_str())),
+                    Expr::FieldAccess { object, field }
+                        if matches!(object.0, Expr::Ident(_))
+                            && self.ordinary_call_target(&span).is_none()
+                            && !matches!(
+                                self.resolutions.get(&self.mk_key(&object.1)),
+                                Some(
+                                    Resolution::Local(_)
+                                        | Resolution::Field(_, _)
+                                        | Resolution::Module(_)
+                                )
+                            )
+                            && self.checked_ty(&object.1).is_none() =>
+                    {
+                        let owner = match self.resolutions.get(&self.mk_key(&object.1)) {
+                            Some(Resolution::Builtin(builtin)) => builtin.canonical_name(),
+                            Some(Resolution::Nominal(id)) => self.defs.display(id.declaration()),
+                            _ => match &object.0 {
+                                Expr::Ident(ident) => ident.name.as_str(),
+                                _ => unreachable!("guarded by Expr::Ident match"),
+                            },
+                        };
+                        Some(std::borrow::Cow::Owned(format!("{owner}::{}", field.0)))
                     }
-                });
-                // Intercept payload-bearing variant constructors written
-                // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
-                // identifier path produces `MachineVariantCtor { payload:
-                // None }`; the call form must capture the args into
-                // `payload: Some(...)`. Mismatched ctor shape (calling a
-                // unit variant with args, or calling a struct variant
-                // positionally) emits a structured diagnostic and falls
-                // through to the regular-call path so checker-stream
-                // coverage is preserved.
-                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
-                let variant_kind_for_call = self
-                    .lookup_variant_ctor(name.name.as_str(), checker_ctor_ty.as_ref())
-                    .map(|(_, _, kind)| kind.clone());
-                if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
-                    let taken = std::mem::take(&mut args);
-                    self.lower_variant_ctor_tuple_call(name.name.as_str(), taken, &span)
-                } else if let Some(kind) = &variant_kind_for_call {
-                    self.report_variant_ctor_call_shape_mismatch(name.name.as_str(), kind, &span);
-                    // Fall through to regular-call to keep checker-stream
-                    // coverage for the malformed source.
-                    self.lower_regular_call(
-                        function,
-                        LoweredCallArgs {
-                            args,
-                            evaluation_order,
-                        },
-                        &span,
-                        site,
-                    )
-                } else if let Some(endpoint) = overload_endpoint {
-                    self.lower_builtin_overload(&endpoint, name.name.as_str(), args, &span)
+                    _ => None,
+                };
+                if let Some(ctor_name) = ctor_name {
+                    // Intercept payload-bearing variant constructors written
+                    // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
+                    // identifier path produces `MachineVariantCtor { payload:
+                    // None }`; the call form must capture the args into
+                    // `payload: Some(...)`. Mismatched ctor shape (calling a
+                    // unit variant with args, or calling a struct variant
+                    // positionally) emits a structured diagnostic and falls
+                    // through to the regular-call path so checker-stream
+                    // coverage is preserved.
+                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                    let variant_kind_for_call = self
+                        .lookup_variant_ctor(ctor_name.as_ref(), checker_ctor_ty.as_ref())
+                        .map(|(_, _, kind)| kind.clone());
+                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                        let taken = std::mem::take(&mut args);
+                        self.lower_variant_ctor_tuple_call(ctor_name.as_ref(), taken, &span)
+                    } else if let Some(kind) = &variant_kind_for_call {
+                        self.report_variant_ctor_call_shape_mismatch(
+                            ctor_name.as_ref(),
+                            kind,
+                            &span,
+                        );
+                        // Fall through to regular-call to keep checker-stream
+                        // coverage for the malformed source.
+                        self.lower_regular_call(
+                            function,
+                            LoweredCallArgs {
+                                args,
+                                evaluation_order,
+                            },
+                            &span,
+                            site,
+                        )
+                    } else if let Some(endpoint) = overload_endpoint {
+                        self.lower_builtin_overload(&endpoint, ctor_name.as_ref(), args, &span)
+                    } else {
+                        self.lower_regular_call(
+                            function,
+                            LoweredCallArgs {
+                                args,
+                                evaluation_order,
+                            },
+                            &span,
+                            site,
+                        )
+                    }
                 } else {
                     self.lower_regular_call(
                         function,
@@ -1306,16 +1372,6 @@ impl LowerCtx<'_> {
                         site,
                     )
                 }
-            } else {
-                self.lower_regular_call(
-                    function,
-                    LoweredCallArgs {
-                        args,
-                        evaluation_order,
-                    },
-                    &span,
-                    site,
-                )
             }
         };
         Ok(lowered)

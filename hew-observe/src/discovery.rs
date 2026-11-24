@@ -62,8 +62,11 @@ pub fn scan_profilers() -> Vec<DiscoveredProfiler> {
     let Some(dir) = discovery_dir() else {
         return Vec::new();
     };
+    scan_profilers_in(&dir)
+}
 
-    let Ok(entries) = fs::read_dir(&dir) else {
+fn scan_profilers_in(dir: &Path) -> Vec<DiscoveredProfiler> {
+    let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
 
@@ -81,9 +84,7 @@ pub fn scan_profilers() -> Vec<DiscoveredProfiler> {
         if is_pid_alive(profiler.pid) {
             profilers.push(profiler);
         } else {
-            // Prune stale entry.
-            let _ = fs::remove_file(&path);
-            let _ = fs::remove_file(&profiler.socket_path);
+            prune_stale_entry(dir, &path, &profiler);
         }
     }
 
@@ -94,16 +95,63 @@ pub fn scan_profilers() -> Vec<DiscoveredProfiler> {
 /// Look up a specific PID in the discovery directory.
 pub fn find_by_pid(pid: u32) -> Option<DiscoveredProfiler> {
     let dir = discovery_dir()?;
+    find_by_pid_in(&dir, pid)
+}
+
+fn find_by_pid_in(dir: &Path, pid: u32) -> Option<DiscoveredProfiler> {
     let path = dir.join(format!("{pid}.json"));
     let profiler = parse_discovery_file(&path)?;
+    if profiler.pid != pid {
+        return None;
+    }
 
     if is_pid_alive(profiler.pid) {
         Some(profiler)
     } else {
-        // Prune stale.
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(&profiler.socket_path);
+        prune_stale_entry(dir, &path, &profiler);
         None
+    }
+}
+
+fn prune_stale_entry(dir: &Path, descriptor_path: &Path, profiler: &DiscoveredProfiler) {
+    if fs::symlink_metadata(descriptor_path).is_ok_and(|meta| meta.file_type().is_file()) {
+        let _ = fs::remove_file(descriptor_path);
+    }
+    remove_stale_socket(dir, profiler.pid, &profiler.socket_path);
+}
+
+/// Remove a stale profiler socket only when the descriptor names `<pid>.sock`
+/// directly inside `dir` and `symlink_metadata` confirms it is a genuine Unix
+/// domain socket (never following symlinks, never unlinking out-of-directory
+/// paths or non-socket files).
+fn remove_stale_socket(dir: &Path, pid: u32, declared_socket: &Path) {
+    use std::os::unix::fs::FileTypeExt;
+
+    let expected_name = format!("{pid}.sock");
+    let expected_path = dir.join(&expected_name);
+
+    let has_parent_dir_component = declared_socket
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir));
+    if has_parent_dir_component {
+        return;
+    }
+
+    let same_direct_child = declared_socket == expected_path
+        || (declared_socket.file_name().and_then(|name| name.to_str())
+            == Some(expected_name.as_str())
+            && declared_socket
+                .parent()
+                .is_some_and(|parent| fs::canonicalize(parent).ok() == fs::canonicalize(dir).ok()));
+    if !same_direct_child {
+        return;
+    }
+
+    let Ok(meta) = fs::symlink_metadata(&expected_path) else {
+        return;
+    };
+    if meta.file_type().is_socket() {
+        let _ = fs::remove_file(&expected_path);
     }
 }
 
@@ -166,6 +214,15 @@ fn parse_discovery_file(path: &Path) -> Option<DiscoveredProfiler> {
     })
 }
 
+fn kill_probe_indicates_alive(result: libc::c_int, errno: Option<libc::c_int>) -> bool {
+    if result == 0 {
+        return true;
+    }
+    // `EPERM` means the process exists even though this user cannot signal it.
+    // Prune a discovery entry only on confirmed `ESRCH`.
+    errno != Some(libc::ESRCH)
+}
+
 fn is_pid_alive(pid: u32) -> bool {
     // `kill(0, 0)` and negative PIDs address process groups, which would
     // report a stale descriptor as alive.
@@ -178,7 +235,10 @@ fn is_pid_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) checks if the process exists without sending a
     // signal. No preconditions beyond a valid signal number (0 is valid).
     let result = unsafe { libc::kill(pid, 0) };
-    result == 0
+    let errno = (result != 0)
+        .then(|| std::io::Error::last_os_error().raw_os_error())
+        .flatten();
+    kill_probe_indicates_alive(result, errno)
 }
 
 #[cfg(test)]
@@ -263,5 +323,109 @@ mod tests {
                 "pid {pid} must not parse (it would alias another process or group)"
             );
         }
+    }
+
+    #[test]
+    fn kill_probe_treats_eperm_as_alive_and_only_esrch_as_dead() {
+        assert!(kill_probe_indicates_alive(0, None));
+        assert!(kill_probe_indicates_alive(-1, Some(libc::EPERM)));
+        assert!(!kill_probe_indicates_alive(-1, Some(libc::ESRCH)));
+        // PID 1 always exists on Unix (EPERM when unprivileged, 0 when root).
+        assert!(is_pid_alive(1));
+    }
+
+    #[test]
+    fn stale_cleanup_removes_only_matching_unix_socket_in_discovery_dir() {
+        use std::os::unix::net::UnixListener;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let discovery = tmp.path().join("discovery");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&discovery).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        // Find a confirmed-dead PID (ESRCH) so pruning triggers reliably.
+        let dead_pid = (4_000_000..4_001_000)
+            .find(|&pid| !is_pid_alive(pid))
+            .expect("find dead pid");
+        let write_descriptor = |file_name: &str, pid: u32, socket: &Path| {
+            let descriptor = discovery.join(file_name);
+            let json = serde_json::json!({
+                "pid": pid,
+                "socket": socket.to_string_lossy(),
+                "started": 1,
+                "program": "stale"
+            })
+            .to_string();
+            fs::write(&descriptor, json).unwrap();
+            descriptor
+        };
+
+        // 1. Genuine Unix socket matching `<pid>.sock` inside discovery dir is removed.
+        let valid_sock = discovery.join(format!("{dead_pid}.sock"));
+        let listener = UnixListener::bind(&valid_sock).unwrap();
+        drop(listener);
+        let valid_json = write_descriptor(&format!("{dead_pid}.json"), dead_pid, &valid_sock);
+        assert!(scan_profilers_in(&discovery).is_empty());
+        assert!(!valid_json.exists(), "stale descriptor should be pruned");
+        assert!(
+            !valid_sock.exists(),
+            "matching stale unix socket should be pruned"
+        );
+
+        // 2. Out-of-directory regular file and out-of-directory Unix socket survive.
+        let outside_file = outside.join("victim.txt");
+        fs::write(&outside_file, b"keep").unwrap();
+        write_descriptor("out_file.json", dead_pid, &outside_file);
+        let outside_sock = outside.join(format!("{dead_pid}.sock"));
+        let outside_listener = UnixListener::bind(&outside_sock).unwrap();
+        drop(outside_listener);
+        write_descriptor("out_sock.json", dead_pid, &outside_sock);
+        assert!(scan_profilers_in(&discovery).is_empty());
+        assert!(
+            outside_file.exists(),
+            "out-of-dir regular file must never be unlinked"
+        );
+        assert!(
+            outside_sock.exists(),
+            "out-of-dir unix socket must never be unlinked"
+        );
+
+        // 3. Regular file named `<pid>.sock` inside discovery dir survives.
+        let regular_in_dir = discovery.join(format!("{dead_pid}.sock"));
+        fs::write(&regular_in_dir, b"not a socket").unwrap();
+        write_descriptor("reg.json", dead_pid, &regular_in_dir);
+        assert!(scan_profilers_in(&discovery).is_empty());
+        assert!(
+            regular_in_dir.exists(),
+            "regular file must never be unlinked as a socket"
+        );
+        fs::remove_file(&regular_in_dir).unwrap();
+
+        // 4. Symlink named `<pid>.sock` inside discovery dir (even to a real socket) survives.
+        let symlink_in_dir = discovery.join(format!("{dead_pid}.sock"));
+        std::os::unix::fs::symlink(&outside_sock, &symlink_in_dir).unwrap();
+        write_descriptor("sym.json", dead_pid, &symlink_in_dir);
+        assert!(scan_profilers_in(&discovery).is_empty());
+        assert!(
+            fs::symlink_metadata(&symlink_in_dir).is_ok(),
+            "symlink at socket path must never be unlinked"
+        );
+        assert!(
+            outside_sock.exists(),
+            "symlink target socket must remain untouched"
+        );
+        fs::remove_file(&symlink_in_dir).unwrap();
+
+        // 5. Genuine Unix socket for a different PID inside discovery dir survives.
+        let other_sock = discovery.join(format!("{}.sock", dead_pid + 1));
+        let other_listener = UnixListener::bind(&other_sock).unwrap();
+        drop(other_listener);
+        write_descriptor("wrong_pid.json", dead_pid, &other_sock);
+        assert!(scan_profilers_in(&discovery).is_empty());
+        assert!(
+            other_sock.exists(),
+            "socket belonging to a different PID must never be unlinked"
+        );
     }
 }

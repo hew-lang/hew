@@ -68,8 +68,11 @@ pub fn v7() -> string {
 /// }
 /// ```
 pub fn is_valid(s: string) -> bool {
+    let n = s.byte_len();
+    if n != 32 && n != 36 && n != 38 && n != 45 {
+        return false;
+    }
     let b = s.to_bytes();
-    let n = b.len();
     if n == 32 {
         return is_simple_uuid(b);
     }
@@ -79,14 +82,11 @@ pub fn is_valid(s: string) -> bool {
     if n == 38 {
         return b[0] == 123 && b[37] == 125 && is_hyphenated_uuid(b, 1);
     }
-    if n == 45 {
-        // Exact lowercase ASCII prefix "urn:uuid:" (9 bytes).
-        if b[0] != 117 || b[1] != 114 || b[2] != 110 || b[3] != 58 || b[4] != 117 || b[5] != 117 || b[6] != 105 || b[7] != 100 || b[8] != 58 {
-            return false;
-        }
-        return is_hyphenated_uuid(b, 9);
+    // Exact lowercase ASCII prefix "urn:uuid:" (9 bytes).
+    if b[0] != 117 || b[1] != 114 || b[2] != 110 || b[3] != 58 || b[4] != 117 || b[5] != 117 || b[6] != 105 || b[7] != 100 || b[8] != 58 {
+        return false;
     }
-    false
+    is_hyphenated_uuid(b, 9)
 }
 
 fn is_hex_digit(ch: u8) -> bool {

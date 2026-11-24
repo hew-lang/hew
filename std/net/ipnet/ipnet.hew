@@ -408,11 +408,11 @@ fn parse_v6_at(
 }
 
 fn parse_ip(addr: string) -> Option<ParsedIp> {
-    let data = addr.to_bytes();
-    let n = data.len();
-    if n == 0 {
+    let n = addr.byte_len();
+    if n < 2 || n > 45 {
         return .None;
     }
+    let data = addr.to_bytes();
     if n <= 15 {
         match parse_v4_at(data, 0, n, false) {
             .Some(v4) => {
@@ -436,11 +436,11 @@ fn parse_ip(addr: string) -> Option<ParsedIp> {
 }
 
 fn parse_cidr(cidr: string) -> Option<ParsedCidr> {
-    let data = cidr.to_bytes();
-    let n = data.len();
-    if n == 0 {
+    let n = cidr.byte_len();
+    if n < 4 || n > 49 {
         return .None;
     }
+    let data = cidr.to_bytes();
     match parse_v4_at(data, 0, n, true) {
         .Some(v4) => {
             if v4.next < n && data[v4.next] == 47 {

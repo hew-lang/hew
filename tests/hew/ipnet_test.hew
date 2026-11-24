@@ -161,3 +161,25 @@ fn ipv6_masking_and_rfc5952_formatting() {
     assert(!ipnet.cidr_contains("2001:db8:8000::/33", "2001:db8:7fff::1").expect("v6 /33 out"));
     assert(ipnet.cidr_contains("2001:db8:8000::/33", "2001:db8:ffff::1").expect("v6 /33 in"));
 }
+
+#[test]
+fn overlong_and_multibyte_inputs_are_rejected() {
+    // Maximum valid lengths: IPv4 = 15, IPv6 = 45, CIDR = 49.
+    assert(ipnet.is_valid("255.255.255.255"));
+    assert(ipnet.is_valid("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"));
+    assert(ipnet.cidr_network("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255/128").is_ok());
+
+    // One byte over max IPv6 (46) and max CIDR (50), plus large overlong inputs.
+    assert(!ipnet.is_valid("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.2551"));
+    assert(!ipnet.is_valid("192.168.1.1" + " ".repeat(256)));
+    assert(!ipnet.is_v4("192.168.1.1" + "0".repeat(20)));
+    assert(!ipnet.is_v6("::1" + "0".repeat(128)));
+    assert(ipnet.cidr_network("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255/0128").is_err());
+    assert(ipnet.cidr_network("10.0.0.0/8" + " ".repeat(256)).is_err());
+
+    // Multi-byte UTF-8 where scalar count <= 15/45/49 but byte length > limit.
+    assert(!ipnet.is_valid("é".repeat(45)));
+    assert(ipnet.cidr_network("é".repeat(49) + "/24").is_err());
+    assert(!ipnet.is_valid("a"));
+    assert(ipnet.cidr_network("::/").is_err());
+}

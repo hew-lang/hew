@@ -165,16 +165,14 @@ impl Checker {
                 .map(|param| (*param).to_string())
                 .collect(),
             None,
-            vec![],
-            &Ty::Named {
-                head: crate::TypeHead::Builtin(builtin),
-                args: type_params
-                    .iter()
-                    .map(|param| Ty::Named {
-                        head: crate::TypeHead::Unresolved(Symbol::intern(param)),
-                        args: vec![],
-                    })
-                    .collect(),
+            |type_params| {
+                (
+                    vec![],
+                    Ty::Named {
+                        head: crate::TypeHead::Builtin(builtin),
+                        args: type_params.iter().copied().map(Ty::param).collect(),
+                    },
+                )
             },
         );
         self.builtin_call_targets
@@ -588,7 +586,7 @@ impl Checker {
                     && matches!(item, Item::TypeDecl(declaration)
                     if self
                         .scopes
-                        .item(identity_module, declaration.name.name)
+                        .item(identity_module, Ident::from_symbol(declaration.name.name))
                         .is_none());
                 if matches!(item, Item::Impl(_)) || unminted_type {
                     self.mint_item_declaration_identities(
@@ -958,16 +956,23 @@ impl Checker {
                     self.report_unsupported_impl_drop(span);
                     continue;
                 }
-                if let TypeExpr::Named {
-                    path: named_path, ..
-                } = &id.target_type.0
-                {
-                    let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                if matches!(&id.target_type.0, TypeExpr::Named { .. }) {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
                     let self_ty = self.resolve_impl_target(id);
+                    let type_name = self.impl_target_identity(&self_ty);
+                    let primitive_key = id
+                        .trait_bound
+                        .as_ref()
+                        .and_then(|_| Self::canonical_primitive_or_builtin_key(&self_ty));
+                    let builtin_receiver = self_ty.named_builtin().filter(|b| {
+                        matches!(
+                            b,
+                            BuiltinType::Result | BuiltinType::Option | BuiltinType::Vec
+                        )
+                    });
                     self.current_self_type = Some((type_name.clone(), self_ty));
                     if !self.admit_source_impl(id, span, impl_origin) {
                         self.current_self_type = prev_self_type;
@@ -977,23 +982,10 @@ impl Checker {
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
-                    let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                        self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                    });
                     let impl_trait = self.impl_trait_ref(id);
-                    // Compiled-in stdlib impls are the origin of the builtin
-                    // Result/Option/Vec receiver surfaces. Snapshot their
-                    // canonical signatures before a user same-named type can
-                    // clobber the colliding bare `Type::<method>` fn_sigs key.
-                    let builtin_receiver = crate::lookup_builtin_type(type_name).filter(|b| {
-                        matches!(
-                            b,
-                            BuiltinType::Result | BuiltinType::Option | BuiltinType::Vec
-                        )
-                    });
                     for method in &id.methods {
                         let sig = self.register_impl_method(
-                            type_name,
+                            &type_name,
                             method,
                             id.type_params.as_ref(),
                             id.where_clause.as_ref(),
@@ -1027,7 +1019,7 @@ impl Checker {
                                         _ => unreachable!("canonical optional receiver"),
                                     };
                                     if let Some(method_id) =
-                                        self.impl_method_declaration_id(type_name, method, None)
+                                        self.impl_method_declaration_id(&type_name, method, None)
                                     {
                                         self.lang_items.insert(
                                             item.key(),
@@ -1043,7 +1035,10 @@ impl Checker {
                             }
                         }
                         // Also register on qualified type name
-                        let qualified_type = format!("{module_short}.{type_name}");
+                        let unqualified_type = type_name
+                            .strip_prefix(&format!("{module_full_path}."))
+                            .unwrap_or(type_name.as_str());
+                        let qualified_type = format!("{module_short}.{unqualified_type}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
                             td.methods.insert(method.name.to_string(), sig.clone());
                         }
@@ -1746,7 +1741,7 @@ impl Checker {
                         let importer = self.current_module.clone();
                         if self.register_type_namespace_name(
                             importer.as_deref(),
-                            &binding_name,
+                            Ident::new(&binding_name),
                             span,
                         ) {
                             Some(binding_name)
@@ -1802,14 +1797,15 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
-                    if let TypeExpr::Named {
-                        path: named_path, ..
-                    } = &id.target_type.0
-                    {
-                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                                 // Set current_self_type for resolving `Self` in method parameters
+                    if matches!(&id.target_type.0, TypeExpr::Named { .. }) {
+                        // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
                         let self_ty = self.resolve_impl_target(id);
+                        let type_name = self.impl_target_identity(&self_ty);
+                        let primitive_key = id
+                            .trait_bound
+                            .as_ref()
+                            .and_then(|_| Self::canonical_primitive_or_builtin_key(&self_ty));
                         self.current_self_type = Some((type_name.clone(), self_ty));
                         if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
                             self.current_self_type = prev_self_type;
@@ -1820,9 +1816,6 @@ impl Checker {
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
-                        let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                            self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                        });
                         let impl_trait = self.impl_trait_ref(id);
                         for method in &id.methods {
                             // Register the declaring module's complete method
@@ -1831,7 +1824,7 @@ impl Checker {
                             // source-local calls and public values returned from
                             // the module with an incomplete canonical TypeDef.
                             let sig = self.register_impl_method(
-                                type_name,
+                                &type_name,
                                 method,
                                 id.type_params.as_ref(),
                                 id.where_clause.as_ref(),
@@ -2157,12 +2150,22 @@ impl Checker {
         // the annotation, while the actor's legitimate `<T>` still resolves. This
         // mirrors the inline `Item::Actor` path for imported / flat-file actors.
         let actor_sig_scope = self.enter_primary_sig_scope(&[(Some(&ad.type_params), None)]);
+        let actor_decl = self
+            .named_item_declaration(ad.name)
+            .or_else(|| self.lookup_declaration(&identity));
         for rf in &ad.receive_fns {
-            self.register_receive_fn(&identity, rf);
+            self.register_receive_fn(actor_decl, &identity, rf);
         }
         for method in &ad.methods {
             let method_name = format!("{identity}::{}", method.name);
-            self.register_fn_sig_with_name(&method_name, method, None);
+            let method_decl = actor_decl.and_then(|owner| {
+                self.defs.member_of_kind(
+                    owner,
+                    method.name.name,
+                    crate::DeclarationKind::ActorMethod,
+                )
+            });
+            self.register_fn_sig_with_name(&method_name, method, method_decl);
         }
         self.exit_primary_sig_scope(actor_sig_scope);
     }

@@ -291,7 +291,8 @@ else needs `impl Display for {rendered}`)"
         }
         // A local/parameter in an inner body scope shadows imports normally.
         // Only an outer import-scope binding can be ill-formed here.
-        if matches!(self.env.lookup_ref_with_depth(name), Some((depth, _)) if depth > 0) {
+        if matches!(self.env.lookup_ref_with_depth(Ident::new(name)), Some((depth, _)) if depth > 0)
+        {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
@@ -750,23 +751,15 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    pub(in crate::check) fn require_unsafe(&mut self, name: &str, span: &Span) {
-        // rc1-F1 stage B: `unsafe` gating is derived from the extern table's
-        // declaration index — a call requires `unsafe` exactly when its
-        // resolved declaration key names a registered extern declaration.
-        // The canonical-owner probe covers root extern declarations, which
-        // key `{root_module}.{name}` inside the checker while root call
-        // sites spell the bare leaf.
-        // TRANSITION(P2): the path lookups are deleted by A1 commit 3, when
-        // the call carries its resolved declaration.
-        let requires_unsafe = |path: &str| {
-            self.defs
-                .lookup_path(path)
-                .is_some_and(|declaration| self.extern_table.requires_unsafe(declaration))
-        };
-        let scoped_unsafe = scoped_module_item_name(self.canonical_fn_owner(), name)
-            .is_some_and(|qualified| requires_unsafe(&qualified));
-        if !self.in_unsafe && (scoped_unsafe || requires_unsafe(name)) {
+    pub(in crate::check) fn require_unsafe(
+        &mut self,
+        declaration: Option<crate::DefId>,
+        name: &str,
+        span: &Span,
+    ) {
+        if !self.in_unsafe
+            && declaration.is_some_and(|declaration| self.extern_table.requires_unsafe(declaration))
+        {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -799,7 +792,7 @@ else needs `impl Display for {rendered}`)"
         else {
             return Ty::Error;
         };
-        if !self.module_binding_in_current_file(module_short) {
+        if !self.module_binding_in_current_file(Ident::new(module_short)) {
             let similar =
                 crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
             self.report_error_with_suggestions(
@@ -810,7 +803,7 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         }
-        self.note_import_use(module_short);
+        self.resolve_import_use(Ident::new(module_short));
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
                 .module_type_exports_for_binding(module_short)
@@ -843,7 +836,7 @@ else needs `impl Display for {rendered}`)"
             .unwrap_or_else(|| {
                 format!(
                     "{}.{type_name}",
-                    self.canonical_module_import_owner(module_short)
+                    self.canonical_module_import_owner(Ident::new(module_short))
                 )
             });
         if Self::variant_is_source_unit(&td, variant_name) {

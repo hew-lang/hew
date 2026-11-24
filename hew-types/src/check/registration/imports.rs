@@ -18,6 +18,17 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 use hew_parser::module::ModulePath;
 
+fn path_matches_skipped(path: &hew_parser::ast::Path, skipped: &HashSet<String>) -> bool {
+    match path.segments.as_slice() {
+        [(ident, _)] => skipped.contains(ident.name.as_str()),
+        [(owner, _), (leaf, _)] => skipped.iter().any(|name| {
+            name.split_once('.')
+                .is_some_and(|(a, b)| a == owner.name.as_str() && b == leaf.name.as_str())
+        }),
+        _ => false,
+    }
+}
+
 impl Checker {
     /// Report `import` declarations no resolution went through.
     fn record_reportable_import(&mut self, name: &str, span: &Span) {
@@ -33,16 +44,16 @@ impl Checker {
             });
     }
 
-    /// Count a use of the import binding `name` in the current file.
-    ///
-    /// TRANSITION(A1c3): WHY record-literal and module-member paths still
-    /// arrive as dotted strings. WHEN they resolve through `Scope`, the
-    /// resolution marks the import and this is deleted. WHAT: the struct
-    /// literal and member checkers take the written `Path`.
-    pub(in crate::check) fn note_import_use(&mut self, name: &str) {
+    /// Resolve a written identifier through `Scope` to mark its import use in
+    /// the current file.
+    pub(in crate::check) fn resolve_import_use(&mut self, name: Ident) {
         if let Some(site) = self.scope_site() {
-            self.scopes
-                .mark_import_binding_used(site.file, Symbol::intern(name));
+            let _ = self.scopes.resolve_prefix(
+                &self.env,
+                site,
+                super::super::scope::Namespace::Value,
+                &[(name, 0..0)],
+            );
         }
     }
 
@@ -127,7 +138,7 @@ impl Checker {
 
     fn note_import_use_of_expr_head_inner(&mut self, expr: &Expr) {
         match expr {
-            Expr::Ident(name) => self.note_import_use(name.name.as_str()),
+            Expr::Ident(name) => self.resolve_import_use(*name),
             Expr::FieldAccess { object, .. } => self.note_import_use_of_expr_head(&object.0),
             _ => {}
         }
@@ -1470,8 +1481,7 @@ impl Checker {
                         path: named_path, ..
                     } = &id.target_type.0
                     {
-                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        if skipped_type_names.contains(type_name) {
+                        if path_matches_skipped(named_path, &skipped_type_names) {
                             continue;
                         }
                         let importer_module = self.current_module.take();
@@ -1491,9 +1501,11 @@ impl Checker {
                         // placeholder the dispatch-time binding zips against
                         // the receiver's concrete args.
                         let self_ty = self.resolve_impl_target(id);
-                        let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                            self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                        });
+                        let type_name = self.impl_target_identity(&self_ty);
+                        let primitive_key = id
+                            .trait_bound
+                            .as_ref()
+                            .and_then(|_| Self::canonical_primitive_or_builtin_key(&self_ty));
                         // The enclosing impl's self type, as every other
                         // registration path publishes it. `register_impl_method`
                         // reads it to tell `impl Render for Box<i64>` from
@@ -1516,7 +1528,7 @@ impl Checker {
                                 continue;
                             }
                             let sig = self.register_impl_method(
-                                type_name,
+                                &type_name,
                                 method,
                                 id.type_params.as_ref(),
                                 id.where_clause.as_ref(),
@@ -1603,7 +1615,7 @@ impl Checker {
         // importing one file each get their own copy of its names.
         let importer = self.current_module.clone();
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
-            && self.register_type_namespace_name(importer.as_deref(), name, span)
+            && self.register_type_namespace_name(importer.as_deref(), Ident::new(name), span)
     }
 
     /// Publish an imported file's type-shaped declaration into the importing

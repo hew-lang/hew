@@ -140,11 +140,11 @@ impl Checker {
         } = &object.0
         {
             if let Expr::Ident(module_short) = &module.0 {
-                if self.module_binding_in_current_file(module_short)
-                    && self.env.lookup_ref(module_short).is_none()
+                if self.module_binding_in_current_file(*module_short)
+                    && self.env.lookup_ref(*module_short).is_none()
                 {
                     let constructor = format!("{module_short}.{}::{}", type_name.0, field);
-                    return self.synthesize_identifier(&constructor, span);
+                    return self.synthesize_identifier(Ident::new(&constructor), span);
                 }
             }
         }
@@ -199,9 +199,9 @@ impl Checker {
                     // If the receiver looks like a module (known to self.modules) but
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
-                    if self.module_binding_in_current_file(name) {
+                    if self.module_binding_in_current_file(*name) {
                         if self.has_fn_sig(&qualified_key) {
-                            self.note_import_use(name.name.as_str());
+                            self.resolve_import_use(*name);
                             self.reject_wasm_native_only_module_function(
                                 name.name.as_str(),
                                 field,
@@ -1299,7 +1299,7 @@ impl Checker {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [surface_machine, "Event", variant]
-                    if self.env.lookup_ref(surface_machine).is_none()
+                    if self.env.lookup_ref(Ident::new(surface_machine)).is_none()
                         && in_lexical_scope(surface_machine) =>
                 {
                     self.source_nominal_declaration(surface_machine)
@@ -1324,14 +1324,14 @@ impl Checker {
                         })
                 }
                 [module_short, surface_machine, "Event", variant]
-                    if self.env.lookup_ref(module_short).is_none()
+                    if self.env.lookup_ref(Ident::new(module_short)).is_none()
                         && self
                             .resolve_module_type(module_short, surface_machine)
                             .is_some() =>
                 {
                     let machine = format!(
                         "{}.{surface_machine}",
-                        self.canonical_module_import_owner(module_short)
+                        self.canonical_module_import_owner(Ident::new(module_short))
                     );
                     self.defs
                         .lookup_path(&machine)
@@ -1353,12 +1353,9 @@ impl Checker {
                                 })
                                 .map(|_| format!("{path}::{variant}"))
                         })
-                        .inspect(|_| {
-                            self.note_import_use(module_short);
-                        })
                 }
                 [surface_type, variant]
-                    if self.env.lookup_ref(surface_type).is_none()
+                    if self.env.lookup_ref(Ident::new(surface_type)).is_none()
                         && in_lexical_scope(surface_type) =>
                 {
                     self.source_nominal_declaration(surface_type)
@@ -1374,15 +1371,14 @@ impl Checker {
                         })
                 }
                 [module_short, surface_type, variant]
-                    if self.env.lookup_ref(module_short).is_none() =>
+                    if self.env.lookup_ref(Ident::new(module_short)).is_none() =>
                 {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
                         .map(|_| {
-                            self.note_import_use(module_short);
                             format!(
                                 "{}.{surface_type}::{variant}",
-                                self.canonical_module_import_owner(module_short)
+                                self.canonical_module_import_owner(Ident::new(module_short))
                             )
                         })
                 }
@@ -1403,10 +1399,9 @@ impl Checker {
             let segments = name.split('.').collect::<Vec<_>>();
             match segments.as_slice() {
                 [module_short, type_name]
-                    if self.env.lookup_ref(module_short).is_none()
-                        && self.module_binding_in_current_file(module_short) =>
+                    if self.env.lookup_ref(Ident::new(module_short)).is_none()
+                        && self.module_binding_in_current_file(Ident::new(module_short)) =>
                 {
-                    self.note_import_use(module_short);
                     let Some(_) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1428,7 +1423,7 @@ impl Checker {
                     };
                     Some(format!(
                         "{}.{type_name}",
-                        self.canonical_module_import_owner(module_short)
+                        self.canonical_module_import_owner(Ident::new(module_short))
                     ))
                 }
                 _ => None,
@@ -1463,12 +1458,11 @@ impl Checker {
             .filter(|_| !resolved && !name.contains("::") && dotted_struct_variant.is_none())
         {
             let module_short = &name[..dot];
-            if self.module_binding_in_current_file(module_short) {
+            if self.module_binding_in_current_file(Ident::new(module_short)) {
                 let after_dot = &name[dot + 1..];
                 if let Some(colon) = after_dot.find("::") {
                     let type_name = &after_dot[..colon];
                     let variant_name = &after_dot[colon + 2..];
-                    self.note_import_use(module_short);
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
                             .module_type_exports_for_binding(module_short)
@@ -1509,7 +1503,7 @@ impl Checker {
                     // alias and the full declaration as candidates.
                     resolved_module_variant_name = Some(format!(
                         "{}.{type_name}::{variant_name}",
-                        self.canonical_module_import_owner(module_short)
+                        self.canonical_module_import_owner(Ident::new(module_short))
                     ));
                 }
             }
@@ -1545,11 +1539,6 @@ impl Checker {
             return Ty::Error;
         }
 
-        if qualified_owned.is_some() {
-            // Credit the written binding, not every import of its selected
-            // declaration's source module.
-            self.note_import_use(name.split('.').next().unwrap_or(name));
-        }
         let name = qualified_owned.as_deref().unwrap_or(name);
         if self
             .lookup_type_def(name)
@@ -2212,9 +2201,9 @@ impl Checker {
             // local actor is a typed error naming the candidates — never
             // silent first-wins.
             Expr::Ident(name) => {
-                match self.resolve_bare_spawn_target_identity(name) {
+                match self.resolve_bare_spawn_target_identity(*name) {
                     super::types::BareActorResolution::Resolved(identity) => {
-                        self.note_import_use(name.name.as_str());
+                        self.resolve_import_use(*name);
                         Some(identity)
                     }
                     super::types::BareActorResolution::Ambiguous(candidate_modules) => {
@@ -2260,7 +2249,7 @@ impl Checker {
             // Handle module-qualified actor: spawn module.ActorName { args }
             Expr::FieldAccess { object, field } => {
                 if let Expr::Ident(module) = &object.0 {
-                    if self.module_binding_in_current_file(module) {
+                    if self.module_binding_in_current_file(*module) {
                         // Verify the qualifier resolves to something spawnable
                         // that is a public export of `module` before stripping
                         // it to the bare name. `module_type_exports` membership
@@ -2310,7 +2299,7 @@ impl Checker {
                             // keeping a single clear diagnostic.
                             return Err(());
                         };
-                        self.note_import_use(module.name.as_str());
+                        self.resolve_import_use(*module);
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
                         // an alias or share its leaf with another module.

@@ -337,7 +337,12 @@ impl Checker {
         let name = format!("<callable@{}:{}>", span.start, span.end);
         let path = scoped_module_item_name(self.canonical_fn_owner(), &name).unwrap_or(name);
         self.defs
-            .declare(occurrence, Symbol::intern("callable"), None, path)
+            .declare(
+                occurrence,
+                hew_parser::ast::Ident::from_symbol(Symbol::intern("callable")),
+                None,
+                path,
+            )
             .expect("one callable occurrence has one declaration identity")
     }
 

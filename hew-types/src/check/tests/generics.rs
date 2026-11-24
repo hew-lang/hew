@@ -871,7 +871,7 @@ fn test_wire_since_without_version_uses_registered_decl_span() {
     };
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_type_namespace_name(None, "TestMsg", &(10..50));
+    checker.register_type_namespace_name(None, Ident::new("TestMsg"), &(10..50));
     checker.validate_wire_version_constraints("TestMsg", &wire);
 
     assert_eq!(checker.warnings.len(), 1);
@@ -2135,7 +2135,7 @@ fn mutable_var_initializer_keeps_integer_literal_inferable() {
     checker.check_stmt(&var_stmt, &(0..10));
     let binding = checker
         .env
-        .lookup_ref("n")
+        .lookup_ref(Ident::new("n"))
         .expect("mutable binding should be defined");
     assert!(matches!(binding.ty, Ty::Var(_)));
     assert_eq!(checker.subst.resolve(&binding.ty), Ty::IntLiteral);
@@ -2220,8 +2220,8 @@ fn or_pattern_binding_helper_rejects_mutability_mismatch() {
     let names = HashSet::from(["x".to_string()]);
     let mut left_env = crate::env::TypeEnv::new();
     let mut right_env = crate::env::TypeEnv::new();
-    left_env.define_with_span("x".to_string(), Ty::I64, true, 0..1);
-    right_env.define_with_span("x".to_string(), Ty::I64, false, 0..1);
+    left_env.define_with_span(Ident::new("x"), Ty::I64, true, 0..1);
+    right_env.define_with_span(Ident::new("x"), Ty::I64, false, 0..1);
 
     assert!(
         !checker.or_pattern_bindings_match(&left_env, &right_env, &names, &names),
@@ -2261,7 +2261,7 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
     assert_eq!(
         checker
             .env
-            .lookup_ref("value")
+            .lookup_ref(Ident::new("value"))
             .map(|binding| binding.ty.clone()),
         Some(Ty::Error),
         "missing type defs should seed placeholder bindings for recovery"

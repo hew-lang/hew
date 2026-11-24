@@ -391,3 +391,32 @@ fn direct_display_surface_named_type_routes_to_impl() {
         );
     }
 }
+
+#[test]
+fn dotted_trait_ufcs_on_primitive_i64_lowers_with_rewrite() {
+    let source = r#"
+        trait Renderable {
+            fn fmt(self) -> string;
+        }
+        impl Renderable for i64 {
+            fn fmt(self) -> string {
+                "i64"
+            }
+        }
+        fn main() {
+            let x: i64 = 42;
+            let _: string = Renderable.fmt(x);
+        }
+    "#;
+    let output = lower_checked(source);
+    assert!(
+        output.diagnostics.is_empty(),
+        "dotted trait UFCS on i64 must lower without HIR diagnostics; got: {:#?}",
+        output.diagnostics
+    );
+    let calls = collect_calls(&output);
+    assert!(
+        calls.iter().any(|c| c == "i64::fmt"),
+        "dotted trait UFCS on i64 must lower to `i64::fmt`; observed calls: {calls:?}"
+    );
+}

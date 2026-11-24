@@ -503,6 +503,7 @@ fn collect_value_type_refs(
                 active,
             );
         }
+        Ty::Named { head, .. } if head.is_actor() => {}
         Ty::Named { head, args } => match head.builtin() {
             Some(crate::BuiltinType::Option | crate::BuiltinType::Result) => {
                 for arg in args {

@@ -405,7 +405,7 @@ impl Checker {
         surface_module: &str,
         function: &str,
     ) -> Option<WasmUnsupportedFeature> {
-        let source_module = self.canonical_module_import_owner(surface_module);
+        let source_module = self.canonical_module_import_owner(Ident::new(surface_module));
         if !self.canonical_std_module_sources.contains(&source_module) {
             return None;
         }
@@ -556,8 +556,8 @@ impl Checker {
     /// resolves to the innermost binding, the loop variable. Every other binder
     /// kind already rejects that collision here; the induction variable is not
     /// special enough to be allowed to make a field ambiguous.
-    pub(super) fn check_shadowing(&mut self, name: impl crate::env::LexicalName, span: &Span) {
-        let ident = name.lexical_key();
+    pub(super) fn check_shadowing(&mut self, name: hew_parser::ast::Ident, span: &Span) {
+        let ident = name;
         let name = ident.name.as_str();
         if name.starts_with('_') {
             return;

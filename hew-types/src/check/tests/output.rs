@@ -1911,3 +1911,128 @@ fn deep_widened_callable_field_does_not_forge_send_across_fork() {
         output.errors
     );
 }
+
+#[test]
+fn tuple_index_field_access_yields_precise_element_candidates() {
+    let source = "fn first(x: i64) -> i64 { x + 1 }\n\
+                  fn second(x: i64) -> i64 { x * 2 }\n\
+                  fn third(x: i64) -> i64 { x - 3 }\n\
+                  fn main() {\n\
+                      let pair = (first, second);\n\
+                      let a = (pair.0)(4);\n\
+                      let nested = ((first, third), second);\n\
+                      let b = ((nested.0).1)(5);\n\
+                  }\n";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let first_call = source.rfind("pair.0").unwrap();
+    let first_candidates = output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx == 0 && key.start <= first_call && first_call < key.end)
+        .map(|(_, candidates)| candidates)
+        .expect("indirect call provenance for tuple index call");
+    assert!(!first_candidates.may_be_unknown, "{first_candidates:#?}");
+    assert!(
+        matches!(
+            first_candidates.known.as_slice(),
+            [CallableCandidate::Element { index: 0, receiver }]
+                if matches!(receiver.as_ref(), CallableCandidate::Sequence(_))
+        ),
+        "expected precise Element(0) projection on tuple: {first_candidates:#?}"
+    );
+
+    let nested_call = source.rfind("nested.0).1").unwrap();
+    let nested_candidates = output
+        .indirect_call_candidates
+        .iter()
+        .find(|(key, _)| key.module_idx == 0 && key.start <= nested_call && nested_call < key.end)
+        .map(|(_, candidates)| candidates)
+        .expect("indirect call provenance for nested tuple index call");
+    assert!(!nested_candidates.may_be_unknown, "{nested_candidates:#?}");
+    assert!(
+        matches!(
+            nested_candidates.known.as_slice(),
+            [CallableCandidate::Element { index: 1, receiver }]
+                if matches!(
+                    receiver.as_ref(),
+                    CallableCandidate::Element { index: 0, .. }
+                )
+        ),
+        "expected precise Element(1, Element(0, ...)) projection on nested tuple: {nested_candidates:#?}"
+    );
+}
+
+#[test]
+fn tuple_index_deep_projection_widens_and_fails_closed_for_send() {
+    use std::fmt::Write as _;
+
+    let depth = 34;
+    let mut source = String::from(
+        "type Boxed { f: fn() -> i64; }\n\
+         fn good() -> i64 { 1 }\n\
+         fn test_deep(consume b0: fn() -> i64) {\n",
+    );
+    writeln!(source, "    let t1 = (b0, 0);").unwrap();
+    for level in 2..=depth {
+        writeln!(source, "    let t{level} = (t{}, 0);", level - 1).unwrap();
+    }
+    let mut zero_chain = String::from("c.0");
+    for _ in 0..depth {
+        zero_chain = format!("({zero_chain}).0");
+    }
+    writeln!(
+        source,
+        "    let c = (t{depth}, good);\n\
+             let b = Boxed {{ f: {zero_chain} }};\n\
+             let task = fork {{ (b.f)() }};\n\
+             let _ = await task;\n\
+         }}\n\
+         fn main() {{}}\n"
+    )
+    .unwrap();
+    let output = check_source(&source);
+    assert!(
+        !output.errors.is_empty()
+            && output
+                .errors
+                .iter()
+                .all(|error| error.kind == TypeErrorKind::InvalidSend),
+        "expected only InvalidSend rejection for deep widened tuple projection: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn incomplete_origin_propagates_across_element_and_field_reads_to_fail_closed() {
+    let source = "trait Opaque {\n\
+                      fn make(self) -> fn() -> i64;\n\
+                  }\n\
+                  type Impl {}\n\
+                  impl Opaque for Impl {\n\
+                      fn make(self) -> fn() -> i64 { || 1 }\n\
+                  }\n\
+                  type Boxed { f: fn() -> i64; }\n\
+                  fn test_opaque(flag: bool, d: dyn Opaque) {\n\
+                      let pair = if flag { (|| 1, 0) } else { (d.make(), 0) };\n\
+                      let b = Boxed { f: pair.0 };\n\
+                      let task = fork { (b.f)() };\n\
+                      let _ = await task;\n\
+                  }\n\
+                  fn main() {}\n";
+    let output = check_source(source);
+    assert!(
+        !output.errors.is_empty()
+            && output
+                .errors
+                .iter()
+                .all(|error| error.kind == TypeErrorKind::InvalidSend),
+        "incomplete CallResult joined with a pure branch must propagate through Element/Field reads and fail closed: {:#?}",
+        output.errors
+    );
+
+    let pure_source = source.replace("d.make()", "|| 2");
+    let pure_output = check_source(&pure_source);
+    assert!(pure_output.errors.is_empty(), "{:#?}", pure_output.errors);
+}

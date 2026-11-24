@@ -2893,7 +2893,8 @@ mod utf8_floor_tests {
                 hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8
             );
             assert!(
-                hew_types::runtime_call::RuntimeVariantResultKind::Utf8Decode.matches(calls[0].1)
+                hew_types::runtime_call::RuntimeVariantResultKind::Utf8Decode
+                    .matches(&checked.defs, calls[0].1)
             );
             assert_eq!(
                 calls[1],

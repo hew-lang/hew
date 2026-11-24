@@ -1,7 +1,6 @@
 //! Expression lowering.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
@@ -138,33 +137,6 @@ impl LowerCtx<'_> {
                 return self.lower_expr_inner(&(bare, span), intent);
             }
         }
-        if let Expr::Call {
-            function,
-            type_args,
-            args,
-            is_tail_call,
-        } = &expr.0
-        {
-            if let Expr::FieldAccess { object, field } = &function.0 {
-                if let Expr::Ident(owner) = &object.0 {
-                    if hew_types::lookup_builtin_type(owner.name.as_str()).is_some() {
-                        let compatibility = Expr::Call {
-                            function: hew_parser::chain::Chain::new((
-                                Expr::Ident(Ident::new(&format!(
-                                    "{owner}::{field}",
-                                    field = field.0
-                                ))), // TRANSITION(P1): deleted by A1 commit 2
-                                function.1.clone(),
-                            )),
-                            type_args: type_args.clone(),
-                            args: args.clone(),
-                            is_tail_call: *is_tail_call,
-                        };
-                        return self.lower_expr_inner(&(compatibility, span), intent);
-                    }
-                }
-            }
-        }
         if let Expr::FieldAccess { object, field } = &expr.0 {
             if let Expr::Ident(owner) = &object.0 {
                 let qualified = format!("{owner}::{field}", field = field.0);
@@ -198,25 +170,6 @@ impl LowerCtx<'_> {
                     let site = self.source_site(&span);
                     let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
                     return self.subsumed_value(site, &span, intent, lowered);
-                }
-            }
-            if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
-                if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
-                    if let Expr::Ident(owner) = &target.0 {
-                        let compatibility = Expr::Call {
-                            function: hew_parser::chain::Chain::new((
-                                Expr::Ident(Ident::new(&format!(
-                                    "{owner}::{method}",
-                                    method = method.0
-                                ))), // TRANSITION(P1): deleted by A1 commit 2
-                                target.1.clone(),
-                            )),
-                            type_args: Some(type_args.clone()),
-                            args: args.clone(),
-                            is_tail_call: false,
-                        };
-                        return self.lower_expr_inner(&(compatibility, span), intent);
-                    }
                 }
             }
             if let Expr::Ident(owner) = &receiver.0 {

@@ -50,13 +50,17 @@ impl LowerCtx<'_> {
             ));
             return;
         };
-        let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                      // Record the FFI-backed nominal surface of this impl BEFORE any
-                                                      // metadata-only skip below drops the block: a record named in the
-                                                      // signature of an `#[extern_symbol]` method is constructed/consumed
-                                                      // behind the C ABI, which is the signal
-                                                      // `finalize_user_record_value_classes` needs to admit a zero-field
-                                                      // record as a pointer-width handle stand-in.
+        let Some(self_type_name) = self.impl_target_symbol_owner(&decl.target_type) else {
+            let _ = self.lower_type(&decl.target_type);
+            return;
+        };
+        let self_type_name = self_type_name.as_str();
+        // Record the FFI-backed nominal surface of this impl BEFORE any
+        // metadata-only skip below drops the block: a record named in the
+        // signature of an `#[extern_symbol]` method is constructed/consumed
+        // behind the C ABI, which is the signal
+        // `finalize_user_record_value_classes` needs to admit a zero-field
+        // record as a pointer-width handle stand-in.
         for method in &decl.methods {
             if !method
                 .attributes
@@ -116,7 +120,7 @@ impl LowerCtx<'_> {
                 if self.lowering_injected_items {
                     injected_builtin_impl_symbol_owner(self_type_name)
                 } else {
-                    self_type_name.as_str()
+                    self_type_name
                 }
             });
         let symbol_self_name: std::borrow::Cow<str> = if imported
@@ -175,7 +179,11 @@ impl LowerCtx<'_> {
         // exact builtin discriminator only at this provenance-bearing injected
         // boundary; ordinary source impls continue to trust checker resolution.
         if self.lowering_injected_items {
-            let injected_builtin = hew_types::lookup_builtin_type(self_type_name);
+            let injected_builtin = hew_types::lookup_builtin_type(
+                self_type_name
+                    .strip_prefix("std.builtins.")
+                    .unwrap_or(self_type_name),
+            );
             if let (Some(builtin), ResolvedTy::Named { args, .. }) =
                 (injected_builtin, &resolved_impl_self_ty)
             {
@@ -366,9 +374,15 @@ impl LowerCtx<'_> {
                     // declaration registry rather than rebuilding identity from
                     // a builtin name, so a same-leaf user carrier cannot inherit
                     // the standard-library lifecycle.
-                    let declared = format!("{module}.{self_type_name}");
-                    if self.source_type_identities.contains(&declared) {
-                        return declared;
+                    if self_type_name.contains('.') {
+                        if self.source_type_identities.contains(self_type_name) {
+                            return self_type_name.to_string();
+                        }
+                    } else {
+                        let declared = format!("{module}.{self_type_name}");
+                        if self.source_type_identities.contains(&declared) {
+                            return declared;
+                        }
                     }
                     let module_short = hew_types::short_name(module);
                     let name = head.registry_key();
@@ -593,12 +607,7 @@ impl LowerCtx<'_> {
                         method_declaring_trait_ids
                             .push(ids.as_ref().map(|(trait_id, _)| *trait_id));
                         method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| *method_id));
-                        method_ids.push(
-                            self.impl_method_declaration_ids
-                                .get(&symbol)
-                                .copied()
-                                .or(synthetic_default_declaration),
-                        );
+                        method_ids.push(synthetic_default_declaration);
                         method_declaring_traits.push(declaring_trait);
                     }
                     self.current_module_idx = saved_module_idx;
@@ -624,10 +633,16 @@ impl LowerCtx<'_> {
             .map(|arg| self.lower_type(arg))
             .collect();
 
+        let trait_id = decl
+            .trait_bound
+            .as_ref()
+            .and_then(|bound| self.trait_declaration(&bound.path));
         items.push(HirItem::Impl(crate::node::HirImplBlock {
             id: self.ids.item(),
             node: self.ids.node(),
-            trait_name: decl.trait_bound.as_ref().map(|b| b.path.to_string()), // TRANSITION(P1): deleted by A1 commit 2
+            trait_id,
+            is_inherent: decl.trait_bound.is_none(),
+            trait_name: trait_id.map(|id| self.defs.display(id).to_string()),
             self_type_name: hir_impl_self_type_name,
             self_type: impl_self_nominal,
             type_params,
@@ -721,7 +736,8 @@ impl LowerCtx<'_> {
             .iter()
             .map(|arg| self.qualify_colliding_module_record_ty(arg, module_full_path))
             .collect();
-        if builtin.is_some()
+        if head.is_actor()
+            || builtin.is_some()
             || *is_opaque
             || name.contains('.')
             || !self.cross_module_colliding_record_names.contains(name)
@@ -857,8 +873,6 @@ impl LowerCtx<'_> {
         // through the checker's own tables.
         let declaration = if let Some(declaration) = known_declaration {
             declaration
-        } else if let Some(declaration) = self.impl_method_declaration_ids.get(name) {
-            *declaration
         } else {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
         };

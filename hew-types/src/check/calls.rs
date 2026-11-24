@@ -1317,27 +1317,22 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let (module_name, method) = func_name.split_once("::")?;
-        // A trait-qualified call (`Trait::method`) is handled by the dedicated
-        // paths above and must not be re-interpreted as a module call.
-        if self.trait_spelled_here(module_name).is_some() {
-            return None;
-        }
         if method.contains("::") {
             return None;
         }
-        if !self.module_binding_in_current_file(module_name) {
+        if !self.module_binding_in_current_file(Ident::new(module_name)) {
             return None;
         }
         // The parsed qualifier is only a lexical binding. Resolve it through
         // the import table before consulting declaration/export authority so
         // nested modules and aliases retain their exact source identity.
-        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
         if !self.has_fn_sig(&key) {
             return None;
         }
-        if self.module_binding_in_current_file(module_name) {
-            self.note_import_use(module_name);
+        if self.module_binding_in_current_file(Ident::new(module_name)) {
+            self.resolve_import_use(Ident::new(module_name));
         }
         // Export gate: only `pub` functions are reachable across the module
         // boundary, mirroring the dot-form path. A `package fn` accessible
@@ -1378,7 +1373,7 @@ impl Checker {
                 return None;
             }
         }
-        self.require_unsafe(&key, span);
+        self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
         let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
@@ -1969,6 +1964,46 @@ impl Checker {
         )
     }
 
+    fn resolve_callee_trait_qualifier(
+        &mut self,
+        expr: Option<&Spanned<Expr>>,
+    ) -> Option<(crate::DefId, String, String)> {
+        let expr = expr?;
+        let (path, method) = match &expr.0 {
+            Expr::FieldAccess { object, field } => {
+                let mut segments = Vec::new();
+                let mut cursor = object.as_ref();
+                loop {
+                    match &cursor.0 {
+                        Expr::Ident(ident) => {
+                            segments.push((*ident, cursor.1.clone()));
+                            break;
+                        }
+                        Expr::FieldAccess { object, field } => {
+                            segments.push((field.0, field.1.clone()));
+                            cursor = object.as_ref();
+                        }
+                        _ => return None,
+                    }
+                }
+                segments.reverse();
+                (hew_parser::ast::Path { segments }, field.0.name.to_string())
+            }
+            Expr::Ident(ident) => {
+                let (trait_name, method_name) = ident.name.as_str().split_once("::")?;
+                (
+                    hew_parser::ast::Path::single(Ident::new(trait_name), expr.1.clone()),
+                    method_name.to_string(),
+                )
+            }
+            _ => return None,
+        };
+        let trait_id = self
+            .resolve_trait_path(&path)
+            .filter(|trait_id| self.trait_info(*trait_id).is_some())?;
+        Some((trait_id, path.to_string(), method))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -2028,10 +2063,10 @@ impl Checker {
                         // identifiers on the existing name-building path
                         // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                         // names are not registered as value bindings.
-                        if self.env.lookup_ref(obj_name).is_some() {
+                        if self.env.lookup_ref(*obj_name).is_some() {
                             let receiver_ty = self
                                 .env
-                                .lookup_ref(obj_name)
+                                .lookup_ref(*obj_name)
                                 .map(|binding| self.subst.resolve(&binding.ty));
                             let has_method = receiver_ty
                                 .as_ref()
@@ -2086,7 +2121,20 @@ impl Checker {
             return Ty::Error;
         }
 
-        self.require_unsafe(&func_name, span);
+        let unsafe_declaration = (!lexical_shadow_of_item)
+            .then(|| {
+                let visible_key =
+                    if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                        self.visible_fn_signature_key(*ident)
+                    } else {
+                        self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                    };
+                visible_key
+                    .and_then(|key| self.fn_sig_keys.get(&key).copied())
+                    .or_else(|| self.scoped_fn_declaration(&func_name, false))
+            })
+            .flatten();
+        self.require_unsafe(unsafe_declaration, &func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
         if let Some(source_identity) = self
             .import_fn_name_aliases
@@ -2448,13 +2496,12 @@ impl Checker {
         // primitive / builtin-generic receivers; this preserves the
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
-        if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
-                if let Some(ret_ty) =
-                    self.try_dispatch_ufcs_primitive_trait_method(trait_id, method_name, args, span)
-                {
-                    return ret_ty;
-                }
+        let resolved_trait = self.resolve_callee_trait_qualifier(callee.expr());
+        if let Some((trait_id, _, method_name)) = resolved_trait.as_ref() {
+            if let Some(ret_ty) =
+                self.try_dispatch_ufcs_primitive_trait_method(*trait_id, method_name, args, span)
+            {
+                return ret_ty;
             }
         }
 
@@ -2466,7 +2513,7 @@ impl Checker {
             if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
                 self.visible_fn_signature_key(*ident)
             } else {
-                self.visible_fn_signature_key(func_name.as_str())
+                self.visible_fn_signature_key(Ident::new(func_name.as_str()))
             }
             .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
@@ -2549,7 +2596,12 @@ impl Checker {
                 self.current_module_idx,
                 func_name.clone(),
             )) {
-                self.note_import_use(&func_name);
+                let ident = if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                    *ident
+                } else {
+                    Ident::new(func_name.as_str())
+                };
+                self.resolve_import_use(ident);
             }
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
@@ -2762,32 +2814,30 @@ impl Checker {
         // Qualified trait method call: e.g. `Measurable::measure(item)`.
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
-        if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if let Some(trait_id) = self.trait_spelled_here(trait_name) {
-                // Use the full signature (receiver included) for qualified calls.
-                if let Some(sig) = self.lookup_trait_method_inner(trait_id, method_name, false) {
-                    // The trait sig includes all non-receiver params.
-                    // For qualified calls the first positional arg is the receiver.
-                    if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
-                        self.synthesize_call_arguments(args);
-                        return sig.return_type;
-                    }
-                    self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
-                    for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = sig.params.get(i) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &param_ty.ty);
-                        }
-                    }
+        if let Some((trait_id, trait_name, method_name)) = resolved_trait.as_ref() {
+            // Use the full signature (receiver included) for qualified calls.
+            if let Some(sig) = self.lookup_trait_method_inner(*trait_id, method_name, false) {
+                // The trait sig includes all non-receiver params.
+                // For qualified calls the first positional arg is the receiver.
+                if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
+                    self.synthesize_call_arguments(args);
                     return sig.return_type;
                 }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!("no method `{method_name}` in trait `{trait_name}`"),
-                );
-                return Ty::Error;
+                self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = sig.params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, &param_ty.ty);
+                    }
+                }
+                return sig.return_type;
             }
+            self.report_error(
+                TypeErrorKind::UndefinedMethod,
+                span,
+                format!("no method `{method_name}` in trait `{trait_name}`"),
+            );
+            return Ty::Error;
         }
 
         // Namespaced module-qualified call: `module::fn(args)` parses as a
@@ -2799,9 +2849,12 @@ impl Checker {
         // same signature, records the same module-qualified rewrite for HIR,
         // and applies the associated-type binding pins. The dot key is the
         // canonical registry identity for both surfaces.
-        if let Some(ret) = self.try_check_namespaced_module_call(&func_name, type_args, args, span)
-        {
-            return ret;
+        if resolved_trait.is_none() {
+            if let Some(ret) =
+                self.try_check_namespaced_module_call(&func_name, type_args, args, span)
+            {
+                return ret;
+            }
         }
 
         // Detect recursive closure self-reference in call position: if we are
@@ -2937,7 +2990,7 @@ impl Checker {
     /// produce, so a hit means the programmer declared the name and the
     /// builtin of that spelling does not apply.
     fn declares_function(&self, name: &str) -> bool {
-        self.visible_fn_signature_key(name)
+        self.visible_fn_signature_key(Ident::new(name))
             .is_some_and(|key| self.fn_def_spans.contains_key(&key))
     }
 

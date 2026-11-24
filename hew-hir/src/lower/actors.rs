@@ -405,7 +405,7 @@ impl LowerCtx<'_> {
         if let ResolvedTy::Named { head, args, .. } = &ty {
             let name = head.registry_key();
             let builtin = head.builtin();
-            if builtin.is_none() && !head.is_param() {
+            if builtin.is_none() && !head.is_actor() && !head.is_param() {
                 let actor_name = if self.actor_type_names.contains(name) {
                     Some(name.to_string())
                 } else if !name.contains('.') {

@@ -31,7 +31,7 @@ impl Checker {
         sd: &SupervisorDecl,
         identity: &str,
     ) {
-        let type_params = self.declaration_parameter_heads(identity);
+        let type_params = self.declaration_parameter_heads(Ident::new(identity));
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let fields = sd
             .params
@@ -147,7 +147,7 @@ impl Checker {
         // init parameters are resolved, or a field's `HashMap<K, V>` key
         // admission cannot see K's declared bounds and is rejected as if K
         // had none.
-        let type_param_names = self.declaration_parameter_heads(identity);
+        let type_param_names = self.declaration_parameter_heads(Ident::new(identity));
         let mut type_param_bounds =
             self.collect_type_param_bounds(Some(&ad.type_params), None, &mut Vec::new());
         let send = TraitRef::bare(crate::DefTable::predicate(crate::Predicate::Send));
@@ -423,7 +423,7 @@ impl Checker {
         let type_params = if tr.type_params.as_ref().is_none_or(Vec::is_empty) {
             Vec::new()
         } else {
-            self.declaration_parameter_heads(&declaration_name)
+            self.declaration_parameter_heads(Ident::new(&declaration_name))
         };
         TraitInfo {
             source_module,
@@ -989,12 +989,14 @@ impl Checker {
             }
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name: tn,
                 assoc_name,
             } => {
                 let new_base = self.substitute_trait_sig_for_impl(base, impl_self, trait_param_map);
                 self.project_assoc_types(&Ty::AssocType {
                     base: Box::new(new_base),
+                    trait_id: *trait_id,
                     trait_name: tn.clone(),
                     assoc_name: assoc_name.clone(),
                 })

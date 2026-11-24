@@ -276,6 +276,12 @@ pub fn managed_storage_shape(
                     ),
                 }
             } else if let T::Named {
+                head: TypeHead::Actor(_),
+                ..
+            } = ty
+            {
+                return Ok(S::Handle(ManagedHandleKind::Actor));
+            } else if let T::Named {
                 head: TypeHead::Builtin(builtin),
                 args,
                 ..

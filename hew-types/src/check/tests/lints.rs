@@ -3857,6 +3857,49 @@ fn primitive_trait_dispatch_records_rewrite_for_builtin_fmt() {
 }
 
 #[test]
+fn primitive_trait_dispatch_dotted_ufcs_records_method_rewrite() {
+    let parsed = hew_parser::parse(
+        r#"
+            trait Renderable {
+                fn fmt(self) -> string;
+            }
+            impl Renderable for i64 {
+                fn fmt(self) -> string {
+                    "i64"
+                }
+            }
+            fn main() {
+                let x: i64 = 42;
+                let _ = Renderable.fmt(x);
+            }
+        "#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors
+    );
+    assert!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: crate::CallTarget::ImplMethod(_),
+                c_symbol,
+            } if c_symbol == "Renderable::fmt"
+        )),
+        "dotted trait UFCS on primitive receiver must promote its method rewrite, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
 fn primitive_trait_dispatch_builtins_blanket_each_kind() {
     // One receiver per kind covered by std/builtins.hew lines 29–87.
     // Each row asserts `x.fmt()` resolves with NO in-file `trait Display`

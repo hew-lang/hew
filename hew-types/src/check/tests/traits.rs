@@ -1801,7 +1801,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         make_test_type_def("Boxy", vec![crate::ParamHead::for_test("T")], methods),
     );
     checker.env.define(
-        "boxy".to_string(),
+        Ident::new("boxy"),
         checker.test_named("Boxy", vec![Ty::String]),
         false,
     );
@@ -1852,7 +1852,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
         },
     );
     checker.env.define(
-        "wrapper".to_string(),
+        Ident::new("wrapper"),
         checker.test_named("Wrapper", vec![Ty::String]),
         false,
     );
@@ -1915,7 +1915,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
         ),
     );
     checker.env.define(
-        "m".to_string(),
+        Ident::new("m"),
         checker.test_named("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
@@ -2065,7 +2065,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
         },
     );
     checker.env.define(
-        "thing".to_string(),
+        Ident::new("thing"),
         checker.test_named("widgets.Thing", vec![]),
         false,
     );
@@ -3129,21 +3129,19 @@ fn local_trait_implemented_for_an_imported_type_dispatches() {
             .filter(|key| key.ends_with("::tag"))
             .collect::<Vec<_>>()
     );
-    // HIR reconstructs an impl block's emitted symbol from the spelling the
-    // source wrote, so the declaration stays reachable under it as well — one
-    // declaration, not two.
-    let surface = output.impl_method_declaration_ids.get("thing.Thing::tag");
+    // Declaration IDs register under the target's canonical identity (`pkg.thing.Thing::tag`),
+    // never under the caller's surface module spelling (`thing.Thing::tag`).
     assert!(
-        surface.is_some(),
-        "the surface spelling must select a declaration: {:?}",
+        output
+            .impl_method_declaration_ids
+            .contains_key("pkg.thing.Thing::tag"),
+        "the canonical identity must select a declaration: {:?}",
         output.impl_method_declaration_ids
     );
     assert_eq!(
-        surface,
-        output
-            .impl_method_declaration_ids
-            .get("pkg.thing.Thing::tag"),
-        "surface and identity keys must select one declaration: {:?}",
+        output.impl_method_declaration_ids.get("thing.Thing::tag"),
+        None,
+        "surface alias key must not be registered: {:?}",
         output.impl_method_declaration_ids
     );
 }

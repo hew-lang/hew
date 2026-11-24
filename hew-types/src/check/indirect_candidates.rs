@@ -9,6 +9,11 @@ use super::{CallTarget, MethodCallRewrite};
 use crate::DeclarationKind;
 use hew_parser::ast::{CallArg, Expr, Ident, Param, Span, Spanned};
 
+enum FieldAccessMember {
+    Named(crate::NominalId, u32),
+    Tuple(usize, usize),
+}
+
 impl Checker {
     /// Provenance tracks callables, task handles and actor self. Scalars and
     /// collections of scalars cannot carry these origins; abstract and nominal
@@ -251,43 +256,56 @@ impl Checker {
         }
     }
 
+    fn field_access_member(
+        &self,
+        object: &Spanned<Expr>,
+        field: &Spanned<Ident>,
+    ) -> Option<FieldAccessMember> {
+        let key = SpanKey::in_module(&field.1, self.current_module_idx);
+        if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
+            return Some(FieldAccessMember::Named(*owner, *index));
+        }
+        // Method syntax for a callable field uses the same declaration
+        // identity even when name resolution recorded a method site, and
+        // tuple index access (`t.0`) projects a positional element.
+        let ty = self
+            .expr_types
+            .get(&SpanKey::in_module(&object.1, self.current_module_idx))?;
+        match self.normalize_for_use(ty) {
+            crate::Ty::Named { head, .. } => {
+                let owner = head.nominal()?;
+                let definition = self.head_type_def(head)?;
+                let index = definition
+                    .field_order
+                    .iter()
+                    .position(|name| name == field.0.name.as_str())?;
+                Some(FieldAccessMember::Named(owner, u32::try_from(index).ok()?))
+            }
+            crate::Ty::Tuple(elems) => {
+                let index = field.0.name.as_str().parse::<usize>().ok()?;
+                (index < elems.len()).then_some(FieldAccessMember::Tuple(index, elems.len()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn callable_field_candidates(
         &self,
         object: &Spanned<Expr>,
         field: &Spanned<Ident>,
     ) -> IndirectCallCandidates {
-        let key = SpanKey::in_module(&field.1, self.current_module_idx);
-        let identity =
-            if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
-                Some((*owner, *index))
-            } else {
-                // Method syntax for a callable field uses the same declaration
-                // identity even when name resolution recorded a method site.
-                let ty = self
-                    .expr_types
-                    .get(&SpanKey::in_module(&object.1, self.current_module_idx));
-                ty.and_then(|ty| match self.subst.resolve(ty) {
-                    crate::Ty::Named { head, .. } => {
-                        let owner = head.nominal()?;
-                        let definition = self.head_type_def(head)?;
-                        let index = definition
-                            .field_order
-                            .iter()
-                            .position(|name| name == field.0.name.as_str())?;
-                        Some((owner, u32::try_from(index).ok()?))
-                    }
-                    _ => None,
-                })
-            };
-        if let Some((owner, index)) = identity {
-            self.callable_candidates_for_expr(&object.0, &object.1)
+        match self.field_access_member(object, field) {
+            Some(FieldAccessMember::Named(owner, index)) => self
+                .callable_candidates_for_expr(&object.0, &object.1)
                 .project(|receiver| CallableCandidate::Field {
                     receiver: Box::new(receiver),
                     owner,
                     index,
-                })
-        } else {
-            self.resolved_callable_candidate(&field.1)
+                }),
+            Some(FieldAccessMember::Tuple(index, _)) => self
+                .callable_candidates_for_expr(&object.0, &object.1)
+                .project_member(None, index),
+            None => self.resolved_callable_candidate(&field.1),
         }
     }
 
@@ -350,15 +368,22 @@ impl Checker {
                 .unwrap_or_else(IndirectCallCandidates::unknown);
         }
         if let Expr::FieldAccess { object, field } = &place.0 {
-            let key = SpanKey::in_module(&field.1, self.current_module_idx);
-            if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
-                return self
-                    .current_place_value_candidates(object)
-                    .project(|receiver| CallableCandidate::Field {
-                        receiver: Box::new(receiver),
-                        owner: *owner,
-                        index: *index,
-                    });
+            match self.field_access_member(object, field) {
+                Some(FieldAccessMember::Named(owner, index)) => {
+                    return self
+                        .current_place_value_candidates(object)
+                        .project(|receiver| CallableCandidate::Field {
+                            receiver: Box::new(receiver),
+                            owner,
+                            index,
+                        });
+                }
+                Some(FieldAccessMember::Tuple(index, _)) => {
+                    return self
+                        .current_place_value_candidates(object)
+                        .project_member(None, index);
+                }
+                None => {}
             }
         }
         self.callable_candidates_for_expr(&place.0, &place.1)
@@ -376,46 +401,59 @@ impl Checker {
                     self.env.set_value_candidates(*binding, candidates);
                 }
             }
-            Expr::FieldAccess { object, field } => {
-                let field_key = SpanKey::in_module(&field.1, self.current_module_idx);
-                let Some(Resolution::Field(owner, selected)) =
-                    self.scopes.resolutions().get(&field_key).copied()
-                else {
-                    return;
-                };
-                let object_key = SpanKey::in_module(&object.1, self.current_module_idx);
-                let Some(ty) = self.expr_types.get(&object_key) else {
-                    return;
-                };
-                let Some(definition) = self.ty_type_def(&self.subst.resolve(ty)) else {
-                    return;
-                };
-                let count = definition.field_order.len();
-                let base = self.current_place_value_candidates(object);
-                let fields = (0..count)
-                    .map(|index| {
-                        let index = u32::try_from(index).expect("checked field index");
-                        CallableFieldFlow {
-                            owner,
-                            index,
-                            candidates: if index == selected {
+            Expr::FieldAccess { object, field } => match self.field_access_member(object, field) {
+                Some(FieldAccessMember::Named(owner, selected)) => {
+                    let object_key = SpanKey::in_module(&object.1, self.current_module_idx);
+                    let Some(ty) = self.expr_types.get(&object_key) else {
+                        return;
+                    };
+                    let Some(definition) = self.ty_type_def(&self.subst.resolve(ty)) else {
+                        return;
+                    };
+                    let count = definition.field_order.len();
+                    let base = self.current_place_value_candidates(object);
+                    let fields = (0..count)
+                        .map(|index| {
+                            let index = u32::try_from(index).expect("checked field index");
+                            CallableFieldFlow {
+                                owner,
+                                index,
+                                candidates: if index == selected {
+                                    candidates.clone()
+                                } else {
+                                    base.project(|receiver| CallableCandidate::Field {
+                                        receiver: Box::new(receiver),
+                                        owner,
+                                        index,
+                                    })
+                                },
+                            }
+                        })
+                        .collect();
+                    self.aggregate_field_candidates.insert(key.clone(), fields);
+                    self.replace_place_value_candidates(
+                        object,
+                        IndirectCallCandidates::single(CallableCandidate::Aggregate(key)),
+                    );
+                }
+                Some(FieldAccessMember::Tuple(selected, count)) => {
+                    let base = self.current_place_value_candidates(object);
+                    let elements = (0..count)
+                        .map(|index| {
+                            if index == selected {
                                 candidates.clone()
                             } else {
-                                base.project(|receiver| CallableCandidate::Field {
-                                    receiver: Box::new(receiver),
-                                    owner,
-                                    index,
-                                })
-                            },
-                        }
-                    })
-                    .collect();
-                self.aggregate_field_candidates.insert(key.clone(), fields);
-                self.replace_place_value_candidates(
-                    object,
-                    IndirectCallCandidates::single(CallableCandidate::Aggregate(key)),
-                );
-            }
+                                base.project_member(None, index)
+                            }
+                        })
+                        .collect();
+                    self.replace_place_value_candidates(
+                        object,
+                        IndirectCallCandidates::sequence(elements),
+                    );
+                }
+                None => {}
+            },
             _ => {}
         }
     }
@@ -436,7 +474,7 @@ impl Checker {
         let Some(receiver) = self
             .var_self_receiver
             .as_ref()
-            .and_then(|name| self.env.lookup_ref(name.as_str()))
+            .and_then(|name| self.env.lookup_ref(Ident::new(name.as_str())))
         else {
             return;
         };

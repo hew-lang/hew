@@ -383,17 +383,11 @@ impl TypeHead {
         }
     }
 
-    /// The builtin this head is, when it is one. An actor head reports the
-    /// handle builtin, so a discriminator that reads the builtin sees an
-    /// actor handle.
-    ///
-    /// TRANSITION(A1 commit 3): the actor arm is deleted when every such
-    /// discriminator matches `TypeHead::Actor`.
+    /// The builtin this head is, when it is one.
     #[must_use]
     pub fn builtin(self) -> Option<BuiltinType> {
         match self {
             Self::Builtin(builtin) => Some(builtin),
-            Self::Actor(_) => Some(BuiltinType::ActorHandle),
             _ => None,
         }
     }
@@ -660,8 +654,9 @@ pub enum Ty {
         /// at registration time; may become a concrete `Ty` after
         /// monomorphisation substitutes the type-arg).
         base: Box<Ty>,
-        /// Trait that declares the associated type. Required for
-        /// disambiguation when `base` has multiple bounds.
+        /// Trait declaration that declares the associated type.
+        trait_id: crate::DefId,
+        /// Display name of the declaring trait.
         trait_name: Box<str>,
         /// Associated type name (e.g. `"Item"`).
         assoc_name: Box<str>,
@@ -1873,7 +1868,8 @@ impl Ty {
             | Ty::Unit => true,
             Ty::Tuple(members) => members.iter().all(Ty::renders_structurally),
             Ty::Named { head, args } => {
-                head.builtin().is_none_or(BuiltinType::renders_structurally)
+                !head.is_actor()
+                    && head.builtin().is_none_or(BuiltinType::renders_structurally)
                     && args.iter().all(Ty::renders_structurally)
             }
             _ => false,
@@ -2174,10 +2170,12 @@ impl Ty {
             Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name,
                 assoc_name,
             } => Ty::AssocType {
                 base: Box::new(f(base)),
+                trait_id: *trait_id,
                 trait_name: trait_name.clone(),
                 assoc_name: assoc_name.clone(),
             },

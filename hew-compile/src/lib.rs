@@ -10552,6 +10552,47 @@ fn main() {
     }
 
     #[test]
+    fn nested_stdlib_iter_adapters_preserve_effects_with_cached_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = test_options();
+        let source = "fn nested_chain() -> Vec<i64> {\n\
+                          let xs: Vec<i64> = [1, 2, 3, 4];\n\
+                          xs.iter().map(|x: i64| x + 1).filter(|x: i64| x > 2).map(|x: i64| x * 2).collect()\n\
+                      }\n\
+                      fn main() {\n\
+                          let f: fn() -> Vec<i64> = nested_chain;\n\
+                      }\n";
+        let suspending = source.replace("x + 1", "{ sleep(1ms); x + 1 }");
+        for (source, must_suspend) in [(source, false), (suspending.as_str(), true)] {
+            let mut batch = SourceAnalysisBatch::new(options.clone());
+            for name in ["first.hew", "second.hew"] {
+                let label = dir.path().join(name);
+                let state =
+                    assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+                if must_suspend {
+                    let output = state
+                        .typecheck_result
+                        .as_ref()
+                        .unwrap()
+                        .tco
+                        .as_ref()
+                        .unwrap();
+                    assert!(
+                        output
+                            .errors
+                            .iter()
+                            .any(|error| error.message.contains("suspends via `sleep(...)`")),
+                        "{:?}",
+                        state.diagnostics
+                    );
+                } else {
+                    assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn independent_roots_reuse_dependencies_with_fresh_alias_scopes() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(

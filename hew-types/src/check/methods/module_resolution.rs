@@ -32,9 +32,9 @@ impl Checker {
     /// path segment.
     pub(in crate::check) fn canonical_module_import_owner(
         &self,
-        module_name: impl crate::env::LexicalName,
+        module_name: hew_parser::ast::Ident,
     ) -> String {
-        let ident = module_name.lexical_key();
+        let ident = module_name;
         if let Some(scope::Resolution::Module(module)) = self
             .scope_site()
             .and_then(|site| self.scopes.value_head(&self.env, site, ident))
@@ -56,9 +56,9 @@ impl Checker {
     /// The process-wide module registry is deliberately not consulted.
     pub(in crate::check) fn module_binding_in_current_file(
         &self,
-        module_name: impl crate::env::LexicalName,
+        module_name: hew_parser::ast::Ident,
     ) -> bool {
-        let ident = module_name.lexical_key();
+        let ident = module_name;
         if let Some(scope::Resolution::Module(_)) = self
             .scope_site()
             .and_then(|site| self.scopes.value_head(&self.env, site, ident))
@@ -82,7 +82,7 @@ impl Checker {
         module_name: &str,
         method: &str,
     ) -> bool {
-        let owner = self.canonical_module_import_owner(module_name);
+        let owner = self.canonical_module_import_owner(Ident::new(module_name));
         let declaration = format!("{owner}.{method}");
         self.fn_def_spans
             .get(&declaration)
@@ -444,7 +444,7 @@ impl Checker {
         module_short: &str,
         type_name: &str,
     ) -> Option<TypeDef> {
-        if !self.module_binding_in_current_file(module_short) {
+        if !self.module_binding_in_current_file(Ident::new(module_short)) {
             return None;
         }
         let resolved_module = self
@@ -470,7 +470,7 @@ impl Checker {
         &self,
         module_short: &str,
     ) -> Option<&HashSet<String>> {
-        if !self.module_binding_in_current_file(module_short) {
+        if !self.module_binding_in_current_file(Ident::new(module_short)) {
             return None;
         }
         let owner = self.module_import_bindings.get(&(
@@ -545,9 +545,9 @@ impl Checker {
     /// once the canonical owner is published (`retire_imported_type_keys`).
     pub(in crate::check) fn declaration_identity(
         &self,
-        bare_name: impl crate::env::LexicalName,
+        bare_name: hew_parser::ast::Ident,
     ) -> String {
-        let ident = bare_name.lexical_key();
+        let ident = bare_name;
         if let Some(id) = self.named_item_declaration(ident) {
             return self.defs.path(id).to_string();
         }
@@ -562,9 +562,9 @@ impl Checker {
     /// actor is, so both declaration kinds answer to the same resolution.
     pub(in crate::check) fn resolve_bare_spawn_target_identity(
         &self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
     ) -> BareActorResolution {
-        let ident = name.lexical_key();
+        let ident = name;
         if let Some(id) = self.named_item_declaration(ident) {
             if matches!(
                 self.defs.kind(id),

@@ -561,7 +561,13 @@ impl Checker {
                     found.insert(*param);
                 }
                 Ty::Named { head, args } => {
-                    if let Some(builtin) = head.builtin() {
+                    if head.is_actor() {
+                        if matches!(demand, StructuralDemand::CloneBlocker) {
+                            for arg in args {
+                                parameters(arg, demands, demand, found);
+                            }
+                        }
+                    } else if let Some(builtin) = head.builtin() {
                         let transparent = match demand {
                             StructuralDemand::VectorCallable => matches!(
                                 builtin,

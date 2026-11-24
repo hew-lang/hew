@@ -17,7 +17,7 @@ pub use crate::ty::EffectBody;
 use crate::Ty;
 
 #[path = "effect_solver.rs"]
-mod effect_solver;
+pub(super) mod effect_solver;
 #[path = "effect_instances.rs"]
 mod instances;
 use effect_solver::{EffectProgress, EffectSolver};
@@ -148,9 +148,9 @@ pub struct ForkTransferFact {
 }
 
 #[derive(Debug, Clone)]
-struct Invocation {
+pub(super) struct Invocation {
     owner: Option<EffectBody>,
-    receiver: Option<Ty>,
+    pub(super) receiver: Option<Ty>,
     /// The callee value's type when the call dispatches through a value.
     callee: Option<Ty>,
     /// Source spelling of the callee for diagnostics.
@@ -162,7 +162,7 @@ struct Invocation {
 /// A loop performs two distinct calls at one iterable expression. Keep those
 /// calls separate from an authored call at that same span.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum EffectCallSite {
+pub(super) enum EffectCallSite {
     Authored(SpanKey),
     ForIntoIter(SpanKey),
     ForNext(SpanKey),
@@ -245,7 +245,7 @@ pub(super) struct EffectGraph {
     pub bodies: HashMap<EffectBody, bool>,
     /// The construct or call that first made each body suspend.
     witnesses: HashMap<EffectBody, String>,
-    calls: HashMap<EffectCallSite, Invocation>,
+    pub(super) calls: HashMap<EffectCallSite, Invocation>,
     /// Every authored call the body checker visited, including unresolved
     /// calls. Imported-body eligibility refuses a body missing a selected
     /// target instead of inferring one from the callee spelling.
@@ -445,7 +445,7 @@ impl Checker {
     ) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let ty = self.expr_types.get(&key).cloned().or_else(|| match expr {
-            Expr::Ident(name) => self.env.lookup_ref(name).map(|binding| binding.ty.clone()),
+            Expr::Ident(name) => self.env.lookup_ref(*name).map(|binding| binding.ty.clone()),
             _ => None,
         });
         let Some(ty) = ty else {
@@ -563,9 +563,9 @@ impl Checker {
         let place = self.expr_place(expr);
         let consumed = place.as_ref().is_some_and(|(root, path)| {
             self.env
-                .lookup_ref(root)
+                .lookup_ref(*root)
                 .is_some_and(|binding| binding.is_moved)
-                || self.env.place_move_conflict(root, path).is_some()
+                || self.env.place_move_conflict(*root, path).is_some()
         });
         let snapshot = place.is_some()
             && !consumed
@@ -766,10 +766,7 @@ impl Checker {
             .get(&SpanKey::in_module(&callee.1, self.current_module_idx))
             .cloned()
             .or_else(|| match &callee.0 {
-                Expr::Ident(name) => self
-                    .env
-                    .lookup_ref(name.name.as_str())
-                    .map(|binding| binding.ty.clone()),
+                Expr::Ident(name) => self.env.lookup_ref(*name).map(|binding| binding.ty.clone()),
                 _ => None,
             })
     }
@@ -1137,7 +1134,7 @@ impl Checker {
         .unwrap_or_default()
     }
 
-    fn call_cleanup_substitutions(
+    pub(super) fn call_cleanup_substitutions(
         &self,
         declaration: crate::DefId,
         site: &EffectCallSite,
@@ -1198,14 +1195,21 @@ impl Checker {
                 candidates,
                 crate::traits::MarkerTrait::Send,
                 flows,
+                Some(graph),
             );
             let proven = |marker| {
                 (!ty.contains_inferred_generator() && self.type_has_marker(&ty, marker))
                     || if marker == crate::traits::MarkerTrait::Send {
                         value_send
                     } else {
-                        self.value_candidates_have_marker(&ty, candidates, marker, flows)
-                            .0
+                        self.value_candidates_have_marker(
+                            &ty,
+                            candidates,
+                            marker,
+                            flows,
+                            Some(graph),
+                        )
+                        .0
                     }
             };
             let is_send = proven(crate::traits::MarkerTrait::Send);
@@ -1495,6 +1499,7 @@ impl Checker {
             &graph.send_obligations,
             &mut output,
             flows,
+            &graph,
         );
         output
     }

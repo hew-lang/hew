@@ -44,6 +44,7 @@ fn validating_utf8_decode_returns_an_owned_variant_on_the_normal_edge() {
 fn validating_utf8_decode_refuses_a_same_leaf_error_type() {
     let mut module = decode_module();
     let lookalike = utf8_error_ty("application.Utf8Error");
+    module.defs = hew_types::DefTable::fixture();
     let result_ty = decode_result_ty(lookalike.clone());
     let SemTerminator::RtCall {
         result: CallResult::Value(result),

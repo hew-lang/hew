@@ -85,8 +85,8 @@ impl TemplateNames<'_> {
             return Ok(());
         }
         let bound = match namespace {
-            Namespace::Value => self.env.lookup_ref(name),
-            Namespace::Type => self.types.lookup_ref(name),
+            Namespace::Value => self.env.lookup_ref(*name),
+            Namespace::Type => self.types.lookup_ref(*name),
         };
         if bound.is_some() {
             return Ok(());

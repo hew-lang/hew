@@ -316,10 +316,9 @@ impl Scopes {
     pub fn declare_item(
         &mut self,
         namespace: ModuleId,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         binding: Binding,
     ) -> Option<Binding> {
-        let name = name.lexical_key();
         let previous = self
             .items
             .entry(namespace)
@@ -336,8 +335,7 @@ impl Scopes {
 
     /// Withdraw the item `name` binds in `namespace`: a declaration the
     /// checker refused, so the name keeps reaching what it reached before.
-    pub fn unbind_item(&mut self, namespace: ModuleId, name: impl crate::env::LexicalName) {
-        let name = name.lexical_key();
+    pub fn unbind_item(&mut self, namespace: ModuleId, name: hew_parser::ast::Ident) {
         if let Some(items) = self.items.get_mut(&namespace) {
             items.remove(&name);
         }
@@ -345,11 +343,8 @@ impl Scopes {
 
     /// The item `name` binds in `namespace`.
     #[must_use]
-    pub fn item(&self, namespace: ModuleId, name: impl crate::env::LexicalName) -> Option<Binding> {
-        self.items
-            .get(&namespace)?
-            .get(&name.lexical_key())
-            .copied()
+    pub fn item(&self, namespace: ModuleId, name: hew_parser::ast::Ident) -> Option<Binding> {
+        self.items.get(&namespace)?.get(&name).copied()
     }
 
     /// Every item of `namespace`.
@@ -937,13 +932,13 @@ mod tests {
         let id = defs
             .declare(
                 DeclarationOccurrence::new(Some(module), &span, kind, 0),
-                Symbol::intern(name),
+                Ident::from_symbol(Symbol::intern(name)),
                 None,
                 path,
             )
             .expect("fresh declaration");
         let binding = Binding::of_item(defs, id).expect("an item row");
-        scopes.declare_item(module, Symbol::intern(name), binding);
+        scopes.declare_item(module, Ident::from_symbol(Symbol::intern(name)), binding);
         id
     }
 
@@ -973,14 +968,14 @@ mod tests {
             publish: true,
         };
         let mut env = TypeEnv::new();
-        env.define("C", Ty::I64, false);
+        env.define(Ident::new("C"), Ty::I64, false);
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Value, &[at("C", 20)]),
             Ok(Resolution::Def(constant))
         );
         env.push_scope();
-        env.define("C", Ty::I64, false);
-        let local = env.lookup_ref("C").expect("nested binding").id;
+        env.define(Ident::new("C"), Ty::I64, false);
+        let local = env.lookup_ref(Ident::new("C")).expect("nested binding").id;
         assert_eq!(
             scopes.resolve(&env, site, Namespace::Value, &[at("C", 30)]),
             Ok(Resolution::Local(local))
@@ -1083,8 +1078,8 @@ mod tests {
         assert_eq!(scopes.contexts().len(), 2);
 
         let mut env = TypeEnv::new();
-        env.define_with_span("v", Ty::I64, false, 40..41);
-        let local = env.lookup_ref("v").expect("local").id;
+        env.define_with_span(Ident::new("v"), Ty::I64, false, 40..41);
+        let local = env.lookup_ref(Ident::new("v")).expect("local").id;
         let site = ScopeSite {
             file: root,
             span_file: 0,

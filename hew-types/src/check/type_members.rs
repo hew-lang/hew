@@ -10,6 +10,7 @@ use crate::method_resolution::instantiate_stdlib_method_sig;
 pub(super) struct ResolvedDottedTypeHead {
     pub(super) canonical_type: String,
     builtin: Option<crate::BuiltinType>,
+    trait_id: Option<crate::DefId>,
     type_args: Option<Vec<Spanned<TypeExpr>>>,
     span: Span,
 }
@@ -76,6 +77,7 @@ impl Checker {
         let head = ResolvedDottedTypeHead {
             canonical_type: name.to_string(),
             builtin: Some(builtin),
+            trait_id: None,
             type_args: None,
             span: span.clone(),
         };
@@ -103,14 +105,14 @@ impl Checker {
             _ => (head, None),
         };
 
-        let (canonical_type, builtin) = match &target.0 {
+        let (canonical_type, builtin, trait_id) = match &target.0 {
             Expr::Ident(surface) => {
-                if self.env.lookup_ref(surface).is_some()
-                    || self.module_binding_in_current_file(surface)
+                if self.env.lookup_ref(*surface).is_some()
+                    || self.module_binding_in_current_file(*surface)
                 {
                     return None;
                 }
-                let canonical = self
+                if let Some(canonical) = self
                     .named_item_declaration(*surface)
                     .map(|id| self.defs.path(id).to_string())
                     .or_else(|| self.source_nominal_declaration(surface.name.as_str()))
@@ -128,12 +130,21 @@ impl Checker {
                         self.resolved_builtin_type(surface.name.as_str())
                             .map(|_| surface.to_string())
                     })
-                    .or_else(|| {
-                        self.has_fn_sig(&format!("{surface}::{member}"))
-                            .then(|| surface.to_string())
-                    })?;
-                let builtin = self.resolved_builtin_type(&canonical);
-                (canonical, builtin)
+                {
+                    let builtin = self.resolved_builtin_type(&canonical);
+                    (canonical, builtin, None)
+                } else if let Some(trait_id) = self
+                    .resolve_trait_path(&hew_parser::ast::Path::single(*surface, target.1.clone()))
+                    .filter(|id| self.trait_info(*id).is_some())
+                {
+                    (surface.to_string(), None, Some(trait_id))
+                } else {
+                    let canonical = self
+                        .has_fn_sig(&format!("{surface}::{member}"))
+                        .then(|| surface.to_string())?;
+                    let builtin = self.resolved_builtin_type(&canonical);
+                    (canonical, builtin, None)
+                }
             }
             Expr::FieldAccess { object, field } => {
                 if field.0.name == hew_parser::ast::sym::EVENT {
@@ -141,6 +152,7 @@ impl Checker {
                         return Some(ResolvedDottedTypeHead {
                             canonical_type,
                             builtin: None,
+                            trait_id: None,
                             type_args,
                             span: target.1.clone(),
                         });
@@ -149,18 +161,33 @@ impl Checker {
                 let Expr::Ident(module_short) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module_short).is_some() {
+                if self.env.lookup_ref(*module_short).is_some() {
                     return None;
                 }
+                let trait_path = hew_parser::ast::Path {
+                    segments: vec![(*module_short, object.1.clone()), field.clone()],
+                };
+                if let Some(trait_id) = self
+                    .resolve_trait_path(&trait_path)
+                    .filter(|id| self.trait_info(*id).is_some())
+                {
+                    return Some(ResolvedDottedTypeHead {
+                        canonical_type: trait_path.to_string(),
+                        builtin: None,
+                        trait_id: Some(trait_id),
+                        type_args,
+                        span: target.1.clone(),
+                    });
+                }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
-                self.note_import_use(module_short.name.as_str());
+                self.resolve_import_use(*module_short);
                 let canonical = format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module_short),
+                    self.canonical_module_import_owner(*module_short),
                     field.0
                 );
                 let builtin = self.resolved_builtin_type(&canonical);
-                (canonical, builtin)
+                (canonical, builtin, None)
             }
             _ => return None,
         };
@@ -168,6 +195,7 @@ impl Checker {
         Some(ResolvedDottedTypeHead {
             canonical_type,
             builtin,
+            trait_id,
             type_args,
             span: target.1.clone(),
         })
@@ -178,7 +206,7 @@ impl Checker {
     /// machine follows the same nominal authority as other type heads.
     fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
         let machine = match &object.0 {
-            Expr::Ident(name) if self.env.lookup_ref(name).is_none() => self
+            Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => self
                 .named_item_declaration(*name)
                 .map(|id| self.defs.path(id).to_string())
                 .or_else(|| self.source_nominal_declaration(name.name.as_str()))
@@ -192,14 +220,14 @@ impl Checker {
                 let Expr::Ident(module) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module).is_some() {
+                if self.env.lookup_ref(*module).is_some() {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
-                self.note_import_use(module.name.as_str());
+                self.resolve_import_use(*module);
                 Some(format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module),
+                    self.canonical_module_import_owner(*module),
                     machine.0
                 ))
             }
@@ -240,6 +268,15 @@ impl Checker {
                 return self.associated_function_reference(head, member, *type_args, span);
             }
         };
+        if let Some(trait_id) = head.trait_id {
+            return Some(self.dispatch_trait_static_member(
+                trait_id,
+                &head.canonical_type,
+                member,
+                args,
+                span,
+            ));
+        }
         self.dispatch_static_type_member(head, member, args, *expected, span)
     }
 
@@ -293,7 +330,7 @@ impl Checker {
                     || Self::variant_is_source_unit(type_def, member) =>
             {
                 let constructor = format!("{}::{member}", head.canonical_type);
-                Some(self.synthesize_identifier(&constructor, span))
+                Some(self.synthesize_identifier(Ident::new(&constructor), span))
             }
             DottedTypeMemberUse::Call {
                 args,
@@ -396,7 +433,7 @@ impl Checker {
                 }
             }
             DottedTypeMemberUse::Reference { span, .. } => {
-                self.synthesize_identifier(constructor, span)
+                self.synthesize_identifier(Ident::new(constructor), span)
             }
             DottedTypeMemberUse::Call {
                 args,
@@ -535,6 +572,48 @@ impl Checker {
             return Some(result);
         }
         None
+    }
+
+    fn dispatch_trait_static_member(
+        &mut self,
+        trait_id: crate::DefId,
+        trait_name: &str,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        if let Some(ret_ty) =
+            self.try_dispatch_ufcs_primitive_trait_method(trait_id, method, args, span)
+        {
+            let trait_path = self.defs.path(trait_id).to_string();
+            self.promote_dotted_static_call_rewrite(span, &format!("{trait_path}::{method}"));
+            return ret_ty;
+        }
+        if let Some(sig) = self.lookup_trait_method_inner(trait_id, method, false) {
+            let trait_call = format!("`{trait_name}::{method}`");
+            if self.refuse_named_arguments(args, &trait_call, span) {
+                self.synthesize_call_arguments(args);
+                return sig.return_type;
+            }
+            self.check_arity(args, sig.params.len(), &trait_call, span);
+            for (i, arg) in args.iter().enumerate() {
+                if let Some(param_ty) = sig.params.get(i) {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &param_ty.ty);
+                }
+            }
+            return sig.return_type;
+        }
+        for arg in args {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
+        self.report_error(
+            TypeErrorKind::UndefinedMethod,
+            span,
+            format!("no method `{method}` in trait `{trait_name}`"),
+        );
+        Ty::Error
     }
 
     fn dispatch_static_type_member(

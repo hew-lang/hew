@@ -796,3 +796,122 @@ fn main() -> i64 {
         "fatal error set must retain CallableUnsupportedInMir: {errors:#?}"
     );
 }
+
+#[test]
+fn foreign_and_aliased_impl_targets_use_canonical_declaration_owner() {
+    let imported_src = r"pub type Foo {
+    n: i64;
+}
+";
+    for root_src in [
+        r#"import shapes;
+
+trait Tagged {
+    fn tag(self) -> string;
+}
+
+impl Tagged for shapes.Foo {
+    fn tag(self) -> string { "foo" }
+}
+
+fn read_tag(f: shapes.Foo) -> string {
+    f.tag()
+}
+
+fn main() {}
+"#,
+        r#"import shapes as s;
+
+trait Tagged {
+    fn tag(self) -> string;
+}
+
+impl Tagged for s.Foo {
+    fn tag(self) -> string { "foo" }
+}
+
+fn read_tag(f: s.Foo) -> string {
+    f.tag()
+}
+
+fn main() {}
+"#,
+    ] {
+        let program = build_imported_module_program_src(imported_src, root_src);
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tc = checker.check_program(&program);
+        assert!(tc.errors.is_empty(), "type errors: {:#?}", tc.errors);
+        let output = hew_hir::lower_program(
+            &program,
+            &tc,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            output.diagnostics.is_empty(),
+            "HIR diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let impl_block = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Impl(block) if block.trait_name.as_deref() == Some("Tagged") => {
+                    Some(block)
+                }
+                _ => None,
+            })
+            .expect("HirImplBlock for Tagged must exist");
+        assert_eq!(impl_block.self_type_name, "shapes.Foo");
+        assert!(
+            output.module.items.iter().any(|item| matches!(
+                item,
+                HirItem::Function(f) if f.name == "shapes.Foo::tag"
+            )),
+            "expected canonical `shapes.Foo::tag` fn in HIR items: {:#?}",
+            output
+                .module
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    HirItem::Function(f) => Some(f.name.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn type_alias_impl_target_retains_alias_owner_for_lowering() {
+    let output = crate::support::checker_pipeline::lower_through_checker(
+        r"trait Ready {
+    fn ready(self) -> i64;
+}
+
+type PlainItem {}
+type ReadyAlias = PlainItem;
+
+impl Ready for ReadyAlias {
+    fn ready(self) -> i64 { 42 }
+}
+
+fn main() -> i64 { 0 }
+",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+    assert!(output.module.items.iter().any(|item| matches!(
+        item,
+        HirItem::Function(f) if f.name == "ReadyAlias::ready"
+    )));
+    assert!(output.module.items.iter().any(|item| matches!(
+        item,
+        HirItem::Impl(block) if block.trait_name.as_deref() == Some("Ready")
+    )));
+}

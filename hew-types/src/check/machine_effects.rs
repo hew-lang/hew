@@ -45,6 +45,7 @@ type ReleaseCache = HashMap<ResolvedTy, BTreeSet<crate::NominalId>>;
 /// The surface identity a machine is instantiated through.
 #[derive(Debug, Clone, Default)]
 struct MachineShape {
+    nominal: Option<crate::NominalId>,
     type_name: String,
     type_parameter_count: usize,
 }
@@ -341,7 +342,7 @@ fn collect_released_resources(
             // Native-backed carriers own their typed payloads. A source
             // declaration instead owns its stored members; a generic argument
             // alone does not introduce a value or a release obligation.
-            if head.builtin().is_some() || declaration.is_none() {
+            if head.is_actor() || head.builtin().is_some() || declaration.is_none() {
                 for arg in args {
                     collect_released_resources(arg, output, found, seen);
                 }
@@ -421,8 +422,8 @@ fn unstageable_field(
 fn collect_instantiations(ty: &ResolvedTy, shape: &MachineShape, found: &mut Vec<ResolvedTy>) {
     match ty {
         ResolvedTy::Named { head, args, .. } => {
-            let name = head.registry_key();
-            if name == shape.type_name
+            if shape.nominal.is_some()
+                && head.nominal() == shape.nominal
                 && args.len() == shape.type_parameter_count
                 && !args.iter().any(is_abstract)
             {
@@ -468,6 +469,63 @@ fn is_abstract(ty: &ResolvedTy) -> bool {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "records a single function/method body and optional machine-step shape"
+)]
+fn record_body_declaration<'a>(
+    function: &'a FnDecl,
+    kind: DeclarationKind,
+    declaration_span: &Span,
+    type_parameter_count: usize,
+    ordinal: usize,
+    module: Option<crate::ModuleId>,
+    module_idx: u32,
+    source_module: Option<&str>,
+    output: &TypeCheckOutput,
+    bodies: &mut HashMap<DefId, Body<'a>>,
+    machines: &mut Vec<(DefId, MachineShape)>,
+    missing_steps: &mut Vec<Span>,
+) {
+    let occurrence = DeclarationOccurrence::new_with_synthetic_ordinal(
+        module,
+        declaration_span,
+        ordinal,
+        kind,
+        0,
+    );
+    let Some(declaration) = output.defs.declaration(occurrence) else {
+        if function.origin == DeclarationOrigin::MachineStep {
+            missing_steps.push(function.fn_span.clone());
+        }
+        return;
+    };
+    if function.origin == DeclarationOrigin::MachineStep
+        && !machines.iter().any(|(id, _)| *id == declaration)
+    {
+        let nominal = output
+            .defs
+            .owner(declaration)
+            .map(crate::NominalId::from_minted_declaration);
+        let type_name = nominal
+            .map(|id| output.defs.name(id.declaration()).to_string())
+            .unwrap_or_default();
+        machines.push((
+            declaration,
+            MachineShape {
+                nominal,
+                type_name,
+                type_parameter_count,
+            },
+        ));
+    }
+    bodies.entry(declaration).or_insert_with(|| Body {
+        function,
+        module_idx,
+        source_module: source_module.map(str::to_string),
+    });
+}
+
 fn collect_bodies<'a>(
     program: &'a Program,
     output: &TypeCheckOutput,
@@ -481,58 +539,40 @@ fn collect_bodies<'a>(
             for (ordinal, ((item, span), (module, module_idx, source_module))) in
                 items.iter().zip(contexts).enumerate()
             {
-                let mut add = |function: &'a FnDecl,
-                               kind: DeclarationKind,
-                               declaration_span: &Span,
-                               shape: &MachineShape| {
-                    let occurrence = DeclarationOccurrence::new_with_synthetic_ordinal(
-                        module,
-                        declaration_span,
-                        ordinal,
-                        kind,
-                        0,
-                    );
-                    if let Some(declaration) = output.defs.declaration(occurrence) {
-                        if function.origin == DeclarationOrigin::MachineStep
-                            && !machines.iter().any(|(id, _)| *id == declaration)
-                        {
-                            machines.push((declaration, shape.clone()));
-                        }
-                        bodies.entry(declaration).or_insert_with(|| Body {
-                            function,
-                            module_idx,
-                            source_module: source_module.clone(),
-                        });
-                    } else if function.origin == DeclarationOrigin::MachineStep {
-                        missing_steps.push(function.fn_span.clone());
-                    }
-                };
                 match item {
-                    Item::Function(function) => add(
-                        function,
-                        DeclarationKind::Function,
-                        span,
-                        &MachineShape::default(),
-                    ),
+                    Item::Function(function) => {
+                        record_body_declaration(
+                            function,
+                            DeclarationKind::Function,
+                            span,
+                            0,
+                            ordinal,
+                            module,
+                            module_idx,
+                            source_module.as_deref(),
+                            output,
+                            bodies,
+                            machines,
+                            missing_steps,
+                        );
+                    }
                     Item::Impl(implementation) => {
-                        // Only a machine's own generated impl may defer a
-                        // purity obligation to instantiation; an ordinary
-                        // generic helper is still judged where it is written.
-                        let shape = if implementation
-                            .methods
-                            .iter()
-                            .any(|function| function.origin == DeclarationOrigin::MachineStep)
-                        {
-                            machine_shape(implementation)
-                        } else {
-                            MachineShape::default()
-                        };
+                        let type_parameter_count =
+                            implementation.type_params.as_ref().map_or(0, Vec::len);
                         for function in &implementation.methods {
-                            add(
+                            record_body_declaration(
                                 function,
                                 DeclarationKind::ImplMethod,
                                 &function.fn_span,
-                                &shape,
+                                type_parameter_count,
+                                ordinal,
+                                module,
+                                module_idx,
+                                source_module.as_deref(),
+                                output,
+                                bodies,
+                                machines,
+                                missing_steps,
                             );
                         }
                     }
@@ -577,19 +617,6 @@ fn collect_bodies<'a>(
                 .collect();
             add_items(&module.items, contexts);
         }
-    }
-}
-
-/// The machine's surface type name and its own parameters, read from the
-/// generated impl the normalizer produced for it.
-fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
-    let type_name = match &implementation.target_type.0 {
-        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-        _ => String::new(),
-    };
-    MachineShape {
-        type_name,
-        type_parameter_count: implementation.type_params.as_ref().map_or(0, Vec::len),
     }
 }
 

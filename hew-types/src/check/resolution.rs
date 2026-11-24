@@ -290,7 +290,7 @@ impl Checker {
             );
             return Err(());
         }
-        self.note_import_use(&binding);
+        self.resolve_import_use(Ident::new(&binding));
         Ok(Some(format!("{canonical}{suffix}")))
     }
 
@@ -1208,7 +1208,10 @@ impl Checker {
         }
 
         crate::ty::TraitObjectBound {
-            trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+            trait_name: trait_id.map_or_else(
+                || bound.path.to_string(),
+                |id| self.defs.display(id).to_string(),
+            ),
             trait_id,
             args,
             assoc_bindings,
@@ -1313,12 +1316,15 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_fn_sig_inference_holes(&mut self, name: &str, hole_vars: Vec<TypeVar>) {
-        if !hole_vars.is_empty() {
-            self.fn_sig_inference_holes
-                .entry(name.to_string())
-                .or_default()
-                .extend(hole_vars);
+    pub(super) fn record_fn_sig_inference_holes(
+        &mut self,
+        declaration: crate::DefId,
+        hole_vars: Vec<TypeVar>,
+    ) {
+        if hole_vars.is_empty() {
+            self.fn_sig_inference_holes.remove(&declaration);
+        } else {
+            self.fn_sig_inference_holes.insert(declaration, hole_vars);
         }
     }
 
@@ -1471,12 +1477,14 @@ impl Checker {
                 let module_name = module_id.dotted();
                 self.report_unresolved_inference_in_items(
                     &module.items,
+                    Some(module_id),
+                    Some(module_graph),
                     Some(module_name.as_str()),
                 );
             }
         }
 
-        self.report_unresolved_inference_in_items(&program.items, None);
+        self.report_unresolved_inference_in_items(&program.items, None, None, None);
 
         // Drain body-level deferred inference holes accumulated across ALL modules
         // (root and every non-root module body checked earlier in check_program).
@@ -1620,6 +1628,8 @@ impl Checker {
     pub(super) fn report_unresolved_inference_in_items(
         &mut self,
         items: &[Spanned<Item>],
+        module_id: Option<&hew_parser::module::ModulePath>,
+        module_graph: Option<&hew_parser::module::ModuleGraph>,
         module_name: Option<&str>,
     ) {
         // Snapshot error count so we can tag newly-emitted errors with the source
@@ -1627,15 +1637,35 @@ impl Checker {
         // non-root module must point to that module's source file when rendered.
         let err_before = self.errors.len();
 
-        for (item, span) in items {
+        for (item_ordinal, (item, span)) in items.iter().enumerate() {
+            let occurrence_module = match (module_graph, module_id) {
+                (Some(graph), Some(mod_id)) => graph
+                    .item_source(mod_id, item_ordinal)
+                    .or_else(|| {
+                        graph
+                            .modules
+                            .get(mod_id)
+                            .and_then(|module| module.source_paths.first())
+                    })
+                    .and_then(|source| self.defs.module_for_source(source))
+                    .or_else(|| module_name.and_then(|name| self.defs.module_for_path(name))),
+                _ => self.defs.root_module(),
+            };
+            let declaration_at = |kind: crate::DeclarationKind, occ_span: &Span, ordinal: usize| {
+                let occ = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    occurrence_module,
+                    occ_span,
+                    item_ordinal,
+                    kind,
+                    ordinal,
+                );
+                self.defs.declaration(occ)
+            };
             match item {
                 Item::Function(fd) => {
-                    if lookup_scoped_item(
-                        &self.fn_sig_inference_holes,
-                        module_name.or_else(|| self.canonical_fn_owner()),
-                        fd.name.name.as_str(),
-                    )
-                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    if declaration_at(crate::DeclarationKind::Function, span, 0)
+                        .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
                         let return_hole = fd.return_type.as_ref().filter(|_| {
                             fd.params
@@ -1708,11 +1738,10 @@ impl Checker {
                         ));
                     }
 
-                    for method in &ad.methods {
+                    for (index, method) in ad.methods.iter().enumerate() {
                         let method_name = format!("{}::{}", ad.name, method.name);
-                        if self
-                            .fn_sig_inference_holes
-                            .get(&method_name)
+                        if declaration_at(crate::DeclarationKind::ActorMethod, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
                             .is_some_and(|hole_vars| {
                                 self.inference_holes_still_unresolved(hole_vars)
                             })
@@ -1724,11 +1753,10 @@ impl Checker {
                         }
                     }
 
-                    for receive_fn in &ad.receive_fns {
+                    for (index, receive_fn) in ad.receive_fns.iter().enumerate() {
                         let receive_name = format!("{}::{}", ad.name, receive_fn.name);
-                        if self
-                            .fn_sig_inference_holes
-                            .get(&receive_name)
+                        if declaration_at(crate::DeclarationKind::ActorReceive, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
                             .is_some_and(|hole_vars| {
                                 self.inference_holes_still_unresolved(hole_vars)
                             })
@@ -1741,13 +1769,12 @@ impl Checker {
                     }
                 }
                 Item::ExternBlock(eb) => {
-                    for function in &eb.functions {
-                        if lookup_scoped_item(
-                            &self.fn_sig_inference_holes,
-                            module_name,
-                            function.name.name.as_str(),
-                        )
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    for (index, function) in eb.functions.iter().enumerate() {
+                        if declaration_at(crate::DeclarationKind::ExternFunction, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
                         {
                             let error_span = first_infer_span_in_extern_fn(function)
                                 .unwrap_or_else(|| span.clone());
@@ -1759,36 +1786,49 @@ impl Checker {
                     }
                 }
                 Item::Impl(id) => {
-                    if let TypeExpr::Named {
-                        path: named_path, ..
-                    } = &id.target_type.0
-                    {
-                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        for method in &id.methods {
-                            let method_name = format!("{type_name}::{}", method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of method `{method_name}`"),
-                                ));
-                            }
+                    for method in &id.methods {
+                        let Some(declaration) =
+                            declaration_at(crate::DeclarationKind::ImplMethod, &method.fn_span, 0)
+                        else {
+                            continue;
+                        };
+                        if self
+                            .fn_sig_inference_holes
+                            .get(&declaration)
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            let diagnostic_path = self.defs.callable_diagnostic_path(declaration);
+                            let method_name = crate::short_name(diagnostic_path.as_ref());
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of method `{method_name}`"),
+                            ));
                         }
                     }
                 }
                 Item::Trait(td) => {
-                    for trait_item in &td.items {
-                        if let TraitItem::Method(method) = trait_item {
-                            let method_name = format!("{}::{}", td.name, method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of trait method `{method_name}`"),
-                                ));
-                            }
+                    for (index, method) in td
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            TraitItem::Method(method) => Some(method),
+                            TraitItem::AssociatedType { .. } => None,
+                        })
+                        .enumerate()
+                    {
+                        let method_name = format!("{}::{}", td.name, method.name);
+                        if declaration_at(crate::DeclarationKind::TraitMethod, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of trait method `{method_name}`"),
+                            ));
                         }
                     }
                 }
@@ -1994,6 +2034,7 @@ impl Checker {
             }
             [trait_id] => Some(Ty::AssocType {
                 base: Box::new(Ty::param(param)),
+                trait_id: *trait_id,
                 trait_name: self.defs.path(*trait_id).into(),
                 assoc_name: assoc_name.into(),
             }),
@@ -2017,31 +2058,14 @@ impl Checker {
         }
     }
 
-    /// The trait a `Ty::AssocType` carrier names.
-    ///
-    /// TRANSITION(A1c4): WHY the carrier holds the trait's path render, and
-    /// the module registry's signature mirror a prelude spelling. WHEN the
-    /// carrier holds the trait's `DefId`, this is a field read. WHAT:
-    /// `AssocType` by id.
-    pub(super) fn assoc_carrier_trait(&self, trait_name: &str) -> Option<crate::DefId> {
-        self.lookup_declaration(trait_name)
-            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
-            .or_else(
-                || match self.scopes.prelude_binding(Symbol::intern(trait_name)) {
-                    Some(super::scope::Binding::Trait(id)) => Some(id),
-                    _ => None,
-                },
-            )
-    }
-
-    /// Walk a `Ty` and collapse `Ty::AssocType { base, trait_name, assoc_name }`
-    /// carriers whose `base` resolves to either an in-scope type parameter
-    /// with a where-clause associated-type binding or a concrete impl target
-    /// for which an impl is registered. Carriers whose base is still abstract
-    /// and unconstrained (a generic type param without a matching associated-
-    /// type binding, an unresolved inference variable, another
-    /// `Ty::AssocType`, etc.) pass through unchanged so they can be diagnosed
-    /// or collapsed later when more substitutions arrive.
+    /// Walk a `Ty` and collapse `Ty::AssocType` carriers whose `base` resolves
+    /// to either an in-scope type parameter with a where-clause associated-type
+    /// binding or a concrete impl target for which an impl is registered.
+    /// Carriers whose base is still abstract and unconstrained (a generic type
+    /// param without a matching associated-type binding, an unresolved
+    /// inference variable, another `Ty::AssocType`, etc.) pass through
+    /// unchanged so they can be diagnosed or collapsed later when more
+    /// substitutions arrive.
     ///
     /// Lookup goes through `AssociatedTypeSchemas`, populated at impl-
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
@@ -2055,19 +2079,18 @@ impl Checker {
         match ty {
             Ty::AssocType {
                 base,
+                trait_id,
                 trait_name,
                 assoc_name,
             } => {
                 let projected_base = self.project_assoc_types_inner(base, expanding);
                 let carrier = || Ty::AssocType {
                     base: Box::new(projected_base.clone()),
+                    trait_id: *trait_id,
                     trait_name: trait_name.clone(),
                     assoc_name: assoc_name.clone(),
                 };
-                let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
-                    return carrier();
-                };
-                let owners = self.associated_type_owners(trait_id, assoc_name);
+                let owners = self.associated_type_owners(*trait_id, assoc_name);
                 let [trait_id] = owners.as_slice() else {
                     return carrier();
                 };
@@ -2101,6 +2124,7 @@ impl Checker {
         let resolved_base = self.subst.resolve(base);
         let carrier = Ty::AssocType {
             base: Box::new(resolved_base.clone()),
+            trait_id,
             trait_name: self.defs.path(trait_id).into(),
             assoc_name: associated.as_str().into(),
         };
@@ -2693,6 +2717,7 @@ impl Checker {
                 };
                 Ty::AssocType {
                     base: Box::new(base),
+                    trait_id: *owner,
                     trait_name: self.defs.path(*owner).into(),
                     assoc_name: assoc_name.name.as_str().into(),
                 }
@@ -2701,12 +2726,8 @@ impl Checker {
                 path: named_path,
                 type_args,
             } => {
-                // TRANSITION(A1c4): WHY `Self` and associated-type projections
-                // are still matched on the joined spelling. WHEN generic binders
-                // and projections resolve through `Scope`, this render goes.
-                // WHAT: `Self` and `T.Item` as `Scope` resolutions.
-                let name = &named_path.to_string();
-                if name == "CancellationToken" {
+                let single = named_path.as_single().map(|id| id.name.as_str());
+                if single == Some("CancellationToken") {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &te.1,
@@ -2715,7 +2736,7 @@ impl Checker {
                     return Ty::Error;
                 }
                 // Handle `Self` type
-                if name == "Self" {
+                if single == Some("Self") {
                     if let Some((_, self_ty)) = &self.current_self_type {
                         return self_ty.clone();
                     }
@@ -2739,10 +2760,29 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                if let Some(alias_name) = name
-                    .strip_prefix("Self.")
-                    .or_else(|| name.strip_prefix("Self::"))
-                {
+                let self_assoc_name: Option<std::borrow::Cow<'_, str>> =
+                    match named_path.segments.as_slice() {
+                        [(base, _), (assoc, _)] if base.name == hew_parser::ast::sym::SELF_TYPE => {
+                            Some(std::borrow::Cow::Borrowed(assoc.name.as_str()))
+                        }
+                        [(base, _), rest @ ..]
+                            if base.name == hew_parser::ast::sym::SELF_TYPE && !rest.is_empty() =>
+                        {
+                            Some(std::borrow::Cow::Owned(
+                                rest.iter()
+                                    .map(|(segment, _)| segment.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("."),
+                            ))
+                        }
+                        [(segment, _)] => segment
+                            .name
+                            .as_str()
+                            .strip_prefix("Self::")
+                            .map(std::borrow::Cow::Borrowed),
+                        _ => None,
+                    };
+                if let Some(alias_name) = self_assoc_name.as_deref() {
                     // Generated ordinary providers explicitly bind Self as a
                     // function type parameter. Resolve that lexical binder
                     // before the enclosing trait's implicit receiver.
@@ -2803,6 +2843,7 @@ impl Checker {
                         };
                         return Ty::AssocType {
                             base: Box::new(Ty::param(crate::ParamHead::receiver(trait_id))),
+                            trait_id: *owner,
                             trait_name: self.defs.path(*owner).into(),
                             assoc_name: alias_name.into(),
                         };
@@ -2840,7 +2881,11 @@ impl Checker {
                 // bounds), missing-assoc (no bound declares `Bar`), and
                 // ambiguous (more than one bound declares `Bar`) are all
                 // typed errors here. No silent pass-through.
-                if !name.starts_with("Self::") && !name.starts_with("Self.") {
+                let is_self_headed =
+                    named_path.segments.first().is_some_and(|(segment, _)| {
+                        segment.name == hew_parser::ast::sym::SELF_TYPE
+                    }) || single.is_some_and(|name| name.starts_with("Self::"));
+                if !is_self_headed {
                     // Dotted paths are also the module-qualified nominal
                     // surface. Treat a direct `T.Item` as an associated-type
                     // projection only when `T` is a type parameter in scope;
@@ -2854,7 +2899,7 @@ impl Checker {
                             return ty;
                         }
                     }
-                    if let Some((base_name, assoc_name)) = name.split_once("::") {
+                    if let Some((base_name, assoc_name)) = single.and_then(|s| s.split_once("::")) {
                         // Reject multi-segment projections (`T::Iter::Bar`)
                         // explicitly — deferred per the precursor plan.
                         if assoc_name.contains("::") {
@@ -2862,7 +2907,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 &te.1,
                                 format!(
-                                    "multi-segment associated-type projections like `{name}` are not supported; \
+                                    "multi-segment associated-type projections like `{base_name}::{assoc_name}` are not supported; \
                                      introduce an intermediate type parameter"
                                 ),
                             );
@@ -2883,8 +2928,8 @@ impl Checker {
                         self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedType,
                             &te.1,
-                            format!("unknown type `{name}`; `::` is not the module separator in type position"),
-                            vec![format!("use `{base_name}.{assoc_name}` instead of `{name}`")],
+                            format!("unknown type `{base_name}::{assoc_name}`; `::` is not the module separator in type position"),
+                            vec![format!("use `{base_name}.{assoc_name}` instead of `{base_name}::{assoc_name}`")],
                         );
                         return Ty::Error;
                     }
@@ -2907,24 +2952,25 @@ impl Checker {
                 // name shadows the reservation.
                 // A user declaration shadows a reserved spelling.
                 let declared = matches!(
-                    name.as_str(),
-                    "LocalPid" | "Pid" | "LambdaPid" | "Task" | "Unit"
+                    single,
+                    Some("LocalPid" | "Pid" | "LambdaPid" | "Task" | "Unit")
                 ) && matches!(
                     self.resolve_type_path(named_path),
                     Some(super::scope::Resolution::Nominal(_) | super::scope::Resolution::Def(_))
                 );
-                if !declared && matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid") {
+                if !declared && matches!(single, Some("LocalPid" | "Pid" | "LambdaPid")) {
+                    let reserved = single.expect("matched reserved actor handle spelling");
                     let written_args: Vec<String> = type_args
                         .iter()
                         .flatten()
                         .map(|argument| self.resolve_type_expr(argument).user_facing().to_string())
                         .collect();
                     let written = if written_args.is_empty() {
-                        name.clone()
+                        reserved.to_string()
                     } else {
-                        format!("{name}<{}>", written_args.join(", "))
+                        format!("{reserved}<{}>", written_args.join(", "))
                     };
-                    let hint = if name == "LambdaPid" {
+                    let hint = if reserved == "LambdaPid" {
                         "write the anonymous actor's type `actor(M) -> R`".to_string()
                     } else if written_args.len() == 1 {
                         format!("write the actor's own type `{}`", written_args[0])
@@ -2948,7 +2994,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                if !declared && name == "Task" {
+                if !declared && single == Some("Task") {
                     self.report_error(
                         TypeErrorKind::TaskNotNameable,
                         &te.1,
@@ -2961,21 +3007,20 @@ impl Checker {
                 }
                 // Removed aliases: suggest the replacement before the
                 // general unknown-type path swallows the name.
-                match name.as_str() {
-                    "int" => {
+                match single {
+                    Some("int") => {
                         // Lowercase `int` was never a valid v0.3/v0.4 user-facing
                         // spelling; treat it as an unknown type.
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
-                            format!(
-                                "unknown type `{name}`; use `i64` for fixed 64-bit integers \
-                                 or `isize` for pointer-sized integers"
-                            ),
+                            "unknown type `int`; use `i64` for fixed 64-bit integers \
+                             or `isize` for pointer-sized integers"
+                                .to_string(),
                         );
                         return Ty::Error;
                     }
-                    "Int" => {
+                    Some("Int") => {
                         // `Int` was the v0.3/v0.4 spelling for i64; it is no
                         // longer accepted.  Hard error pointing to the canonical
                         // name so migrated source uses `i64` directly.
@@ -2988,7 +3033,7 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    "uint" => {
+                    Some("uint") => {
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
@@ -2998,7 +3043,7 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    "Unit" if !declared => {
+                    Some("Unit") if !declared => {
                         // `Unit` is Kotlin / Swift muscle memory; Hew's unit type
                         // is the empty tuple `()`. `BuiltinType::Unit` is an
                         // internal carrier with no user-writable spelling, so a
@@ -3029,7 +3074,7 @@ impl Checker {
                     _ => {}
                 }
                 // Check for primitive types first
-                if let Some(prim) = Ty::from_name(name) {
+                if let Some(prim) = single.and_then(Ty::from_name) {
                     return prim;
                 }
                 // Non-primitive: resolve generics, aliases, special types
@@ -3044,9 +3089,11 @@ impl Checker {
                 });
                 // Declaration binders shadow nominal and alias spellings before
                 // module qualification changes their source name.
-                for scope in self.generic_ctx.iter().rev() {
-                    if let Some(ty) = scope.get(name) {
-                        return ty.clone();
+                if let Some(param_name) = single {
+                    for scope in self.generic_ctx.iter().rev() {
+                        if let Some(ty) = scope.get(param_name) {
+                            return ty.clone();
+                        }
                     }
                 }
                 let resolution = self.resolve_type_path(named_path);

@@ -119,7 +119,7 @@ impl Checker {
                     .iter()
                     .map(|arg| self.resolve_extern_signature_nominals(arg))
                     .collect();
-                if builtin.is_some() || head.is_param() {
+                if builtin.is_some() || head.is_actor() || head.is_param() {
                     Ty::Named { head: *head, args }
                 } else {
                     self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)
@@ -395,7 +395,10 @@ impl Checker {
                 0,
             );
             *ordinal += 1;
-            match self.defs.declare(occurrence, name, None, key) {
+            match self
+                .defs
+                .declare(occurrence, Ident::from_symbol(name), None, key)
+            {
                 Ok(declaration) => declaration,
                 Err(error) => {
                     self.errors.push(TypeError::new(
@@ -581,7 +584,7 @@ impl Checker {
             ) else {
                 continue;
             };
-            self.record_fn_sig_inference_holes(&key, hole_vars);
+            self.record_fn_sig_inference_holes(declaration, hole_vars);
             self.insert_fn_sig(&key, declaration, sig);
             if f.is_offload() {
                 self.pending_offloads

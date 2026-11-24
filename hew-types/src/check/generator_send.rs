@@ -28,6 +28,7 @@ impl Checker {
         demands: &HashMap<SpanKey, Vec<Ty>>,
         output: &mut effects::SuspensionEffects,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
+        graph: &effects::EffectGraph,
     ) {
         let mut proven_demands = HashSet::new();
         for obligation in obligations {
@@ -66,6 +67,7 @@ impl Checker {
                         candidates,
                         MarkerTrait::Send,
                         flows,
+                        Some(graph),
                     );
                     requirements.extend(nested);
                     proven
@@ -208,7 +210,7 @@ impl Checker {
                 .unwrap_or_else(IndirectCallCandidates::unknown);
             if previous.depth.is_some_and(|boundary| {
                 self.env
-                    .lookup_with_depth(&capture.name)
+                    .lookup_with_depth(hew_parser::ast::Ident::new(&capture.name))
                     .is_some_and(|(depth, binding)| {
                         depth < boundary && binding.id == capture.binding_id
                     })

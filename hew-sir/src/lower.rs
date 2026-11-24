@@ -1412,6 +1412,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::sink_element(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || collection_type_arguments(ty).is_some()
+        || ty.is_actor()
         || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
         || ty.is_builtin(hew_types::BuiltinType::ActorFn)
         // A pool view is the same fixed-width pair a role is: the owning

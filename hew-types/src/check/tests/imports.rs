@@ -3307,7 +3307,7 @@ fn test_file_import_private_items_not_visible() {
         "private function must not be registered from file import"
     );
     assert!(
-        checker.env.lookup("PRIVATE_CONST").is_none(),
+        checker.env.lookup(Ident::new("PRIVATE_CONST")).is_none(),
         "private const must not be registered from file import"
     );
     assert!(

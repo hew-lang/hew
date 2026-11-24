@@ -607,20 +607,6 @@ fn type_expr_to_ty_with_context(
     context: TypeConversionContext,
 ) -> Ty {
     match texpr {
-        TypeExpr::QualifiedAssocPath(path) => {
-            let base = type_expr_to_ty_with_context(&path.base.0, module_short, context);
-            let Some(assoc_name) = path.members.first() else {
-                return Ty::Error;
-            };
-            if path.members.len() != 1 {
-                return Ty::Error;
-            }
-            Ty::AssocType {
-                base: Box::new(base),
-                trait_name: path.trait_path.to_string().into_boxed_str(), // TRANSITION(P1): deleted by A1 commit 2
-                assoc_name: assoc_name.clone().to_string().into_boxed_str(),
-            }
-        }
         TypeExpr::Named {
             path: named_path,
             type_args,
@@ -722,12 +708,15 @@ fn type_expr_to_ty_with_context(
                 context,
             )],
         ),
-        // Quantified annotations require the binders minted by source registration.
+        // Quantified annotations, qualified associated paths, and dyn trait objects
+        // require binders / resolution from source registration.
         TypeExpr::Infer
         | TypeExpr::Function {
             type_params: Some(_),
             ..
-        } => Ty::Error,
+        }
+        | TypeExpr::QualifiedAssocPath(_)
+        | TypeExpr::TraitObject(_) => Ty::Error,
         TypeExpr::ActorFn {
             params,
             return_type,
@@ -788,17 +777,6 @@ fn type_expr_to_ty_with_context(
         TypeExpr::Borrow(_) => {
             panic!("borrow type reached a non-extern stdlib signature")
         }
-        TypeExpr::TraitObject(bounds) => Ty::TraitObject {
-            traits: bounds
-                .iter()
-                .map(|bound| crate::ty::TraitObjectBound {
-                    trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
-                    trait_id: None,
-                    args: vec![],
-                    assoc_bindings: vec![],
-                })
-                .collect(),
-        },
     }
 }
 

@@ -62,7 +62,7 @@ impl Checker {
             Ty::Tuple(members) => members
                 .iter()
                 .all(|member| self.renders_through_fields(member, visiting)),
-            Ty::Named { head, args } if head.builtin().is_none() => {
+            Ty::Named { head, args } if !head.is_actor() && head.builtin().is_none() => {
                 let Some(id) = head.declaration(&self.defs) else {
                     return true;
                 };

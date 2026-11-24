@@ -80,10 +80,9 @@ impl Checker {
     /// releases a handle the selected value carries.
     pub(super) fn resource_handle_owner(
         &self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
     ) -> Option<usize> {
-        let root = root.lexical_key();
         let binding = self.env.lookup_ref(root)?;
         let mut parent = self.subst.resolve(&binding.ty);
         let mut owner = None;
@@ -247,11 +246,10 @@ impl Checker {
     /// does not prevent moving that entire value out of its plain parent.
     pub(in crate::check) fn reject_partial_place_consumption(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
     ) -> bool {
-        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };
@@ -267,7 +265,7 @@ impl Checker {
             let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
                 if self.resource_handle_owner(root, path) == Some(depth) {
                     let record = Self::render_place(root, &path[..depth]);
-                    let handed_out = Self::render_place(field, &path[depth + 1..]);
+                    let handed_out = Self::render_place(Ident::new(field), &path[depth + 1..]);
                     let resource = parent.user_facing().to_string();
                     let short = parent
                         .type_name()
@@ -516,16 +514,12 @@ impl Checker {
     /// belongs to [`Self::check_field_access`], which reports it against the
     /// actor rather than letting the receiver be synthesised as a value.
     pub(in crate::check) fn is_actor_self_receiver(&self, object: &Expr) -> bool {
-        matches!(object, Expr::Ident(name) if name.name.as_str() == "self" && self.env.lookup_ref(name).is_none())
+        matches!(object, Expr::Ident(name) if name.name.as_str() == "self" && self.env.lookup_ref(*name).is_none())
             && self.current_actor_type.is_some()
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
-    pub(in crate::check) fn render_place(
-        root: impl crate::env::LexicalName,
-        path: &[String],
-    ) -> String {
-        let root = root.lexical_key();
+    pub(in crate::check) fn render_place(root: hew_parser::ast::Ident, path: &[String]) -> String {
         std::iter::once(root.name.as_str())
             .chain(path.iter().map(String::as_str))
             .collect::<Vec<_>>()
@@ -596,11 +590,10 @@ impl Checker {
     /// noted for the enclosing loops' back-edge check.
     pub(in crate::check) fn report_place_use_after_move(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
     ) {
-        let root = root.lexical_key();
         if self.place_base_depth == 0 {
             self.reject_prepared_input_access(
                 root,
@@ -635,13 +628,12 @@ impl Checker {
     /// moved.
     fn place_use_after_move_error(
         &self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         conflict: PlaceConflict,
         moved_path: &[String],
         span: &Span,
     ) -> TypeError {
-        let root = root.lexical_key();
         let place = Self::render_place(root, path);
         let moved_place = Self::render_place(root, moved_path);
         let (message, suggestion) = match conflict {
@@ -701,7 +693,7 @@ impl Checker {
                 self.use_after_move_error(&name, &ty, &carried.use_span)
             } else {
                 self.place_use_after_move_error(
-                    &name,
+                    Ident::new(&name),
                     &carried.use_path,
                     carried.conflict,
                     &carried.moved_path,
@@ -714,7 +706,7 @@ impl Checker {
                     "value was consumed here, in an earlier iteration of the loop",
                 );
             }
-            let consumed = Self::render_place(&name, &carried.moved_path);
+            let consumed = Self::render_place(Ident::new(&name), &carried.moved_path);
             error = error.with_suggestion(format!(
                 "the loop runs again after consuming `{consumed}`; leave the loop after \
                  the consuming use (`break` or `return`), or re-initialise it \
@@ -790,7 +782,7 @@ impl Checker {
                     }
                     // A builtin carries no user member set to descend into, and its
                     // ownership verdict is already decided above.
-                    if builtin.is_some() {
+                    if head.is_actor() || builtin.is_some() {
                         return false;
                     }
                     let members: Vec<Ty> = self

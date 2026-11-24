@@ -891,7 +891,7 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let source_declaration = format!("{canonical_owner}.{method}");
         if let Some(target) = self.intrinsic_runtime_target_for_signature(&source_declaration) {
             // The checker has already proved the exact canonical declaration
@@ -949,7 +949,7 @@ impl Checker {
         if !self.module_binding_has_user_declaration(module_name, method) {
             return;
         }
-        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let source_declaration = format!("{canonical_owner}.{method}");
         // A canonical compiler-intrinsic declaration is source-backed but not
         // an ordinary user function. Its typed runtime or type-directed math
@@ -1041,7 +1041,7 @@ impl Checker {
 
     pub(in crate::check) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
-        if self.module_binding_in_current_file(&name[..dot]) {
+        if self.module_binding_in_current_file(Ident::new(&name[..dot])) {
             Some(&name[dot + 1..])
         } else {
             None

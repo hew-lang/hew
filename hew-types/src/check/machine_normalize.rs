@@ -571,22 +571,22 @@ impl Builder {
     fn stmt(&mut self, stmt: Stmt) -> Spanned<Stmt> {
         (stmt, self.span())
     }
-    fn ident(&mut self, name: impl crate::env::LexicalName) -> Spanned<Expr> {
-        self.expr(Expr::Ident(name.lexical_key()))
+    fn ident(&mut self, name: hew_parser::ast::Ident) -> Spanned<Expr> {
+        self.expr(Expr::Ident(name))
     }
     fn field(&mut self, object: &str, name: &str) -> Spanned<Expr> {
-        let object = self.ident(object);
+        let object = self.ident(Ident::new(object));
         let field = (Ident::new(name), self.span());
         self.expr(Expr::FieldAccess {
             object: hew_parser::chain::Chain::new(object),
             field,
         })
     }
-    fn ty(&mut self, name: impl crate::env::LexicalName) -> Spanned<TypeExpr> {
+    fn ty(&mut self, name: hew_parser::ast::Ident) -> Spanned<TypeExpr> {
         let span = self.span();
         (
             TypeExpr::Named {
-                path: Path::single(name.lexical_key(), span.clone()),
+                path: Path::single(name, span.clone()),
                 type_args: None,
             },
             span,
@@ -614,11 +614,11 @@ impl Builder {
     }
     fn let_value(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         ty: Option<Spanned<TypeExpr>>,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
-        let pattern = (Pattern::Identifier(name.lexical_key()), self.span());
+        let pattern = (Pattern::Identifier(name), self.span());
         self.stmt(Stmt::Let {
             pattern,
             ty,
@@ -686,7 +686,12 @@ impl Builder {
                     .as_ref()
                     .is_none_or(|fields| fields.contains(field))
             })
-            .map(|(name, _)| (*name, self.ident(format!("_$machine_state_{name}"))))
+            .map(|(name, _)| {
+                (
+                    *name,
+                    self.ident(Ident::new(&format!("_$machine_state_{name}"))),
+                )
+            })
             .collect();
         self.carry_history(machine, state.name, &mut fields);
         self.qualified_variant(machine, state.name, fields)
@@ -741,7 +746,7 @@ impl Builder {
             .iter()
             .filter_map(|param| {
                 let default = param.default?;
-                let ty = self.ty("usize");
+                let ty = self.ty(Ident::new("usize"));
                 let literal = self.expr(Expr::Literal(Literal::Integer {
                     value: i128::from(default),
                     radix: IntRadix::Decimal,
@@ -1111,7 +1116,7 @@ impl Builder {
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
         state_name.visibility = machine.visibility;
-        let receiver = self.ident("self");
+        let receiver = self.ident(Ident::new("self"));
         let arms = state_variants
             .iter()
             .map(|(name, fields)| {
@@ -1170,10 +1175,10 @@ impl Builder {
             param.default_provider = None;
         }
         forwarding.origin = DeclarationOrigin::MachineCompanion;
-        let receiver = self.ident("self");
+        let receiver = self.ident(Ident::new("self"));
         let method = (Ident::new("step"), self.span());
-        let event = self.ident("event");
-        let limit = self.ident("limit");
+        let event = self.ident(Ident::new("event"));
+        let limit = self.ident(Ident::new("limit"));
         let call = self.expr(Expr::MethodCall {
             receiver: hew_parser::chain::Chain::new(receiver),
             method,
@@ -1299,7 +1304,7 @@ impl Builder {
 
     fn enum_decl(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         variants: &[VariantFields],
         visibility: Visibility,
     ) -> TypeDecl {
@@ -1307,7 +1312,7 @@ impl Builder {
             origin: DeclarationOrigin::MachineCompanion,
             visibility,
             kind: TypeDeclKind::Enum,
-            name: name.lexical_key(),
+            name,
             type_params: None,
             where_clause: None,
             body: variants
@@ -1518,7 +1523,7 @@ impl Builder {
         let taken = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
         let none = self.expr(Expr::Array(Vec::new()));
-        let rule_ty = self.ty("i64");
+        let rule_ty = self.ty(Ident::new("i64"));
         let option_span = self.span();
         let rule_ty = (
             TypeExpr::Named {
@@ -1529,7 +1534,7 @@ impl Builder {
         );
         let rule_binding = self.var(RULE, Some(rule_ty), none);
         let empty = self.expr(Expr::Literal(Literal::String(String::new())));
-        let input_ty = self.ty("string");
+        let input_ty = self.ty(Ident::new("string"));
         let input_binding = self.var(INPUT, Some(input_ty), empty);
         let mut stmts = self.const_param_bindings(machine);
         stmts.extend([outputs, disposition, rule_binding, input_binding]);
@@ -1541,13 +1546,13 @@ impl Builder {
 
     fn finish_step(&mut self, machine: &MachineDecl, shell: &mut Block, dispatch: Spanned<Expr>) {
         let state_ty = self.machine_ty(machine, "");
-        let candidate = self.let_value(CANDIDATE, Some(state_ty), dispatch);
+        let candidate = self.let_value(Ident::new(CANDIDATE), Some(state_ty), dispatch);
         // Construct the report before changing the candidate receiver, so
         // ordinary candidate/output failure cleanup precedes any commit.
-        let output_value = self.ident(OUTPUTS);
-        let disposition_value = self.ident(DISPOSITION);
-        let input_value = self.ident(INPUT);
-        let rule_value = self.ident(RULE);
+        let output_value = self.ident(Ident::new(OUTPUTS));
+        let disposition_value = self.ident(Ident::new(DISPOSITION));
+        let input_value = self.ident(Ident::new(INPUT));
+        let rule_value = self.ident(Ident::new(RULE));
         let report_path = Path::single(machine_companion(machine, "Step"), self.span());
         let report = self.expr(Expr::StructInit {
             path: report_path,
@@ -1562,21 +1567,22 @@ impl Builder {
             base: None,
         });
         let report_ty = self.machine_ty(machine, "Step");
-        let report_binding = self.let_value("_$machine_report", Some(report_ty), report);
-        let receiver = self.ident("self");
-        let candidate_value = self.ident(CANDIDATE);
+        let report_binding =
+            self.let_value(Ident::new("_$machine_report"), Some(report_ty), report);
+        let receiver = self.ident(Ident::new("self"));
+        let candidate_value = self.ident(Ident::new(CANDIDATE));
         let commit = self.stmt(Stmt::Assign {
             target: receiver,
             op: None,
             value: candidate_value,
         });
-        let result = self.ident("_$machine_report");
+        let result = self.ident(Ident::new("_$machine_report"));
         shell.stmts.extend([candidate, report_binding, commit]);
         shell.trailing_expr = Some(Box::new(result));
     }
 
     fn record_rule(&mut self, index: usize) -> Spanned<Stmt> {
-        let receiver = self.ident(RULE);
+        let receiver = self.ident(Ident::new(RULE));
         let method = (Ident::new("push"), self.span());
         let value = self.expr(Expr::Literal(Literal::Integer {
             value: i128::try_from(index).expect("checked rule index"),
@@ -1934,7 +1940,7 @@ impl Builder {
                 }
                 self.rewrite_field_inits(fields, machine, state, event)?;
                 let value = self.variant(*event_name, fields.clone(), field_labels.clone());
-                let receiver = self.ident(OUTPUTS);
+                let receiver = self.ident(Ident::new(OUTPUTS));
                 let method = (Ident::new("push"), self.span());
                 *expr = Expr::MethodCall {
                     receiver: hew_parser::chain::Chain::new(receiver),

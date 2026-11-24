@@ -566,6 +566,7 @@ mod tests {
             Ty::Task(Box::new(Ty::I32)),
             Ty::AssocType {
                 base: Box::new(Ty::param(crate::ParamHead::for_test("I"))),
+                trait_id: crate::DefId::for_test("Iterator"),
                 trait_name: "Iterator".into(),
                 assoc_name: "Item".into(),
             },

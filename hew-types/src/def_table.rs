@@ -1529,11 +1529,10 @@ impl DefTable {
     pub(crate) fn declare(
         &mut self,
         occurrence: DeclarationOccurrence,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         owner: Option<DefId>,
         path: impl Into<String>,
     ) -> Result<DefId, DeclarationIdentityError> {
-        let name = name.lexical_key();
         let source_path = path.into();
         let (path, display_path) = if let Some(owner) = owner {
             let parent = self.row(owner);
@@ -1909,7 +1908,7 @@ mod tests {
         let shared = table
             .declare(
                 DeclarationOccurrence::new(Some(builtins), &(0..8), DeclarationKind::Type, 0),
-                Symbol::intern("Cursor"),
+                Ident::from_symbol(Symbol::intern("Cursor")),
                 None,
                 "std.builtins.Cursor",
             )
@@ -1917,7 +1916,7 @@ mod tests {
         let source_cursor = table
             .declare(
                 DeclarationOccurrence::new(Some(root), &(0..8), DeclarationKind::Type, 0),
-                Symbol::intern("Cursor"),
+                Ident::from_symbol(Symbol::intern("Cursor")),
                 None,
                 "Cursor",
             )
@@ -1930,7 +1929,7 @@ mod tests {
         let embedded_cursor = fork
             .declare(
                 DeclarationOccurrence::new(Some(fork_root), &(0..8), DeclarationKind::Type, 0),
-                Symbol::intern("Cursor"),
+                Ident::from_symbol(Symbol::intern("Cursor")),
                 None,
                 "std.builtins.Cursor",
             )
@@ -2127,10 +2126,20 @@ mod tests {
         let occurrence =
             DeclarationOccurrence::new(Some(imported), &(10..40), DeclarationKind::Function, 0);
         let first = table
-            .declare(occurrence, Symbol::intern("run"), None, "pkg.worker.run")
+            .declare(
+                occurrence,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "pkg.worker.run",
+            )
             .expect("first claim");
         let second = table
-            .declare(occurrence, Symbol::intern("run"), None, "pkg.worker.run")
+            .declare(
+                occurrence,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "pkg.worker.run",
+            )
             .expect("same route-independent claim");
         assert_eq!(first, second);
         assert_eq!(table.declaration(occurrence), Some(first));
@@ -2146,10 +2155,20 @@ mod tests {
         let right_occurrence =
             DeclarationOccurrence::new(Some(right), &(0..8), DeclarationKind::Type, 0);
         let left_id = table
-            .declare(left_occurrence, Symbol::intern("Item"), None, "left.Item")
+            .declare(
+                left_occurrence,
+                Ident::from_symbol(Symbol::intern("Item")),
+                None,
+                "left.Item",
+            )
             .unwrap();
         let right_id = table
-            .declare(right_occurrence, Symbol::intern("Item"), None, "right.Item")
+            .declare(
+                right_occurrence,
+                Ident::from_symbol(Symbol::intern("Item")),
+                None,
+                "right.Item",
+            )
             .unwrap();
         assert_ne!(left_id, right_id);
     }
@@ -2161,17 +2180,32 @@ mod tests {
         let occurrence =
             DeclarationOccurrence::new(Some(module), &(0..8), DeclarationKind::Function, 0);
         let established = table
-            .declare(occurrence, Symbol::intern("run"), None, "m.run")
+            .declare(
+                occurrence,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "m.run",
+            )
             .unwrap();
         // Repeating the established claim is idempotent.
         assert_eq!(
             table
-                .declare(occurrence, Symbol::intern("run"), None, "m.run")
+                .declare(
+                    occurrence,
+                    Ident::from_symbol(Symbol::intern("run")),
+                    None,
+                    "m.run"
+                )
                 .unwrap(),
             established
         );
         let error = table
-            .declare(occurrence, Symbol::intern("run"), None, "pkg.m.run")
+            .declare(
+                occurrence,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "pkg.m.run",
+            )
             .expect_err("one declaration has one render");
         let message = error.to_string();
         assert!(
@@ -2190,10 +2224,20 @@ mod tests {
         let second =
             DeclarationOccurrence::new(Some(module), &(9..17), DeclarationKind::Function, 0);
         table
-            .declare(first, Symbol::intern("run"), None, "m.run")
+            .declare(
+                first,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "m.run",
+            )
             .unwrap();
         assert!(matches!(
-            table.declare(second, Symbol::intern("run"), None, "m.run"),
+            table.declare(
+                second,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "m.run"
+            ),
             Err(DeclarationIdentityError::PathAlreadyDeclared { .. })
         ));
         assert!(table.declaration(second).is_none());
@@ -2204,13 +2248,28 @@ mod tests {
         let second =
             DeclarationOccurrence::new(Some(module), &(9..17), DeclarationKind::Function, 0);
         let first_id = table
-            .declare(first, Symbol::intern("run"), None, "m.run")
+            .declare(
+                first,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "m.run",
+            )
             .unwrap();
         table
-            .declare(second, Symbol::intern("stop"), None, "m.stop")
+            .declare(
+                second,
+                Ident::from_symbol(Symbol::intern("stop")),
+                None,
+                "m.stop",
+            )
             .unwrap();
         assert!(table
-            .declare(second, Symbol::intern("run"), None, "m.run")
+            .declare(
+                second,
+                Ident::from_symbol(Symbol::intern("run")),
+                None,
+                "m.run"
+            )
             .is_err());
         assert_eq!(table.lookup_path("m.run"), Some(first_id));
         assert_eq!(table.declaration(first), Some(first_id));

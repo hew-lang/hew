@@ -219,11 +219,13 @@ pub fn lower_program(
                 // a subset of this because its methods use the same
                 // `fn_registry` key shape.
                 if let TypeExpr::Named {
-                    path: named_path,
                     type_args: target_type_args,
+                    ..
                 } = &impl_decl.target_type.0
                 {
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                    let Some(name) = ctx.impl_target_symbol_owner(&impl_decl.target_type) else {
+                        continue;
+                    };
                     let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
                     // For concrete specialised impls (empty impl type-params,
                     // non-empty target type args), compute the mangled self-type
@@ -239,7 +241,7 @@ pub fn lower_program(
                         if concrete_args.is_empty() {
                             std::borrow::Cow::Borrowed(name.as_str())
                         } else {
-                            std::borrow::Cow::Owned(crate::monomorph::mangle(name, &concrete_args))
+                            std::borrow::Cow::Owned(crate::monomorph::mangle(&name, &concrete_args))
                         }
                     } else {
                         std::borrow::Cow::Borrowed(name.as_str())
@@ -502,14 +504,11 @@ pub fn lower_program(
                         // no `pub` filter) keeps HIR aligned with the
                         // checker-authoritative `fn_sigs`.
                         Item::Impl(impl_decl) => {
-                            if let TypeExpr::Named {
-                                path: named_path, ..
-                            } = &impl_decl.target_type.0
+                            if let Some(name) = ctx.impl_target_symbol_owner(&impl_decl.target_type)
                             {
-                                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                 let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
                                 let symbol_self_name =
-                                    imported_impl_symbol_self_name(&module_full_path, name);
+                                    imported_impl_symbol_self_name(&module_full_path, &name);
                                 for method in &impl_decl.methods {
                                     ctx.register_impl_method_fn_entry(
                                         &symbol_self_name,
@@ -1415,17 +1414,9 @@ pub fn lower_program(
                 if !is_builtin_callable_impl(item) {
                     continue;
                 }
-                if let TypeExpr::Named {
-                    path: named_path, ..
-                } = &impl_decl.target_type.0
+                if let Some((symbol_owner, receiver_specific)) =
+                    ctx.injected_impl_symbol_owner(item, &impl_decl.target_type)
                 {
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    let receiver_specific = is_builtin_receiver_impl(item);
-                    let symbol_owner = if receiver_specific {
-                        injected_builtin_impl_symbol_owner(name).to_string()
-                    } else {
-                        imported_impl_symbol_self_name("std.builtins", name)
-                    };
                     let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
                     for method in &impl_decl.methods {
                         let declaration = ctx.source_declaration(
@@ -2003,11 +1994,10 @@ pub fn lower_program(
                             ) {
                                 continue;
                             }
-                            if let TypeExpr::Named {
-                                path: named_path, ..
-                            } = &impl_decl.target_type.0
-                            {
-                                let self_type_name = &named_path.to_string();
+                            if matches!(&impl_decl.target_type.0, TypeExpr::Named { .. }) {
+                                let self_type_name = ctx
+                                    .impl_target_symbol_owner(&impl_decl.target_type)
+                                    .unwrap_or_else(|| "<unresolved>".to_string());
                                 // The pre-lowering plan and this emitter share
                                 // the same exact declaration eligibility set.
                                 let skip_methods = ctx.imported_impl_skip_methods(impl_decl);
@@ -2222,18 +2212,10 @@ pub fn lower_program(
             }
             if let Item::Impl(impl_decl) = item {
                 if is_builtin_callable_impl(item) {
-                    let TypeExpr::Named {
-                        path: named_path, ..
-                    } = &impl_decl.target_type.0
+                    let Some((symbol_owner, receiver_specific)) =
+                        ctx.injected_impl_symbol_owner(item, &impl_decl.target_type)
                     else {
                         continue;
-                    };
-                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                    let receiver_specific = is_builtin_receiver_impl(item);
-                    let symbol_owner = if receiver_specific {
-                        injected_builtin_impl_symbol_owner(name).to_string()
-                    } else {
-                        imported_impl_symbol_self_name("std.builtins", name)
                     };
                     let skipped_methods: HashSet<hew_types::DefId> = impl_decl
                         .methods

@@ -568,3 +568,86 @@ fn trait_defaults_preserve_independent_concrete_and_generic_receivers() {
         .diagnostics()
         .is_empty());
 }
+
+#[test]
+fn cross_module_trait_impl_carries_checker_trait_id_and_display_name() {
+    let program = crate::support::checker_pipeline::program_with_imported_module(
+        "pub trait Speak { fn speak(self) -> i64; }\n",
+        r"import m;
+
+type Voice {}
+
+impl m.Speak for Voice {
+    fn speak(self) -> i64 { 7 }
+}
+
+fn call_speak<T: m.Speak>(x: T) -> i64 {
+    x.speak()
+}
+
+fn main() -> i64 {
+    call_speak(Voice {})
+}
+",
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:?}",
+        tc_output.errors
+    );
+    let expected_trait_id = tc_output
+        .defs
+        .lookup_path("m.Speak")
+        .expect("m.Speak declaration must exist");
+    let output = lower_program(
+        &program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert_no_top_level_item_unsupported(&output);
+    let impl_block = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Impl(block) if block.self_type_name == "Voice" => Some(block),
+            _ => None,
+        })
+        .expect("HirImplBlock for Voice must exist");
+    assert_eq!(impl_block.trait_id, Some(expected_trait_id));
+    assert!(!impl_block.is_inherent);
+    assert_eq!(impl_block.trait_name.as_deref(), Some("Speak"));
+    assert!(hew_hir::analyze_hir(&output.module)
+        .diagnostics()
+        .is_empty());
+}
+
+#[test]
+fn unresolved_trait_bound_is_not_marked_inherent_on_resource() {
+    let output = lower_rejected_shape(
+        r"#[resource]
+type Handle {
+    fd: i64;
+}
+
+impl MissingTrait for Handle {
+    fn close(consume self) {}
+}
+",
+    );
+    let impl_block = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Impl(block) if block.self_type_name == "Handle" => Some(block),
+            _ => None,
+        })
+        .expect("HirImplBlock for Handle must exist");
+    assert!(!impl_block.is_inherent);
+    assert!(impl_block.trait_id.is_none());
+    assert!(impl_block.trait_name.is_none());
+}

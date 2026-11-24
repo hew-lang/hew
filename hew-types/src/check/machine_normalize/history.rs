@@ -206,7 +206,7 @@ impl Builder {
             let pattern = self.pattern(name, &fields, "_$machine_saved_");
             let mut restore = Vec::new();
             for (field, _) in &fields {
-                let value = self.ident(format!("_$machine_saved_{field}"));
+                let value = self.ident(Ident::new(&format!("_$machine_saved_{field}")));
                 restore.push(self.assign(*field, value));
             }
             let unit = self.expr(Expr::Tuple(Vec::new()));
@@ -218,7 +218,7 @@ impl Builder {
                 body,
             });
         }
-        let receiver = self.ident("self");
+        let receiver = self.ident(Ident::new("self"));
         let restore = self.expr(Expr::Match {
             scrutinee: Box::new(receiver),
             arms,
@@ -249,7 +249,7 @@ impl Builder {
             let selected = rules
                 .iter()
                 .filter(|index| hierarchy.crosses(**index, slot.target))
-                .map(|index| self.ident(format!("_$machine_selected_{index}")))
+                .map(|index| self.ident(Ident::new(&format!("_$machine_selected_{index}"))))
                 .collect();
             let condition = self.disjunction(selected);
             let mut capture = Vec::new();
@@ -269,7 +269,12 @@ impl Builder {
                 let fields = hierarchy
                     .own_fields(child)
                     .iter()
-                    .map(|(field, _)| (*field, self.ident(format!("_$machine_state_{field}"))))
+                    .map(|(field, _)| {
+                        (
+                            *field,
+                            self.ident(Ident::new(&format!("_$machine_state_{field}"))),
+                        )
+                    })
                     .collect();
                 let value = self.enum_value(
                     machine_companion(machine, &slot.suffix),
@@ -320,7 +325,7 @@ impl Builder {
             fields.extend(own_fields.iter().map(|(field, _)| {
                 (
                     *field,
-                    self.ident(format!("_$machine_history_payload_{field}")),
+                    self.ident(Ident::new(&format!("_$machine_history_payload_{field}"))),
                 )
             }));
             let value = if let Some(value) =
@@ -341,7 +346,7 @@ impl Builder {
                 body: value,
             });
         }
-        let saved = self.ident("_$machine_history_child");
+        let saved = self.ident(Ident::new("_$machine_history_child"));
         let restored = self.expr(Expr::Match {
             scrutinee: Box::new(saved),
             arms,

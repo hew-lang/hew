@@ -313,12 +313,7 @@ impl Checker {
         // spurious unused-import warning when the supervisor is the only
         // reference.
         for child in &sd.children {
-            if let [(module, _), _, ..] = child.actor_type.segments.as_slice() {
-                let module = module.name.as_str();
-                if self.modules.contains(module) {
-                    self.note_import_use(module);
-                }
-            }
+            self.resolve_type_path(&child.actor_type);
         }
 
         // ── 2. Duplicate child names ─────────────────────────────────────────
@@ -959,7 +954,7 @@ impl Checker {
             self.record_local_resolution(p.name, &p.name_span);
             self.record_callable_formal_candidate(p.name);
             self.env.set_parameter_consume(
-                p.name.name.as_str(),
+                p.name,
                 p.is_consume
                     || (is_receiver && fd.consumes_self)
                     || fd
@@ -968,7 +963,7 @@ impl Checker {
                         .any(|attribute| attribute.name.as_str() == "intercept"),
             );
             if private_copy {
-                self.env.reinit_place(p.name.name.as_str(), &[]);
+                self.env.reinit_place(p.name, &[]);
             }
         }
     }
@@ -1328,7 +1323,7 @@ impl Checker {
                 self.effect_graph.confined.insert(id);
             }
         }
-        let parameters = self.declaration_parameter_heads(&identity);
+        let parameters = self.declaration_parameter_heads(ad.name);
         let actor_ty = self.named_ty_for_key(
             &identity,
             parameters.iter().copied().map(Ty::param).collect(),
@@ -1741,7 +1736,7 @@ impl Checker {
         for field in fields {
             let Some(consumed_at) = self
                 .env
-                .lookup_ref(field.name.name.as_str())
+                .lookup_ref(field.name)
                 .and_then(|binding| binding.consumed_at.clone())
             else {
                 continue;
@@ -1770,8 +1765,7 @@ impl Checker {
                 .iter()
                 .any(|info| info.name == field.name.name.as_str() && info.deferred);
             if deferred {
-                self.env
-                    .define_deferred_field(field.name.name.as_str(), field_ty);
+                self.env.define_deferred_field(field.name, field_ty);
             } else {
                 self.env.define(field.name, field_ty, true);
             }
@@ -1785,7 +1779,12 @@ impl Checker {
         let missing: Vec<_> = self
             .current_actor_fields
             .iter()
-            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .filter(|field| {
+                field.deferred
+                    && self
+                        .env
+                        .deferred_field_uninitialized(Ident::new(&field.name))
+            })
             .map(|field| (field.name.clone(), field.decl_span.clone()))
             .collect();
         for (name, decl_span) in missing {
@@ -1810,7 +1809,12 @@ impl Checker {
         let missing: Vec<_> = self
             .current_actor_fields
             .iter()
-            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .filter(|field| {
+                field.deferred
+                    && self
+                        .env
+                        .deferred_field_uninitialized(Ident::new(&field.name))
+            })
             .map(|field| field.name.clone())
             .collect();
         let method = method_key.rsplit("::").next().unwrap_or(method_key);
@@ -1842,7 +1846,7 @@ impl Checker {
                 field.deferred
                     && self
                         .env
-                        .deferred_field_id(&field.name)
+                        .deferred_field_id(Ident::new(&field.name))
                         .is_some_and(|id| conflicts.contains(&id))
             })
             .map(|field| (field.name.clone(), field.decl_span.clone()))
@@ -2743,7 +2747,7 @@ impl Checker {
             // The receiving handler owns the delivered message. Its fields
             // may move out of an aggregate parameter just as they may from a
             // local owner; ordinary function parameters retain borrow semantics.
-            self.env.set_parameter_consume(p.name.name.as_str(), true);
+            self.env.set_parameter_consume(p.name, true);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sig(&qualified_name) {

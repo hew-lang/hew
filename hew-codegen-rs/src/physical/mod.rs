@@ -826,7 +826,8 @@ fn primitive_repr(
         // A lambda actor's handle addresses an ordinary actor; only its
         // spelling differs, because it names no source nominal.
         actor
-            if actor.is_builtin(hew_types::BuiltinType::ActorHandle)
+            if actor.is_actor()
+                || actor.is_builtin(hew_types::BuiltinType::ActorHandle)
                 || actor.is_builtin(hew_types::BuiltinType::ActorFn) =>
         {
             PhysicalRepr::Integer { bits: pointer_bits }

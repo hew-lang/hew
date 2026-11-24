@@ -1209,7 +1209,9 @@ impl TypeFactService {
                 ResolvedTy::Named {
                     is_opaque: true, ..
                 } => {}
-                ResolvedTy::Named { head, args, .. } if head.builtin().is_some() => {
+                ResolvedTy::Named { head, args, .. }
+                    if head.is_actor() || head.builtin().is_some() =>
+                {
                     pending.extend(args);
                 }
                 ResolvedTy::Named { .. } => pending.extend(
@@ -1568,7 +1570,8 @@ impl TypeFactService {
                 let Some(definition) = self.context.types().of(*head) else {
                     // A builtin, or a memberless declaration such as a
                     // supervisor, derives nothing.
-                    if builtin.is_some()
+                    if head.is_actor()
+                        || builtin.is_some()
                         || head
                             .declaration(&self.context.defs)
                             .is_some_and(|id| self.context.declarations.contains_key(&id))

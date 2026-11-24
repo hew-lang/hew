@@ -80,7 +80,11 @@ impl Checker {
         // Reifying an extern as a callable performs the same authority check
         // as invoking it. An unsafe block may wrap that checked operation in
         // an ordinary callable, as an authored closure can.
-        self.require_unsafe(signature_key, span);
+        self.require_unsafe(
+            self.fn_sig_keys.get(signature_key).copied(),
+            signature_key,
+            span,
+        );
         let target = self.call_target_for_signature(signature_key);
         let lifecycle = match &target {
             super::CallTarget::Builtin { endpoint } => {
@@ -335,11 +339,15 @@ impl Checker {
             .cloned()
             .unwrap_or_default()
         {
-            let owned = self.env.lookup_ref(&name).is_some_and(|binding| {
-                self.place_read_transfers_ownership(&self.subst.resolve(&binding.ty))
-            });
+            let owned = self
+                .env
+                .lookup_ref(Ident::new(&name))
+                .is_some_and(|binding| {
+                    self.place_read_transfers_ownership(&self.subst.resolve(&binding.ty))
+                });
             if owned {
-                self.env.set_collection_borrow(&name, Some(loan.clone()));
+                self.env
+                    .set_collection_borrow(Ident::new(&name), Some(loan.clone()));
             }
         }
     }
@@ -350,12 +358,11 @@ impl Checker {
     /// is still owned after the pattern binds.
     pub(super) fn record_pattern_place_transfer(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: crate::env::PlacePath,
         ty: &Ty,
         span: &Span,
     ) {
-        let root = root.lexical_key();
         if !self.place_read_transfers_ownership(ty)
             || self.reject_borrowed_place_consumption(root, &path, span)
             || self.reject_partial_place_consumption(root, &path, span)
@@ -537,8 +544,9 @@ impl Checker {
                     // The move into the closure is this capture's use in the
                     // enclosing body; the body's own reads ran in the closure's
                     // environment, outside the enclosing loops.
-                    self.env.note_loop_use(&fact.name, &[], span, false);
-                    self.env.mark_moved(&fact.name, span.clone());
+                    self.env
+                        .note_loop_use(Ident::new(&fact.name), &[], span, false);
+                    self.env.mark_moved(Ident::new(&fact.name), span.clone());
                 }
             } else if fact.ty.has_inference_var() {
                 self.record_generic_requirement(
@@ -556,7 +564,10 @@ impl Checker {
                     "write `move ||` to transfer `{}` into the closure",
                     fact.name
                 )];
-                if self.env.place_borrows_parameter(&fact.name, &[]) {
+                if self
+                    .env
+                    .place_borrows_parameter(Ident::new(&fact.name), &[])
+                {
                     suggestions.push(format!(
                         "`{}` is a borrowed parameter with no owner to move; declare it `consume {}: {}`",
                         fact.name, fact.name, fact.ty.user_facing()
@@ -619,11 +630,10 @@ impl Checker {
     /// copy. An unresolved generic type does not prove absence of Clone.
     pub(super) fn reject_borrowed_parameter_mutation(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
     ) {
-        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnMutateBorrowed) {
             return;
         }
@@ -657,10 +667,9 @@ impl Checker {
     /// instantiation can acquire the frame's owner (spec §3.8.1).
     pub(super) fn reject_borrowed_generator_capture(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         span: &Span,
     ) {
-        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return;
         };
@@ -781,7 +790,7 @@ impl Checker {
         if let Some((root, path)) = &place {
             if self
                 .env
-                .lookup_ref(root)
+                .lookup_ref(*root)
                 .is_some_and(|binding| binding.is_moved)
             {
                 self.report_error(
@@ -790,7 +799,7 @@ impl Checker {
                     format!("cannot invoke consumed callable `{root}`"),
                 );
             } else {
-                self.report_place_use_after_move(root, path, &callee.1);
+                self.report_place_use_after_move(*root, path, &callee.1);
             }
         }
         match capabilities.call {
@@ -798,14 +807,14 @@ impl Checker {
             CallableCallMode::Var => {
                 let writable = place.as_ref().is_some_and(|(root, _)| {
                     self.env
-                        .lookup_ref(root)
+                        .lookup_ref(*root)
                         .is_some_and(|binding| binding.is_mutable)
                 });
                 if writable {
                     if !capabilities.clone {
                         if let Some((root, path)) = &place {
-                            if !self.is_current_closure_capture(root)
-                                && self.env.place_borrows_parameter(root, path)
+                            if !self.is_current_closure_capture(*root)
+                                && self.env.place_borrows_parameter(*root, path)
                             {
                                 self.report_error_with_suggestions(TypeErrorKind::OwnMutateBorrowed, &callee.1,
                                 format!("cannot invoke this mutable callable through borrowed parameter `{root}`: its type does not guarantee an independent clone"),
@@ -869,8 +878,7 @@ impl Checker {
         self.record_value_transfer(expr, span);
     }
 
-    fn is_current_closure_capture(&self, root: impl crate::env::LexicalName) -> bool {
-        let root = root.lexical_key();
+    fn is_current_closure_capture(&self, root: hew_parser::ast::Ident) -> bool {
         self.lambda_capture_depth.is_some_and(|capture_depth| {
             self.env
                 .lookup_ref_with_depth(root)
@@ -918,11 +926,10 @@ impl Checker {
     /// out of the place it destructures.
     pub(super) fn reject_borrowed_place_consumption(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
     ) -> bool {
-        let root = root.lexical_key();
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnConsumeBorrowed) {
             return true;
         }
@@ -959,7 +966,7 @@ impl Checker {
 
     pub(super) fn reject_prepared_task_access(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
         kind: TypeErrorKind,
@@ -969,13 +976,12 @@ impl Checker {
 
     pub(super) fn reject_prepared_input_access(
         &mut self,
-        root: impl crate::env::LexicalName,
+        root: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
         kind: TypeErrorKind,
         read: bool,
     ) -> bool {
-        let root = root.lexical_key();
         let Some(binding) = self.env.lookup_ref(root) else {
             return false;
         };

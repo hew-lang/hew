@@ -116,84 +116,96 @@ impl Checker {
             CallTarget::StaticTraitMethod {
                 declaring_trait,
                 method,
-            } => {
-                use super::super::dispatch_table::MethodOwner;
-                let receiver_ty = self
-                    .subst
-                    .resolve(call.receiver.as_ref()?)
-                    .substitute_type_params_parallel(actuals)
-                    .materialize_literal_defaults();
-                // Invocation receivers retain their inference-time types.
-                // Apply the settled numeric defaults before crossing the
-                // resolved-type boundary, just as finalized call arguments do.
-                let receiver = crate::ResolvedTy::from_ty(&receiver_ty).ok()?;
-                let trait_args: Vec<_> = self
-                    .effect_trait_args(site)?
-                    .iter()
-                    .map(|ty| {
-                        self.subst
-                            .resolve(ty)
-                            .substitute_type_params_parallel(actuals)
-                            .materialize_literal_defaults()
-                    })
-                    .collect();
-                let instantiate = |declaration| {
-                    let binders = self.impl_method_binders.get(&declaration)?;
-                    let arguments = binders.implementation_arguments(
-                        &self.defs,
-                        declaration,
-                        &receiver,
-                        &trait_args,
-                    )?;
-                    let mut applied = self.call_cleanup_substitutions(
-                        declaration,
-                        site,
-                        call.receiver.as_ref(),
-                        actuals,
-                    );
-                    applied.extend(
-                        binders
-                            .impl_params
-                            .iter()
-                            .copied()
-                            .zip(arguments.iter().map(crate::ResolvedTy::to_ty)),
-                    );
-                    Some((declaration, applied))
-                };
-                // Builtin receivers have no nominal dispatch instance. Use
-                // the checker's selected trait-slot identity for the exact
-                // receiver, then verify its impl binders as for nominals.
-                if Self::canonical_primitive_or_builtin_key(&receiver_ty).is_some() {
-                    let declaration = self.trait_impl_method_declaration(
-                        &receiver_ty,
-                        *declaring_trait,
-                        self.defs.name(*method).as_str(),
-                    )?;
-                    return instantiate(declaration);
-                }
-                let instance = receiver.impl_receiver_instance(&self.defs)?;
-                let mut candidates = self
-                    .dispatch
-                    .candidates(instance.nominal, Some(&instance), self.defs.name(*method))
-                    .into_iter()
-                    .filter_map(|(owner, declaration)| {
-                        let admitted = owner == MethodOwner::Trait(*declaring_trait)
-                            || (owner == MethodOwner::Inherent
-                                && self.structural_witnesses.iter().any(|witness| {
-                                    witness.self_type == instance.nominal
-                                        && witness.declaring_trait == *declaring_trait
-                                        && witness.method == *method
-                                        && witness.inherent == declaration
-                                }));
-                        if !admitted {
-                            return None;
-                        }
-                        instantiate(declaration)
-                    });
-                let selected = candidates.next()?;
-                candidates.next().is_none().then_some(selected)
-            }
+            } => self.instantiate_static_trait_target(
+                site,
+                *declaring_trait,
+                *method,
+                call.receiver.as_ref()?,
+                self.effect_trait_args(site)?,
+                actuals,
+            ),
             _ => None,
         }
+    }
+
+    pub(in crate::check) fn instantiate_static_trait_target(
+        &self,
+        site: &EffectCallSite,
+        declaring_trait: crate::DefId,
+        method: crate::DefId,
+        raw_receiver: &Ty,
+        raw_trait_args: &[Ty],
+        actuals: &Actuals,
+    ) -> Option<(crate::DefId, Actuals)> {
+        use super::super::dispatch_table::MethodOwner;
+        let receiver_ty = self
+            .subst
+            .resolve(raw_receiver)
+            .substitute_type_params_parallel(actuals)
+            .materialize_literal_defaults();
+        // Invocation receivers retain their inference-time types.
+        // Apply the settled numeric defaults before crossing the
+        // resolved-type boundary, just as finalized call arguments do.
+        let receiver = crate::ResolvedTy::from_ty(&receiver_ty).ok()?;
+        let trait_args: Vec<_> = raw_trait_args
+            .iter()
+            .map(|ty| {
+                self.subst
+                    .resolve(ty)
+                    .substitute_type_params_parallel(actuals)
+                    .materialize_literal_defaults()
+            })
+            .collect();
+        let instantiate = |declaration| {
+            let binders = self.impl_method_binders.get(&declaration)?;
+            let arguments = binders.implementation_arguments(
+                &self.defs,
+                declaration,
+                &receiver,
+                &trait_args,
+            )?;
+            let mut applied =
+                self.call_cleanup_substitutions(declaration, site, Some(raw_receiver), actuals);
+            applied.extend(
+                binders
+                    .impl_params
+                    .iter()
+                    .copied()
+                    .zip(arguments.iter().map(crate::ResolvedTy::to_ty)),
+            );
+            Some((declaration, applied))
+        };
+        // Builtin receivers have no nominal dispatch instance. Use
+        // the checker's selected trait-slot identity for the exact
+        // receiver, then verify its impl binders as for nominals.
+        if Self::canonical_primitive_or_builtin_key(&receiver_ty).is_some() {
+            let declaration = self.trait_impl_method_declaration(
+                &receiver_ty,
+                declaring_trait,
+                self.defs.name(method).as_str(),
+            )?;
+            return instantiate(declaration);
+        }
+        let instance = receiver.impl_receiver_instance(&self.defs)?;
+        let mut candidates = self
+            .dispatch
+            .candidates(instance.nominal, Some(&instance), self.defs.name(method))
+            .into_iter()
+            .filter_map(|(owner, declaration)| {
+                let admitted = owner == MethodOwner::Trait(declaring_trait)
+                    || (owner == MethodOwner::Inherent
+                        && self.structural_witnesses.iter().any(|witness| {
+                            witness.self_type == instance.nominal
+                                && witness.declaring_trait == declaring_trait
+                                && witness.method == method
+                                && witness.inherent == declaration
+                        }));
+                if !admitted {
+                    return None;
+                }
+                instantiate(declaration)
+            });
+        let selected = candidates.next()?;
+        candidates.next().is_none().then_some(selected)
     }
 }

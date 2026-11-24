@@ -656,3 +656,71 @@ fn resolved_impl_call_refuses_missing_or_poisoned_result_facts() {
         assert!(output.into_result().is_err());
     }
 }
+
+#[test]
+fn generic_dotted_builtin_constructors_and_variants_lower_without_expr_rewrites() {
+    let (output, tco) = typecheck_and_lower(
+        r"fn main() -> i64 {
+    let v1: Vec<i64> = Vec.new<i64>();
+    let v2 = Vec<i64>.new();
+    let m1: HashMap<string, i64> = HashMap.new<string, i64>();
+    let m2 = HashMap<string, i64>.new();
+    let s1: HashSet<i64> = HashSet.new<i64>();
+    let s2 = HashSet<i64>.new();
+    let r1: Rc<i64> = Rc.new(5);
+    let o1: Option<i64> = Option<i64>.Some(7);
+    let res1: Result<i64, string> = Result<i64, string>.Ok(9);
+    let ox = match o1 { .Some(x) => x, .None => 0 };
+    let rx = match res1 { .Ok(x) => x, .Err(_) => 0 };
+    v1.len() + v2.len() + m1.len() + m2.len() + s1.len() + s2.len() + r1.get() + ox + rx
+}
+",
+    );
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+
+    let (unannotated, unannotated_tco) = typecheck_and_lower(
+        r"fn main() -> i64 {
+    let o: Option<i64> = Option.Some(7);
+    let r: Result<i64, string> = Result.Ok(9);
+    let ox = match o { .Some(x) => x, .None => 0 };
+    let rx = match r { .Ok(x) => x, .Err(_) => 0 };
+    ox + rx
+}
+",
+    );
+    assert!(
+        unannotated_tco.errors.is_empty(),
+        "unannotated variant type errors: {:#?}",
+        unannotated_tco.errors
+    );
+    assert!(
+        unannotated.diagnostics.is_empty(),
+        "unexpected HIR diagnostics for Option.Some/Result.Ok: {:#?}",
+        unannotated.diagnostics
+    );
+
+    // Calling a unit variant with generic apply suffix reports shape mismatch,
+    // not a checker boundary violation.
+    let parsed = hew_parser::parse("fn main() -> Option<i64> { Option<i64>.None(1) }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    let bad = lower_program(
+        &parsed.program,
+        &checked,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        bad.diagnostics.iter().any(|diag| matches!(
+            &diag.kind,
+            HirDiagnosticKind::EnumVariantConstructorShapeMismatch { .. }
+        )),
+        "expected EnumVariantConstructorShapeMismatch, got {:#?}",
+        bad.diagnostics
+    );
+}

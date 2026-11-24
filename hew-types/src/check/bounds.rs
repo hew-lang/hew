@@ -299,6 +299,7 @@ impl Checker {
                     .projection_for_id(param)
                     .map(|(base, trait_id, associated)| Ty::AssocType {
                         base: Box::new(Ty::param(base)),
+                        trait_id,
                         trait_name: self.defs.path(trait_id).into(),
                         assoc_name: associated.as_str().into(),
                     })
@@ -322,16 +323,14 @@ impl Checker {
         }
         let Ty::AssocType {
             base,
-            trait_name,
+            trait_id,
             assoc_name,
+            ..
         } = ty
         else {
             return Vec::new();
         };
-        let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
-            return Vec::new();
-        };
-        self.declared_associated_bounds(base, trait_id, Symbol::intern(assoc_name))
+        self.declared_associated_bounds(base, *trait_id, Symbol::intern(assoc_name))
             .into_iter()
             .flat_map(|bound| self.applied_trait_closure(&bound, Some(ty)))
             .collect()
@@ -1205,18 +1204,6 @@ impl Checker {
             } if args.is_empty() => Some(*param),
             _ => None,
         }
-    }
-
-    /// The declared trait a rendered callee qualifier (`Display` in
-    /// `Display::fmt`) names in the current file.
-    ///
-    /// TRANSITION(A1c3): WHY callees still arrive as rendered `Trait::method`
-    /// strings. WHEN calls resolve their written path through `Scope`, the
-    /// qualifier is that resolution. WHAT: callee `Path`s.
-    pub(in crate::check) fn trait_spelled_here(&mut self, spelling: &str) -> Option<crate::DefId> {
-        let path = hew_parser::ast::Path::single(Ident::new(spelling), 0..0);
-        self.resolve_trait_path(&path)
-            .filter(|trait_id| self.trait_info(*trait_id).is_some())
     }
 
     /// Record the active impl block's conformance: `trait_ref` for its

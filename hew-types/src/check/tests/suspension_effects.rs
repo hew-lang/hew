@@ -1501,3 +1501,183 @@ fn main() {
         output.errors
     );
 }
+
+#[test]
+fn tuple_index_preserves_precise_effects_and_send_soundness() {
+    let effects_source = "fn pure() -> i64 { 1 }\n\
+                          fn slow() -> i64 { sleep(1ms); 2 }\n\
+                          fn main() {\n\
+                              let pair = (pure, slow);\n\
+                              let a = (pair.0)();\n\
+                              let b = (pair.1)();\n\
+                          }\n";
+    assert_call_effect(effects_source, "pair.0)()", SuspensionEffect::Never);
+    assert_call_effect(effects_source, "pair.1)()", SuspensionEffect::MaySuspend);
+
+    let reassigned_reject = "fn pure() -> i64 { 1 }\n\
+                             fn slow() -> i64 { sleep(1ms); 2 }\n\
+                             fn main() {\n\
+                                 var pair: (fn() -> i64, fn() -> i64) = (pure, pure);\n\
+                                 pair.1 = slow;\n\
+                             }\n";
+    let reject_output = check_source(reassigned_reject);
+    assert!(
+        reject_output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("suspends via `sleep(...)`")),
+        "{:#?}",
+        reject_output.errors
+    );
+
+    let captured_send_ok = "fn main() {\n\
+                                let pair: (fn() -> i64, fn() -> i64) = (|| 1, || 2);\n\
+                                let task = fork { (pair.0)() };\n\
+                                let _ = await task;\n\
+                            }\n";
+    let captured_ok_output = check_source(captured_send_ok);
+    assert!(
+        captured_ok_output.errors.is_empty(),
+        "{:#?}",
+        captured_ok_output.errors
+    );
+
+    let send_ok = "fn main() {\n\
+                       let rc = Rc.new(1);\n\
+                       let pair = (|| 1, move || { let _ = rc; 2 });\n\
+                       let first = pair.0;\n\
+                       let task = fork { first() };\n\
+                       let _ = await task;\n\
+                   }\n";
+    let ok_output = check_source(send_ok);
+    assert!(ok_output.errors.is_empty(), "{:#?}", ok_output.errors);
+
+    let send_fail = send_ok.replace("pair.0", "pair.1");
+    let fail_output = check_source(&send_fail);
+    assert!(
+        !fail_output.errors.is_empty()
+            && fail_output
+                .errors
+                .iter()
+                .all(|error| error.kind == crate::error::TypeErrorKind::InvalidSend),
+        "expected only InvalidSend when invoking non-Send tuple element inside fork: {:#?}",
+        fail_output.errors
+    );
+
+    let reassigned_send_ok = "fn main() {\n\
+                                  let rc = Rc.new(1);\n\
+                                  var pair: (fn() -> i64, fn() -> i64) = (|| 1, move || { let _ = rc; 2 });\n\
+                                  pair.1 = || 3;\n\
+                                  let repaired = pair.1;\n\
+                                  let task = fork { repaired() };\n\
+                                  let _ = await task;\n\
+                              }\n";
+    let repaired_output = check_source(reassigned_send_ok);
+    assert!(
+        repaired_output.errors.is_empty(),
+        "{:#?}",
+        repaired_output.errors
+    );
+
+    let reassigned_sibling_preserved = "fn main() {\n\
+                                            let rc = Rc.new(1);\n\
+                                            var pair: (fn() -> i64, fn() -> i64) = (|| 1, || 2);\n\
+                                            pair.0 = move || { let _ = rc; 3 };\n\
+                                            let unaffected = pair.1;\n\
+                                            let task = fork { unaffected() };\n\
+                                            let _ = await task;\n\
+                                        }\n";
+    let sibling_output = check_source(reassigned_sibling_preserved);
+    assert!(
+        sibling_output.errors.is_empty(),
+        "{:#?}",
+        sibling_output.errors
+    );
+
+    let reassigned_tainted_slot = reassigned_sibling_preserved.replace("pair.1", "pair.0");
+    let tainted_output = check_source(&reassigned_tainted_slot);
+    assert!(
+        !tainted_output.errors.is_empty()
+            && tainted_output
+                .errors
+                .iter()
+                .all(|error| error.kind == crate::error::TypeErrorKind::InvalidSend),
+        "expected InvalidSend when invoking reassigned non-Send tuple slot inside fork: {:#?}",
+        tainted_output.errors
+    );
+}
+
+#[test]
+fn nested_generic_iterator_adapters_resolve_call_writebacks_soundly() {
+    let pure_source = "trait Cursor {\n\
+                           type Item;\n\
+                           fn next(var self) -> Option<Self.Item>;\n\
+                       }\n\
+                       type Leaf {\n\
+                           remaining: i64;\n\
+                       }\n\
+                       impl Cursor for Leaf {\n\
+                           type Item = i64;\n\
+                           fn next(var self) -> Option<i64> {\n\
+                               if self.remaining <= 0 { .None } else { self.remaining -= 1; .Some(self.remaining) }\n\
+                           }\n\
+                       }\n\
+                       type Map<I, A, B> {\n\
+                           iter: I;\n\
+                           f: fn(A) -> B;\n\
+                       }\n\
+                       impl<I, A, B> Cursor for Map<I, A, B> where I: Cursor<Item = A> {\n\
+                           type Item = B;\n\
+                           fn next(var self) -> Option<B> {\n\
+                               match self.iter.next() {\n\
+                                   .Some(x) => .Some((self.f)(x)),\n\
+                                   .None => .None,\n\
+                               }\n\
+                           }\n\
+                       }\n\
+                       fn collect<I, A>(consume it: I) -> Vec<A> where I: Cursor<Item = A> {\n\
+                           var out: Vec<A> = [];\n\
+                           var iter = it;\n\
+                           loop {\n\
+                               match iter.next() {\n\
+                                   .Some(x) => out.push(x),\n\
+                                   .None => break,\n\
+                               }\n\
+                           }\n\
+                           out\n\
+                       }\n\
+                       fn pure_nested() -> Vec<i64> {\n\
+                           let base = Leaf { remaining: 2 };\n\
+                           let inner = Map { iter: base, f: |x: i64| x + 1 };\n\
+                           let outer = Map { iter: inner, f: |x: i64| x * 2 };\n\
+                           collect(outer)\n\
+                       }\n\
+                       fn main() {\n\
+                           let f: fn() -> Vec<i64> = pure_nested;\n\
+                       }\n";
+    let pure_output = check_source(pure_source);
+    assert!(pure_output.errors.is_empty(), "{:#?}", pure_output.errors);
+
+    let suspending_source = pure_source.replace("x + 1", "{ sleep(1ms); x + 1 }");
+    let suspending_output = check_source(&suspending_source);
+    assert!(
+        suspending_output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("suspends via `sleep(...)`")),
+        "{:#?}",
+        suspending_output.errors
+    );
+}
+
+#[test]
+fn irrelevant_growing_generic_with_callable_keeps_finite_origin_environment() {
+    let source = "fn recurse<T>(n: i64, f: fn() -> i64) -> i64 {\n\
+                      if n > 0 { recurse<Vec<T>>(n - 1, f) } else { f() }\n\
+                  }\n\
+                  fn main() {\n\
+                      let g: fn() -> i64 = || recurse<i64>(1, || 42);\n\
+                  }\n";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

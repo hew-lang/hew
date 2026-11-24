@@ -4197,47 +4197,44 @@ fn await_stream_recv_int_element_admitted() {
 
 // ── WASM gate: std::crypto native-only surfaces ─────────────────────────────
 
-/// `std::crypto::encrypt` module calls are rejected on wasm32 with a structured
-/// `PlatformLimitation` diagnostic.  The encrypt and sign modules are backed by
-/// native-only staticlib companion crates absent from the wasm32 link set.
+/// `std::crypto::encrypt` module calls are admitted on wasm32 now that
+/// AES-256-GCM runs on pure-Rust crates across native and `wasm32-wasip1`.
 #[test]
-fn wasm_rejects_crypto_encrypt_module_calls() {
-    // The gate fires at the method call level; argument types need not be valid.
+fn wasm_admits_crypto_encrypt_module_calls() {
     let output = typecheck_inline_wasm(
         "import std.crypto.encrypt;\n\
-         fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
+         fn main() {\n\
+             let _ = encrypt.seal(bytes [0x61], \"hello\");\n\
+             let _ = encrypt.open(bytes [0x61], bytes [0x62]);\n\
+         }",
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std.crypto.encrypt")
-        }),
-        "expected PlatformLimitation for encrypt module call on wasm32, got: {:#?}",
+        output.errors.is_empty(),
+        "expected encrypt module calls to be admitted on wasm32, got: {:#?}",
         output.errors
     );
 }
 
-/// `std::crypto::sign` module calls are rejected on wasm32 with a structured
-/// `PlatformLimitation` diagnostic.
+/// `std::crypto::sign` module calls are admitted on wasm32 now that Ed25519
+/// runs on pure-Rust crates across native and `wasm32-wasip1`.
 #[test]
-fn wasm_rejects_crypto_sign_module_calls() {
+fn wasm_admits_crypto_sign_module_calls() {
     let output = typecheck_inline_wasm(
-        r"
+        r#"
         import std.crypto.sign;
 
         fn main() {
-            let key = sign.from_seed(sign.generate_seed());
+            let key = sign.from_seed(sign.generate_seed()).expect("seed");
             let msg = bytes [0x01, 0x02, 0x03];
-            let _ = sign.verify(msg, msg, msg);
+            let sig = key.sign(msg);
+            let _ = sign.verify(msg, sig, key.public_key());
+            key.close();
         }
-        ",
+        "#,
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
-                && e.message.contains("std.crypto.sign")
-        }),
-        "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
+        output.errors.is_empty(),
+        "expected sign module calls to be admitted on wasm32, got: {:#?}",
         output.errors
     );
 }

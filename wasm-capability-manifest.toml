@@ -809,47 +809,33 @@ id = "crypto-random"
 generate = "refuse"
 generate_functions = ["std.crypto.hash.random_bytes"]
 generate_endpoints = ["hew_random_bytes_hew", "hew_random_bytes"]
-enum_variant = "CryptoRandom"
 label = "std.crypto.hash.random_bytes operations"
 prose_label = "`std.crypto.hash.random_bytes`"
-reason = "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Implemented via OS entropy on native targets and WASI `random_get` (`getrandom`) on `wasm32-wasip1`; fails closed when entropy is unavailable"
 categories = ["stdlib", "crypto"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(crypto-random):"
 
 [[feature]]
 id = "crypto-encrypt"
 generate = "refuse"
 generate_functions = ["std.crypto.encrypt.seal"]
 generate_endpoints = ["hew_encrypt_try_seal_base64_hew", "hew_encrypt_seal"]
-enum_variant = "CryptoEncrypt"
 label = "std.crypto.encrypt operations"
 prose_label = "`std.crypto.encrypt.*`"
-reason = "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "Native-only AES-256-GCM companion crate; not linked for wasm32"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Implemented in pure Rust (`aes-gcm` + `getrandom`) across native and `wasm32-wasip1`"
 categories = ["stdlib", "crypto"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(crypto-encrypt):"
-native_only_modules = ["std.crypto.encrypt"]
 
 [[feature]]
 id = "crypto-sign"
-enum_variant = "CryptoSign"
 label = "std.crypto.sign operations"
 prose_label = "`std.crypto.sign.*`"
-reason = "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "Native-only Ed25519 companion crate; not linked for wasm32"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Implemented in pure Rust (`ed25519-dalek` + `getrandom`) across native and `wasm32-wasip1`"
 categories = ["stdlib", "crypto"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(crypto-sign):"
-native_only_modules = ["std.crypto.sign"]
 
 [[feature]]
 id = "unseeded-random"
@@ -954,14 +940,6 @@ marker_disposition = "non-source"
 non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
-id = "crypto-random"
-gap = "`hash.random_bytes` parity"
-blocker = "Secure wasm32 entropy source and explicit capability classification"
-tracking_label = "WASM-TODO(crypto-random):"
-marker_disposition = "non-source"
-non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
-
-[[backlog]]
 id = "process-execution"
 gap = "Process execution parity"
 blocker = "Explicit host capability model for subprocesses"
@@ -1010,20 +988,6 @@ id = "cooperative-yield"
 gap = "Stack-safe cooperative actor yielding"
 blocker = "A non-recursive WASM scheduler driver that cannot suppress progress at the nesting cap"
 tracking_label = "WASM-TODO(cooperative-yield):"
-
-[[backlog]]
-id = "crypto-encrypt"
-gap = "AES-256-GCM encryption parity"
-blocker = "A wasm32-compatible authenticated-encryption implementation and ecosystem-FFI link path"
-tracking_label = "WASM-TODO(crypto-encrypt):"
-
-[[backlog]]
-id = "crypto-sign"
-gap = "Ed25519 signing parity"
-blocker = "A wasm32-compatible key generation, signing, and verification implementation"
-tracking_label = "WASM-TODO(crypto-sign):"
-marker_disposition = "non-source"
-non_source_reason = "The capability is rejected by generated checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "diagnostic-source-map"

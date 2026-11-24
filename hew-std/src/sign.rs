@@ -21,8 +21,7 @@
 //! never written to messages, and a key's memory is zeroed when it is freed.
 use ed25519_dalek::hazmat::{raw_sign, ExpandedSecretKey};
 use ed25519_dalek::pkcs8::DecodePrivateKey;
-use ed25519_dalek::{Digest, Sha512, SigningKey, VerifyingKey};
-use ring::signature::{UnparsedPublicKey, ED25519};
+use ed25519_dalek::{Digest, Sha512, Signature, SigningKey, VerifyingKey};
 use zeroize::Zeroizing;
 
 type BytesTriple = hew_runtime::bytes::BytesTriple;
@@ -216,7 +215,10 @@ pub unsafe extern "C" fn hew_ed25519_key_from_pkcs8(
 ) -> *mut Ed25519Key {
     // SAFETY: forwarded caller contract.
     match SigningKey::from_pkcs8_der(unsafe { view(document) }) {
-        Ok(key) => into_handle(key_from_expanded(expand_seed(&key.to_bytes()))),
+        Ok(key) => {
+            let seed = Zeroizing::new(key.to_bytes());
+            into_handle(key_from_expanded(expand_seed(&seed)))
+        }
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -293,11 +295,16 @@ pub unsafe extern "C" fn hew_ed25519_verify_hew(
     // SAFETY: forwarded caller contract for all three views.
     let (message, signature, public_key) =
         unsafe { (view(message), view(signature), view(public_key)) };
-    i32::from(
-        UnparsedPublicKey::new(&ED25519, public_key)
-            .verify(message, signature)
-            .is_ok(),
-    )
+    let Ok(public_key_bytes) = <[u8; ED25519_PUBLIC_LEN]>::try_from(public_key) else {
+        return 0;
+    };
+    let Ok(verifying_key) = VerifyingKey::from_bytes(&public_key_bytes) else {
+        return 0;
+    };
+    let Ok(sig) = Signature::from_slice(signature) else {
+        return 0;
+    };
+    i32::from(verifying_key.verify_strict(message, &sig).is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +465,7 @@ mod tests {
         assert_eq!(check(&stored), EXPANDED_OK);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn ring_pkcs8_document_loads_and_signs_verifiably() {
         use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -468,6 +476,42 @@ mod tests {
         let key = Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const doc) }).unwrap();
         assert_eq!(key.public(), ring_key.public_key().as_ref());
         assert_eq!(key.sign(b"hew"), ring_key.sign(b"hew").as_ref());
+        let garbage = triple(b"not a document");
+        assert!(Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const garbage) }).is_none());
+    }
+
+    #[test]
+    fn pkcs8_v1_and_v2_documents_load_and_sign_verifiably() {
+        // RFC 8410 §10.3 PKCS#8 v1 and v2 DER encodings for the same key.
+        let expected_seed = hex("d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842");
+        let expected_pub = hex("19bf44096984cdfe8541bac167dc3b96c85086aa30b6b6cb0c5c38ad703166e1");
+        let pkcs8_v1 = hex(
+            "302e020100300506032b657004220420d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842",
+        );
+        let mut pkcs8_v2 = hex(
+            "3072020101300506032b657004220420d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842a01f301d060a2a864886f70d01090914310f0c0d437572646c652043686169727381210019bf44096984cdfe8541bac167dc3b96c85086aa30b6b6cb0c5c38ad703166e1",
+        );
+
+        let seed_key = Key::from_seed(&expected_seed).unwrap();
+        let v1_doc = triple(&pkcs8_v1);
+        let v1_key =
+            Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const v1_doc) }).unwrap();
+        let v2_doc = triple(&pkcs8_v2);
+        let v2_key =
+            Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const v2_doc) }).unwrap();
+
+        assert_eq!(v1_key.public(), expected_pub);
+        assert_eq!(v2_key.public(), expected_pub);
+        assert_eq!(v1_key.sign(b"hew"), seed_key.sign(b"hew"));
+        assert_eq!(v2_key.sign(b"hew"), seed_key.sign(b"hew"));
+        assert!(verify(b"hew", &v2_key.sign(b"hew"), &expected_pub));
+
+        // Flip a bit in the embedded public key of the v2 document; it must be refused.
+        let last = pkcs8_v2.len() - 1;
+        pkcs8_v2[last] ^= 0x01;
+        let bad_v2 = triple(&pkcs8_v2);
+        assert!(Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const bad_v2) }).is_none());
+
         let garbage = triple(b"not a document");
         assert!(Key::checked(unsafe { hew_ed25519_key_from_pkcs8(&raw const garbage) }).is_none());
     }
@@ -489,5 +533,24 @@ mod tests {
         }
         assert!(!verify(&hex(message), &signed, &hex(public_key)));
         assert!(!verify(&hex(message), &signed[..63], &hex(public_key)));
+    }
+
+    #[test]
+    fn verify_rejects_small_order_keys_and_points() {
+        // Identity point (order 1): [1, 0, ..., 0]. With A = O, R = O, S = 0,
+        // the unstrict verification equation [0]B = O + [k]O holds trivially;
+        // strict verification must refuse it.
+        let mut identity_point = [0u8; ED25519_PUBLIC_LEN];
+        identity_point[0] = 1;
+        let mut forged_sig = [0u8; ED25519_SIG_LEN];
+        forged_sig[..32].copy_from_slice(&identity_point);
+        assert!(!verify(b"hew", &forged_sig, &identity_point));
+
+        // Non-canonical zero-filled public key/signature must also be refused.
+        assert!(!verify(
+            b"hew",
+            &[0u8; ED25519_SIG_LEN],
+            &[0u8; ED25519_PUBLIC_LEN]
+        ));
     }
 }

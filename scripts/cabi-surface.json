@@ -4952,27 +4952,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_constant_time_eq( *const u8, *const u8, usize) -> i32"
+        "native": "fn hew_constant_time_eq( *const u8, *const u8, usize) -> i32",
+        "wasm32-wasip1": "fn hew_constant_time_eq( *const u8, *const u8, usize) -> i32"
       },
       "symbol": "hew_constant_time_eq"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_constant_time_eq_hew( *const BytesTriple, *const BytesTriple, ) -> i32"
+        "native": "fn hew_constant_time_eq_hew( *const BytesTriple, *const BytesTriple, ) -> i32",
+        "wasm32-wasip1": "fn hew_constant_time_eq_hew( *const BytesTriple, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_constant_time_eq_hew"
     },
@@ -6992,248 +6996,286 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_expanded_check( *const BytesTriple) -> i32"
+        "native": "fn hew_ed25519_expanded_check( *const BytesTriple) -> i32",
+        "wasm32-wasip1": "fn hew_ed25519_expanded_check( *const BytesTriple) -> i32"
       },
       "symbol": "hew_ed25519_expanded_check"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_expanded( *const Ed25519Key) -> BytesTriple"
+        "native": "fn hew_ed25519_key_expanded( *const Ed25519Key) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_ed25519_key_expanded( *const Ed25519Key) -> BytesTriple"
       },
       "symbol": "hew_ed25519_key_expanded"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_free( *mut Ed25519Key)"
+        "native": "fn hew_ed25519_key_free( *mut Ed25519Key)",
+        "wasm32-wasip1": "fn hew_ed25519_key_free( *mut Ed25519Key)"
       },
       "symbol": "hew_ed25519_key_free"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_from_expanded( *const BytesTriple, ) -> *mut Ed25519Key"
+        "native": "fn hew_ed25519_key_from_expanded( *const BytesTriple, ) -> *mut Ed25519Key",
+        "wasm32-wasip1": "fn hew_ed25519_key_from_expanded( *const BytesTriple, ) -> *mut Ed25519Key"
       },
       "symbol": "hew_ed25519_key_from_expanded"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_from_pkcs8( *const BytesTriple, ) -> *mut Ed25519Key"
+        "native": "fn hew_ed25519_key_from_pkcs8( *const BytesTriple, ) -> *mut Ed25519Key",
+        "wasm32-wasip1": "fn hew_ed25519_key_from_pkcs8( *const BytesTriple, ) -> *mut Ed25519Key"
       },
       "symbol": "hew_ed25519_key_from_pkcs8"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_from_seed( *const BytesTriple) -> *mut Ed25519Key"
+        "native": "fn hew_ed25519_key_from_seed( *const BytesTriple) -> *mut Ed25519Key",
+        "wasm32-wasip1": "fn hew_ed25519_key_from_seed( *const BytesTriple) -> *mut Ed25519Key"
       },
       "symbol": "hew_ed25519_key_from_seed"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_is_valid( *const Ed25519Key) -> bool"
+        "native": "fn hew_ed25519_key_is_valid( *const Ed25519Key) -> bool",
+        "wasm32-wasip1": "fn hew_ed25519_key_is_valid( *const Ed25519Key) -> bool"
       },
       "symbol": "hew_ed25519_key_is_valid"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_public( *const Ed25519Key) -> BytesTriple"
+        "native": "fn hew_ed25519_key_public( *const Ed25519Key) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_ed25519_key_public( *const Ed25519Key) -> BytesTriple"
       },
       "symbol": "hew_ed25519_key_public"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_key_sign( *const Ed25519Key, *const BytesTriple, ) -> BytesTriple"
+        "native": "fn hew_ed25519_key_sign( *const Ed25519Key, *const BytesTriple, ) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_ed25519_key_sign( *const Ed25519Key, *const BytesTriple, ) -> BytesTriple"
       },
       "symbol": "hew_ed25519_key_sign"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ed25519_verify_hew( *const BytesTriple, *const BytesTriple, *const BytesTriple, ) -> i32"
+        "native": "fn hew_ed25519_verify_hew( *const BytesTriple, *const BytesTriple, *const BytesTriple, ) -> i32",
+        "wasm32-wasip1": "fn hew_ed25519_verify_hew( *const BytesTriple, *const BytesTriple, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_ed25519_verify_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_last_open_error_code() -> i32"
+        "native": "fn hew_encrypt_last_open_error_code() -> i32",
+        "wasm32-wasip1": "fn hew_encrypt_last_open_error_code() -> i32"
       },
       "symbol": "hew_encrypt_last_open_error_code"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_last_seal_error_code() -> i32"
+        "native": "fn hew_encrypt_last_seal_error_code() -> i32",
+        "wasm32-wasip1": "fn hew_encrypt_last_seal_error_code() -> i32"
       },
       "symbol": "hew_encrypt_last_seal_error_code"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_must_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
+        "native": "fn hew_encrypt_must_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_encrypt_must_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
       },
       "symbol": "hew_encrypt_must_open_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_open( *const u8, usize, *const u8, usize, *mut u8, usize, ) -> usize"
+        "native": "fn hew_encrypt_open( *const u8, usize, *const u8, usize, *mut u8, usize, ) -> usize",
+        "wasm32-wasip1": "fn hew_encrypt_open( *const u8, usize, *const u8, usize, *mut u8, usize, ) -> usize"
       },
       "symbol": "hew_encrypt_open"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
+        "native": "fn hew_encrypt_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_encrypt_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
       },
       "symbol": "hew_encrypt_open_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_seal( *const u8, usize, *const c_char, *mut u8, usize, ) -> usize"
+        "native": "fn hew_encrypt_seal( *const u8, usize, *const c_char, *mut u8, usize, ) -> usize",
+        "wasm32-wasip1": "fn hew_encrypt_seal( *const u8, usize, *const c_char, *mut u8, usize, ) -> usize"
       },
       "symbol": "hew_encrypt_seal"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_try_open( *const u8, usize, *const u8, usize, *mut HewEncryptError, ) -> *mut c_char"
+        "native": "fn hew_encrypt_try_open( *const u8, usize, *const u8, usize, *mut HewEncryptError, ) -> *mut c_char",
+        "wasm32-wasip1": "fn hew_encrypt_try_open( *const u8, usize, *const u8, usize, *mut HewEncryptError, ) -> *mut c_char"
       },
       "symbol": "hew_encrypt_try_open"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_try_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
+        "native": "fn hew_encrypt_try_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_encrypt_try_open_hew( *const BytesTriple, *const BytesTriple, ) -> *mut HewString"
       },
       "symbol": "hew_encrypt_try_open_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_encrypt_try_seal_base64_hew( *const BytesTriple, *const HewString, ) -> *mut HewString"
+        "native": "fn hew_encrypt_try_seal_base64_hew( *const BytesTriple, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_encrypt_try_seal_base64_hew( *const BytesTriple, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_encrypt_try_seal_base64_hew"
     },
@@ -9782,27 +9824,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hmac_sha256( *const u8, usize, *const u8, usize, *mut u8, )"
+        "native": "fn hew_hmac_sha256( *const u8, usize, *const u8, usize, *mut u8, )",
+        "wasm32-wasip1": "fn hew_hmac_sha256( *const u8, usize, *const u8, usize, *mut u8, )"
       },
       "symbol": "hew_hmac_sha256"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hmac_sha256_hew( *const BytesTriple, *const BytesTriple, ) -> BytesTriple"
+        "native": "fn hew_hmac_sha256_hew( *const BytesTriple, *const BytesTriple, ) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_hmac_sha256_hew( *const BytesTriple, *const BytesTriple, ) -> BytesTriple"
       },
       "symbol": "hew_hmac_sha256_hew"
     },
@@ -15864,27 +15910,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_random_bytes( *mut u8, usize)"
+        "native": "fn hew_random_bytes( *mut u8, usize)",
+        "wasm32-wasip1": "fn hew_random_bytes( *mut u8, usize)"
       },
       "symbol": "hew_random_bytes"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_random_bytes_hew( i64) -> BytesTriple"
+        "native": "fn hew_random_bytes_hew( i64) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_random_bytes_hew( i64) -> BytesTriple"
       },
       "symbol": "hew_random_bytes_hew"
     },
@@ -15920,14 +15970,16 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_random_last_error_code() -> i32"
+        "native": "fn hew_random_last_error_code() -> i32",
+        "wasm32-wasip1": "fn hew_random_last_error_code() -> i32"
       },
       "symbol": "hew_random_last_error_code"
     },
@@ -18271,79 +18323,91 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha256( *const u8, usize, *mut u8)"
+        "native": "fn hew_sha256( *const u8, usize, *mut u8)",
+        "wasm32-wasip1": "fn hew_sha256( *const u8, usize, *mut u8)"
       },
       "symbol": "hew_sha256"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha256_hew( *const BytesTriple) -> BytesTriple"
+        "native": "fn hew_sha256_hew( *const BytesTriple) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_sha256_hew( *const BytesTriple) -> BytesTriple"
       },
       "symbol": "hew_sha256_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha384( *const u8, usize, *mut u8)"
+        "native": "fn hew_sha384( *const u8, usize, *mut u8)",
+        "wasm32-wasip1": "fn hew_sha384( *const u8, usize, *mut u8)"
       },
       "symbol": "hew_sha384"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha384_hew( *const BytesTriple) -> BytesTriple"
+        "native": "fn hew_sha384_hew( *const BytesTriple) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_sha384_hew( *const BytesTriple) -> BytesTriple"
       },
       "symbol": "hew_sha384_hew"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha512( *const u8, usize, *mut u8)"
+        "native": "fn hew_sha512( *const u8, usize, *mut u8)",
+        "wasm32-wasip1": "fn hew_sha512( *const u8, usize, *mut u8)"
       },
       "symbol": "hew_sha512"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_sha512_hew( *const BytesTriple) -> BytesTriple"
+        "native": "fn hew_sha512_hew( *const BytesTriple) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_sha512_hew( *const BytesTriple) -> BytesTriple"
       },
       "symbol": "hew_sha512_hew"
     },

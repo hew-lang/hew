@@ -6,7 +6,7 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (388 packages)
+  Apache License 2.0 (389 packages)
   MIT License (106 packages)
   Unicode License v3 (19 packages)
   ISC License (9 packages)
@@ -6943,6 +6943,7 @@ Apache License 2.0
   * digest 0.10.7 — https://github.com/RustCrypto/traits
   * digest 0.11.3 — https://github.com/RustCrypto/traits
   * ghash 0.5.1 — https://github.com/RustCrypto/universal-hashes
+  * hmac 0.13.0 — https://github.com/RustCrypto/MACs
   * hybrid-array 0.4.15 — https://github.com/RustCrypto/hybrid-array
   * inout 0.1.4 — https://github.com/RustCrypto/utils
   * md-5 0.11.0 — https://github.com/RustCrypto/hashes

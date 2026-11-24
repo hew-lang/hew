@@ -207,14 +207,6 @@ impl Checker {
                                 field,
                                 span,
                             );
-                            if self.is_shipped_crypto_module(name.name.as_str())
-                                && matches!(field, "random_bytes" | "try_random_bytes")
-                            {
-                                self.reject_wasm_feature(
-                                    span,
-                                    WasmUnsupportedFeature::CryptoRandom,
-                                );
-                            }
                             self.record_call_edge(&qualified_key);
                             return self.instantiate_function_value(
                                 &qualified_key,

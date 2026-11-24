@@ -1501,3 +1501,108 @@ fn main() {
         output.errors
     );
 }
+
+#[test]
+fn tuple_index_preserves_precise_effects_and_send_soundness() {
+    let effects_source = "fn pure() -> i64 { 1 }\n\
+                          fn slow() -> i64 { sleep(1ms); 2 }\n\
+                          fn main() {\n\
+                              let pair = (pure, slow);\n\
+                              let a = (pair.0)();\n\
+                              let b = (pair.1)();\n\
+                          }\n";
+    assert_call_effect(effects_source, "pair.0)()", SuspensionEffect::Never);
+    assert_call_effect(effects_source, "pair.1)()", SuspensionEffect::MaySuspend);
+
+    let reassigned_reject = "fn pure() -> i64 { 1 }\n\
+                             fn slow() -> i64 { sleep(1ms); 2 }\n\
+                             fn main() {\n\
+                                 var pair: (fn() -> i64, fn() -> i64) = (pure, pure);\n\
+                                 pair.1 = slow;\n\
+                             }\n";
+    let reject_output = check_source(reassigned_reject);
+    assert!(
+        reject_output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("suspends via `sleep(...)`")),
+        "{:#?}",
+        reject_output.errors
+    );
+
+    let captured_send_ok = "fn main() {\n\
+                                let pair: (fn() -> i64, fn() -> i64) = (|| 1, || 2);\n\
+                                let task = fork { (pair.0)() };\n\
+                                let _ = await task;\n\
+                            }\n";
+    let captured_ok_output = check_source(captured_send_ok);
+    assert!(
+        captured_ok_output.errors.is_empty(),
+        "{:#?}",
+        captured_ok_output.errors
+    );
+
+    let send_ok = "fn main() {\n\
+                       let rc = Rc.new(1);\n\
+                       let pair = (|| 1, move || { let _ = rc; 2 });\n\
+                       let first = pair.0;\n\
+                       let task = fork { first() };\n\
+                       let _ = await task;\n\
+                   }\n";
+    let ok_output = check_source(send_ok);
+    assert!(ok_output.errors.is_empty(), "{:#?}", ok_output.errors);
+
+    let send_fail = send_ok.replace("pair.0", "pair.1");
+    let fail_output = check_source(&send_fail);
+    assert!(
+        !fail_output.errors.is_empty()
+            && fail_output
+                .errors
+                .iter()
+                .all(|error| error.kind == crate::error::TypeErrorKind::InvalidSend),
+        "expected only InvalidSend when invoking non-Send tuple element inside fork: {:#?}",
+        fail_output.errors
+    );
+
+    let reassigned_send_ok = "fn main() {\n\
+                                  let rc = Rc.new(1);\n\
+                                  var pair: (fn() -> i64, fn() -> i64) = (|| 1, move || { let _ = rc; 2 });\n\
+                                  pair.1 = || 3;\n\
+                                  let repaired = pair.1;\n\
+                                  let task = fork { repaired() };\n\
+                                  let _ = await task;\n\
+                              }\n";
+    let repaired_output = check_source(reassigned_send_ok);
+    assert!(
+        repaired_output.errors.is_empty(),
+        "{:#?}",
+        repaired_output.errors
+    );
+
+    let reassigned_sibling_preserved = "fn main() {\n\
+                                            let rc = Rc.new(1);\n\
+                                            var pair: (fn() -> i64, fn() -> i64) = (|| 1, || 2);\n\
+                                            pair.0 = move || { let _ = rc; 3 };\n\
+                                            let unaffected = pair.1;\n\
+                                            let task = fork { unaffected() };\n\
+                                            let _ = await task;\n\
+                                        }\n";
+    let sibling_output = check_source(reassigned_sibling_preserved);
+    assert!(
+        sibling_output.errors.is_empty(),
+        "{:#?}",
+        sibling_output.errors
+    );
+
+    let reassigned_tainted_slot = reassigned_sibling_preserved.replace("pair.1", "pair.0");
+    let tainted_output = check_source(&reassigned_tainted_slot);
+    assert!(
+        !tainted_output.errors.is_empty()
+            && tainted_output
+                .errors
+                .iter()
+                .all(|error| error.kind == crate::error::TypeErrorKind::InvalidSend),
+        "expected InvalidSend when invoking reassigned non-Send tuple slot inside fork: {:#?}",
+        tainted_output.errors
+    );
+}

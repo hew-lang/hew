@@ -494,9 +494,12 @@ impl Deployment {
                 return Err(error);
             }
         };
-        let deadline = Instant::now()
-            .checked_add(within)
-            .ok_or(Error::InvalidDeadline)?;
+        // Every attempt announced as preparing must reach a terminal phase,
+        // including a duration the host clock cannot represent.
+        let Some(deadline) = Instant::now().checked_add(within) else {
+            self.record(candidate_status, None, "rejected");
+            return Err(Error::InvalidDeadline);
+        };
         let mut stage = Stage::Admission;
         self.record(candidate_status, None, "waiting");
         let result = tokio::time::timeout_at(deadline, async {

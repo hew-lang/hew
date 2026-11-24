@@ -420,8 +420,8 @@ pub enum HirDiagnosticKind {
     /// chained `root.sub.worker`) now lowers end-to-end through the
     /// `hew_supervisor_nested_get` ABI call and never constructs this
     /// variant (`check_supervisor_child_accessor_gates`'s `ChildKind::Static`
-    /// arm no longer gates it). Retained because
-    /// `LowerOutput::into_result`'s fatal-diagnostic match still lists it.
+    /// arm no longer gates it). Retained as a [`HirDiagnosticSeverity::Fatal`]
+    /// variant for compatibility with existing callers.
     NestedSupervisorAccessorUnsupported {
         /// Outer supervisor type name (e.g. `"RootSupervisor"`).
         supervisor: String,
@@ -520,7 +520,88 @@ pub enum HirDiagnosticKind {
     },
 }
 
+/// Severity classification governing whether a diagnostic fails
+/// [`crate::LowerOutput::into_result`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HirDiagnosticSeverity {
+    /// Fail-closed: [`crate::LowerOutput::into_result`] returns `Err`.
+    Fatal,
+    /// Recorded in [`crate::LowerOutput::diagnostics`] without tripping
+    /// [`crate::LowerOutput::into_result`] by itself.
+    NonFatal,
+}
+
 impl HirDiagnosticKind {
+    /// Whether this diagnostic kind is fail-closed at
+    /// [`crate::LowerOutput::into_result`].
+    ///
+    /// This match is intentionally exhaustive (no wildcard arm) so every new
+    /// [`HirDiagnosticKind`] variant must be explicitly classified here rather
+    /// than silently falling through.
+    #[must_use]
+    pub const fn severity(&self) -> HirDiagnosticSeverity {
+        match self {
+            Self::CheckerBoundaryViolation { .. }
+            | Self::MonomorphisationCallTypeArgsViolation { .. }
+            | Self::ImportedBodyMissingPrivateHelper { .. }
+            | Self::ImportedFreeFnBodyUnresolvedBareCall { .. }
+            | Self::TargetCoroutineUnsupported { .. }
+            | Self::TaskSpawnSignatureUnsupported { .. }
+            | Self::TaskSpawnCalleeUnsupported { .. }
+            | Self::DeadlineBodyUnsupported { .. }
+            | Self::NestedSupervisorAccessorUnsupported { .. }
+            | Self::CallableUnsupportedInMir { .. }
+            | Self::IndirectCallUnsupported { .. }
+            | Self::VecIndexElementTypeUnsupported { .. }
+            | Self::VecSliceElementTypeUnsupported { .. }
+            | Self::CloneNotYetSupported { .. } => HirDiagnosticSeverity::Fatal,
+
+            Self::ConstIntegerEvaluation { .. }
+            | Self::ConstDependencyCycle { .. }
+            | Self::UnresolvedSymbol { .. }
+            | Self::ImportMissing { .. }
+            | Self::UnresolvedBuiltinOverload { .. }
+            | Self::UnresolvedInferenceVar
+            | Self::DuplicateBindingId { .. }
+            | Self::DuplicateSiteId { .. }
+            | Self::DuplicateNodeId { .. }
+            | Self::DanglingRef { .. }
+            | Self::ReturnTypeMismatch { .. }
+            | Self::TuplePatternArityMismatch { .. }
+            | Self::TuplePatternNonTupleValue
+            | Self::EnumVariantConstructorShapeMismatch { .. }
+            | Self::EnumVariantConstructorMissingField { .. }
+            | Self::EnumVariantConstructorUnknownField { .. }
+            | Self::EnumVariantConstructorArityMismatch { .. }
+            | Self::ResourceMissingClose { .. }
+            | Self::LinearNoConsumingMethods { .. }
+            | Self::ResourceGenericUnsupported { .. }
+            | Self::ResourceCloseMustReturnUnit { .. }
+            | Self::CloseableOpaqueMustBeResource { .. }
+            | Self::OpaqueResourceCloseMismatch { .. }
+            | Self::OpaqueResourceLifecycleConflict { .. }
+            | Self::AwaitOutOfPosition
+            | Self::AwaitNonTask { .. }
+            | Self::ForkChildNotACall
+            | Self::TaskNotNameable
+            | Self::TaskCannotEscape
+            | Self::SelectArmNotSealedForm { .. }
+            | Self::SelectArmTypeMismatch { .. }
+            | Self::SelectMultipleAfterArms
+            | Self::SelectStreamNextArity { .. }
+            | Self::MachineEmitCycle { .. }
+            | Self::MachineEmitNotInManifest { .. }
+            | Self::MethodCallNoRewrite { .. }
+            | Self::ImplBlockShapeNotLowered { .. }
+            | Self::TraitObjectMethodNoSideTableEntry { .. }
+            | Self::TraitObjectCoercionMissing { .. }
+            | Self::ActorStateGuardMissing { .. }
+            | Self::RecursiveLambdaActorHandle { .. }
+            | Self::UnknownIntrinsic { .. }
+            | Self::UnaryOperatorUnsupportedInMir { .. } => HirDiagnosticSeverity::NonFatal,
+        }
+    }
+
     /// Which of the three diagnostic channels this kind reports on.
     ///
     /// Internal: the checker/HIR boundary contract was violated — two
@@ -553,5 +634,202 @@ impl HirDiagnosticKind {
         let debug = format!("{self:?}");
         let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
         debug[..end].to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fatal_diagnostic_kinds_report_fatal_severity() {
+        let fatal_kinds = [
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "x".into(),
+                reason: "leaked var".into(),
+            },
+            HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
+                callee: "f".into(),
+                reason: "ty error".into(),
+            },
+            HirDiagnosticKind::ImportedBodyMissingPrivateHelper {
+                module: "m".into(),
+                helper_fn: "h".into(),
+                item_kind: ImportedItemKind::FreeFn,
+            },
+            HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall {
+                module: "m".into(),
+                callee: "c".into(),
+                suggested_qualified: "m.c".into(),
+            },
+            HirDiagnosticKind::TargetCoroutineUnsupported {
+                target_arch: "riscv64".into(),
+                construct: "actor".into(),
+            },
+            HirDiagnosticKind::TaskSpawnSignatureUnsupported { site: SiteId(1) },
+            HirDiagnosticKind::TaskSpawnCalleeUnsupported { site: SiteId(2) },
+            HirDiagnosticKind::DeadlineBodyUnsupported { site: SiteId(3) },
+            HirDiagnosticKind::NestedSupervisorAccessorUnsupported {
+                supervisor: "Root".into(),
+                child: "sub".into(),
+                nested_supervisor: "Sub".into(),
+            },
+            HirDiagnosticKind::CallableUnsupportedInMir { name: "f".into() },
+            HirDiagnosticKind::IndirectCallUnsupported {
+                callee: "f".into(),
+                callee_ty: "fn()".into(),
+            },
+            HirDiagnosticKind::VecIndexElementTypeUnsupported {
+                element_ty: "i8".into(),
+            },
+            HirDiagnosticKind::VecSliceElementTypeUnsupported {
+                element_ty: "f32".into(),
+            },
+            HirDiagnosticKind::CloneNotYetSupported {
+                receiver_ty: "Foo".into(),
+            },
+        ];
+
+        for kind in &fatal_kinds {
+            assert_eq!(
+                kind.severity(),
+                HirDiagnosticSeverity::Fatal,
+                "expected Fatal severity for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustively exercises every NonFatal HirDiagnosticKind variant"
+    )]
+    fn non_fatal_diagnostic_kinds_report_non_fatal_severity() {
+        let non_fatal_kinds = [
+            HirDiagnosticKind::ConstIntegerEvaluation {
+                class: "arithmetic-overflow".into(),
+            },
+            HirDiagnosticKind::ConstDependencyCycle { name: "A".into() },
+            HirDiagnosticKind::UnresolvedSymbol { name: "x".into() },
+            HirDiagnosticKind::ImportMissing {
+                module: "m".into(),
+                name: "x".into(),
+            },
+            HirDiagnosticKind::UnresolvedBuiltinOverload {
+                name: "println".into(),
+                arg_ty: ResolvedTy::Unit,
+            },
+            HirDiagnosticKind::UnresolvedInferenceVar,
+            HirDiagnosticKind::DuplicateBindingId { id: BindingId(1) },
+            HirDiagnosticKind::DuplicateSiteId { id: SiteId(1) },
+            HirDiagnosticKind::DuplicateNodeId { id: HirNodeId(1) },
+            HirDiagnosticKind::DanglingRef {
+                resolved: ResolvedRef::Unresolved,
+            },
+            HirDiagnosticKind::ReturnTypeMismatch {
+                expected: ResolvedTy::I64,
+                actual: ResolvedTy::Bool,
+            },
+            HirDiagnosticKind::TuplePatternArityMismatch {
+                expected: 2,
+                actual: 3,
+            },
+            HirDiagnosticKind::TuplePatternNonTupleValue,
+            HirDiagnosticKind::EnumVariantConstructorShapeMismatch {
+                variant: "V".into(),
+            },
+            HirDiagnosticKind::EnumVariantConstructorMissingField {
+                variant: "V".into(),
+                field: "f".into(),
+            },
+            HirDiagnosticKind::EnumVariantConstructorUnknownField {
+                variant: "V".into(),
+                field: "f".into(),
+            },
+            HirDiagnosticKind::EnumVariantConstructorArityMismatch {
+                variant: "V".into(),
+                expected: 1,
+                actual: 2,
+            },
+            HirDiagnosticKind::ResourceMissingClose { name: "R".into() },
+            HirDiagnosticKind::LinearNoConsumingMethods { name: "L".into() },
+            HirDiagnosticKind::ResourceGenericUnsupported { name: "R".into() },
+            HirDiagnosticKind::ResourceCloseMustReturnUnit {
+                name: "R".into(),
+                return_ty: "i64".into(),
+            },
+            HirDiagnosticKind::CloseableOpaqueMustBeResource {
+                resource_type: "R".into(),
+                producer: "p".into(),
+                release: "r".into(),
+            },
+            HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                resource_type: "R".into(),
+                expected_release: "r".into(),
+                detail: "d".into(),
+            },
+            HirDiagnosticKind::OpaqueResourceLifecycleConflict {
+                resource_type: "R".into(),
+                producer: "p".into(),
+                release: "r".into(),
+                detail: "d".into(),
+            },
+            HirDiagnosticKind::AwaitOutOfPosition,
+            HirDiagnosticKind::AwaitNonTask {
+                found_ty: ResolvedTy::I64,
+            },
+            HirDiagnosticKind::ForkChildNotACall,
+            HirDiagnosticKind::TaskNotNameable,
+            HirDiagnosticKind::TaskCannotEscape,
+            HirDiagnosticKind::SelectArmNotSealedForm {
+                source_shape: "literal".into(),
+            },
+            HirDiagnosticKind::SelectArmTypeMismatch {
+                arm_index: 1,
+                expected: ResolvedTy::I64,
+                actual: ResolvedTy::Bool,
+            },
+            HirDiagnosticKind::SelectMultipleAfterArms,
+            HirDiagnosticKind::SelectStreamNextArity { arg_count: 2 },
+            HirDiagnosticKind::MachineEmitCycle {
+                machine_name: "M".into(),
+                event_name: "E".into(),
+            },
+            HirDiagnosticKind::MachineEmitNotInManifest {
+                machine_name: "M".into(),
+                event_name: "E".into(),
+            },
+            HirDiagnosticKind::MethodCallNoRewrite {
+                method: "send".into(),
+            },
+            HirDiagnosticKind::ImplBlockShapeNotLowered {
+                shape: "blanket".into(),
+            },
+            HirDiagnosticKind::TraitObjectMethodNoSideTableEntry { method: "m".into() },
+            HirDiagnosticKind::TraitObjectCoercionMissing {
+                trait_name: "Display".into(),
+            },
+            HirDiagnosticKind::ActorStateGuardMissing {
+                handler: "h".into(),
+            },
+            HirDiagnosticKind::RecursiveLambdaActorHandle { name: "a".into() },
+            HirDiagnosticKind::UnknownIntrinsic {
+                fn_name: "f".into(),
+                intrinsic_key: "k".into(),
+            },
+            HirDiagnosticKind::UnaryOperatorUnsupportedInMir {
+                op: "!".into(),
+                operand_ty: "string".into(),
+                result_ty: "bool".into(),
+            },
+        ];
+
+        for kind in &non_fatal_kinds {
+            assert_eq!(
+                kind.severity(),
+                HirDiagnosticSeverity::NonFatal,
+                "expected NonFatal severity for {kind:?}"
+            );
+        }
     }
 }

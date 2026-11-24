@@ -18,7 +18,7 @@ pub mod test_entry;
 pub mod value_class;
 pub mod verify;
 
-pub use diagnostic::{HirDiagnostic, HirDiagnosticKind, ImportedItemKind};
+pub use diagnostic::{HirDiagnostic, HirDiagnosticKind, HirDiagnosticSeverity, ImportedItemKind};
 pub use dump::dump_hir;
 pub use hew_types::error::DiagChannel;
 pub use hew_types::stdlib_authority;

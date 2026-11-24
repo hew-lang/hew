@@ -10,7 +10,8 @@ use tower_lsp_server::ls_types::{
     SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
     SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TypeDefinitionProviderCapability, WorkDoneProgressOptions,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TypeDefinitionProviderCapability,
+    WorkDoneProgressOptions,
 };
 
 // ── Semantic token types ─────────────────────────────────────────────
@@ -44,7 +45,14 @@ pub(super) fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
 
 pub(super) fn build_server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::FULL),
+                save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                ..Default::default()
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
             ..Default::default()

@@ -1299,15 +1299,10 @@ mod tests {
             "all_keywords in syntax-data.json must exactly match the lexer's ALL_KEYWORDS, in order"
         );
 
-        // WHY: nothing generates docs/syntax-data.json's `version` field — it
-        // is hand-maintained and had drifted to a value no release ever
-        // shipped (0.10.0-pre) while the workspace was on 0.6.0-rc3. This
-        // assertion is the authority that keeps it honest; a mismatch means
-        // the JSON's version was hand-edited without checking Cargo.toml.
-        // WHEN: obsolete once a real generator writes this file from the
-        // workspace version at build/sync time.
-        // WHAT: `scripts/sync-downstream.sh` would emit the file instead of
-        // validating a hand-maintained copy.
+        // Permanent drift guard: `docs/syntax-data.json`'s `version` field is
+        // synced from `Cargo.toml` by `scripts/sync-downstream.sh` and
+        // `scripts/bump-version.sh`; this assertion keeps the checked-in copy
+        // locked to the workspace version.
         assert_eq!(
             data["version"].as_str(),
             Some(env!("CARGO_PKG_VERSION")),
@@ -1334,25 +1329,11 @@ mod tests {
         );
     }
 
-    // WHY: hand-maintained editor grammars silently drift from the real
-    // keyword/attribute surface — nothing failed CI when PR #2370 removed
-    // `struct`. This guards the sublime grammar (the most structured of the
-    // 3 hand-maintained files) as a representative canary.
-    // WHEN: extend to editors/emacs and editors/nano if they grow their own
-    // structured (machine-parseable) format; today they are free-form regex
-    // lists not worth round-tripping through serde_json.
-    // WHAT: every hand-maintained grammar file should agree with
-    // ALL_KEYWORDS, and type-decl attributes (`#[resource]`, `#[linear]`,
-    // `#[opaque]`, `#[wire]`, ...) must be recognised generically via the
-    // `#[...]` attribute region rather than hard-coded into
-    // `variable.language.contextual.hew`. `resource`/`linear`/`opaque`/`wire`
-    // are KNOWN_TYPE_ATTRS-only (hew-parser/src/parser/items.rs) — they are
-    // never valid outside an attribute, so listing them as bare contextual
-    // identifiers over-matches ordinary code (e.g. `let resource = f();`)
-    // instead of only the attribute position. The attribute-region check
-    // below is what actually prevents silent drift here: any current or
-    // future KNOWN_TYPE_ATTRS word is covered by the region existing at all,
-    // with no per-word list to fall out of sync.
+    // Permanent grammar drift guard for `editors/sublime/Hew.tmLanguage.json`:
+    // ensures removed keywords (`struct`) stay absent and attribute-only words
+    // (`resource`, `linear`, `opaque`, `wire`) are highlighted only inside the
+    // generic `#[...]` attribute region rather than matching bare identifiers
+    // in `variable.language.contextual.hew`.
     #[test]
     fn sublime_grammar_keywords_match_lexer_surface() {
         let json_str = include_str!(concat!(

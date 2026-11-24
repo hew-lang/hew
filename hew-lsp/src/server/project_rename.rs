@@ -820,8 +820,14 @@ pub(super) async fn rename(
     // Keep existing local and non-function planning synchronous. Only the
     // exported-function transaction crosses a worker handoff, with its full
     // physical snapshot fence. The query itself is checked freshly here.
-    let project = match prepare_rename(&snapshot, uri, position, new_name, &server.extra_pkg_paths)?
-    {
+    let project = match prepare_rename(
+        &snapshot,
+        uri,
+        position,
+        new_name,
+        &server.extra_pkg_paths,
+        &server.workspace_index,
+    )? {
         None => return Ok(None),
         Some(PreparedRename::Legacy(planned)) => {
             return complete_rename(server, &snapshot, planned);
@@ -1012,6 +1018,7 @@ fn prepare_rename(
     position: Position,
     new_name: &str,
     pkg_paths: &[PathBuf],
+    workspace_index: &super::workspace_index::WorkspaceIndex,
 ) -> Result<Option<PreparedRename>, RenameError> {
     let (mut open, mut overlay) = source_snapshot(snapshot)?;
     let Some(query) = query_source(snapshot, uri) else {
@@ -1059,6 +1066,7 @@ fn prepare_rename(
             offset,
             new_name,
             &legacy_documents(snapshot),
+            workspace_index,
         )?;
         PreparedRename::Legacy(PlannedRename {
             edit,
@@ -1096,7 +1104,18 @@ fn rename_snapshot(
     roots: Option<Vec<PathBuf>>,
     pkg_paths: &[PathBuf],
 ) -> Result<Option<PlannedRename>, RenameError> {
-    match prepare_rename(snapshot, uri, position, new_name, pkg_paths)? {
+    let workspace_index = super::workspace_index::WorkspaceIndex::new();
+    if let Some(roots) = &roots {
+        workspace_index.set_roots(roots);
+    }
+    match prepare_rename(
+        snapshot,
+        uri,
+        position,
+        new_name,
+        pkg_paths,
+        &workspace_index,
+    )? {
         Some(PreparedRename::Project(project)) => {
             let roots = roots
                 .ok_or_else(|| refused(&project.query.path, "workspace roots are unavailable"))?;

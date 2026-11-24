@@ -15,15 +15,9 @@ fn checked_field_rename_edits_only_the_selected_owner() {
     .expect("checked field should be preparable for rename");
     assert!(matches!(prepared, PrepareRenameResponse::Range(range)
         if range == offset_range_to_lsp(source, &doc.line_offsets, offset, offset + 1)));
-    let edit = super::super::navigation::plan_workspace_rename(
-        &uri,
-        &doc,
-        offset,
-        "value",
-        &DashMap::new(),
-    )
-    .expect("field rename should be safe")
-    .expect("field rename should produce edits");
+    let edit = plan_workspace_rename(&uri, &doc, offset, "value", &DashMap::new())
+        .expect("field rename should be safe")
+        .expect("field rename should produce edits");
     let changes = edit.changes.unwrap();
     let edits = &changes[&uri];
     let positions: Vec<_> = edits.iter().map(|edit| edit.range.start).collect();
@@ -47,9 +41,8 @@ fn checked_field_rename_rejects_an_existing_field() {
     let doc = make_typed_doc(source);
     let uri = make_test_uri("/identity-field-conflict.hew");
     let offset = source.find("b.x").unwrap() + 2;
-    let error =
-        super::super::navigation::plan_workspace_rename(&uri, &doc, offset, "y", &DashMap::new())
-            .expect_err("renaming x to existing y must be refused");
+    let error = plan_workspace_rename(&uri, &doc, offset, "y", &DashMap::new())
+        .expect_err("renaming x to existing y must be refused");
     assert!(
         matches!(error, hew_analysis::RenameError::Conflicts { conflicts }
         if conflicts.iter().any(|conflict| conflict.kind == hew_analysis::RenameConflictKind::ShadowsField))
@@ -59,15 +52,9 @@ fn checked_field_rename_rejects_an_existing_field() {
 /// Apply a rename's edits to the one document it changes.
 fn renamed_source(source: &str, uri: &Url, offset: usize, new_name: &str) -> String {
     let doc = make_typed_doc(source);
-    let edit = super::super::navigation::plan_workspace_rename(
-        uri,
-        &doc,
-        offset,
-        new_name,
-        &DashMap::new(),
-    )
-    .expect("rename should be safe")
-    .expect("rename should produce edits");
+    let edit = plan_workspace_rename(uri, &doc, offset, new_name, &DashMap::new())
+        .expect("rename should be safe")
+        .expect("rename should produce edits");
     let mut edits = edit.changes.unwrap().remove(uri).unwrap();
     edits
         .sort_by_key(|edit| std::cmp::Reverse((edit.range.start.line, edit.range.start.character)));

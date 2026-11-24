@@ -1486,15 +1486,8 @@ pub struct FnDecl {
     /// When `Some`, this function is a compiler-intrinsic declaration: the body
     /// is a stub (empty block or semicolon) and the named intrinsic key is the
     /// dispatch authority used by HIR/MIR/codegen. The checker validates the key
-    /// against the known intrinsic catalog at registration time.
-    ///
-    /// WHY: the intrinsic catalog has no Hew-side declaration for these entries.
-    /// This field enables typed declarations that the checker
-    /// can validate, making the intrinsic surface opt-in and fail-closed.
-    /// WHEN-OBSOLETE: when all catalog `CompilerIntrinsic` rows have been migrated
-    /// to `#[intrinsic]` declarations (slices 4–7).
-    /// WHAT: add `#[intrinsic("key")]` declarations to stdlib `.hew` files and
-    /// remove the corresponding catalog rows in the migration slices.
+    /// against the known intrinsic catalog at registration time so the stdlib
+    /// intrinsic surface remains typed, opt-in, and fail-closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intrinsic: Option<String>,
     /// `true` when this method declares a `consume self` receiver — the

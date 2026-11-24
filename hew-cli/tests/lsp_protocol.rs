@@ -2798,3 +2798,118 @@ fn lsp_analysis_context_updates_navigation_and_respects_dirty_documents() {
         "analysis must never write a generated module into the source tree"
     );
 }
+
+#[test]
+fn lsp_workspace_index_handles_incremental_edits_close_fallback_and_external_disk_changes() {
+    let project = TestProject::new("workspace-index-lifecycle");
+    let builtins = project.write(
+        "std/builtins.hew",
+        "pub fn println(value: dyn Display) {}\n",
+    );
+    let helper_disk = "pub fn disk_helper() -> i64 { 1 }\n";
+    let helper = project.write("helper.hew", helper_disk);
+    let main_source = concat!(
+        "fn main() {\n",
+        "    println(1);\n",
+        "    disk_helper();\n",
+        "    live_helper();\n",
+        "    ext_helper();\n",
+        "}\n",
+    );
+    let main = project.write("main.hew", main_source);
+    let main_uri = file_uri(&main);
+    let helper_uri = file_uri(&helper);
+    let builtins_uri = file_uri(&builtins);
+
+    let mut session = RenameSession::new(Some(&project), &[]);
+    session.open(&main, main_source, 1);
+
+    let def_at = |session: &mut RenameSession, needle: &str| {
+        session.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": main_uri},
+                "position": position_of(main_source, needle),
+            }),
+        )
+    };
+
+    // 1. Lazy workspace index resolves stdlib `println` and closed disk `disk_helper`.
+    assert_eq!(
+        def_at(&mut session, "println")["result"]["uri"],
+        builtins_uri
+    );
+    assert_eq!(
+        def_at(&mut session, "disk_helper")["result"]["uri"],
+        helper_uri
+    );
+    assert!(def_at(&mut session, "live_helper")["result"].is_null());
+
+    // 2. Open helper.hew and edit in memory without saving to disk.
+    let helper_live = "pub fn live_helper() -> i64 { 2 }\n";
+    session.open(&helper, helper_disk, 1);
+    session.change_uri_without_waiting(&helper_uri, helper_live, 2);
+    assert_eq!(
+        def_at(&mut session, "live_helper")["result"]["uri"],
+        helper_uri
+    );
+    assert!(def_at(&mut session, "disk_helper")["result"].is_null());
+
+    // 3. Close helper.hew without saving; workspace index falls back to disk.
+    send(
+        &mut session.stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": {"textDocument": {"uri": helper_uri}},
+        }),
+    );
+    assert!(def_at(&mut session, "live_helper")["result"].is_null());
+    assert_eq!(
+        def_at(&mut session, "disk_helper")["result"]["uri"],
+        helper_uri
+    );
+
+    // 4. External disk change (without watcher) refreshes definitions and references.
+    let external_helper = "pub fn ext_helper() -> i64 {\n    println(99);\n    3\n}\n";
+    std::fs::write(&helper, external_helper).expect("write external helper change");
+    assert_eq!(
+        def_at(&mut session, "ext_helper")["result"]["uri"],
+        helper_uri
+    );
+
+    let refs_println = session.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": main_uri},
+            "position": position_of(main_source, "println"),
+            "context": {"includeDeclaration": true},
+        }),
+    );
+    let ref_uris: BTreeSet<&str> = refs_println["result"]
+        .as_array()
+        .expect("workspace references array")
+        .iter()
+        .filter_map(|loc| loc["uri"].as_str())
+        .collect();
+    assert!(
+        ref_uris.contains(helper_uri.as_str())
+            && ref_uris.contains(main_uri.as_str())
+            && ref_uris.contains(builtins_uri.as_str()),
+        "workspace references must include externally added println call: {refs_println}"
+    );
+
+    // 5. Explicit didSave on an open file keeps the cached index consistent.
+    send(
+        &mut session.stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didSave",
+            "params": {"textDocument": {"uri": main_uri}, "text": main_source},
+        }),
+    );
+    assert_eq!(
+        def_at(&mut session, "ext_helper")["result"]["uri"],
+        helper_uri
+    );
+}

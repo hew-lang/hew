@@ -4,7 +4,8 @@ use serde_json::Value;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, MessageType, ServerCapabilities,
+    DidSaveTextDocumentParams, InitializeParams, InitializeResult, MessageType, ServerCapabilities,
+    Uri as Url,
 };
 
 use super::super::uri::FileUriExt;
@@ -95,9 +96,11 @@ pub(crate) fn initialize(
             .and_then(|watching| watching.dynamic_registration)
             .unwrap_or(false);
     }
+    let extracted_roots = extract_workspace_roots(params);
     if let Ok(mut roots) = server.workspace_roots.write() {
-        *roots = extract_workspace_roots(params);
+        roots.clone_from(&extracted_roots);
     }
+    server.workspace_index.set_roots(&extracted_roots);
     if let Ok(mut supported) = server.rename_document_changes.write() {
         *supported = params
             .capabilities
@@ -153,7 +156,7 @@ pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocu
     let _analysis = server.analysis_jobs.lock().await;
     let uri = params.text_document.uri;
     let source = params.text_document.text;
-    if let Ok(mut open) = server.open_documents.write() {
+    let open_uris: Vec<Url> = if let Ok(mut open) = server.open_documents.write() {
         open.insert(
             uri.clone(),
             OpenDocument {
@@ -162,7 +165,13 @@ pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocu
             },
         );
         server.advance_open_generation();
-    }
+        open.keys().cloned().collect()
+    } else {
+        vec![uri.clone()]
+    };
+    server
+        .workspace_index
+        .upsert_open_document(&uri, &source, &open_uris);
     server.suspend_context_source(&uri);
     server.reanalyze(&uri, &source);
 }
@@ -171,7 +180,7 @@ pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeText
     let _analysis = server.analysis_jobs.lock().await;
     let uri = params.text_document.uri;
     if let Some(change) = params.content_changes.into_iter().last() {
-        if let Ok(mut open) = server.open_documents.write() {
+        let open_uris: Vec<Url> = if let Ok(mut open) = server.open_documents.write() {
             open.insert(
                 uri.clone(),
                 OpenDocument {
@@ -180,18 +189,41 @@ pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeText
                 },
             );
             server.advance_open_generation();
-        }
+            open.keys().cloned().collect()
+        } else {
+            vec![uri.clone()]
+        };
+        server
+            .workspace_index
+            .upsert_open_document(&uri, &change.text, &open_uris);
         server.reanalyze(&uri, &change.text);
     }
 }
 
+pub(crate) fn did_save(server: &HewLanguageServer, params: DidSaveTextDocumentParams) {
+    let uri = params.text_document.uri;
+    let (is_open, open_uris) = server.open_documents.read().map_or_else(
+        |_| (false, Vec::new()),
+        |open| (open.contains_key(&uri), open.keys().cloned().collect()),
+    );
+    server
+        .workspace_index
+        .did_save(&uri, params.text.as_deref(), is_open, &open_uris);
+}
+
 pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDocumentParams) {
     let analysis = server.analysis_jobs.lock().await;
-    if let Ok(mut open) = server.open_documents.write() {
+    let open_uris: Vec<Url> = if let Ok(mut open) = server.open_documents.write() {
         if open.remove(&params.text_document.uri).is_some() {
             server.advance_open_generation();
         }
-    }
+        open.keys().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    server
+        .workspace_index
+        .close_document(&params.text_document.uri, &open_uris);
     // Retain a monotonically increasing generation across close/reopen so a
     // sleeping task from a previous open cannot match the reopened document.
     if let Some(mut generation) = server.analysis_versions.get_mut(&params.text_document.uri) {

@@ -3467,3 +3467,88 @@ type MissingConsume { raw: i64; }
         ctx.diagnostics
     );
 }
+
+#[test]
+fn into_result_returns_ok_for_empty_or_non_fatal_diagnostics() {
+    let (_, _, clean) = parse_typecheck_and_lower("fn main() -> i64 { 1 }");
+    assert!(clean.diagnostics.is_empty());
+    let module = clean
+        .into_result()
+        .expect("empty diagnostics must return Ok");
+
+    let non_fatal = LowerOutput {
+        module: module.clone(),
+        diagnostics: vec![
+            HirDiagnostic::new(
+                HirDiagnosticKind::UnresolvedSymbol {
+                    name: "missing".into(),
+                },
+                0..1,
+                "non-fatal unresolved symbol",
+            ),
+            HirDiagnostic::new(
+                HirDiagnosticKind::MethodCallNoRewrite {
+                    method: "send".into(),
+                },
+                1..2,
+                "non-fatal method call rewrite gap",
+            ),
+        ],
+    };
+    assert_eq!(
+        non_fatal.into_result(),
+        Ok(module),
+        "only NonFatal diagnostics must not fail into_result"
+    );
+}
+
+#[test]
+fn into_result_returns_err_when_any_fatal_diagnostic_is_present() {
+    let (_, _, clean) = parse_typecheck_and_lower("fn main() -> i64 { 1 }");
+    let module = clean
+        .into_result()
+        .expect("empty diagnostics must return Ok");
+
+    let fatal_only = LowerOutput {
+        module: module.clone(),
+        diagnostics: vec![HirDiagnostic::new(
+            HirDiagnosticKind::CloneNotYetSupported {
+                receiver_ty: "Opaque".into(),
+            },
+            0..4,
+            "fatal clone unsupported",
+        )],
+    };
+    let errs = fatal_only
+        .into_result()
+        .expect_err("Fatal diagnostic must fail into_result");
+    assert_eq!(errs.len(), 1);
+    assert_eq!(errs[0].kind.severity(), HirDiagnosticSeverity::Fatal);
+
+    let mixed = LowerOutput {
+        module,
+        diagnostics: vec![
+            HirDiagnostic::new(
+                HirDiagnosticKind::UnresolvedSymbol { name: "x".into() },
+                0..1,
+                "non-fatal",
+            ),
+            HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "expr".into(),
+                    reason: "leaked var".into(),
+                },
+                2..5,
+                "fatal",
+            ),
+        ],
+    };
+    let errs = mixed
+        .into_result()
+        .expect_err("mixed NonFatal + Fatal diagnostics must fail into_result");
+    assert_eq!(
+        errs.len(),
+        2,
+        "into_result must preserve all diagnostics on Err"
+    );
+}

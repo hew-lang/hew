@@ -16,6 +16,7 @@ mod testing;
 mod tests;
 mod uri;
 mod workspace;
+mod workspace_index;
 
 // Items used by the LanguageServer impl handlers and sibling submodules.
 use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
@@ -58,14 +59,15 @@ use tower_lsp_server::ls_types::{
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeActionParams, CodeActionResponse, CodeLens, CodeLensParams, CompletionParams,
     CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentDiagnosticParams, DocumentDiagnosticReportResult,
-    DocumentFormattingParams, DocumentHighlight, DocumentHighlightParams, DocumentLink,
-    DocumentLinkParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandParams,
-    FoldingRange, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverParams, InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintParams,
-    Location, MessageType, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
-    SelectionRange, SelectionRangeParams, SemanticTokensParams, SemanticTokensResult,
-    SignatureHelp, SignatureHelpParams, TextDocumentIdentifier, TextEdit, TypeHierarchyItem,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentDiagnosticParams,
+    DocumentDiagnosticReportResult, DocumentFormattingParams, DocumentHighlight,
+    DocumentHighlightParams, DocumentLink, DocumentLinkParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandParams, FoldingRange, FoldingRangeParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, InitializeParams,
+    InitializeResult, InitializedParams, InlayHint, InlayHintParams, Location, MessageType,
+    Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams, SelectionRange,
+    SelectionRangeParams, SemanticTokensParams, SemanticTokensResult, SignatureHelp,
+    SignatureHelpParams, TextDocumentIdentifier, TextEdit, TypeHierarchyItem,
     TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
     Uri as Url, WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -188,6 +190,9 @@ pub struct HewLanguageServer {
     watched_files_supported: RwLock<bool>,
     diagnostic_refresh_supported: RwLock<bool>,
     workspace_roots: RwLock<Vec<PathBuf>>,
+    /// Cached, incrementally updated workspace index backing cross-file
+    /// navigation, workspace-wide references, and unopened-importer rename checks.
+    workspace_index: workspace_index::WorkspaceIndex,
     /// One CPU-heavy rename job per server, including cancelled requests whose
     /// blocking computation is still running.
     rename_jobs: Arc<tokio::sync::Semaphore>,
@@ -226,6 +231,7 @@ impl HewLanguageServer {
             watched_files_supported: RwLock::new(false),
             diagnostic_refresh_supported: RwLock::new(false),
             workspace_roots: RwLock::new(Vec::new()),
+            workspace_index: workspace_index::WorkspaceIndex::new(),
             rename_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             analysis_versions: Arc::new(DashMap::new()),
             completed_analysis_versions: Arc::new(DashMap::new()),
@@ -424,10 +430,20 @@ impl LanguageServer for HewLanguageServer {
         handlers::text_sync::did_change(self, params).await;
     }
 
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        handlers::text_sync::did_save(self, params);
+    }
+
     async fn did_change_watched_files(
         &self,
         params: tower_lsp_server::ls_types::DidChangeWatchedFilesParams,
     ) {
+        let open_uris: Vec<Url> = self
+            .open_documents
+            .read()
+            .map_or_else(|_| Vec::new(), |open| open.keys().cloned().collect());
+        self.workspace_index
+            .handle_watched_files(&params.changes, &open_uris);
         let changed: HashSet<_> = params.changes.into_iter().map(|event| event.uri).collect();
         let changed_paths = changed
             .iter()

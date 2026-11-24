@@ -608,13 +608,7 @@ fn importer_originated_rename_includes_unopened_definition_file_edits() {
     // Place cursor on the `foo` binding in `import util::{ foo }`.
     let offset = importer_source.find("{ foo }").unwrap() + 2;
 
-    let edit = super::super::navigation::build_workspace_edit(
-        &importer_uri,
-        &importer_doc,
-        offset,
-        "bar",
-        &documents,
-    );
+    let edit = build_workspace_edit(&importer_uri, &importer_doc, offset, "bar", &documents);
     let edit = edit
         .expect("workspace edit should not error")
         .expect("workspace edit should be generated");
@@ -714,13 +708,7 @@ fn importer_originated_rename_includes_unopened_sibling_importer_edits() {
     // Place cursor on the `foo` binding in `import util::{ foo }`.
     let offset = importer1_source.find("{ foo }").unwrap() + 2;
 
-    let edit = super::super::navigation::build_workspace_edit(
-        &importer1_uri,
-        &importer1_doc,
-        offset,
-        "bar",
-        &documents,
-    );
+    let edit = build_workspace_edit(&importer1_uri, &importer1_doc, offset, "bar", &documents);
     let edit = edit
         .expect("workspace edit should not error")
         .expect("workspace edit should be generated");
@@ -823,9 +811,7 @@ fn unopened_aliased_importer_rename_rewrites_import_name() {
     // Place cursor on the `foo` definition.
     let offset = util_source.find("fn foo").unwrap() + 3;
 
-    let edit = super::super::navigation::build_workspace_edit(
-        &util_uri, &util_doc, offset, "bar", &documents,
-    );
+    let edit = build_workspace_edit(&util_uri, &util_doc, offset, "bar", &documents);
     let edit = edit
         .expect("workspace edit should not error")
         .expect("workspace edit should be generated");

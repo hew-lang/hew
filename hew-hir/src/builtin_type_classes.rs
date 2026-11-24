@@ -262,29 +262,22 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 
 /// Seed a `TypeClassTable` with the compiler-known built-in substrate types.
 ///
-/// These types are not defined by user-level `TypeDecl` items; they are
-/// intrinsic to the runtime and must be seeded before the source-order
-/// `Item::TypeDecl` pass so that `ValueClass::of_ty` resolves them correctly
-/// in function bodies.
+/// These types carry runtime-intrinsic representation or drop semantics and
+/// must be seeded before the source-order `Item::TypeDecl` pass so that
+/// `ValueClass::of_ty` resolves them consistently in function bodies, including
+/// when a program receives a handle without explicitly importing its declaring
+/// module.
 ///
 /// Resource types carry their canonical consuming close method. `BitCopy`
 /// compiler-known records carry their marker and shape here so downstream
 /// lowering can query the registry instead of matching user-visible names.
 ///
-/// WHY: `Sink<T>` and `Stream<T>` have no source `#[resource]` declaration
-/// (`std.stream.pipe` yields them through the pair intrinsics), so they are
-/// registered here so that `ValueClass::of_ty` resolves them correctly for
-/// drop elaboration when they appear as values from std / runtime surfaces.
-/// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every
-/// `Named { "Sink", .. }` / `Named { "Stream", .. }` binding, and drop
-/// elaboration never fires.
-///
-/// WHEN-OBSOLETE: when user-level `@resource` type declarations become the
-/// canonical authority for all substrate types (i.e. when `std/stream.hew`
-/// ships its own `TypeDecl` with the `#[resource]` attribute).
-///
-/// WHAT-REAL-SOLUTION: move this seeding into a stdlib module loaded at
-/// program-start so user programs never need to see the compiler-internal table.
+/// In particular, `Sink<T>` and `Stream<T>` are declared in `std/stream.hew`
+/// without `#[resource]` because generic opaque handles do not use the
+/// user-defined `#[resource]` release ABI (rejected by
+/// `HirDiagnosticKind::ResourceGenericUnsupported`); their affine resource
+/// marker and `close` teardown remain owned by `hew_types::BuiltinType` and
+/// seeded from `BUILTIN_TYPE_REGISTRATIONS` here.
 pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
     for registration in builtin_type_registrations() {
         debug_assert!(

@@ -15,12 +15,10 @@ hew-std = { path = "..", features = ["fuzzing"] }
 hew-cabi = { path = "../../hew-cabi" }
 hew-calendar = { path = "../../hew-calendar" }
 flate2 = "1"
-ipnet = "2"
 rmp-serde = "1"
 serde = "1"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tungstenite = "0.30"
-uuid = "1"
 
 [[bin]]
 name = "fuzz_value_formats"

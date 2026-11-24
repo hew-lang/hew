@@ -185,7 +185,6 @@ pub mod wasm_capability_ids {
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");
     pub const BLOCKING_POOL: WasmCapabilityId = WasmCapabilityId("blocking-pool");
-    pub const COMPRESSION: WasmCapabilityId = WasmCapabilityId("compression");
     pub const COOPERATIVE_YIELD: WasmCapabilityId = WasmCapabilityId("cooperative-yield");
     pub const CRYPTO_ENCRYPT: WasmCapabilityId = WasmCapabilityId("crypto-encrypt");
     pub const CRYPTO_RANDOM: WasmCapabilityId = WasmCapabilityId("crypto-random");

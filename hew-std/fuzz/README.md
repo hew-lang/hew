@@ -17,7 +17,7 @@ or filesystem. The typed wire codecs and YAML values live in
 | `fuzz_jwt`           | token and secret                         | decode, validate and inspect agree; encode keeps the claims                |
 | `fuzz_regex`         | pattern, subject, replacement            | queries agree with each other                                              |
 | `fuzz_calendar`      | instant, text, strftime pattern          | components rebuild the instant; lossless pattern round trip                |
-| `fuzz_net_text`      | URL, IP, CIDR, UUID text                 | URL printing is a fixed point; IP, CIDR and UUID agree with their crates   |
+| `fuzz_net_text`      | URL text                                 | URL printing is a fixed point                                              |
 
 The HTTP server and client delegate wire parsing to `tiny_http` and `reqwest`. Their transport behaviour is exercised with loopback requests.
 

@@ -22,3 +22,142 @@ fn cidr_counts_and_boundaries() {
     assert(ipnet.cidr_broadcast("192.168.1.0/24").expect("IPv4 network") == .Some("192.168.1.255"));
     assert(ipnet.cidr_network("bad").is_err());
 }
+
+#[test]
+fn ip_parsing_and_classification() {
+    assert(ipnet.is_valid("0.0.0.0"));
+    assert(ipnet.is_valid("192.168.1.1"));
+    assert(ipnet.is_valid("255.255.255.255"));
+    assert(ipnet.is_v4("192.168.1.1"));
+    assert(!ipnet.is_v6("192.168.1.1"));
+
+    // Leading zeroes in IPv4 octets are rejected (RFC 6943 / core::net).
+    assert(!ipnet.is_valid(""));
+    assert(!ipnet.is_valid("192.168.01.1"));
+    assert(!ipnet.is_valid("01.0.0.0"));
+    assert(!ipnet.is_valid("256.0.0.1"));
+    assert(!ipnet.is_valid("1920.0.0.1"));
+    assert(!ipnet.is_valid("1.2.3"));
+    assert(!ipnet.is_valid("1.2.3.4.5"));
+    assert(!ipnet.is_valid("1.2.3.4 "));
+
+    // IPv6 valid forms including leading-zero groups and embedded IPv4.
+    assert(ipnet.is_valid("::"));
+    assert(ipnet.is_valid("::1"));
+    assert(ipnet.is_valid("1::"));
+    assert(ipnet.is_valid("2001:0db8::0001"));
+    assert(ipnet.is_valid("fe80:0000:0000:0000:0202:b3ff:fe1e:8329"));
+    assert(ipnet.is_valid("::ffff:192.168.1.1"));
+    assert(ipnet.is_valid("1:2:3:4:5:6:1.2.3.4"));
+    assert(ipnet.is_valid("1:2:3:4:5::1.2.3.4"));
+    assert(ipnet.is_v6("::1"));
+    assert(!ipnet.is_v4("::1"));
+
+    // Zone IDs, multiple compressions, non-compressing ::, and malformed groups are rejected.
+    assert(!ipnet.is_valid("fe80::1%eth0"));
+    assert(!ipnet.is_valid(":::1"));
+    assert(!ipnet.is_valid("1::2::3"));
+    assert(!ipnet.is_valid("1:2:3:4:5:6:7::8"));
+    assert(!ipnet.is_valid("1:2:3:4:5:6::1.2.3.4"));
+    assert(!ipnet.is_valid("192.168.1.1::1"));
+    assert(!ipnet.is_valid("2001:db8::12345"));
+    assert(!ipnet.is_valid("2001:db8::g"));
+    assert(!ipnet.is_valid("1:2:3:4:5:6:7:8:9"));
+
+    // Loopback and private ranges.
+    assert(ipnet.is_loopback("127.0.0.1"));
+    assert(ipnet.is_loopback("127.255.255.254"));
+    assert(ipnet.is_loopback("::1"));
+    assert(ipnet.is_loopback("0000::0001"));
+    assert(!ipnet.is_loopback("128.0.0.1"));
+    assert(!ipnet.is_loopback("::ffff:127.0.0.1"));
+    assert(!ipnet.is_loopback("::2"));
+    assert(ipnet.is_private("10.0.0.1"));
+    assert(ipnet.is_private("172.16.0.1"));
+    assert(ipnet.is_private("172.31.255.254"));
+    assert(ipnet.is_private("192.168.0.1"));
+    assert(!ipnet.is_private("172.15.255.255"));
+    assert(!ipnet.is_private("172.32.0.0"));
+    assert(!ipnet.is_private("11.0.0.1"));
+    assert(!ipnet.is_private("192.169.1.1"));
+    assert(!ipnet.is_private("fc00::1"));
+    assert(!ipnet.is_private("fd00::1"));
+    assert(!ipnet.is_private("::1"));
+}
+
+#[test]
+fn fuzz_seed_cidr_cases() {
+    // cidr4: 10.0.0.0/8 + 10.1.2.3
+    assert(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3").expect("cidr4"));
+    assert(!ipnet.cidr_contains("10.0.0.0/8", "11.0.0.1").expect("cidr4 outside"));
+    assert(ipnet.cidr_network("10.0.0.0/8").expect("cidr4 net") == "10.0.0.0");
+    assert(ipnet.cidr_broadcast("10.0.0.0/8").expect("cidr4 bcast") == .Some("10.255.255.255"));
+    assert(ipnet.cidr_hosts("10.0.0.0/8").expect("cidr4 hosts") == 16777214);
+
+    // cidr4-0: 0.0.0.0/0 + 8.8.8.8
+    assert(ipnet.cidr_contains("0.0.0.0/0", "8.8.8.8").expect("cidr4-0"));
+    assert(ipnet.cidr_network("0.0.0.0/0").expect("cidr4-0 net") == "0.0.0.0");
+    assert(ipnet.cidr_broadcast("0.0.0.0/0").expect("cidr4-0 bcast") == .Some("255.255.255.255"));
+    assert(ipnet.cidr_hosts("0.0.0.0/0").expect("cidr4-0 hosts") == 4294967294);
+
+    // cidr4-31: 192.168.0.0/31 + 192.168.0.1 (RFC 3021 keeps both hosts)
+    assert(ipnet.cidr_contains("192.168.0.0/31", "192.168.0.1").expect("cidr4-31"));
+    assert(ipnet.cidr_broadcast("192.168.0.0/31").expect("cidr4-31 bcast") == .Some("192.168.0.1"));
+    assert(ipnet.cidr_hosts("192.168.0.0/31").expect("cidr4-31 hosts") == 2);
+    assert(ipnet.cidr_hosts("192.168.0.1/32").expect("cidr4-32 hosts") == 1);
+    assert(ipnet.cidr_broadcast("192.168.0.1/32").expect("cidr4-32 bcast") == .Some("192.168.0.1"));
+
+    // cidr6-0: ::/0 + ::1
+    assert(ipnet.cidr_contains("::/0", "::1").expect("cidr6-0"));
+    assert(ipnet.cidr_network("::/0").expect("cidr6-0 net") == "::");
+    assert(ipnet.cidr_broadcast("::/0").expect("cidr6-0 bcast").is_none());
+    match ipnet.cidr_hosts("::/0") {
+        .Err(.HostCountOverflow) => {}
+        _ => panic("::/0 host count must overflow"),
+    }
+
+    // cidr6-65: 2001:db8::/65 + 2001:db8::1
+    assert(ipnet.cidr_contains("2001:db8::/65", "2001:db8::1").expect("cidr6-65"));
+    assert(ipnet.cidr_network("2001:db8::/65").expect("cidr6-65 net") == "2001:db8::");
+    assert(ipnet.cidr_broadcast("2001:db8::/65").expect("cidr6-65 bcast").is_none());
+    match ipnet.cidr_hosts("2001:db8::/65") {
+        .Err(.HostCountOverflow) => {}
+        _ => panic("/65 host count must overflow"),
+    }
+
+    // ipv6 seed: fe80::1%eth0 is invalid as IpAddr.
+    match ipnet.cidr_contains("::/0", "fe80::1%eth0") {
+        .Err(.InvalidAddress(value)) => assert(value == "fe80::1%eth0"),
+        _ => panic("scoped IPv6 address must fail"),
+    }
+
+    // Cross-family containment is false, not an error.
+    assert(!ipnet.cidr_contains("10.0.0.0/8", "::1").expect("v4 vs v6"));
+    assert(!ipnet.cidr_contains("::/0", "10.0.0.1").expect("v6 vs v4"));
+
+    // ipnet crate parity: CIDR parser accepts leading zeroes in octets and prefixes.
+    assert(ipnet.cidr_network("192.168.01.5/24").expect("leading-zero octet cidr") == "192.168.1.0");
+    assert(ipnet.cidr_network("10.0.0.0/08").expect("leading-zero prefix cidr") == "10.0.0.0");
+
+    // Invalid CIDR forms.
+    assert(ipnet.cidr_network("10.0.0.0/33").is_err());
+    assert(ipnet.cidr_network("::/129").is_err());
+    assert(ipnet.cidr_network("10.0.0.0/").is_err());
+    assert(ipnet.cidr_network("10.0.0.0").is_err());
+    assert(ipnet.cidr_network("10.0.0.0/24a").is_err());
+    assert(ipnet.cidr_network("2001:db8::/64x").is_err());
+}
+
+#[test]
+fn ipv6_masking_and_rfc5952_formatting() {
+    assert(ipnet.cidr_network("2001:db8:abcd:0012:ffff::1/64").expect("v6 /64") == "2001:db8:abcd:12::");
+    assert(ipnet.cidr_network("2001:db8:1:0:2:0:0:1/112").expect("v6 /112") == "2001:db8:1:0:2::");
+    assert(ipnet.cidr_network("0:0:1:2:0:0:3:4/128").expect("v6 tie") == "::1:2:0:0:3:4");
+    assert(ipnet.cidr_network("1:0:2:3:4:5:6:7/128").expect("v6 single zero") == "1:0:2:3:4:5:6:7");
+    assert(ipnet.cidr_network("::ffff:192.0.2.128/120").expect("v6 mapped") == "::ffff:192.0.2.0");
+    assert(ipnet.cidr_network("::2/128").expect("v6 non-mapped") == "::2");
+    assert(ipnet.cidr_network("2001:0db8:0000:0000:0000:ff00:0042:8329/128").expect("v6 canonical") == "2001:db8::ff00:42:8329");
+    assert(ipnet.cidr_network("2001:db8:8000::/33").expect("v6 /33") == "2001:db8:8000::");
+    assert(!ipnet.cidr_contains("2001:db8:8000::/33", "2001:db8:7fff::1").expect("v6 /33 out"));
+    assert(ipnet.cidr_contains("2001:db8:8000::/33", "2001:db8:ffff::1").expect("v6 /33 in"));
+}

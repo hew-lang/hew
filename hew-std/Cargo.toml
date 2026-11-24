@@ -17,11 +17,8 @@ crate-type = ["staticlib", "lib"]
 # must share with production code. Never enabled by a shipped build.
 fuzzing = []
 
-# Wasm + native deps. The wasm32 build (browser playground wire codecs)
-# compiles only the json/yaml/toml/pure modules, so only their crates may
-# appear here. Every native-only crate lives in the cfg(not(wasm)) block below
-# — many of them (ring, socket2, flate2, getrandom, …) hard-`compile_error!`
-# on wasm32, so listing them unconditionally would break the wasm build.
+# Wasm + native deps. Every native-only crate (ring, socket2, reqwest, …) lives
+# in the cfg(not(wasm)) block below.
 
 [dependencies]
 hew-codec = { path = "../hew-codec" }
@@ -33,9 +30,19 @@ hew-runtime = { path = "../hew-runtime", default-features = false }
 
 # Wire-codec + pure-module deps (wasm-safe).
 base64.workspace = true
+flate2 = "1"
 libc.workspace = true
+pulldown-cmark = "0.13.5"
+quick-xml = "0.42.0"
+rmp-serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+url = "2"
+
+# Host + WASI deps (excluded only on bare wasm32-unknown-unknown where getrandom
+# requires a custom JS/host entropy backend).
+[target.'cfg(any(not(target_family = "wasm"), target_os = "wasi"))'.dependencies]
+uuid = { version = "1.23.3", features = ["v4", "v7"] }
 
 # Native-only module deps (union of the former per-module crates). Gated off the
 # wasm build, where their crates do not compile.
@@ -48,8 +55,6 @@ ed25519-dalek = { version = "3", default-features = false, features = [
   "pkcs8",
   "zeroize",
 ] }
-flate2 = "1"
-ipnet = "2"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
@@ -59,12 +64,9 @@ lettre = { version = "0.11.24", default-features = false, features = [
   "rustls-tls",
 ] }
 parking_lot = "0.12"
-pulldown-cmark = "0.13.5"
-quick-xml = "0.42.0"
 quinn = "0.11"
 rcgen = "0.14.8"
 ring = "0.17"
-rmp-serde.workspace = true
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 tiny_http = "0.12"
 tokio = { version = "1", default-features = false, features = [
@@ -77,8 +79,6 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 reqwest.workspace = true
-url = "2"
-uuid = { version = "1.23.3", features = ["v4", "v7"] }
 webpki-roots = "1.0.10"
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 

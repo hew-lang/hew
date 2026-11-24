@@ -1013,7 +1013,6 @@ dependencies = [
  "hew-calendar",
  "hew-codec",
  "hew-runtime",
- "ipnet",
  "jsonwebtoken",
  "lettre",
  "libc",
@@ -1047,13 +1046,11 @@ dependencies = [
  "hew-cabi",
  "hew-calendar",
  "hew-std",
- "ipnet",
  "libfuzzer-sys",
  "rmp-serde",
  "serde",
  "serde_json",
  "tungstenite",
- "uuid",
 ]
 
 [[package]]

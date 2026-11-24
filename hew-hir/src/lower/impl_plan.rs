@@ -43,6 +43,64 @@ pub(super) fn impl_method_symbol_collisions(
 }
 
 impl LowerCtx<'_> {
+    /// Checker-published owner name for an `impl` block's `TypeExpr::Named`
+    /// target, before module-import or injected-builtin owner projection.
+    ///
+    /// Checks `resolutions` on the path's final segment first so authored type
+    /// aliases retain their own alias identity (`resolved_annotation_types`
+    /// expands aliases), then falls back to `checked_annotation_type` for
+    /// primitives, builtins, and blanket parameters.
+    pub(super) fn impl_target_symbol_owner(
+        &self,
+        target_type: &hew_parser::ast::Spanned<TypeExpr>,
+    ) -> Option<String> {
+        let TypeExpr::Named {
+            path: named_path, ..
+        } = &target_type.0
+        else {
+            return None;
+        };
+        if let Some((_, span)) = named_path.segments.last() {
+            match self.resolutions.get(&self.mk_key(span)) {
+                Some(Resolution::Nominal(id)) => {
+                    return Some(self.defs.path(id.declaration()).to_string());
+                }
+                Some(Resolution::Builtin(builtin)) => {
+                    return Some(builtin.canonical_name().to_string());
+                }
+                _ => {}
+            }
+        }
+        let resolved = self.checked_annotation_type(&self.mk_key(&target_type.1))?;
+        match resolved.as_ref() {
+            ResolvedTy::Named { head, .. } => match head {
+                hew_types::TypeHead::Nominal(nominal) | hew_types::TypeHead::Actor(nominal) => {
+                    Some(self.defs.path(nominal.id.declaration()).to_string())
+                }
+                hew_types::TypeHead::Builtin(builtin) => Some(builtin.canonical_name().to_string()),
+                hew_types::TypeHead::Param(param) => Some(param.spelling.to_string()),
+                hew_types::TypeHead::Unresolved(sym) => Some(sym.to_string()),
+            },
+            ResolvedTy::Unit => Some("()".to_string()),
+            primitive => Some(primitive.user_facing().to_string()),
+        }
+    }
+
+    pub(super) fn injected_impl_symbol_owner(
+        &self,
+        item: &Item,
+        target_type: &hew_parser::ast::Spanned<TypeExpr>,
+    ) -> Option<(String, bool)> {
+        let owner = self.impl_target_symbol_owner(target_type)?;
+        let receiver_specific = is_builtin_receiver_impl(item);
+        let symbol_owner = if receiver_specific {
+            injected_builtin_impl_symbol_owner(&owner).to_string()
+        } else {
+            imported_impl_symbol_self_name("std.builtins", &owner)
+        };
+        Some((symbol_owner, receiver_specific))
+    }
+
     /// Preserve existing symbols for unique methods. When two checker
     /// declarations would share one symbol, add a reversible encoding of the
     /// declaration path to the owner portion of each symbol.
@@ -442,12 +500,8 @@ pub(super) fn plan_imported_impl_bodies(
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         if let Item::Impl(impl_decl) = item {
-            if let TypeExpr::Named {
-                path: named_path, ..
-            } = &impl_decl.target_type.0
-            {
-                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
+            if let Some(name) = ctx.impl_target_symbol_owner(&impl_decl.target_type) {
+                plan_impl_block_symbols(ctx, impl_decl, &name, &empty_skips);
             }
         }
     }
@@ -477,15 +531,11 @@ pub(super) fn plan_imported_impl_bodies(
             if item_is_duplicated_in_preferred_module(program, preferred_modules, module_id, item) {
                 continue;
             }
-            let TypeExpr::Named {
-                path: named_path, ..
-            } = &impl_decl.target_type.0
-            else {
+            let Some(name) = ctx.impl_target_symbol_owner(&impl_decl.target_type) else {
                 continue;
             };
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             let skip_methods = ctx.imported_impl_skip_methods(impl_decl);
-            let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
+            let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, &name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_idx = previous_module_idx;
@@ -750,10 +800,10 @@ impl BuiltinMethodDemands {
 /// source declarations never call this projection.
 pub(super) fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
     match source_name {
-        "VecIter" => "std.builtins.VecIter",
-        "StringIter" => "std.builtins.StringIter",
-        "HashMapIter" => "std.builtins.HashMapIter",
-        "ActorRequestOwner" => "std.builtins.ActorRequestOwner",
+        "VecIter" | "std.builtins.VecIter" => "std.builtins.VecIter",
+        "StringIter" | "std.builtins.StringIter" => "std.builtins.StringIter",
+        "HashMapIter" | "std.builtins.HashMapIter" => "std.builtins.HashMapIter",
+        "ActorRequestOwner" | "std.builtins.ActorRequestOwner" => "std.builtins.ActorRequestOwner",
         _ => source_name,
     }
 }

@@ -291,7 +291,13 @@ pub struct HirExternFn {
 pub struct HirImplBlock {
     pub id: ItemId,
     pub node: HirNodeId,
-    /// `Some("Iterator")` for trait impls, `None` for inherent impls.
+    /// Checker-owned declaration identity of the implemented trait; `None`
+    /// for inherent impls or unresolved trait bounds.
+    pub trait_id: Option<hew_types::DefId>,
+    /// `true` when the impl block carries no trait bound (`impl Foo { ... }`).
+    pub is_inherent: bool,
+    /// Display name of the implemented trait, e.g. `Some("Iterator")`, derived
+    /// from [`Self::trait_id`]; `None` for inherent impls or unresolved traits.
     pub trait_name: Option<String>,
     /// User nominal target, e.g. `"VecIter"`. Builtin nominals are rejected
     /// at lowering time with `ImplBlockShapeNotLowered`.

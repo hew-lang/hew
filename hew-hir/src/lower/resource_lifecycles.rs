@@ -29,7 +29,7 @@ fn inherent_close_methods(
         .iter()
         .filter_map(|item| match item {
             HirItem::Impl(block)
-                if block.trait_name.is_none() && impl_receiver_is(identity, block, declaration) =>
+                if block.is_inherent && impl_receiver_is(identity, block, declaration) =>
             {
                 Some(block)
             }

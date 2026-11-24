@@ -219,11 +219,16 @@ pub fn dump_hir(module: &HirModule) -> String {
                 writeln!(out, "supervisor {} {}", sup.id, sup.name).expect("write to string");
             }
             HirItem::Impl(block) => {
+                let trait_label = if block.is_inherent {
+                    "<inherent>"
+                } else {
+                    block.trait_name.as_deref().unwrap_or("<unresolved trait>")
+                };
                 writeln!(
                     out,
                     "impl {} {} for {} [methods: {}]",
                     block.id,
-                    block.trait_name.as_deref().unwrap_or("<inherent>"),
+                    trait_label,
                     block.self_type_name,
                     block.method_names.join(", "),
                 )

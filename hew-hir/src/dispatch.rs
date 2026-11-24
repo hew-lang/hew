@@ -87,7 +87,7 @@ pub fn build_trait_impl_method_index(
         let HirItem::Impl(block) = item else { continue };
         // A target with no impl-dispatch anchor can never be reached from a
         // receiver, so it contributes no entries.
-        let (Some(_), Some(nominal)) = (&block.trait_name, &block.self_type) else {
+        let (Some(_), Some(nominal)) = (&block.trait_id, &block.self_type) else {
             continue;
         };
         // Generic impls are registered under their declaration nominal with no

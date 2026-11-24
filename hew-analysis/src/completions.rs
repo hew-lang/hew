@@ -124,7 +124,7 @@ pub fn complete(
             }
         }
         items.extend(imported_function_completions(tc));
-        for (name, sig) in &tc.builtin_fn_sigs {
+        for (name, sig) in tc.sigs().builtin_entries() {
             if is_source_identifier(name.as_str())
                 && !sig.is_builtin_variant
                 && !sig.associated
@@ -518,7 +518,7 @@ fn type_member_completions(
         && nominal.is_none_or(|id| tc.defs.declared_builtin(id.declaration()).is_some())
     {
         let prefix = format!("{name}::");
-        methods.extend(tc.builtin_fn_sigs.iter().filter_map(|(key, sig)| {
+        methods.extend(tc.sigs().builtin_entries().filter_map(|(key, sig)| {
             let member = key.as_str().strip_prefix(&prefix)?;
             (sig.associated && is_source_identifier(member))
                 .then(|| (member.to_string(), sig.clone()))

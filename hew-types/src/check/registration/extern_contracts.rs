@@ -606,7 +606,6 @@ impl Checker {
                         declaration,
                         symbol: source_symbol,
                         symbol_template: source_symbol_template,
-                        signature_key: key.clone(),
                         declaring_module: self.current_module.clone(),
                         declaring_file: self.current_module_idx,
                         direct_import_modules: self.current_module_direct_imports.clone(),
@@ -763,7 +762,7 @@ impl Checker {
     /// inherit a lifecycle.
     pub(in crate::check) fn derive_opaque_resource_candidate_graph(
         &self,
-        fn_sigs: crate::check::FnSigView<'_>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(
             &self.source_extern_declarations,
@@ -779,7 +778,7 @@ impl Checker {
     #[cfg(test)]
     pub(in crate::check) fn derive_opaque_resource_candidate_graph_for_contracts(
         &self,
-        fn_sigs: crate::check::FnSigView<'_>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
         contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(

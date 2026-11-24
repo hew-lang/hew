@@ -661,6 +661,7 @@ pub struct DefTable {
     /// TRANSITION(P2): deleted by A1 commit 3, when every consumer holds the
     /// id `Scope::resolve` returned instead of a rendered path.
     by_path: HashMap<String, DefId>,
+    builtin_callables: HashMap<Symbol, DefId>,
     default_bodies: HashMap<DefaultBodyKey, DefId>,
     /// The shared sourceless protocol selected for lambda actor calls.
     lambda_actor_protocol: Option<DefId>,
@@ -715,6 +716,7 @@ impl DefTable {
             restricted: HashMap::new(),
             private_record_fields: HashMap::new(),
             by_path: HashMap::new(),
+            builtin_callables: HashMap::new(),
             default_bodies: HashMap::new(),
             lambda_actor_protocol: None,
             builtin_declarations: HashMap::new(),
@@ -779,20 +781,37 @@ impl DefTable {
 
     /// Intern a compiler-provided callable at its registration boundary.
     pub(crate) fn builtin_callable(&mut self, name: &str) -> DefId {
-        let path = format!("<builtin>.{name}");
-        if let Some(id) = self.by_path.get(&path) {
-            return *id;
+        let symbol = Symbol::intern(name);
+        if let Some(&id) = self.builtin_callables.get(&symbol) {
+            return id;
         }
         let id = self.push_row(DefRow {
-            name: Ident::new(name),
+            name: Ident::from_symbol(symbol),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,
             site: None,
-            path: path.clone(),
+            path: format!("<builtin>.{name}"),
         });
-        self.by_path.insert(path, id);
+        self.builtin_callables.insert(symbol, id);
         id
+    }
+
+    /// Resolve a spelling in the compiler callable catalogue.
+    #[must_use]
+    pub fn lookup_builtin_callable(&self, name: Symbol) -> Option<DefId> {
+        self.builtin_callables.get(&name).copied()
+    }
+
+    /// Enumerate callable catalogue declarations for name completion.
+    pub fn builtin_callables(&self) -> impl Iterator<Item = (Symbol, DefId)> + '_ {
+        self.builtin_callables.iter().map(|(&name, &id)| (name, id))
+    }
+
+    pub(crate) fn is_builtin_callable(&self, id: DefId) -> bool {
+        self.defs.get(id.0 as usize).is_some_and(|row| {
+            row.module.is_none() && self.lookup_builtin_callable(row.name.name) == Some(id)
+        })
     }
 
     /// The row of a known `std.builtins` declaration: known rows follow the

@@ -1681,7 +1681,6 @@ mod tests {
             internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: fn_sig_parts.0,
             fn_sig_keys: fn_sig_parts.1,
-            builtin_fn_sigs: fn_sig_parts.2,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),

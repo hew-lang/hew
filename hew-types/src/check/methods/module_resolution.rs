@@ -226,7 +226,7 @@ impl Checker {
 
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
-        crate::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+        crate::check::FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys)
     }
 
     /// The signature a key spells.
@@ -243,10 +243,12 @@ impl Checker {
 
     /// The signature a key spells, mutably.
     pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
-        match self.fn_sig_keys.get(key) {
-            Some(id) => self.fn_sigs.get_mut(id),
-            None => self.builtin_fn_sigs.get_mut(&Symbol::intern(key)),
-        }
+        let declaration = self
+            .fn_sig_keys
+            .get(key)
+            .copied()
+            .or_else(|| self.defs.lookup_builtin_callable(Symbol::intern(key)))?;
+        self.fn_sigs.get_mut(&declaration)
     }
 
     /// File `sig` under `declaration`, reachable by `key`.
@@ -285,10 +287,13 @@ impl Checker {
     /// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
     /// resolve through it.
     pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.fn_sig_keys.get(source).copied() {
+        if let Some(declaration) = self
+            .fn_sig_keys
+            .get(source)
+            .copied()
+            .or_else(|| self.defs.lookup_builtin_callable(Symbol::intern(source)))
+        {
             self.fn_sig_keys.insert(key.to_string(), declaration);
-        } else if let Some(sig) = self.builtin_fn_sigs.get(&Symbol::intern(source)).cloned() {
-            self.builtin_fn_sigs.insert(Symbol::intern(key), sig);
         }
     }
 

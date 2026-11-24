@@ -477,9 +477,9 @@ fn root_registration_is_independent(
     !bindings.iter().any(|name| {
         footprint.contains(name)
             || seed
-                .builtin_fn_sigs
-                .keys()
-                .any(|builtin| builtin.as_str() == name)
+                .defs
+                .lookup_builtin_callable(hew_parser::ast::Symbol::intern(name))
+                .is_some()
             || super::builtin_named_type(name).is_some()
     })
 }

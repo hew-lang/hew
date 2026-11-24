@@ -170,9 +170,9 @@ pub fn builtin_function_names() -> &'static HashSet<String> {
         let mut checker = Checker::default();
         checker.register_builtins();
         let mut names: HashSet<String> = checker
-            .builtin_fn_sigs
-            .keys()
-            .map(|name| name.as_str())
+            .sigs()
+            .builtin_entries()
+            .map(|(name, _)| name.as_str())
             .filter(|name| !name.contains('.') && !name.contains("::"))
             .map(str::to_string)
             .collect();
@@ -965,8 +965,9 @@ impl Checker {
                 Some(scope::Resolution::Def(declaration)) => declaration,
                 None => {
                     return self
-                        .builtin_fn_sigs
-                        .contains_key(&ident.name)
+                        .defs
+                        .lookup_builtin_callable(ident.name)
+                        .is_some()
                         .then(|| name.to_string())
                 }
                 _ => return None,
@@ -1636,7 +1637,7 @@ impl Checker {
         &mut self,
         return_type: Ty,
         span: &std::ops::Range<usize>,
-        resolved_fn_sigs: crate::check::FnSigView<'_>,
+        resolved_fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> Option<EntryExitAction> {
         let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
         match return_type {
@@ -1698,7 +1699,7 @@ impl Checker {
                     ResolvedTy::Named { args, .. } => args.clone(),
                     _ => Vec::new(),
                 };
-                let Some(display_signature) = resolved_fn_sigs.of(display_declaration) else {
+                let Some(display_signature) = resolved_fn_sigs.get(&display_declaration) else {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         span.clone(),
@@ -1742,11 +1743,11 @@ impl Checker {
     /// handler's `Err(e)` into the actor's own fault, and the fault carries
     /// the error's text; a handler whose error the checker cannot render is
     /// refused at the submission rather than faulting with nothing to say.
-    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: crate::check::FnSigView<'_>) {
+    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: &HashMap<crate::DefId, FnSig>) {
         let mut targets: HashMap<crate::DefId, crate::actor_protocol::ReceiveFailureDisplay> =
             HashMap::new();
         for handler in self.receive_fails_methods.clone() {
-            let Some(sig) = resolved_fn_sigs.of(handler) else {
+            let Some(sig) = resolved_fn_sigs.get(&handler) else {
                 continue;
             };
             let Some((_, error_ty)) = sig.return_type.as_result() else {
@@ -1785,14 +1786,14 @@ impl Checker {
     fn receive_failure_display(
         &mut self,
         error_ty: &Ty,
-        resolved_fn_sigs: crate::check::FnSigView<'_>,
+        resolved_fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> Option<crate::actor_protocol::ReceiveFailureDisplay> {
         if matches!(error_ty, Ty::String) {
             return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
         }
         let display = self.lang_trait(crate::LangItem::Display)?;
         let declaration = self.trait_impl_method_declaration(error_ty, display, "fmt")?;
-        let signature = resolved_fn_sigs.of(declaration)?;
+        let signature = resolved_fn_sigs.get(&declaration)?;
         let instance = if signature.type_params.is_empty() {
             EntryCallableInstance::Declared
         } else {
@@ -1810,7 +1811,7 @@ impl Checker {
     fn classify_entry_exit_plan(
         &mut self,
         program: &Program,
-        resolved_fn_sigs: crate::check::FnSigView<'_>,
+        resolved_fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> Option<EntryExitPlan> {
         let (occurrence, span) =
             if let Some(selection) = self.entry_selection {
@@ -1840,7 +1841,7 @@ impl Checker {
             };
         let entry = self.defs.declaration(occurrence)?;
         let Some(return_type) = resolved_fn_sigs
-            .get(self.defs.path(entry))
+            .get(&entry)
             .map(|signature| signature.return_type.clone())
         else {
             self.errors.push(TypeError::new(
@@ -1864,7 +1865,7 @@ impl Checker {
     fn classify_test_entry_plans(
         &mut self,
         program: &Program,
-        resolved_fn_sigs: crate::check::FnSigView<'_>,
+        resolved_fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> Vec<TestEntryPlan> {
         let Some(selections) = self.test_entry_selections.clone() else {
             return Vec::new();
@@ -1915,7 +1916,7 @@ impl Checker {
                 invalid = true;
                 continue;
             };
-            let Some(signature) = resolved_fn_sigs.get(self.defs.path(entry)) else {
+            let Some(signature) = resolved_fn_sigs.get(&entry) else {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::TestSignature,
                     span.clone(),
@@ -3161,7 +3162,6 @@ impl Checker {
             type_defs: self.type_defs.clone(),
             fn_sigs: self.fn_sigs.clone(),
             fn_sig_keys: self.fn_sig_keys.clone(),
-            builtin_fn_sigs: self.builtin_fn_sigs.clone(),
             builtin_call_targets: self.builtin_call_targets.clone(),
             import_fn_name_aliases: self.import_fn_name_aliases.clone(),
             published_bare_function_owners: self.published_bare_function_owners.clone(),
@@ -3492,7 +3492,7 @@ impl Checker {
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
             &self.defs,
-            FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs),
+            FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys),
             |ty| self.normalize_for_use(ty),
         );
         self.register_actor_intercept_types(program);
@@ -3927,16 +3927,6 @@ impl Checker {
                 (id, resolved)
             })
             .collect();
-        let resolved_builtin_fn_sigs: HashMap<Symbol, FnSig> =
-            std::mem::take(&mut self.builtin_fn_sigs)
-                .into_iter()
-                .map(|(name, sig)| {
-                    let resolved = self.resolve_fn_sig(&sig);
-                    (name, resolved)
-                })
-                .collect();
-        self.builtin_fn_sigs.clone_from(&resolved_builtin_fn_sigs);
-
         self.validate_intrinsic_function_values(&resolved_expr_types);
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
@@ -3988,20 +3978,18 @@ impl Checker {
             })
             .collect();
         let callable_value_specializations = self.finalize_callable_value_specializations();
-        let fn_sig_keys = self.fn_sig_keys.clone();
-        let resolved_sigs =
-            FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
-        let test_entry_plans = self.classify_test_entry_plans(program, resolved_sigs);
+        let test_entry_plans = self.classify_test_entry_plans(program, &resolved_fn_sigs);
         let entry_exit_plan = if self.test_entry_selections.is_some() {
             None
         } else {
-            self.classify_entry_exit_plan(program, resolved_sigs)
+            self.classify_entry_exit_plan(program, &resolved_fn_sigs)
         };
-        self.attach_receive_failure_displays(resolved_sigs);
+        self.attach_receive_failure_displays(&resolved_fn_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
-        let opaque_resource_candidates = self.derive_opaque_resource_candidate_graph(resolved_sigs);
+        let opaque_resource_candidates =
+            self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
         for cycle in crate::cycle::detect_recursive_value_type_cycles(
             crate::check::TypeDefView::new(&self.defs, &resolved_type_defs),
         ) {
@@ -4247,7 +4235,10 @@ impl Checker {
             .collect();
         let source_function_targets = resolved_fn_sigs
             .keys()
-            .filter(|declaration| self.defs.kind(**declaration) == crate::DeclarationKind::Function)
+            .filter(|&&declaration| {
+                self.defs.kind(declaration) == crate::DeclarationKind::Function
+                    && !self.defs.is_builtin_callable(declaration)
+            })
             .map(|declaration| {
                 (
                     *declaration,
@@ -4348,7 +4339,6 @@ impl Checker {
             fn_sigs: resolved_fn_sigs,
             dispatch: self.dispatch.clone(),
             fn_sig_keys: self.fn_sig_keys.clone(),
-            builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             source_function_targets,
             imported_impl_body_facts,

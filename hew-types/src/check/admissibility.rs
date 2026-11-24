@@ -678,9 +678,12 @@ impl Checker {
         });
         self.validate_handle_types_no_field_overlap(type_defs);
 
-        fn_sigs.retain(|_, sig| {
-            !fn_sig_has_inference_var(sig)
-                && !signature_contains_error_type(&sig.params, &sig.return_type)
+        fn_sigs.retain(|id, sig| {
+            // Compiler callables may use inference variables in their catalogue
+            // signatures. The source handoff contract applies to checked bodies.
+            self.defs.is_builtin_callable(*id)
+                || (!fn_sig_has_inference_var(sig)
+                    && !signature_contains_error_type(&sig.params, &sig.return_type))
         });
         Self::validate_call_type_args_output_contract(call_type_args, expr_types);
         Self::validate_record_init_type_args_output_contract(record_init_type_args, expr_types);

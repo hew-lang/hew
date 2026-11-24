@@ -428,6 +428,43 @@ fn main() {
 }
 
 #[test]
+fn os_args_tail_drops_program_name_in_sandbox() {
+    let source = r#"import std.os;
+
+fn main() {
+    let tail = os.args_tail();
+    println(tail.len());
+    for arg in tail {
+        println(arg);
+    }
+}
+"#;
+    let empty = execute_options(
+        source,
+        "ok",
+        r#"{"argv":[]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&empty), "0\n");
+
+    let prog_only = execute_options(
+        source,
+        "ok",
+        r#"{"argv":["myprog"]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&prog_only), "0\n");
+
+    let with_args = execute_options(
+        source,
+        "ok",
+        r#"{"argv":["myprog","--flag","hello"]}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&with_args), "2\n--flag\nhello\n");
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {

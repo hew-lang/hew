@@ -183,16 +183,13 @@ pub(crate) fn register_handler_name_addr(key: usize, msg_type: i32, handler_name
 ///
 /// Returns `Some(dispatch_fn_as_usize)` when the actor is currently registered in
 /// the profiler registry, or `None` if the actor has already been freed or was
-/// never registered.  Used at `drain_events_json` drain time to build the compound
-/// `(dispatch_fn, msg_type)` key for handler-name resolution.
+/// never registered.
 ///
-/// SHIM: WHY: `HewTraceEvent` cannot carry a dispatch-fn pointer without an ABI
-///       change.  Drain-time lookup from the live actor registry is the
-///       zero-ABI-impact alternative (Option B from #1260).
-/// WHEN: Remove if `HewTraceEvent` is extended with `actor_type_id` in a future
-///       ABI revision.
-/// REAL: Embed the dispatch pointer (or a stable type ID) directly in
-///       `HewTraceEvent` when the C ABI is versioned.
+/// `HewTraceEvent` is frozen by the `hew_trace_drain` C ABI
+/// (`scripts/cabi-surface.json`) and cannot carry a dispatch pointer. Internal
+/// `TraceEventRecord` snapshots capture the dispatch pointer at emission time
+/// where available; this live-registry lookup provides the fallback when
+/// resolving `(dispatch_fn, msg_type)` handler names during JSON export.
 #[must_use]
 pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
     capture_actor_identity(actor_id).and_then(|(_, dispatch)| (dispatch != 0).then_some(dispatch))

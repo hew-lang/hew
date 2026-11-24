@@ -1427,11 +1427,18 @@ test("std.crypto.hash digests, hmac, and constant_time_eq run via Wasm bridge wh
       println(hash.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
       println(hash.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
       println(hash.constant_time_eq("abc".to_bytes(), "abcd".to_bytes()));
+      let empty: bytes = bytes [];
+      println(hash.constant_time_eq(empty, empty));
+      println(hash.constant_time_eq(bytes [0, 9, 255], bytes [0, 9, 255]));
+      println(hash.constant_time_eq(bytes [0, 9, 255], bytes [100, 200, 255]));
     }
   `;
   const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result));
-  assert.equal(result.stdout, "32\n48\n64\n32\ntrue\nfalse\nfalse\n");
+  assert.equal(
+    result.stdout,
+    "32\n48\n64\n32\ntrue\nfalse\nfalse\ntrue\ntrue\nfalse\n",
+  );
 
   const randomSource = `
     import std.crypto.hash;

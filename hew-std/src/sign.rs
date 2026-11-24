@@ -215,7 +215,10 @@ pub unsafe extern "C" fn hew_ed25519_key_from_pkcs8(
 ) -> *mut Ed25519Key {
     // SAFETY: forwarded caller contract.
     match SigningKey::from_pkcs8_der(unsafe { view(document) }) {
-        Ok(key) => into_handle(key_from_expanded(expand_seed(&key.to_bytes()))),
+        Ok(key) => {
+            let seed = Zeroizing::new(key.to_bytes());
+            into_handle(key_from_expanded(expand_seed(&seed)))
+        }
         Err(_) => std::ptr::null_mut(),
     }
 }

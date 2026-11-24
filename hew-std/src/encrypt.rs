@@ -318,8 +318,12 @@ pub unsafe extern "C" fn hew_encrypt_open(
     };
     match open_impl(key_bytes, ciphertext_bytes) {
         Ok(mut plaintext) => {
-            let mut buf = std::mem::take(&mut plaintext).into_bytes();
+            // Allocate the exact NUL-terminated buffer up front so pushing the
+            // terminator never reallocates and leaves an unzeroized plaintext copy.
+            let mut buf = Vec::with_capacity(plaintext.len() + 1);
+            buf.extend_from_slice(plaintext.as_bytes());
             buf.push(0);
+            plaintext.zeroize();
             // SAFETY: `out` is a caller-provided buffer under this function's contract.
             let written = unsafe { copy_bytes_to_out(out, out_len, &buf) };
             buf.zeroize();

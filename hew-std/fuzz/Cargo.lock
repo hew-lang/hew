@@ -41,6 +41,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -234,6 +235,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -630,6 +632,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -1005,14 +1008,17 @@ dependencies = [
 name = "hew-std"
 version = "0.11.3"
 dependencies = [
+ "aes-gcm",
  "argon2",
  "base64 0.22.1",
  "ed25519-dalek",
  "flate2",
+ "getrandom 0.4.3",
  "hew-cabi",
  "hew-calendar",
  "hew-codec",
  "hew-runtime",
+ "hmac",
  "jsonwebtoken",
  "lettre",
  "libc",
@@ -1023,10 +1029,11 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
- "ring",
  "rmp-serde",
  "rustls",
  "serde_json",
+ "sha2 0.11.0",
+ "subtle",
  "tiny_http",
  "tokio",
  "toml",
@@ -1051,6 +1058,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite",
+]
+
+[[package]]
+name = "hmac"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
+dependencies = [
+ "digest 0.11.3",
 ]
 
 [[package]]

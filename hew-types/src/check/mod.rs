@@ -4366,6 +4366,7 @@ impl Checker {
             // finished crediting lexical and implementation-provider routes.
             used_imports: self.scopes.take_used_imports(),
             scopes: std::sync::Arc::new(self.scopes.clone()),
+            focused_file: None,
         };
 
         // Detect actor reference cycles and emit warnings.

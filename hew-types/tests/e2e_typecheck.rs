@@ -500,7 +500,7 @@ fn use_widget(w: Widget) -> i64 {
             .any(|kind| matches!(
                 kind,
                 hew_types::MethodCallReceiverKind::NamedTypeInstance { head }
-                    if Some(*head) == output.root_type_head("Widget")
+                    if Some(*head) == output.visible_type_head("Widget")
             )),
         "expected named-type method call receiver metadata, got: {:?}",
         output.method_call_receiver_kinds
@@ -3917,7 +3917,7 @@ fn type_defs_with_error_shapes_are_pruned_from_output() {
             "{label}: expected TaskNotNameable, got: {:#?}",
             output.errors
         );
-        let head = output.root_type_head("Widget").expect("Widget declaration");
+        let head = output.visible_type_head("Widget").expect("Widget declaration");
         let receiver = Ty::named_head(head, vec![]);
         assert!(output.types().of(head).is_some());
         assert!(

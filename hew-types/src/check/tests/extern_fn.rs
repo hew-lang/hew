@@ -568,7 +568,7 @@ impl Holder {
         "well-formed template must not emit diagnostics, got: {:#?}",
         output.errors
     );
-    let receiver = Ty::named_head(output.root_type_head("Holder").unwrap(), vec![]);
+    let receiver = Ty::named_head(output.visible_type_head("Holder").unwrap(), vec![]);
     let sig = output
         .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("cloned"))
         .expect("dispatch must select the inherent method");

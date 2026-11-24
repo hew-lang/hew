@@ -273,7 +273,7 @@ fn machine_registers_type_def() {
     assert!(td.variants.contains_key("Closed"));
     assert!(td.variants.contains_key("Established"));
 
-    let receiver = Ty::named_head(output.root_type_head("TcpState").unwrap(), vec![]);
+    let receiver = Ty::named_head(output.visible_type_head("TcpState").unwrap(), vec![]);
     for name in ["step", "state_name"] {
         assert!(
             output
@@ -993,7 +993,7 @@ fn main() {
 
     let parameter = Ty::param(machine_td.type_params[0]);
     let receiver = Ty::named_head(
-        output.root_type_head("Lifecycle").unwrap(),
+        output.visible_type_head("Lifecycle").unwrap(),
         vec![parameter.clone()],
     );
     let step = output

@@ -99,7 +99,7 @@ pub fn hover(
                 });
             }
 
-            let head = type_output.root_type_head(word)?;
+            let head = type_output.visible_type_head(word)?;
             method_resolution::lookup_type_def(&type_output.defs, &type_output.type_defs, head).map(
                 |mut type_def| {
                     let receiver = Ty::named_head(

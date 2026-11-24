@@ -2199,7 +2199,7 @@ fn impl_dispatch_preserves_inline_method_bounds() {
         output.errors
     );
 
-    let receiver = Ty::named_head(output.root_type_head("Wrapper").unwrap(), vec![]);
+    let receiver = Ty::named_head(output.visible_type_head("Wrapper").unwrap(), vec![]);
     let sig = output
         .dispatched_method_sig(&receiver, Symbol::intern("map"))
         .expect("dispatch must select the impl method");

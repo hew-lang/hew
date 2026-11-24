@@ -560,6 +560,43 @@ fn checked_imported_record_completion_uses_the_selected_module() {
 }
 
 #[test]
+fn focused_file_resolves_shadowed_type_in_its_own_scope() {
+    let main_source = "import other; type Shape { colour: i64; } fn main() { other.build(); }";
+    let other_source =
+        "pub type Shape { width: i64; } pub fn build() -> Shape { Shape { width: 1 } }";
+    let main_uri = make_test_uri("/fake/identity-focus/main.hew");
+    let documents = DashMap::new();
+    documents.insert(
+        make_test_uri("/fake/identity-focus/other.hew"),
+        make_doc(other_source),
+    );
+    let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+    let errors = published_errors(&doc, &main_uri);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut output = doc.type_output.unwrap();
+    let root_shape = output.visible_type_head("Shape").unwrap();
+    assert!(output
+        .types()
+        .of(root_shape)
+        .unwrap()
+        .fields
+        .contains_key("colour"));
+
+    let other = hew_parser::module::ModulePath::new(["other"]);
+    let file = output.file_span_indices.module_base(&other).unwrap();
+    hew_analysis::identity::focus_file(&mut output, file);
+
+    let shape = output.visible_type_head("Shape").unwrap();
+    assert_ne!(shape, root_shape);
+    assert!(output
+        .types()
+        .of(shape)
+        .unwrap()
+        .fields
+        .contains_key("width"));
+}
+
+#[test]
 fn user_stream_completion_excludes_builtin_stream_methods() {
     let source = "type Stream {\n    value: i64;\n}\n\nimpl Stream {\n    fn own(self) -> i64 {\n        self.value\n    }\n}\n\nfn main() {\n    let stream = Stream { value: 1 };\n    println(stream.own());\n}\n";
     let doc = make_typed_doc(source);

@@ -339,7 +339,7 @@ fn try_dot_completions(
         for (field_name, field_ty) in &type_def.fields {
             if nominal.is_some_and(|id| {
                 tc.defs
-                    .inaccessible_record_field(id, field_name, tc.defs.root_module())
+                    .inaccessible_record_field(id, field_name, tc.viewed_source())
                     .is_some()
             }) {
                 continue;
@@ -577,7 +577,7 @@ fn type_member_completions(
     (nominal.is_some() || !items.is_empty()).then_some(items)
 }
 
-/// Resolve a root-scope type head using the checker's lexical import bindings.
+/// Resolve a type head in the viewed file using the checker's lexical import bindings.
 fn type_head_at<'a>(
     source: &'a str,
     tc: &TypeCheckOutput,
@@ -615,9 +615,9 @@ fn direct_type_head_at<'a>(
     let module_qualified = prefix.ends_with('.');
     let head = if let Some(module_prefix) = prefix.strip_suffix('.') {
         let binding = trailing_identifier(module_prefix.trim_end())?;
-        tc.root_type_head(&format!("{binding}.{name}"))
+        tc.visible_type_head(&format!("{binding}.{name}"))
     } else {
-        tc.root_type_head(name)
+        tc.visible_type_head(name)
     };
     let nominal = head.and_then(|head| head.declaration(&tc.defs));
     Some((name, nominal, module_qualified))
@@ -683,7 +683,7 @@ fn try_struct_init_completions(
         }
         Some(_) => return None,
         None => {
-            let head = tc.root_type_head(type_name)?;
+            let head = tc.visible_type_head(type_name)?;
             (
                 method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?,
                 head.declaration(&tc.defs),
@@ -700,7 +700,7 @@ fn try_struct_init_completions(
         .filter(|(name, _)| {
             nominal.is_none_or(|id| {
                 tc.defs
-                    .inaccessible_record_field(id, name, tc.defs.root_module())
+                    .inaccessible_record_field(id, name, tc.viewed_source())
                     .is_none()
             })
         })
@@ -735,7 +735,7 @@ fn try_enum_variant_completions(
 
     let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
-    let head = tc.root_type_head(type_name)?;
+    let head = tc.visible_type_head(type_name)?;
     let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?;
     if type_def.kind != TypeDefKind::Enum {
         return None;

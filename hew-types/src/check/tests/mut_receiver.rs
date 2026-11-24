@@ -124,7 +124,7 @@ impl Iterator for Counter {
         "expected clean typecheck, got: {:?}",
         output.errors,
     );
-    let receiver = Ty::named_head(output.root_type_head("Counter").unwrap(), vec![]);
+    let receiver = Ty::named_head(output.visible_type_head("Counter").unwrap(), vec![]);
     let sig = output
         .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("next"))
         .expect("dispatch must select the Counter iterator method");

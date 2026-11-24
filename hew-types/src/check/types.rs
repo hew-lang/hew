@@ -688,6 +688,8 @@ pub struct TypeCheckOutput {
     pub defs: std::sync::Arc<crate::DefTable>,
     /// The semantic scopes used to resolve this compilation's source names.
     pub scopes: std::sync::Arc<super::scope::Scopes>,
+    /// Source file whose facts an editor view presents at span index zero.
+    pub focused_file: Option<crate::ModuleId>,
     /// Every path segment the checker resolved, keyed by the segment's span:
     /// the identity `Scope::resolve` answered. HIR and tooling read it rather
     /// than resolving a spelling again.
@@ -1725,10 +1727,16 @@ impl TypeCheckOutput {
         TypeDefView::new(&self.defs, &self.type_defs)
     }
 
-    /// Resolve a type name in the root file for editor queries on incomplete source.
+    /// Source scope for editor queries, defaulting to the root file.
     #[must_use]
-    pub fn root_type_head(&self, path: &str) -> Option<crate::TypeHead> {
-        let file = self.defs.root_module()?;
+    pub fn viewed_source(&self) -> Option<crate::ModuleId> {
+        self.focused_file.or_else(|| self.defs.root_module())
+    }
+
+    /// Resolve a type name in the viewed source file.
+    #[must_use]
+    pub fn visible_type_head(&self, path: &str) -> Option<crate::TypeHead> {
+        let file = self.viewed_source()?;
         let segments: Vec<_> = path.split('.').collect();
         match self.scopes.lookup_type_path(file, &segments)? {
             super::scope::Resolution::Nominal(id) => {

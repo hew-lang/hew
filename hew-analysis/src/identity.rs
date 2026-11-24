@@ -35,6 +35,10 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
     if file == 0 {
         return;
     }
+    output.focused_file = output
+        .file_span_indices
+        .file_path(file)
+        .and_then(|path| output.defs.module_for_source(path));
     let swap = |key: &mut SpanKey| {
         if key.module_idx == file {
             key.module_idx = 0;

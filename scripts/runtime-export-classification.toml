@@ -304,6 +304,7 @@ stable = [
   "hew_env_has",
   "hew_env_remove",
   "hew_env_set",
+  "hew_errno_kind",
   "hew_exit",
   "hew_file_append",
   "hew_file_delete",

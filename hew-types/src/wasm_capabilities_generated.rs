@@ -190,7 +190,6 @@ pub mod wasm_capability_ids {
     pub const TIMERS_EVERY: WasmCapabilityId = WasmCapabilityId("timers-every");
     pub const TIMERS_SLEEP: WasmCapabilityId = WasmCapabilityId("timers-sleep");
     pub const TLS: WasmCapabilityId = WasmCapabilityId("tls");
-    pub const WASI_ERRNO: WasmCapabilityId = WasmCapabilityId("wasi-errno");
     pub const WASI_SOCKETS: WasmCapabilityId = WasmCapabilityId("wasi-sockets");
     pub const WEBSOCKET: WasmCapabilityId = WasmCapabilityId("websocket");
 }

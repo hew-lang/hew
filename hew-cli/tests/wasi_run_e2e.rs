@@ -707,6 +707,93 @@ fn supplied_directory_preopens_preserve_rooted_owners_under_wasi() {
     }
 }
 
+/// Real failing filesystem operations classify to the same `IoError` variants
+/// on a native directory and on a WASI preopen, whose raw errno spaces differ.
+#[test]
+#[cfg(unix)]
+fn filesystem_errors_classify_identically_on_native_and_wasi() {
+    use std::os::unix::fs::PermissionsExt;
+
+    require_codegen();
+    require_wasi_runner();
+    let temporary = tempdir();
+    let root = temporary.path().join("root");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("present"), b"data").unwrap();
+    let locked = root.join("locked");
+    fs::write(&locked, b"secret").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    // A process that bypasses file modes (such as root) cannot observe the
+    // denial; drop the file so the case reports NotFound on both targets.
+    let locked_line = if fs::read(&locked).is_ok() {
+        fs::remove_file(&locked).unwrap();
+        "locked: NotFound\n"
+    } else {
+        "locked: PermissionDenied\n"
+    };
+    let expected = format!(
+        "present: ok 4\nmissing: NotFound\n{locked_line}not-a-directory: Other\nnested: NotFound\nabsent: NotFound\n"
+    );
+    let source = repo_root().join("tests/vertical-slice/accept/wasi_fs_error_classification.hew");
+    for target in ["native", "wasm32-wasi"] {
+        let extension = if target == "native" { "" } else { ".wasm" };
+        let binary = temporary
+            .path()
+            .join(format!("classify-{target}{extension}"));
+        let mut build = support::hew_command();
+        build
+            .current_dir(repo_root())
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary);
+        if target != "native" {
+            build.args(["--target", target]);
+        }
+        let compiled =
+            support::run_bounded_command(build, format!("classification {target} build"));
+        support::assert_success(&compiled, "compile filesystem error classification");
+        let mut run = if target == "native" {
+            Command::new(&binary)
+        } else {
+            let mut run = Command::new(support::find_wasmtime().unwrap());
+            run.arg("run")
+                .arg("--dir")
+                .arg(format!("{}::root", root.display()))
+                .arg(&binary);
+            run
+        };
+        run.current_dir(temporary.path());
+        let output = support::run_bounded_command(run, format!("classification {target}"));
+        support::assert_success(&output, "execute filesystem error classification");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{target} classification\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // Restore a mode the temporary directory can delete.
+    let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o600));
+}
+
+/// The raw-integer helpers read WASI preview1 codes under WASI, and do not
+/// misread the POSIX or peer-platform codes that collide with them.
+#[test]
+fn raw_errno_helpers_use_the_wasi_errno_space() {
+    require_wasi_runner();
+    let source = repo_root().join("tests/vertical-slice/accept/wasi_errno_helpers.hew");
+    let output = run_wasi_example(&source);
+    support::assert_success(&output, "run WASI errno helpers");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "NotFound(44)\nPermissionDenied(2)\nAlreadyExists(20)\nTimedOut(73)\nCancelled(11)\n\
+         Other(17)\nOther(125)\nNotFound(44)\n",
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn assert_native_wasi_cases(names: &[&str]) {
     require_codegen();
     require_wasi_runner();

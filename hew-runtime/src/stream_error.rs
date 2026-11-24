@@ -81,6 +81,15 @@ pub const IO_ERROR_KIND_CONNECTION_CLOSED: i32 = 5;
 /// The platform cannot perform the operation as asked: a Unix permission mode
 /// on Windows, for example. Portable `std::io::ErrorKind::Unsupported`.
 pub const IO_ERROR_KIND_UNSUPPORTED: i32 = 6;
+/// The operation was cancelled (`ECANCELED`, or the Windows equivalents).
+/// Produced by [`errno_kind_tag`]; Rust has no portable `ErrorKind` for it.
+pub const IO_ERROR_KIND_CANCELLED: i32 = 7;
+/// The peer refused the connection (`ECONNREFUSED`).
+pub const IO_ERROR_KIND_CONNECTION_REFUSED: i32 = 8;
+/// The local address is already bound (`EADDRINUSE`).
+pub const IO_ERROR_KIND_ADDRESS_IN_USE: i32 = 9;
+/// The local address cannot be assigned (`EADDRNOTAVAIL`).
+pub const IO_ERROR_KIND_ADDRESS_NOT_AVAILABLE: i32 = 10;
 
 /// Map a portable [`std::io::ErrorKind`] to its canonical cross-platform tag.
 ///
@@ -102,6 +111,73 @@ pub fn io_error_kind_tag(kind: std::io::ErrorKind) -> i32 {
         ErrorKind::Unsupported => IO_ERROR_KIND_UNSUPPORTED,
         _ => IO_ERROR_KIND_UNCLASSIFIED,
     }
+}
+
+/// Classify a raw OS error code by the target's own errno space.
+///
+/// This is the one authority for turning a bare integer into a canonical tag
+/// when no `std::io::Error` is in scope. The integer spaces differ by target
+/// and collide: `wasm32-wasip1` numbers its errors in the WASI preview1 space
+/// (`ENOENT` = 44, `ECONNREFUSED` = 14) where Linux reads 44 as `ECHRNG` and 14
+/// as `EFAULT`. A WASI module therefore classifies only against that target's
+/// own constants.
+///
+/// Native targets accept the documented cross-platform set: the POSIX codes of
+/// Linux, macOS and FreeBSD plus the Windows `Win32` / `WinSock` codes, because a
+/// native program may carry a code recorded on a peer platform.
+///
+/// Returns [`IO_ERROR_KIND_UNCLASSIFIED`] for every code without a tag.
+#[must_use]
+pub fn errno_kind_tag(errno: i32) -> i32 {
+    #[cfg(target_os = "wasi")]
+    {
+        match errno {
+            e if e == libc::ENOENT => IO_ERROR_KIND_NOT_FOUND,
+            e if e == libc::EACCES => IO_ERROR_KIND_PERMISSION_DENIED,
+            e if e == libc::EEXIST => IO_ERROR_KIND_ALREADY_EXISTS,
+            e if e == libc::ETIMEDOUT => IO_ERROR_KIND_TIMED_OUT,
+            e if e == libc::ECANCELED => IO_ERROR_KIND_CANCELLED,
+            e if e == libc::ECONNREFUSED => IO_ERROR_KIND_CONNECTION_REFUSED,
+            e if e == libc::EADDRINUSE => IO_ERROR_KIND_ADDRESS_IN_USE,
+            e if e == libc::EADDRNOTAVAIL => IO_ERROR_KIND_ADDRESS_NOT_AVAILABLE,
+            _ => IO_ERROR_KIND_UNCLASSIFIED,
+        }
+    }
+    #[cfg(not(target_os = "wasi"))]
+    {
+        match errno {
+            // ENOENT: Linux, macOS, FreeBSD.
+            2 => IO_ERROR_KIND_NOT_FOUND,
+            // EACCES.
+            13 => IO_ERROR_KIND_PERMISSION_DENIED,
+            // EEXIST; ERROR_ALREADY_EXISTS is not a POSIX errno.
+            17 | 183 => IO_ERROR_KIND_ALREADY_EXISTS,
+            // ETIMEDOUT: Linux 110, macOS 60; WSAETIMEDOUT.
+            110 | 60 | 10_060 => IO_ERROR_KIND_TIMED_OUT,
+            // ECANCELED: Linux 125, macOS 89, FreeBSD 85; ERROR_OPERATION_ABORTED
+            // and WSAECANCELLED on Windows.
+            125 | 89 | 85 | 995 | 10_103 => IO_ERROR_KIND_CANCELLED,
+            // ECONNREFUSED: Linux 111, macOS 61; WSAECONNREFUSED.
+            111 | 61 | 10_061 => IO_ERROR_KIND_CONNECTION_REFUSED,
+            // EADDRINUSE: Linux 98, macOS 48; WSAEADDRINUSE.
+            98 | 48 | 10_048 => IO_ERROR_KIND_ADDRESS_IN_USE,
+            // EADDRNOTAVAIL: Linux 99, macOS 49; WSAEADDRNOTAVAIL.
+            99 | 49 | 10_049 => IO_ERROR_KIND_ADDRESS_NOT_AVAILABLE,
+            _ => IO_ERROR_KIND_UNCLASSIFIED,
+        }
+    }
+}
+
+/// C ABI wrapper over [`errno_kind_tag`] for `std.fs` and `std.net`.
+///
+/// A negative code is unclassified; callers narrow an `i64` before the call.
+///
+/// INTERNAL-ABI: the Hew standard library calls this so the raw-errno helpers
+/// share the runtime's per-target errno authority instead of repeating
+/// numeric tables.
+#[no_mangle]
+pub extern "C" fn hew_errno_kind(errno: i32) -> i32 {
+    errno_kind_tag(errno)
 }
 
 // ── In-crate Rust helpers ─────────────────────────────────────────────────────
@@ -510,6 +586,62 @@ mod tests {
             io_error_kind_tag(ErrorKind::Other),
             IO_ERROR_KIND_UNCLASSIFIED
         );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "wasi"))]
+    fn errno_kind_tag_classifies_native_and_peer_platform_codes() {
+        assert_eq!(errno_kind_tag(2), IO_ERROR_KIND_NOT_FOUND);
+        assert_eq!(errno_kind_tag(13), IO_ERROR_KIND_PERMISSION_DENIED);
+        assert_eq!(errno_kind_tag(17), IO_ERROR_KIND_ALREADY_EXISTS);
+        assert_eq!(errno_kind_tag(183), IO_ERROR_KIND_ALREADY_EXISTS);
+        for code in [110, 60, 10_060] {
+            assert_eq!(errno_kind_tag(code), IO_ERROR_KIND_TIMED_OUT, "{code}");
+        }
+        for code in [125, 89, 85, 995, 10_103] {
+            assert_eq!(errno_kind_tag(code), IO_ERROR_KIND_CANCELLED, "{code}");
+        }
+        for code in [111, 61, 10_061] {
+            assert_eq!(
+                errno_kind_tag(code),
+                IO_ERROR_KIND_CONNECTION_REFUSED,
+                "{code}"
+            );
+        }
+        for code in [98, 48, 10_048] {
+            assert_eq!(errno_kind_tag(code), IO_ERROR_KIND_ADDRESS_IN_USE, "{code}");
+        }
+        for code in [99, 49, 10_049] {
+            assert_eq!(
+                errno_kind_tag(code),
+                IO_ERROR_KIND_ADDRESS_NOT_AVAILABLE,
+                "{code}"
+            );
+        }
+        // 14 is EFAULT here but ECONNREFUSED in the WASI space; 44 is ECHRNG.
+        for code in [0, 5, 14, 44, 73, -1] {
+            assert_eq!(errno_kind_tag(code), IO_ERROR_KIND_UNCLASSIFIED, "{code}");
+        }
+        assert_eq!(hew_errno_kind(2), IO_ERROR_KIND_NOT_FOUND);
+    }
+
+    /// The WASI preview1 errno space is disjoint from the POSIX one the native
+    /// table recognises, so a WASI module must classify only its own codes.
+    #[test]
+    #[cfg(target_os = "wasi")]
+    fn errno_kind_tag_uses_the_wasi_errno_space() {
+        assert_eq!(errno_kind_tag(44), IO_ERROR_KIND_NOT_FOUND);
+        assert_eq!(errno_kind_tag(2), IO_ERROR_KIND_PERMISSION_DENIED);
+        assert_eq!(errno_kind_tag(20), IO_ERROR_KIND_ALREADY_EXISTS);
+        assert_eq!(errno_kind_tag(73), IO_ERROR_KIND_TIMED_OUT);
+        assert_eq!(errno_kind_tag(11), IO_ERROR_KIND_CANCELLED);
+        assert_eq!(errno_kind_tag(14), IO_ERROR_KIND_CONNECTION_REFUSED);
+        assert_eq!(errno_kind_tag(3), IO_ERROR_KIND_ADDRESS_IN_USE);
+        assert_eq!(errno_kind_tag(4), IO_ERROR_KIND_ADDRESS_NOT_AVAILABLE);
+        // Native peer-platform values mean something else under WASI.
+        for code in [17, 110, 111, 125, 61, 48, 183, 10_061] {
+            assert_eq!(errno_kind_tag(code), IO_ERROR_KIND_UNCLASSIFIED, "{code}");
+        }
     }
 
     #[test]

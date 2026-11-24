@@ -7341,6 +7341,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_errno_kind( i32) -> i32",
+        "wasm32-wasip1": "fn hew_errno_kind( i32) -> i32"
+      },
+      "symbol": "hew_errno_kind"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_exit( i64)",
         "wasm32-wasip1": "fn hew_exit( i64)"
       },

@@ -26,3 +26,33 @@ fn test_io_error_display_cancelled() {
     assert(to_string(IoError.Cancelled(89)) == "Cancelled(89)");
     assert(to_string(IoError.Cancelled(0)) == "Cancelled(0)");
 }
+
+#[test]
+fn test_io_error_from_errno_windows_cancelled_and_timeout() {
+    // ERROR_OPERATION_ABORTED and WSAECANCELLED are cancellations; WSAETIMEDOUT
+    // is a timeout. All three are recognised by the runtime's errno authority.
+    match fs.io_error_from_errno(995) {
+        IoError.Cancelled(code) => assert(code == 995),
+        _ => panic("expected IoError::Cancelled for errno 995"),
+    }
+    match fs.io_error_from_errno(10103) {
+        IoError.Cancelled(code) => assert(code == 10103),
+        _ => panic("expected IoError::Cancelled for errno 10103"),
+    }
+    match fs.io_error_from_errno(10060) {
+        IoError.TimedOut(code) => assert(code == 10060),
+        _ => panic("expected IoError::TimedOut for errno 10060"),
+    }
+}
+
+#[test]
+fn test_io_error_from_errno_out_of_range_is_other() {
+    match fs.io_error_from_errno(-2) {
+        IoError.Other(code) => assert(code == -2),
+        _ => panic("expected IoError::Other for a negative errno"),
+    }
+    match fs.io_error_from_errno(4294967298) {
+        IoError.Other(code) => assert(code == 4294967298),
+        _ => panic("expected IoError::Other for an errno wider than a C int"),
+    }
+}

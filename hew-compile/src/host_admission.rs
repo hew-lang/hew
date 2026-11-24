@@ -3480,4 +3480,37 @@ fn main() { launch(); }
                 if message.code == "E_DETERMINISTIC_TYPECHECK_REQUIRED"
         )));
     }
+
+    #[test]
+    fn confined_actors_admit_supplied_fs_reads_and_errno_classification() {
+        let source = "
+import std.fs;
+import std.net;
+
+#[confined]
+actor Reader {
+    let source: fs.ReadFile;
+    receive fn read() -> Result<bytes, fs.IoError> {
+        source.read()
+    }
+}
+
+#[confined]
+actor Copier {
+    let input: fs.ReadDir;
+    receive fn copy(path: string) -> Result<bytes, fs.IoError> {
+        input.read(path)
+    }
+}
+
+#[confined]
+fn classify_codes() {
+    let _ = fs.io_error_from_errno(2);
+    let _ = net.net_error_from_errno(111);
+}
+
+fn main() {}
+";
+        check_source(source, HostAdmission::ProcessEntry).unwrap();
+    }
 }

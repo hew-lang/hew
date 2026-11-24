@@ -853,6 +853,7 @@ const schema19 = {
         "LastErrorKind",
         "LastErrno",
         "LastError",
+        "ErrnoKind",
       ],
       type: "string",
     },
@@ -56684,6 +56685,7 @@ const schema86 = {
     "LastErrorKind",
     "LastErrno",
     "LastError",
+    "ErrnoKind",
   ],
   type: "string",
 };
@@ -56729,7 +56731,8 @@ function validate273(
       data === "HasError" ||
       data === "LastErrorKind" ||
       data === "LastErrno" ||
-      data === "LastError"
+      data === "LastError" ||
+      data === "ErrnoKind"
     )
   ) {
     validate273.errors = [

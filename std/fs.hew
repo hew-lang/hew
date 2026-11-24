@@ -64,39 +64,57 @@ pub enum IoError {
     Other(i64);
 }
 
-// WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `IoError` variant.
 ///
 /// The i64 payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
 ///
-/// This is a raw-integer helper: it recognises POSIX errno values plus the few
-/// Windows Win32 codes that do not collide with a POSIX errno (only
-/// `ERROR_ALREADY_EXISTS` = 183 today). Codes that mean *different* things on
-/// each platform — for example 5 (`EIO` on POSIX, `ERROR_ACCESS_DENIED` on
-/// Windows) — cannot be disambiguated from the integer alone; the
-/// Result-returning operations classify those correctly through the runtime's canonical error-kind
-/// channel (`hew_stream_last_error_kind`) and only fall back to this function
-/// for kinds without a canonical tag.
+/// This is a raw-integer helper. The runtime classifies the integer against
+/// the errno space of the target the program runs on (`hew_errno_kind`): a
+/// native build recognises the POSIX codes of Linux, macOS and FreeBSD plus the
+/// Windows Win32 codes that do not collide with a POSIX errno, while a
+/// `wasm32-wasi` build recognises only the WASI preview1 codes (`ENOENT` = 44,
+/// `EEXIST` = 20, ...). Codes that mean *different* things on each platform —
+/// for example 5 (`EIO` on POSIX, `ERROR_ACCESS_DENIED` on Windows) — cannot be
+/// disambiguated from the integer alone; the Result-returning operations
+/// classify those correctly through the runtime's canonical error-kind channel
+/// (`hew_stream_last_error_kind`) and only fall back to this function for kinds
+/// without a canonical tag.
 ///
 /// Covers file-system errno values. For network errno values use
 /// `net.net_error_from_errno` in `std.net`.
 pub fn io_error_from_errno(errno: i64) -> IoError {
-    // ENOENT: Linux=2, macOS=2
-    if errno == 2 {
+    io_error_from_tag(errno_kind(errno), errno)
+}
+
+/// Classify a raw errno through the runtime's per-target errno authority.
+/// A code outside the C `int` range is unclassified.
+fn errno_kind(errno: i64) -> i64 {
+    if errno < 0 || errno > 2147483647 {
+        0
+    } else {
+        unsafe {
+            hew_errno_kind(errno as i32) as i64
+        }
+    }
+}
+
+/// Map a canonical tag to its `IoError` variant, keeping the raw errno as the
+/// payload. A tag without an `IoError` variant yields `Other(errno)`. Keep the
+/// tag values in sync with the `IO_ERROR_KIND_*` constants in
+/// `hew-runtime/src/stream_error.rs`.
+fn io_error_from_tag(tag: i64, errno: i64) -> IoError {
+    if tag == 1 {
         IoError.NotFound(errno)
-    // EACCES: Linux=13, macOS=13
-    } else if errno == 13 {
+    } else if tag == 2 {
         IoError.PermissionDenied(errno)
-    // EEXIST: Linux=17, macOS=17; ERROR_ALREADY_EXISTS: Windows=183.
-    // 183 is not a POSIX errno, so mapping it here is unambiguous.
-    } else if errno == 17 || errno == 183 {
+    } else if tag == 3 {
         IoError.AlreadyExists(errno)
-    // ETIMEDOUT: Linux=110, macOS=60
-    } else if errno == 110 || errno == 60 {
+    } else if tag == 4 {
         IoError.TimedOut(errno)
-    // ECANCELED: Linux=125, macOS=89
-    } else if errno == 125 || errno == 89 {
+    } else if tag == 6 {
+        IoError.Unsupported(errno)
+    } else if tag == 7 {
         IoError.Cancelled(errno)
     } else {
         IoError.Other(errno)
@@ -109,8 +127,10 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// The tag classifies the failure identically on every platform — POSIX and
 /// Windows raw codes diverge and collide, so classification cannot be done from
 /// the errno alone — while the raw errno is preserved as the variant payload.
-/// Tag 0 (`IO_ERROR_KIND_UNCLASSIFIED`) means "no canonical kind": fall back to
-/// `io_error_from_errno`, which keeps platform detail for kinds without a tag
+/// A tag with no `IoError` variant (0 `IO_ERROR_KIND_UNCLASSIFIED`, the
+/// connection-closed tag and the network-only tags) falls back to
+/// `io_error_from_errno`, which classifies the raw code against the running
+/// target's errno space and keeps platform detail for kinds without a tag
 /// (e.g. `EISDIR`/`ENOTDIR` -> `Other(raw)`). Keep the tag values in sync with
 /// the `IO_ERROR_KIND_*` constants in `hew-runtime/src/stream_error.rs`.
 ///
@@ -118,16 +138,8 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// classify failures through
 /// this one authority rather than re-deriving it from the raw errno.
 pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
-    if kind == 1 {
-        IoError.NotFound(errno)
-    } else if kind == 2 {
-        IoError.PermissionDenied(errno)
-    } else if kind == 3 {
-        IoError.AlreadyExists(errno)
-    } else if kind == 4 {
-        IoError.TimedOut(errno)
-    } else if kind == 6 {
-        IoError.Unsupported(errno)
+    if kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 6 || kind == 7 {
+        io_error_from_tag(kind, errno)
     } else {
         io_error_from_errno(errno)
     }
@@ -989,6 +1001,7 @@ extern "C" {
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
+    fn hew_errno_kind(errno: i32) -> i32; // INTERNAL-ABI: canonical tag for a raw errno in the running target's errno space
     fn hew_file_read_stream_collect_string(consume stream: FileReadStream) -> string;
     fn hew_file_read_stream_close(consume stream: FileReadStream);
 }

@@ -304,6 +304,7 @@ stable = [
   "hew_env_has",
   "hew_env_remove",
   "hew_env_set",
+  "hew_errno_kind",
   "hew_exit",
   "hew_file_append",
   "hew_file_delete",
@@ -3410,6 +3411,13 @@ discharge-depth = "none"
 symbol = "hew_stream_last_error_kind"
 result = "none"
 params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_errno_kind"
+result = "none"
+params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

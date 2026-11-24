@@ -1044,7 +1044,8 @@
         "HasError",
         "LastErrorKind",
         "LastErrno",
-        "LastError"
+        "LastError",
+        "ErrnoKind"
       ],
       "type": "string"
     },

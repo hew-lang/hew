@@ -283,6 +283,8 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
           const operation = entry.detail;
           return ordinary((host) => host.fileError(operation));
         }
+        case "ErrnoKind":
+          return ordinary((_host, args) => errnoKindShim(integer(args, 0)));
         default:
           return refused(`FileRead::${entry.detail}`, true);
       }
@@ -1939,6 +1941,43 @@ function bool(value: boolean): VmValue {
 
 function int(value: bigint): VmValue {
   return { kind: "i64", value };
+}
+
+function errnoKindShim(raw: bigint): VmValue {
+  const errno = Number(BigInt.asIntN(32, raw));
+  switch (errno) {
+    case 2:
+      return int(1n);
+    case 13:
+      return int(2n);
+    case 17:
+    case 183:
+      return int(3n);
+    case 110:
+    case 60:
+    case 10060:
+      return int(4n);
+    case 125:
+    case 89:
+    case 85:
+    case 995:
+    case 10103:
+      return int(7n);
+    case 111:
+    case 61:
+    case 10061:
+      return int(8n);
+    case 98:
+    case 48:
+    case 10048:
+      return int(9n);
+    case 99:
+    case 49:
+    case 10049:
+      return int(10n);
+    default:
+      return int(0n);
+  }
 }
 
 function checkedChar(

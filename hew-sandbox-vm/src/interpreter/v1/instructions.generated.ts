@@ -222,7 +222,8 @@ export type FileReadOp =
   | "HasError"
   | "LastErrorKind"
   | "LastErrno"
-  | "LastError";
+  | "LastError"
+  | "ErrnoKind";
 export type FloatMethodOp =
   | "ToBits"
   | "IsNan"

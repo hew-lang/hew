@@ -65,6 +65,7 @@ pub enum FileReadOp {
     LastErrorKind,
     LastErrno,
     LastError,
+    ErrnoKind,
 }
 
 impl FileReadOp {
@@ -80,6 +81,7 @@ impl FileReadOp {
             | Self::LastErrorKind
             | Self::LastErrno
             | Self::LastError => crate::runtime_call::RuntimeAuthority::Service,
+            Self::ErrnoKind => crate::runtime_call::RuntimeAuthority::Value,
         }
     }
 
@@ -96,6 +98,7 @@ impl FileReadOp {
             Self::LastErrorKind => "hew_stream_last_error_kind",
             Self::LastErrno => "hew_stream_last_errno",
             Self::LastError => "hew_stream_last_error",
+            Self::ErrnoKind => "hew_errno_kind",
         }
     }
 
@@ -111,6 +114,10 @@ impl FileReadOp {
         use RuntimeValueKind::{Bool, FileReadHandle, String, I32};
         const PATH: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: String,
+            effect: Borrow,
+        };
+        const ERRNO: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: I32,
             effect: Borrow,
         };
         const NOMINAL_READ: RuntimeArgumentContract = RuntimeArgumentContract {
@@ -145,6 +152,7 @@ impl FileReadOp {
                 runtime_semantic_contract(&[], BitCopy(I32), &[])
             }
             Self::LastError => runtime_semantic_contract(&[], FreshOwned(String), &[]),
+            Self::ErrnoKind => runtime_semantic_contract(&[ERRNO], BitCopy(I32), &[]),
         }
     }
 }
@@ -177,7 +185,8 @@ impl RuntimeCallFamily {
                 FileReadOp::HasError
                 | FileReadOp::LastErrorKind
                 | FileReadOp::LastErrno
-                | FileReadOp::LastError,
+                | FileReadOp::LastError
+                | FileReadOp::ErrnoKind,
             ) => matches!(module, "std.fs" | "std.stream" | "std.net"),
             _ => false,
         };
@@ -259,6 +268,63 @@ mod tests {
             &[owner],
             &ResolvedTy::I32,
             &[false]
+        ));
+    }
+
+    #[test]
+    fn errno_kind_extern_authority_requires_exact_signature_and_std_module() {
+        let errno_kind = RuntimeCallFamily::FileRead(FileReadOp::ErrnoKind);
+        assert_eq!(
+            FileReadOp::ErrnoKind.authority(),
+            crate::runtime_call::RuntimeAuthority::Value
+        );
+        for module in ["std.fs", "std.net"] {
+            let declaration = format!("{module}.hew_errno_kind");
+            assert!(errno_kind.matches_file_read_extern(
+                &crate::DefTable::new(),
+                module,
+                &declaration,
+                errno_kind.c_symbol(),
+                &[ResolvedTy::I32],
+                &ResolvedTy::I32,
+                &[false],
+            ));
+        }
+        assert!(!errno_kind.matches_file_read_extern(
+            &crate::DefTable::new(),
+            "application",
+            "application.hew_errno_kind",
+            errno_kind.c_symbol(),
+            &[ResolvedTy::I32],
+            &ResolvedTy::I32,
+            &[false],
+        ));
+        assert!(!errno_kind.matches_file_read_extern(
+            &crate::DefTable::new(),
+            "std.fs",
+            "std.fs.hew_errno_kind",
+            errno_kind.c_symbol(),
+            &[ResolvedTy::I32],
+            &ResolvedTy::I32,
+            &[true],
+        ));
+        assert!(!errno_kind.matches_file_read_extern(
+            &crate::DefTable::new(),
+            "std.fs",
+            "std.fs.hew_errno_kind",
+            errno_kind.c_symbol(),
+            &[ResolvedTy::I64],
+            &ResolvedTy::I32,
+            &[false],
+        ));
+        assert!(!errno_kind.matches_file_read_extern(
+            &crate::DefTable::new(),
+            "std.fs",
+            "std.fs.hew_errno_kind",
+            errno_kind.c_symbol(),
+            &[ResolvedTy::I32],
+            &ResolvedTy::I64,
+            &[false],
         ));
     }
 }

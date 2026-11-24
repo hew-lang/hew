@@ -1031,12 +1031,6 @@ gap = "SMTP client parity"
 blocker = "A wasm32 transport bridge for the native-only SMTP wrapper"
 tracking_label = "WASM-TODO(smtp):"
 
-[[backlog]]
-id = "wasi-errno"
-gap = "WASI error-code classification"
-blocker = "Target-aware filesystem and network error mapping for WASI errno values"
-tracking_label = "WASM-TODO(wasi-errno):"
-
 # ---------------------------------------------------------------------------
 # Curated playground WASI exclusions.
 #

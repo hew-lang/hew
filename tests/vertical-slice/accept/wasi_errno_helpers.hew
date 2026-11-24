@@ -1,0 +1,15 @@
+import std.fs;
+
+// The raw-integer helper classifies against the running target's errno space.
+// This program runs under WASI only: the codes are the WASI preview1 values,
+// and the native values that collide with them must not be misread.
+fn main() {
+    println(to_string(fs.io_error_from_errno(44)));
+    println(to_string(fs.io_error_from_errno(2)));
+    println(to_string(fs.io_error_from_errno(20)));
+    println(to_string(fs.io_error_from_errno(73)));
+    println(to_string(fs.io_error_from_errno(11)));
+    println(to_string(fs.io_error_from_errno(17)));
+    println(to_string(fs.io_error_from_errno(125)));
+    println(to_string(fs.io_error_from_kind(0, 44)));
+}

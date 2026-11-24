@@ -94,30 +94,38 @@ pub enum NetError {
     Protocol(string);
 }
 
-// WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `NetError` variant.
 ///
 /// The i64 payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
 ///
+/// The runtime classifies the integer against the errno space of the target the
+/// program runs on (`hew_errno_kind`): a native build recognises the POSIX codes
+/// of Linux, macOS and FreeBSD plus the Windows WinSock and Win32 codes, while a
+/// `wasm32-wasi` build recognises only the WASI preview1 codes
+/// (`ECONNREFUSED` = 14, `EADDRINUSE` = 3, ...). Codes that collide across
+/// platforms are never matched against a foreign space.
+///
 /// Covers TCP, QUIC, TLS, HTTP, WebSocket, and DNS failure codes.
 pub fn net_error_from_errno(errno: i64) -> NetError {
-    // ECONNREFUSED: Linux=111, macOS=61, Windows=10061
-    if errno == 111 || errno == 61 || errno == 10061 {
+    let tag = if errno < 0 || errno > 2147483647 {
+        0
+    } else {
+        unsafe {
+            hew_errno_kind(errno as i32) as i64
+        }
+    };
+    // Tag values mirror the `IO_ERROR_KIND_*` constants in
+    // `hew-runtime/src/stream_error.rs`.
+    if tag == 8 {
         NetError.ConnectionRefused(errno)
-    // EADDRINUSE: Linux=98, macOS=48, Windows=10048
-    } else if errno == 98 || errno == 48 || errno == 10048 {
+    } else if tag == 9 {
         NetError.AddressInUse(errno)
-    // ETIMEDOUT: Linux=110, macOS=60, Windows=10060
-    } else if errno == 110 || errno == 60 || errno == 10060 {
+    } else if tag == 4 {
         NetError.TimedOut(errno)
-    // ECANCELED: Linux=125, macOS=89, FreeBSD=85. Windows has no
-    // WSABASEERR-offset ECANCELED; a cancelled/aborted overlapped net op
-    // surfaces as ERROR_OPERATION_ABORTED (995) or WSAECANCELLED (10103).
-    } else if errno == 125 || errno == 89 || errno == 85 || errno == 995 || errno == 10103 {
+    } else if tag == 7 {
         NetError.Cancelled(errno)
-    // EADDRNOTAVAIL: Linux=99, macOS=49, Windows=10049
-    } else if errno == 99 || errno == 49 || errno == 10049 {
+    } else if tag == 10 {
         NetError.AddressNotAvailable(errno)
     } else {
         NetError.Other(errno)
@@ -725,6 +733,7 @@ extern "C" {
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical error-kind tag; read before the errno
+    fn hew_errno_kind(errno: i32) -> i32; // INTERNAL-ABI: canonical tag for a raw errno in the running target's errno space
     fn hew_stream_last_write_committed() -> i64;
     // TCP-to-Stream/Sink bridge.  Consumes the connection handle on every
     // return path; returns a StreamPair whose halves are extracted with the

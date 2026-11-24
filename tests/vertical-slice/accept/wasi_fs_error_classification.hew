@@ -1,0 +1,56 @@
+import std.fs;
+import std.fs.{ IoError };
+
+// The same failures must classify to the same `IoError` variants whether the
+// directory grant is a native directory or a WASI preopen. Raw error codes
+// differ by target, so only the variant is reported.
+fn variant(error: IoError) -> string {
+    match error {
+        IoError.NotFound(_) => "NotFound",
+        IoError.PermissionDenied(_) => "PermissionDenied",
+        IoError.AlreadyExists(_) => "AlreadyExists",
+        IoError.TimedOut(_) => "TimedOut",
+        IoError.Cancelled(_) => "Cancelled",
+        IoError.Unsupported(_) => "Unsupported",
+        IoError.Other(_) => "Other",
+    }
+}
+
+fn probe(root: fs.ReadDir, name: string) {
+    match root.open_read(name) {
+        .Ok(file) => {
+            match file.read() {
+                .Ok(data) => println(f"{name}: ok {data.len()}"),
+                .Err(error) => println(f"{name}: {variant(error)}"),
+            }
+            file.close();
+        }
+        .Err(error) => println(f"{name}: {variant(error)}"),
+    }
+}
+
+fn main() {
+    let root = fs.open_read_dir("root").expect("supplied root");
+    probe(root, "present");
+    probe(root, "missing");
+    probe(root, "locked");
+    match root.subdir("present") {
+        .Ok(directory) => {
+            println("not-a-directory: unexpected");
+            directory.close();
+        }
+        .Err(error) => println(f"not-a-directory: {variant(error)}"),
+    }
+    match root.subdir("nested") {
+        .Ok(directory) => {
+            println("nested: unexpected");
+            directory.close();
+        }
+        .Err(error) => println(f"nested: {variant(error)}"),
+    }
+    match fs.open_read_dir("absent") {
+        .Ok(_) => println("absent: unexpected"),
+        .Err(error) => println(f"absent: {variant(error)}"),
+    }
+    root.close();
+}

@@ -267,7 +267,7 @@ impl RuntimeValueKind {
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorHandle => {
                 let actor = receiver?;
-                if !actor.is_builtin(BuiltinType::ActorHandle) {
+                if !actor.is_actor() && !actor.is_builtin(BuiltinType::ActorHandle) {
                     return None;
                 }
                 actor.clone()
@@ -874,7 +874,7 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     // An actor is the type of its handle, so the handle's arguments are the
     // actor declaration's own and may be empty.
-    if ty.is_builtin(BuiltinType::ActorHandle) {
+    if ty.is_actor() || ty.is_builtin(BuiltinType::ActorHandle) {
         return Some(BuiltinType::ActorHandle);
     }
     match ty {

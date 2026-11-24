@@ -782,7 +782,7 @@ impl Checker {
                     }
                     // A builtin carries no user member set to descend into, and its
                     // ownership verdict is already decided above.
-                    if builtin.is_some() {
+                    if head.is_actor() || builtin.is_some() {
                         return false;
                     }
                     let members: Vec<Ty> = self

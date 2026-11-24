@@ -997,7 +997,7 @@ impl Checker {
             Ty::Tuple(values) => (false, values.clone()),
             Ty::Array(value, _) | Ty::Slice(value) => (false, vec![(**value).clone()]),
             Ty::Named { head, args } => {
-                if (effects && head.builtin().is_some())
+                if (effects && (head.is_actor() || head.builtin().is_some()))
                     || matches!(
                         head.builtin(),
                         Some(

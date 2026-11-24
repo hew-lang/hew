@@ -736,7 +736,8 @@ impl LowerCtx<'_> {
             .iter()
             .map(|arg| self.qualify_colliding_module_record_ty(arg, module_full_path))
             .collect();
-        if builtin.is_some()
+        if head.is_actor()
+            || builtin.is_some()
             || *is_opaque
             || name.contains('.')
             || !self.cross_module_colliding_record_names.contains(name)

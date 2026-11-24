@@ -2226,7 +2226,8 @@ pub(crate) fn verify_terminator(
                             "variant runtime result has no physical contract",
                         ));
                     };
-                    let Some((ok_ty, error_ty)) = kind.payload_types(&result_slot.ty) else {
+                    let Some((ok_ty, error_ty)) = kind.payload_types(&module.defs, &result_slot.ty)
+                    else {
                         return Err(PhysicalError::new(
                             "UTF-8 decode result has the wrong nominal type",
                         ));

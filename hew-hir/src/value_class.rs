@@ -271,6 +271,9 @@ pub fn lookup_type_marker_for_ty(
         return None;
     };
     let name = head.registry_key();
+    if head.is_actor() {
+        return Some(ResourceMarker::Resource);
+    }
     let builtin = head.builtin();
 
     if let Some(builtin) = builtin {

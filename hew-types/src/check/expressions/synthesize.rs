@@ -611,7 +611,8 @@ impl Checker {
                     let r = self.subst.resolve(ret);
                     matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
-                        if head.builtin().is_none()
+                        if !head.is_actor()
+                            && head.builtin().is_none()
                             && self.head_type_def(*head).is_none()
                             && !head.nominal().is_some_and(|id| {
                                 self.type_aliases.contains_key(&id.declaration())

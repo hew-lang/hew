@@ -261,9 +261,7 @@ impl SemSupervisor {
         if module.supervisor(self.id) != Some(self) {
             return Err("supervisor descriptor is not at its canonical index".into());
         }
-        if !self
-            .handle_ty
-            .is_builtin(hew_types::BuiltinType::ActorHandle)
+        if !is_actor_handle_ty(&self.handle_ty)
             || declared_handle(&module.defs, &self.handle_ty) != Some(self.declaration)
         {
             return Err("supervisor handle refers to another declaration".into());
@@ -359,6 +357,10 @@ impl SemSupervisor {
         }
         Ok(())
     }
+}
+
+fn is_actor_handle_ty(ty: &ResolvedTy) -> bool {
+    ty.is_actor() || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
 }
 
 /// The declaration a direct handle or stable supervisor role names.

@@ -1417,7 +1417,8 @@ fn transfers_ownership_to_mailbox_guarded(
             {
                 return true;
             }
-            if builtin.is_none()
+            if !head.is_actor()
+                && builtin.is_none()
                 && matches!(
                     type_classes.get(name).map(|(marker, _)| *marker),
                     Some(ResourceMarker::Resource | ResourceMarker::Linear)
@@ -1432,7 +1433,7 @@ fn transfers_ownership_to_mailbox_guarded(
             }
             // A builtin carries no user member set to descend into, and its
             // ownership verdict is already decided above.
-            if builtin.is_some() || !visiting.insert(name.to_string()) {
+            if head.is_actor() || builtin.is_some() || !visiting.insert(name.to_string()) {
                 return false;
             }
             let carries = type_member_tys.get(name).is_some_and(|members| {

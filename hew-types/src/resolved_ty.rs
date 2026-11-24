@@ -572,6 +572,12 @@ impl ResolvedTy {
         }
     }
 
+    /// Returns whether this type is a declared actor handle.
+    #[must_use]
+    pub fn is_actor(&self) -> bool {
+        self.head().is_some_and(TypeHead::is_actor)
+    }
+
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {

@@ -285,7 +285,7 @@ impl Checker {
                 {
                     return true;
                 }
-                if head.builtin().is_some() {
+                if head.is_actor() || head.builtin().is_some() {
                     return false;
                 }
                 match self.registry.member_types(*head) {

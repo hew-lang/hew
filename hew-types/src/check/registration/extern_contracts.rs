@@ -119,7 +119,7 @@ impl Checker {
                     .iter()
                     .map(|arg| self.resolve_extern_signature_nominals(arg))
                     .collect();
-                if builtin.is_some() || head.is_param() {
+                if builtin.is_some() || head.is_actor() || head.is_param() {
                     Ty::Named { head: *head, args }
                 } else {
                     self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)

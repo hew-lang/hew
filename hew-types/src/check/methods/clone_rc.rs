@@ -262,7 +262,8 @@ impl Checker {
                 Ty::Named { head, args, .. } => {
                     let name = head.registry_key();
                     let builtin = head.builtin();
-                    if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
+                    if head.is_actor() || builtin.is_some_and(BuiltinType::is_affine_clone_terminal)
+                    {
                         return None;
                     }
                     let member = if path.is_empty() { "value" } else { path };
@@ -603,14 +604,15 @@ impl Checker {
                         return None;
                     }
                     if local_message_layouts
-                        && matches!(
-                            builtin,
-                            Some(
-                                crate::BuiltinType::Sink
-                                    | crate::BuiltinType::Stream
-                                    | crate::BuiltinType::ActorHandle
-                            )
-                        )
+                        && (head.is_actor()
+                            || matches!(
+                                builtin,
+                                Some(
+                                    crate::BuiltinType::Sink
+                                        | crate::BuiltinType::Stream
+                                        | crate::BuiltinType::ActorHandle
+                                )
+                            ))
                     {
                         return None;
                     }

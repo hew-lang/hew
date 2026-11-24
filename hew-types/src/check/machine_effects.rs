@@ -342,7 +342,7 @@ fn collect_released_resources(
             // Native-backed carriers own their typed payloads. A source
             // declaration instead owns its stored members; a generic argument
             // alone does not introduce a value or a release obligation.
-            if head.builtin().is_some() || declaration.is_none() {
+            if head.is_actor() || head.builtin().is_some() || declaration.is_none() {
                 for arg in args {
                     collect_released_resources(arg, output, found, seen);
                 }

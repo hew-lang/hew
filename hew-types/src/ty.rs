@@ -383,17 +383,11 @@ impl TypeHead {
         }
     }
 
-    /// The builtin this head is, when it is one. An actor head reports the
-    /// handle builtin, so a discriminator that reads the builtin sees an
-    /// actor handle.
-    ///
-    /// TRANSITION(A1 commit 3): the actor arm is deleted when every such
-    /// discriminator matches `TypeHead::Actor`.
+    /// The builtin this head is, when it is one.
     #[must_use]
     pub fn builtin(self) -> Option<BuiltinType> {
         match self {
             Self::Builtin(builtin) => Some(builtin),
-            Self::Actor(_) => Some(BuiltinType::ActorHandle),
             _ => None,
         }
     }
@@ -1874,7 +1868,8 @@ impl Ty {
             | Ty::Unit => true,
             Ty::Tuple(members) => members.iter().all(Ty::renders_structurally),
             Ty::Named { head, args } => {
-                head.builtin().is_none_or(BuiltinType::renders_structurally)
+                !head.is_actor()
+                    && head.builtin().is_none_or(BuiltinType::renders_structurally)
                     && args.iter().all(Ty::renders_structurally)
             }
             _ => false,

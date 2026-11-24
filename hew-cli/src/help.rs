@@ -157,7 +157,7 @@ fn stdout_terminal_width() -> Option<usize> {
         GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
     };
     // SAFETY: `GetStdHandle` and `GetConsoleScreenBufferInfo` are standard
-    // Win32 console queries; `info` is zero-initialised and valid for writes.
+    // Win32 console queries; `info` is zero-initialized and valid for writes.
     unsafe {
         let handle = GetStdHandle(STD_OUTPUT_HANDLE);
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
@@ -284,7 +284,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        hew_command, hew_command_with_width, resolve_listing_width, COMMAND_GROUPS,
+        hew_command, hew_command_with_width, listing_width, resolve_listing_width, COMMAND_GROUPS,
         DEFAULT_LISTING_WIDTH, UNFILED_HEADING,
     };
 
@@ -376,11 +376,25 @@ mod tests {
     /// the page or breaking the two-column alignment.
     #[test]
     fn help_listing_wraps_within_the_listing_width() {
-        let help = rendered_help();
-        for line in listing_lines(&help) {
+        let deterministic = hew_command_with_width(DEFAULT_LISTING_WIDTH)
+            .render_help()
+            .to_string();
+        for line in listing_lines(&deterministic) {
             assert!(
                 line.chars().count() <= DEFAULT_LISTING_WIDTH,
-                "line exceeds the listing width: {line:?}"
+                "deterministic non-TTY line exceeds {DEFAULT_LISTING_WIDTH} columns: {line:?}"
+            );
+        }
+
+        // `libtest` captures Rust print macros without redirecting OS stdout,
+        // so `hew_command()` honours the live terminal width when tests run in
+        // an interactive terminal wider than `DEFAULT_LISTING_WIDTH`.
+        let live_width = listing_width();
+        let live = rendered_help();
+        for line in listing_lines(&live) {
+            assert!(
+                line.chars().count() <= live_width,
+                "line exceeds live listing width ({live_width}): {line:?}"
             );
         }
     }

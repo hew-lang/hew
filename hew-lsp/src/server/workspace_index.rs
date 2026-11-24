@@ -96,11 +96,21 @@ impl DiskStamp {
 
 #[derive(Debug, Clone)]
 enum FileOrigin {
-    Open { content_hash: u64, source: Arc<str> },
-    Disk { stamp: DiskStamp },
+    Open {
+        /// `true` when updated directly by LSP editor lifecycle notifications
+        /// (`didOpen`/`didChange`/`didSave`); `false` when populated from a
+        /// standalone `DashMap` fallback. Prevents debounced `DocumentState`
+        /// snapshots from downgrading fresher `didChange` buffers.
+        managed: bool,
+        content_hash: u64,
+        source: Arc<str>,
+    },
+    Disk {
+        stamp: DiskStamp,
+    },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct IndexedNamedImport {
     target_key: Url,
     imported_uri: Url,
@@ -224,11 +234,17 @@ impl WorkspaceIndex {
         let key = source_file_key(uri);
         let hash = content_hash(source);
 
-        // Fast path: unchanged open buffer content.
+        // Fast path: unchanged managed open buffer content.
         if let Ok(state) = self.state.read() {
             if let Some(existing) = state.files.get(&key) {
-                if matches!(existing.origin, FileOrigin::Open { content_hash: existing_hash, .. } if existing_hash == hash)
-                    && existing.uri == *uri
+                if matches!(
+                    existing.origin,
+                    FileOrigin::Open {
+                        managed: true,
+                        content_hash: existing_hash,
+                        ..
+                    } if existing_hash == hash
+                ) && existing.uri == *uri
                 {
                     return;
                 }
@@ -243,6 +259,7 @@ impl WorkspaceIndex {
             &line_offsets,
             &parse_result,
             FileOrigin::Open {
+                managed: true,
                 content_hash: hash,
                 source: Arc::from(source),
             },
@@ -262,53 +279,74 @@ impl WorkspaceIndex {
         }
     }
 
-    /// Ensure any document present in `documents` that is not already tracked
-    /// as an open buffer is indexed (supports standalone tests that insert into
-    /// `DashMap<Url, DocumentState>` without invoking `didOpen`).
+    /// Ensure any document present in `documents` that is not managed via LSP
+    /// open/change notifications is indexed and up to date (supports standalone
+    /// tests that insert into or update `DashMap<Url, DocumentState>` directly).
+    ///
+    /// Snapshots existing open state and releases `self.state` BEFORE iterating
+    /// `documents` so the lock order never inverts against callers that hold a
+    /// `DashMap` shard guard while querying the index.
     pub(super) fn sync_untracked_open_documents(&self, documents: &DashMap<Url, DocumentState>) {
         if documents.is_empty() {
             return;
         }
-        let open_uris: Vec<Url> = documents.iter().map(|entry| entry.key().clone()).collect();
-        let mut to_insert = Vec::new();
-        {
+        // Value is `None` for LSP-managed buffers (never overwrite from
+        // debounced `DocumentState`) and `Some(hash)` for unmanaged fallback
+        // entries (refresh if the `DashMap` entry's content hash changed).
+        let existing_open: HashMap<Url, Option<u64>> = {
             let Ok(state) = self.state.read() else {
                 return;
             };
-            for entry in documents {
-                let uri = entry.key();
-                let key = source_file_key(uri);
-                if state
-                    .files
-                    .get(&key)
-                    .is_some_and(|file| matches!(file.origin, FileOrigin::Open { .. }))
-                {
-                    continue;
-                }
-                let doc = entry.value();
-                to_insert.push(build_indexed_file(
-                    uri,
-                    &doc.source,
-                    &doc.line_offsets,
-                    &doc.parse_result,
+            state
+                .files
+                .iter()
+                .filter_map(|(key, file)| match file.origin {
+                    FileOrigin::Open { managed: true, .. } => Some((key.clone(), None)),
                     FileOrigin::Open {
-                        content_hash: content_hash(&doc.source),
-                        source: Arc::from(doc.source.as_str()),
-                    },
-                    &open_uris,
-                ));
+                        managed: false,
+                        content_hash,
+                        ..
+                    } => Some((key.clone(), Some(content_hash))),
+                    FileOrigin::Disk { .. } => None,
+                })
+                .collect()
+        };
+
+        let open_uris: Vec<Url> = documents.iter().map(|entry| entry.key().clone()).collect();
+        let mut to_insert = Vec::new();
+        for entry in documents {
+            let uri = entry.key();
+            let key = source_file_key(uri);
+            let doc = entry.value();
+            let doc_hash = content_hash(&doc.source);
+            if let Some(tracked) = existing_open.get(&key) {
+                match tracked {
+                    None => continue,
+                    Some(prev_hash) if *prev_hash == doc_hash => continue,
+                    Some(_) => {}
+                }
             }
+            to_insert.push(build_indexed_file(
+                uri,
+                &doc.source,
+                &doc.line_offsets,
+                &doc.parse_result,
+                FileOrigin::Open {
+                    managed: false,
+                    content_hash: doc_hash,
+                    source: Arc::from(doc.source.as_str()),
+                },
+                &open_uris,
+            ));
         }
         if to_insert.is_empty() {
             return;
         }
         if let Ok(mut state) = self.state.write() {
             for file in to_insert {
-                if state
-                    .files
-                    .get(&file.key)
-                    .is_some_and(|existing| matches!(existing.origin, FileOrigin::Open { .. }))
-                {
+                if state.files.get(&file.key).is_some_and(|existing| {
+                    matches!(existing.origin, FileOrigin::Open { managed: true, .. })
+                }) {
                     continue;
                 }
                 state.insert_file(file);
@@ -363,12 +401,16 @@ impl WorkspaceIndex {
                             open_uris,
                         );
                         if let Ok(mut state) = self.state.write() {
+                            let was_present = state.files.contains_key(&key);
                             state.insert_file(indexed);
                             #[cfg(test)]
                             {
                                 state.stats.disk_parses += 1;
                             }
                             state.record_disk_key_under_matching_roots(&key, &path);
+                            if !was_present {
+                                state.re_resolve_unresolved_imports(open_uris);
+                            }
                         }
                         return;
                     }
@@ -410,11 +452,30 @@ impl WorkspaceIndex {
         }
     }
 
+    fn is_under_skipped_workspace_dir(&self, uri: &Url, path: &Path) -> bool {
+        let Some(root) = self.resolve_root_for_uri(uri) else {
+            return false;
+        };
+        let canonical_root = normalize_workspace_path(&root);
+        let physical = resolved_physical_path(path).unwrap_or_else(|_| path.to_path_buf());
+        let Ok(relative) = physical.strip_prefix(&canonical_root) else {
+            return false;
+        };
+        relative.parent().is_some_and(|parent| {
+            parent
+                .components()
+                .any(|component| should_skip_workspace_dir(Path::new(component.as_os_str())))
+        })
+    }
+
     fn refresh_single_disk_uri(&self, uri: &Url, open_uris: &[Url]) {
         let Some(path) = uri.to_checked_file_path() else {
             return;
         };
         if path.extension().and_then(|ext| ext.to_str()) != Some("hew") {
+            return;
+        }
+        if self.is_under_skipped_workspace_dir(uri, &path) {
             return;
         }
         let key = source_file_key(uri);
@@ -481,12 +542,16 @@ impl WorkspaceIndex {
             {
                 return;
             }
+            let was_present = state.files.contains_key(&key);
             state.insert_file(indexed);
             #[cfg(test)]
             {
                 state.stats.disk_parses += 1;
             }
             state.record_disk_key_under_matching_roots(&key, &path);
+            if !was_present {
+                state.re_resolve_unresolved_imports(open_uris);
+            }
         }
     }
 
@@ -779,7 +844,7 @@ impl IndexState {
             };
             let (resolved, has_unresolved) =
                 resolve_named_imports(&existing.uri, &source, &existing.raw_imports, open_uris);
-            if resolved.len() == existing.resolved_imports.len()
+            if resolved == existing.resolved_imports
                 && has_unresolved == existing.has_unresolved_imports
             {
                 continue;
@@ -913,7 +978,11 @@ impl IndexState {
         #[cfg(not(test))]
         let _ = is_initial;
 
+        let mut added_new_file = false;
         for file in to_upsert {
+            if !self.files.contains_key(&file.key) {
+                added_new_file = true;
+            }
             self.insert_file(file);
         }
 
@@ -923,6 +992,9 @@ impl IndexState {
                 disk_keys: current_disk_keys,
             },
         );
+        if added_new_file {
+            self.re_resolve_unresolved_imports(open_uris);
+        }
         Ok(())
     }
 }
@@ -1393,6 +1465,188 @@ mod tests {
             importers_after.is_empty(),
             "watched-file edit removing import must clear importer graph edge"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_file_creation_resolves_previously_unresolved_importers() {
+        // Case A: target file created externally and discovered via sync_root.
+        let root_a = make_temp_dir("late-target-sync");
+        let (_, importer_a) = write_file(
+            &root_a,
+            "importer.hew",
+            "import util.{ greet };\nfn run() -> i64 { greet() }\n",
+        );
+
+        let index_a = WorkspaceIndex::new();
+        // Warm index before util.hew exists — importer.hew has an unresolved import.
+        assert!(index_a
+            .find_definition_in_root(&root_a, "greet", &HashSet::new(), &[])
+            .is_none());
+
+        // Now create util.hew on disk; sync_root must re-resolve importer.hew's edge.
+        let (_, util_a) = write_file(&root_a, "util.hew", "pub fn greet() -> i64 { 1 }\n");
+        let open_a = HashSet::from([util_a.clone()]);
+        let conflicts_a = index_a
+            .unopened_conflict_importers(&root_a, &util_a, "greet", &open_a)
+            .expect("conflict importer query should succeed");
+        assert_eq!(conflicts_a.len(), 1);
+        assert!(same_source_file(&conflicts_a[0].uri, &importer_a));
+
+        let named_a = index_a
+            .unopened_named_importers(&root_a, &util_a, "greet", &open_a)
+            .expect("named importer query should succeed");
+        assert_eq!(named_a.len(), 1);
+        assert!(same_source_file(&named_a[0].importer_uri, &importer_a));
+        let _ = std::fs::remove_dir_all(&root_a);
+
+        // Case B: target file created and announced via didChangeWatchedFiles.
+        let root_b = make_temp_dir("late-target-watched");
+        let (_, importer_b) = write_file(
+            &root_b,
+            "importer.hew",
+            "import util.{ greet };\nfn run() -> i64 { greet() }\n",
+        );
+
+        let index_b = WorkspaceIndex::new();
+        assert!(index_b
+            .find_definition_in_root(&root_b, "greet", &HashSet::new(), &[])
+            .is_none());
+
+        let (_, util_b) = write_file(&root_b, "util.hew", "pub fn greet() -> i64 { 1 }\n");
+        index_b.handle_watched_files(
+            &[FileEvent {
+                uri: util_b.clone(),
+                typ: FileChangeType::CREATED,
+            }],
+            &[],
+        );
+        let open_b = HashSet::from([util_b.clone()]);
+        let conflicts_b = index_b
+            .unopened_conflict_importers(&root_b, &util_b, "greet", &open_b)
+            .expect("watched creation must re-resolve importer edge");
+        assert_eq!(conflicts_b.len(), 1);
+        assert!(same_source_file(&conflicts_b[0].uri, &importer_b));
+        let _ = std::fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn watched_files_ignores_skipped_workspace_directories() {
+        // Place workspace root inside an outer directory named `worktrees` to
+        // verify only components relative to the workspace root are pruned.
+        let outer = make_temp_dir("outer-parent");
+        let root = outer.join("worktrees").join("project");
+        std::fs::create_dir_all(root.join("std")).expect("create project std");
+
+        let (_, real_uri) = write_file(&root, "src/real.hew", "pub fn real_fn() -> i64 { 1 }\n");
+        let (_, target_uri) = write_file(
+            &root,
+            "target/generated.hew",
+            "pub fn target_fn() -> i64 { 2 }\n",
+        );
+        let (_, inner_wt_uri) = write_file(
+            &root,
+            "worktrees/nested.hew",
+            "pub fn nested_wt_fn() -> i64 { 3 }\n",
+        );
+
+        let index = WorkspaceIndex::new();
+        index.set_roots(std::slice::from_ref(&root));
+        index.handle_watched_files(
+            &[
+                FileEvent {
+                    uri: target_uri,
+                    typ: FileChangeType::CREATED,
+                },
+                FileEvent {
+                    uri: inner_wt_uri,
+                    typ: FileChangeType::CREATED,
+                },
+            ],
+            &[],
+        );
+        assert_eq!(
+            index.stats().disk_parses,
+            0,
+            "watched-file events under target/ and worktrees/ must not be parsed"
+        );
+
+        index.handle_watched_files(
+            &[FileEvent {
+                uri: real_uri.clone(),
+                typ: FileChangeType::CREATED,
+            }],
+            &[],
+        );
+        assert_eq!(
+            index.stats().disk_parses,
+            1,
+            "normal source file inside a repo under an external worktrees/ parent must be indexed"
+        );
+        let found = index
+            .find_definition_in_root(&root, "real_fn", &HashSet::new(), &[])
+            .expect("real_fn should be found");
+        assert!(same_source_file(&found.0, &real_uri));
+        assert!(index
+            .find_definition_in_root(&root, "target_fn", &HashSet::new(), &[])
+            .is_none());
+        assert!(index
+            .find_definition_in_root(&root, "nested_wt_fn", &HashSet::new(), &[])
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&outer);
+    }
+
+    #[test]
+    fn sync_untracked_open_documents_refreshes_unmanaged_and_preserves_managed() {
+        let root = make_temp_dir("sync-untracked");
+        let (_, a_uri) = write_file(&root, "a.hew", "pub fn disk_a() -> i64 { 1 }\n");
+        let (_, b_uri) = write_file(&root, "b.hew", "pub fn disk_b() -> i64 { 1 }\n");
+
+        let make_state = |src: &str| DocumentState {
+            expanded_program: None,
+            source: src.to_owned(),
+            line_offsets: compute_line_offsets(src),
+            parse_result: hew_parser::parse(src),
+            type_output: None,
+            dependency_uris: None,
+            diagnostics_by_uri: HashMap::new(),
+        };
+
+        let documents = DashMap::new();
+        documents.insert(a_uri.clone(), make_state("pub fn v1_a() -> i64 { 1 }\n"));
+        documents.insert(b_uri.clone(), make_state("pub fn stale_b() -> i64 { 1 }\n"));
+
+        let index = WorkspaceIndex::new();
+        // b.hew is managed via LSP didChange with fresher content than `documents`.
+        index.upsert_open_document(
+            &b_uri,
+            "pub fn fresh_b() -> i64 { 2 }\n",
+            &[a_uri.clone(), b_uri.clone()],
+        );
+
+        // First sync indexes unmanaged a.hew (v1_a) without downgrading managed b.hew.
+        index.sync_untracked_open_documents(&documents);
+        assert!(index
+            .find_definition_in_root(&root, "v1_a", &HashSet::new(), &[])
+            .is_some());
+        assert!(index
+            .find_definition_in_root(&root, "fresh_b", &HashSet::new(), &[])
+            .is_some());
+        assert!(index
+            .find_definition_in_root(&root, "stale_b", &HashSet::new(), &[])
+            .is_none());
+
+        // Direct DashMap update to unmanaged a.hew must refresh via content_hash.
+        documents.insert(a_uri.clone(), make_state("pub fn v2_a() -> i64 { 3 }\n"));
+        index.sync_untracked_open_documents(&documents);
+        assert!(index
+            .find_definition_in_root(&root, "v2_a", &HashSet::new(), &[])
+            .is_some());
+        assert!(index
+            .find_definition_in_root(&root, "v1_a", &HashSet::new(), &[])
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -61,8 +61,12 @@ fn terminal_transition_result(
         release: Mutex::new(release_rx),
         blocked_first_suspect: AtomicBool::new(false),
     }));
-    *cluster.membership_callback_binding.lock_or_recover() =
-        MembershipCallbackBinding::new(Some(block_on_first_suspect), callback_state.cast());
+    cluster
+        .membership_callback_binding
+        .replace(MembershipCallbackBinding::new(
+            Some(block_on_first_suspect),
+            callback_state.cast(),
+        ));
 
     cluster.sessions.lock_or_recover().insert(2, 1);
     cluster

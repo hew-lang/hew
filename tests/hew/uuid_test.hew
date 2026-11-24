@@ -112,3 +112,13 @@ fn test_is_valid_rejects_malformed_variants() {
     assert(!uuid.is_valid("550e8400-e29b-41d4-a716-44665544000`"));
     assert(!uuid.is_valid("550e8400-e29b-41d4-a716-44665544000g"));
 }
+
+#[test]
+fn test_is_valid_rejects_overlong_and_multibyte_inputs() {
+    assert(!uuid.is_valid("urn:uuid:550e8400-e29b-41d4-a716-4466554400000"));
+    assert(!uuid.is_valid("urn:uuid:550e8400-e29b-41d4-a716-446655440000" + "0".repeat(256)));
+    // 36 Unicode scalars whose UTF-8 byte length exceeds 45 bytes.
+    assert(!uuid.is_valid("é".repeat(36)));
+    // Exactly 36 UTF-8 bytes containing multi-byte scalars (18 * 2 = 36).
+    assert(!uuid.is_valid("é".repeat(18)));
+}

@@ -404,6 +404,8 @@ mod native_test_hooks {
     }
 }
 
+#[cfg(all(test, unix))]
+use native_test_hooks::set_free_pre_detach_hook_for_test;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use native_test_hooks::{
     install_drain_post_pin_pre_stop_hook_for_test,
@@ -411,9 +413,9 @@ use native_test_hooks::{
     run_free_post_latch_hook, run_free_pre_detach_hook, run_pre_queue_destroy_hook,
     run_registration_retirement_hook, run_send_post_enqueue_pre_wake_hook,
     set_cleanup_post_prepare_hook_for_test, set_free_post_latch_hook_for_test,
-    set_free_pre_detach_hook_for_test, set_pre_queue_destroy_hook_for_test,
-    DRAIN_POST_PIN_PRE_STOP_HOOK, DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
-    FREE_POST_RETIRE_REGISTRATION_HOOK, FREE_PRE_LATCH_REGISTRATION_HOOK,
+    set_pre_queue_destroy_hook_for_test, DRAIN_POST_PIN_PRE_STOP_HOOK,
+    DRAIN_POST_STATE_PRE_CLEANUP_HOOK, FREE_POST_RETIRE_REGISTRATION_HOOK,
+    FREE_PRE_LATCH_REGISTRATION_HOOK,
 };
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use native_test_hooks::{

@@ -69,6 +69,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 url = "2"
+ipnet = "2"
 filetime = "0.2"
 hew-testutil = { path = "../hew-testutil" }
 finl_unicode = { version = "=1.5.0", default-features = false, features = [

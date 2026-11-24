@@ -1197,6 +1197,13 @@ pub struct HewSupervisor {
     native_restart_wakers: crate::wake::ReadinessRegistrations,
 }
 
+#[cfg(test)]
+impl HewSupervisor {
+    pub(crate) fn self_actor(&self) -> *mut HewActor {
+        self.self_actor
+    }
+}
+
 const SUPERVISOR_PIN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// A public stop must never spin forever when a failed worker left a
 /// supervisor/child activation Runnable or Running.  This matches the

@@ -1955,6 +1955,7 @@ dependencies = [
  "hew-testutil",
  "hew-types",
  "hew-wasm",
+ "ipnet",
  "libc",
  "notify",
  "object 0.40.0",

@@ -460,12 +460,6 @@ impl Checker {
             self.current_module_idx = saved_index;
             return;
         }
-        // Module short name "builtins" matches the on-disk file stem and
-        // would be the namespace if anything ever imports `std::builtins`
-        // directly; nothing currently does, so this name is only visible
-        // as the qualified-key prefix on per-method `td.methods` insertions
-        // (none of which fire for primitive targets that lack a
-        // `type_defs` entry).
         self.register_stdlib_hew_items(
             "builtins",
             "std.builtins",

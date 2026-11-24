@@ -2169,7 +2169,7 @@ fn main() {
 }
 
 #[test]
-fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
+fn impl_dispatch_preserves_inline_method_bounds() {
     let source = r"
         trait Show {
             fn show(self);
@@ -2199,27 +2199,16 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
         output.errors
     );
 
-    let fn_sig = output
-        .sigs()
-        .get("Wrapper::map")
-        .expect("impl method must populate fn_sigs");
-    let method_sig = output
-        .type_def_at_path("Wrapper")
-        .and_then(|type_def| type_def.methods.get("map"))
-        .expect("impl method must populate type_def.methods");
-
-    for (surface, sig) in [("fn_sigs", fn_sig), ("type_def.methods", method_sig)] {
-        let u = sig
-            .type_params
-            .iter()
-            .find(|parameter| parameter.spelling.as_str() == "U")
-            .expect("map declares U");
-        assert_eq!(
-            sig.bounds.of(u.id).count(),
-            1,
-            "{surface} surface must retain the method-inline `U: Show` bound"
-        );
-    }
+    let receiver = Ty::named_head(output.root_type_head("Wrapper").unwrap(), vec![]);
+    let sig = output
+        .dispatched_method_sig(&receiver, Symbol::intern("map"))
+        .expect("dispatch must select the impl method");
+    let u = sig
+        .type_params
+        .iter()
+        .find(|parameter| parameter.spelling.as_str() == "U")
+        .expect("map declares U");
+    assert_eq!(sig.bounds.of(u.id).count(), 1);
 }
 
 // -------------------------------------------------------------------------

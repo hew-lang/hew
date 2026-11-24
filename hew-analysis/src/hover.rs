@@ -99,15 +99,30 @@ pub fn hover(
                 });
             }
 
-            method_resolution::lookup_type_def(
-                &type_output.defs,
-                &type_output.type_defs,
-                type_output.root_type_head(word)?,
+            let head = type_output.root_type_head(word)?;
+            method_resolution::lookup_type_def(&type_output.defs, &type_output.type_defs, head).map(
+                |mut type_def| {
+                    let receiver = Ty::named_head(
+                        head,
+                        type_def
+                            .type_params
+                            .iter()
+                            .copied()
+                            .map(Ty::param)
+                            .collect(),
+                    );
+                    type_def.methods.extend(
+                        crate::method_lookup::collect_method_sigs_for_receiver(
+                            type_output,
+                            &receiver,
+                        ),
+                    );
+                    HoverResult {
+                        contents: format_type_def_hover(&type_def),
+                        span: None,
+                    }
+                },
             )
-            .map(|type_def| HoverResult {
-                contents: format_type_def_hover(&type_def),
-                span: None,
-            })
         })
     })
 }

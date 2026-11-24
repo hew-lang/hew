@@ -3911,6 +3911,8 @@ impl Checker {
             &mut resolved_call_type_args,
             &mut resolved_record_init_type_args,
         );
+        let mut dispatch = self.dispatch.clone();
+        dispatch.retain_declarations(|declaration| resolved_fn_sigs.contains_key(&declaration));
         // The output-contract validator may rebuild a surviving expression
         // type while pruning invalid siblings.  Re-run the same finalizer at
         // that mutation boundary so layout facts and
@@ -4292,7 +4294,7 @@ impl Checker {
             test_entry_plans,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
-            dispatch: self.dispatch.clone(),
+            dispatch,
             fn_sig_keys: self.fn_sig_keys.clone(),
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             source_function_targets,

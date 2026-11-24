@@ -970,23 +970,16 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
-    assert!(test_type_def(&checker, "hew.testffi.TestResult")
-        .is_some_and(|result| result.methods.contains_key("echo_len")));
-    let echo_id = output
-        .impl_method_declaration_ids
-        .get("hew.testffi.TestResult::echo_len")
-        .unwrap_or_else(|| {
-            panic!(
-                "canonical emitted impl symbol must publish its declaration ID; keys: {:?}",
-                output
-                    .impl_method_declaration_ids
-                    .keys()
-                    .collect::<Vec<_>>()
-            )
-        });
+    let method = output
+        .dispatched_method_sig(&result_ty, Symbol::intern("echo_len"))
+        .expect("imported record keeps its impl method");
+    let echo_id = method
+        .impl_method
+        .expect("source impl provenance")
+        .declaration;
     assert!(output
         .defs
-        .path(*echo_id)
+        .path(echo_id)
         .starts_with("hew.testffi.TestResult::<impl "));
 }
 

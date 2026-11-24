@@ -218,12 +218,6 @@ impl Checker {
         self.type_defs.get(&self.type_def_key(key)?)
     }
 
-    /// The definition a registry key spells, mutably.
-    pub(in crate::check) fn type_def_at_mut(&mut self, key: &str) -> Option<&mut TypeDef> {
-        let id = self.type_def_key(key)?;
-        self.type_defs.get_mut(&id)
-    }
-
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
         crate::check::FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys)
@@ -342,26 +336,8 @@ impl Checker {
         self.type_def_at(name).cloned()
     }
 
-    /// Look up a type definition mutably by registry key.
-    pub(in crate::check) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
-        self.type_def_at_mut(name)
-    }
-
     /// Publish a checked definition on its minted declaration.
     pub(in crate::check) fn file_type_def(&mut self, id: crate::NominalId, def: TypeDef) {
-        // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
-        // impls published methods onto it, and the rebuilt definition must
-        // keep them. WHEN the dispatch table owns methods, `td.methods` is
-        // deleted and this merge with it. WHAT: impl methods are dispatch
-        // rows keyed by head, never members of the definition.
-        let mut def = def;
-        if let Some(existing) = self.type_defs.get(&id) {
-            for (name, sig) in &existing.methods {
-                def.methods
-                    .entry(name.clone())
-                    .or_insert_with(|| sig.clone());
-            }
-        }
         self.type_defs.insert(id, def);
     }
 

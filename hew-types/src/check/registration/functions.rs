@@ -483,11 +483,6 @@ impl Checker {
                                 type_name, tb, trait_ref, method, &sig,
                             );
                         }
-                        // When the receiver is a primitive or compiler-builtin
-                        // generic, `lookup_type_def_mut(type_name)` returns `None` so the
-                        // sig has nowhere to live for later dispatch.  Mirror it onto the
-                        // side table keyed by the canonical receiver kind + trait name so
-                        // method-resolution can find it.
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {
@@ -709,7 +704,6 @@ impl Checker {
                                         sig.clone(),
                                     );
                                 }
-                                self.publish_impl_method_sig(type_name, m.name.name.as_str(), &sig);
                             }
                         }
                     }
@@ -1358,15 +1352,14 @@ impl Checker {
             .collect()
     }
 
-    /// Register an impl method on a type's method table and `fn_sigs`.
+    /// Register an impl method on its declaration and file it for dispatch.
     ///
     /// `impl_type_params` carries the enclosing `impl<T, U, …>` type
     /// parameter names so they are included in the resulting `FnSig`.
     ///
     /// `impl_where_clause` carries the enclosing impl block's where-clause so
     /// that bounds of the form `impl<T> Holder<T> where T: Display` are
-    /// propagated into the method signature — both the `td.methods` entry and
-    /// the `fn_sigs` entry consulted by `type_param_carries_bound`.
+    /// propagated into the method signature consulted by `type_param_carries_bound`.
     ///
     /// **Important**: the caller must have already pushed the impl-level type
     /// params into `self.generic_ctx` so that type resolution sees them.
@@ -1378,7 +1371,7 @@ impl Checker {
         reason = "single-source-of-truth for impl-method registration; \
                   factoring sub-passes would obscure the ordering invariants \
                   the surrounding code relies on (bounds push/pop, \
-                  receiver-skip, double-write of fn_sigs + td.methods, \
+                  receiver-skip, \
                   W3.001 Stage-2 extern_symbol mirror)"
     )]
     pub(in crate::check) fn register_impl_method(
@@ -1597,12 +1590,6 @@ impl Checker {
             params,
             return_type,
             extern_symbol,
-            // Mirror `register_fn_sig_with_name`'s computation so that
-            // `lookup_named_method_sig` (which prefers `td.methods` before
-            // `fn_sigs`) returns a sig with the receiver-mutability flag
-            // set. Without this, the call-site mutable-binding gate at
-            // `methods.rs` (Q297 Stage 1) silently misses every trait impl
-            // method on a user type.
             requires_mutable_receiver: method
                 .params
                 .first()
@@ -1637,7 +1624,6 @@ impl Checker {
             let origin = (declaring_module, trusted_compiled_stdlib);
             self.extern_method_origins.insert(declaration_id, origin);
         }
-        self.publish_impl_method_sig(type_name, method.name.name.as_str(), &sig);
         // Preserve every exact declaration even when a trait method or concrete
         // specialisation shares the ordinary receiver/method lookup spelling.
         let declaration_path = self.defs.path(declaration_id).to_string();
@@ -1768,20 +1754,6 @@ impl Checker {
             Some(bound) => self
                 .resolve_trait_path(&bound.path)
                 .map(crate::check::dispatch_table::MethodOwner::Trait),
-        }
-    }
-
-    /// Publish one resolved impl-method signature onto the definition of the
-    /// declaration `type_name` names in the current module. Explicit impl
-    /// methods and materialised trait defaults both route through here.
-    pub(super) fn publish_impl_method_sig(
-        &mut self,
-        type_name: &str,
-        method_name: &str,
-        sig: &FnSig,
-    ) {
-        if let Some(td) = self.lookup_type_def_mut(type_name) {
-            td.methods.insert(method_name.to_string(), sig.clone());
         }
     }
 

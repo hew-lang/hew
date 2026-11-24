@@ -1739,6 +1739,33 @@ impl TypeCheckOutput {
         }
     }
 
+    /// Read the checked signature of a source method on this receiver.
+    #[must_use]
+    pub fn dispatched_method_sig(&self, receiver: &Ty, name: Symbol) -> Option<FnSig> {
+        let head = receiver.head()?;
+        let instance = crate::ResolvedTy::from_ty(receiver)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance());
+        let super::dispatch_table::MethodSelection::Unique(_, declaration) =
+            self.dispatch.select(head, instance.as_ref(), name)
+        else {
+            return None;
+        };
+        let signature = self.fn_sigs.get(&declaration)?.clone();
+        let type_params = self
+            .types()
+            .of(head)
+            .map_or(&[][..], |def| &def.type_params);
+        let Ty::Named { args, .. } = receiver else {
+            return Some(signature);
+        };
+        Some(crate::method_resolution::instantiate_named_method_sig(
+            signature,
+            type_params,
+            args,
+        ))
+    }
+
     /// Find a fixture definition by its declared path.
     #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]

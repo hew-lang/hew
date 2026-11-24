@@ -1105,17 +1105,7 @@ impl Checker {
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
         // This ensures body-checking unification updates the shared type variable.
-        //
-        // For an impl method (`Type::method`) checked inside a module, prefer the
-        // module-local type def's method sig. The bare `fn_sigs["Type::method"]`
-        // key is last-write-wins across every module that declares a same-named
-        // type, so two modules each `impl ServerMethods for Server` would clobber
-        // each other's `accept` return type. The qualified `{short}.Type` def
-        // carries this module's own method, registered from its own impl.
-        let module_local_method = fn_name
-            .split_once("::")
-            .and_then(|(type_name, method)| self.module_local_method_sig(type_name, method));
-        let declared_ret = if let Some(sig) = self.checking_sig().or(module_local_method) {
+        let declared_ret = if let Some(sig) = self.checking_sig() {
             sig.return_type.clone()
         } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()

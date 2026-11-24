@@ -1191,14 +1191,6 @@ impl Checker {
                                 }
                             }
                         }
-                        // Also register on qualified type name
-                        let unqualified_type = type_name
-                            .strip_prefix(&format!("{module_full_path}."))
-                            .unwrap_or(type_name.as_str());
-                        let qualified_type = format!("{module_short}.{unqualified_type}");
-                        if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
-                            td.methods.insert(method.name.to_string(), sig.clone());
-                        }
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {

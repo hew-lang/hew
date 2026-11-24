@@ -26,33 +26,20 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 impl Checker {
-    /// Resolve a method signature against the *module-local* type definition.
-    ///
-    /// When the checker is inside module `m` and resolving `Type::method`, the
-    /// authoritative definition is `m`'s own `Type` (registered under the
-    /// qualified `{short}.{Type}` key), not the bare `Type` key which is
-    /// last-write-wins across every module that declares a same-named type.
-    /// Used by the impl-body return-type check so a method body in module `m`
-    /// is validated against `m`'s type, not whichever module registered the
-    /// bare key last. Returns `None` outside a module or when the qualified
-    /// type def / method is absent (caller falls back to the bare lookup).
-    pub(in crate::check) fn module_local_method_sig(
-        &self,
-        type_name: &str,
-        method: &str,
-    ) -> Option<FnSig> {
-        let owner = self.current_module_identity()?;
-        let qualified = format!("{owner}.{type_name}");
-        let td = self.type_def_at(&qualified)?;
-        td.methods.get(method).cloned()
-    }
-
     pub(in crate::check) fn lookup_named_method_sig(
         &self,
         head: crate::TypeHead,
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
+        let receiver = Ty::named_head(head, type_args.to_vec());
+        match self.select_method(&receiver, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
+                return self.selected_method_sig(&receiver, declaration);
+            }
+            crate::check::dispatch_table::MethodSelection::Ambiguous(_) => return None,
+            crate::check::dispatch_table::MethodSelection::Missing => {}
+        }
         shared_lookup_named_method_sig(
             &self.defs,
             &self.type_defs,

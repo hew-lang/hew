@@ -548,12 +548,8 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
     );
 }
 
-/// `#[extern_symbol("…")]` on an inherent impl method populates the
-/// spec on BOTH the `fn_sigs` entry and the `TypeDef.methods` entry,
-/// so Stage-3 method-call rewrite (which reads from `td.methods`) sees
-/// the same template as Stage-2 ingest.
 #[test]
-fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
+fn extern_symbol_on_impl_method_is_read_through_dispatch() {
     let output = check_source(
         r#"type Holder {
     x: i64;
@@ -572,32 +568,19 @@ impl Holder {
         "well-formed template must not emit diagnostics, got: {:#?}",
         output.errors
     );
+    let receiver = Ty::named_head(output.root_type_head("Holder").unwrap(), vec![]);
     let sig = output
-        .sigs()
-        .get("Holder::cloned")
-        .expect("impl method must be in fn_sigs");
+        .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("cloned"))
+        .expect("dispatch must select the inherent method");
     let spec = sig
         .extern_symbol
         .as_ref()
-        .expect("Stage 2 must populate extern_symbol on the fn_sigs entry");
+        .expect("selected method carries the extern symbol");
     assert_eq!(spec.template.raw, "hew_holder_clone");
     assert!(
         spec.template.is_monomorphic(),
         "no {{T}} placeholder → monomorphic"
     );
-
-    let td = output
-        .type_def_at_path("Holder")
-        .expect("Holder type must be registered");
-    let method_sig = td
-        .methods
-        .get("cloned")
-        .expect("cloned method must be on TypeDef");
-    let method_spec = method_sig
-        .extern_symbol
-        .as_ref()
-        .expect("Stage 2 must mirror the spec onto TypeDef.methods");
-    assert_eq!(method_spec.template.raw, "hew_holder_clone");
 }
 
 /// A malformed template surfaces as `InvalidExternSymbolTemplate` with

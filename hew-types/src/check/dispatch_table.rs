@@ -55,6 +55,15 @@ fn file(entries: &mut Vec<(MethodOwner, DefId)>, owner: MethodOwner, method: Def
 }
 
 impl DispatchTable {
+    pub(super) fn retain_declarations(&mut self, keep: impl Fn(DefId) -> bool) {
+        let retain_entry = |entries: &mut Vec<(MethodOwner, DefId)>| {
+            entries.retain(|(_, declaration)| keep(*declaration));
+            !entries.is_empty()
+        };
+        self.by_head.retain(|_, entries| retain_entry(entries));
+        self.specialized.retain(|_, entries| retain_entry(entries));
+    }
+
     /// File a method serving every instance of `head`.
     pub fn insert_generic(
         &mut self,

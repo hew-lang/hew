@@ -383,6 +383,51 @@ fn supervised_restarting_role_reports_restarting_and_retries_after_recovery() {
 }
 
 #[test]
+fn fmt_fixed_and_math_predicates_match_native_edge_cases_in_sandbox() {
+    let trace = execute(
+        r#"import std.fmt;
+import std.math;
+
+fn main() {
+    assert(fmt.fixed(3.14159, 2) == "3.14");
+    assert(fmt.fixed(3.14159, 0) == "3");
+    assert(fmt.fixed(3.14159, -5) == "3");
+    assert(fmt.fixed(2.5, 0) == "2");
+    assert(fmt.fixed(3.5, 0) == "4");
+    assert(fmt.fixed(0.25, 1) == "0.2");
+    assert(fmt.fixed(0.75, 1) == "0.8");
+    assert(fmt.fixed(1.005, 2) == "1.00");
+    assert(fmt.fixed(-0.0, 2) == "-0.00");
+    assert(fmt.fixed(-0.0, 0) == "-0");
+    assert(fmt.fixed(-1.0e-20, 2) == "-0.00");
+    assert(fmt.fixed(0.0 / 0.0, 2) == "NaN");
+    assert(fmt.fixed(1.0 / 0.0, 2) == "inf");
+    assert(fmt.fixed(-1.0 / 0.0, 2) == "-inf");
+    assert(fmt.fixed(1.0e25, 2) == "10000000000000000905969664.00");
+    let capped = fmt.fixed(1.5, 500);
+    assert(capped.len() == 327);
+    assert(capped.starts_with("1.500000"));
+    let sub = fmt.fixed(math.from_bits(1), 325);
+    assert(sub.len() == 327);
+    assert(sub.ends_with("00049"));
+
+    assert(math.is_nan(0.0 / 0.0));
+    assert(!math.is_nan(1.0));
+    assert(math.is_infinite(1.0 / 0.0));
+    assert(math.is_infinite(-1.0 / 0.0));
+    assert(!math.is_infinite(1.0));
+    assert(math.is_finite(42.5));
+    assert(math.is_finite(-0.0));
+    assert(!math.is_finite(1.0 / 0.0));
+    assert(!math.is_finite(0.0 / 0.0));
+    println("fmt-math-sandbox-ok");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "fmt-math-sandbox-ok\n");
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {

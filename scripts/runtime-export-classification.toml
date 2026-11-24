@@ -327,6 +327,7 @@ stable = [
   "hew_file_write_close",
   "hew_file_write_handle",
   "hew_file_write_is_valid",
+  "hew_float_to_fixed",
   "hew_float_to_string",
   "hew_fs_copy",
   "hew_fs_create_new",
@@ -7656,3 +7657,11 @@ params = ["consume"]
 resource-param-types = ["std.net.cluster.NativeSnapshot"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_float_to_fixed"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"

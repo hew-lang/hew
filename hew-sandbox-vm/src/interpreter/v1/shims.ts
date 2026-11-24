@@ -1569,9 +1569,59 @@ function saturatingI64(value: bigint): bigint {
   return bigMax(-(1n << 63n), bigMin((1n << 63n) - 1n, value));
 }
 
+const MAX_FIXED_DECIMALS = 325;
+
+/// Format an IEEE 754 binary64 value in fixed-point decimal notation using
+/// exact BigInt binary-to-decimal round-half-to-even, matching Rust's
+/// `hew_float_to_fixed` bit-for-bit across all finite and non-finite inputs.
+function formatFloatFixed(value: number, decimals: bigint): string {
+  if (Number.isNaN(value)) return "NaN";
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setFloat64(0, value, false);
+  const bits = view.getBigUint64(0, false);
+  const negative = bits >> 63n !== 0n;
+  const rawExp = Number((bits >> 52n) & 0x7ffn);
+  const frac = bits & ((1n << 52n) - 1n);
+  if (rawExp === 0x7ff) return negative ? "-inf" : "inf";
+  const prec =
+    decimals < 0n
+      ? 0
+      : decimals > BigInt(MAX_FIXED_DECIMALS)
+        ? MAX_FIXED_DECIMALS
+        : Number(decimals);
+  const sign = negative ? "-" : "";
+  if (rawExp === 0 && frac === 0n) {
+    return prec === 0 ? `${sign}0` : `${sign}0.${"0".repeat(prec)}`;
+  }
+  const mantissa = rawExp === 0 ? frac : (1n << 52n) | frac;
+  const exp2 = rawExp === 0 ? -1074 : rawExp - 1075;
+  const scale10 = 10n ** BigInt(prec);
+  let scaled: bigint;
+  if (exp2 >= 0) {
+    scaled = (mantissa << BigInt(exp2)) * scale10;
+  } else {
+    const num = mantissa * scale10;
+    const den = 1n << BigInt(-exp2);
+    const q = num / den;
+    const r = num % den;
+    const twiceR = r << 1n;
+    scaled = twiceR > den || (twiceR === den && (q & 1n) === 1n) ? q + 1n : q;
+  }
+  const raw = scaled.toString();
+  if (prec === 0) return `${sign}${raw}`;
+  if (raw.length <= prec) {
+    return `${sign}0.${"0".repeat(prec - raw.length)}${raw}`;
+  }
+  const split = raw.length - prec;
+  return `${sign}${raw.slice(0, split)}.${raw.slice(split)}`;
+}
+
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_float_to_fixed: (_host, args) =>
+    str(formatFloatFixed(real(args, 0), integer(args, 1))),
   hew_arena_instance_id_new: (host) => ({
     kind: "i64",
     value: host.arenaInstanceId(),

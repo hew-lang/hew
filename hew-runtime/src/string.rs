@@ -408,6 +408,43 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const HewString) -> i64 {
     parse_strict_i64(unsafe { string_as_bytes(s) })
 }
 
+/// Maximum decimal places accepted by [`hew_float_to_fixed`].
+/// Larger values are clamped to bound allocation size while still representing
+/// every exact normal `f64` decimal expansion.
+const MAX_FIXED_DECIMALS: usize = 325;
+
+/// Convert an `f64` to fixed-point decimal notation with `decimals` fractional
+/// digits (`decimals` clamped to `0..=325`). Caller must free the result with
+/// `hew_string_drop`.
+///
+/// `NaN` formats as `"NaN"`, infinities as `"inf"` / `"-inf"`, `-0.0` retains
+/// its negative sign, and finite values round half-to-even.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_float_to_fixed(value: f64, decimals: i64) -> *mut HewString {
+    if value.is_nan() {
+        return string_from_str("NaN");
+    }
+    if value.is_infinite() {
+        return string_from_str(if value.is_sign_negative() {
+            "-inf"
+        } else {
+            "inf"
+        });
+    }
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "clamped into 0..=MAX_FIXED_DECIMALS before converting to usize"
+    )]
+    let prec = decimals.clamp(0, MAX_FIXED_DECIMALS as i64) as usize;
+    let formatted = format!("{value:.prec$}");
+    string_from_str(&formatted)
+}
+
 /// Convert an `f64` to its string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
@@ -2672,5 +2709,39 @@ mod tests {
 
             hew_string_to_bytes_owned(std::ptr::null(), std::ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn float_to_fixed_handles_normal_ties_bounds_and_non_finite() {
+        let fixed = |value: f64, decimals: i64| -> String {
+            // SAFETY: hew_float_to_fixed takes only scalar arguments and returns a fresh HewString.
+            let s = unsafe { hew_float_to_fixed(value, decimals) };
+            assert!(!s.is_null());
+            // SAFETY: s is a valid freshly allocated HewString.
+            unsafe { read_and_free(s) }
+        };
+
+        assert_eq!(fixed(std::f64::consts::PI, 2), "3.14");
+        assert_eq!(fixed(std::f64::consts::PI, 0), "3");
+        assert_eq!(fixed(std::f64::consts::PI, -5), "3");
+        assert_eq!(fixed(2.5, 0), "2");
+        assert_eq!(fixed(3.5, 0), "4");
+        assert_eq!(fixed(0.25, 1), "0.2");
+        assert_eq!(fixed(0.75, 1), "0.8");
+        assert_eq!(fixed(1.005, 2), "1.00");
+        assert_eq!(fixed(-0.0, 2), "-0.00");
+        assert_eq!(fixed(-0.0, 0), "-0");
+        assert_eq!(fixed(-1e-20, 2), "-0.00");
+        assert_eq!(fixed(f64::NAN, 2), "NaN");
+        assert_eq!(fixed(-f64::NAN, 2), "NaN");
+        assert_eq!(fixed(f64::INFINITY, 2), "inf");
+        assert_eq!(fixed(f64::NEG_INFINITY, 2), "-inf");
+        assert_eq!(fixed(1e25, 2), "10000000000000000905969664.00");
+        let capped = fixed(1.5, 1000);
+        assert_eq!(capped.len(), 2 + MAX_FIXED_DECIMALS);
+        assert!(capped.starts_with("1.5000000000"));
+        let min_subnormal = fixed(f64::from_bits(1), 325);
+        assert!(min_subnormal.ends_with("00049"));
+        assert_eq!(min_subnormal.len(), 2 + 325);
     }
 }

@@ -245,3 +245,54 @@ pub fn total_cmp(a: f64, b: f64) -> i64 {
     };
     if less { -1 } else { 1 }
 }
+
+// ── Floating-point classification predicates ──────────────────────────
+/// Return `true` if `x` is NaN (not a number).
+///
+/// # Examples
+///
+/// ```
+/// import std.math;
+///
+/// fn main() {
+///     assert(math.is_nan(0.0 / 0.0));
+///     assert(!math.is_nan(1.0));
+/// }
+/// ```
+pub fn is_nan(x: f64) -> bool {
+    x.is_nan()
+}
+
+/// Return `true` if `x` is positive or negative infinity.
+///
+/// # Examples
+///
+/// ```
+/// import std.math;
+///
+/// fn main() {
+///     assert(math.is_infinite(1.0 / 0.0));
+///     assert(math.is_infinite(-1.0 / 0.0));
+///     assert(!math.is_infinite(1.0));
+/// }
+/// ```
+pub fn is_infinite(x: f64) -> bool {
+    x.is_infinite()
+}
+
+/// Return `true` if `x` is neither infinite nor NaN.
+///
+/// # Examples
+///
+/// ```
+/// import std.math;
+///
+/// fn main() {
+///     assert(math.is_finite(42.5));
+///     assert(!math.is_finite(1.0 / 0.0));
+///     assert(!math.is_finite(0.0 / 0.0));
+/// }
+/// ```
+pub fn is_finite(x: f64) -> bool {
+    x.is_finite()
+}

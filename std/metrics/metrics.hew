@@ -67,6 +67,8 @@ impl Display for MetricsError {
     }
 }
 
+impl Error for MetricsError {}
+
 /// A monotonic counter handle.
 ///
 /// Created by `metrics.counter(name)`. `Copy`: the handle is the registry slot

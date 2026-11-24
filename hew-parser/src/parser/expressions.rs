@@ -118,7 +118,7 @@ impl Parser<'_> {
         self.advance();
         let (fields, field_labels, base) =
             self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
         Some(match lhs {
             (Expr::ContextVariant(mut context), _) => {
                 context.record = Some(Box::new(ContextVariantRecord {
@@ -170,7 +170,7 @@ impl Parser<'_> {
         let start = lhs.1.start;
         self.advance();
         let type_args = self.parse_type_args()?;
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
         Some((
             Expr::GenericApplySuffix {
                 target: Chain::new(lhs),
@@ -263,7 +263,7 @@ impl Parser<'_> {
         } else {
             let start = self.peek_span().start;
             let block = self.with_struct_literals_allowed(Self::parse_block)?;
-            Some((Expr::Block(block), start..self.peek_span().start))
+            Some((Expr::Block(block), start..self.last_token_end))
         }
     }
 
@@ -336,14 +336,14 @@ impl Parser<'_> {
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
             let operand = self.parse_prefix_operand(UNARY_BP)?;
-            let end = self.peek_span().start;
+            let end = self.last_token_end;
             (Expr::Clone(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
                     let operand = self.parse_prefix_operand(rbp)?;
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     (
                         Expr::Unary {
                             op: UnaryOp::Not,
@@ -358,7 +358,7 @@ impl Parser<'_> {
                     // so there is nothing the parser must fold early. HIR folds
                     // it once the checker has picked a concrete width.
                     let operand = self.parse_prefix_operand(rbp)?;
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     (
                         Expr::Unary {
                             op: UnaryOp::Negate,
@@ -369,7 +369,7 @@ impl Parser<'_> {
                 }
                 Token::Tilde => {
                     let operand = self.parse_prefix_operand(rbp)?;
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     (
                         Expr::Unary {
                             op: UnaryOp::BitNot,
@@ -451,7 +451,7 @@ impl Parser<'_> {
                         break;
                     }
                     self.advance();
-                    let end = self.peek_span().start;
+                    let end = self.last_token_end;
                     lhs = (Expr::PostfixTry(Chain::new(lhs)), start..end);
                     continue;
                 }
@@ -493,7 +493,7 @@ impl Parser<'_> {
                         self.advance();
                         let args = self.parse_call_args()?;
                         self.expect(&Token::RightParen)?;
-                        let end = self.peek_span().start;
+                        let end = self.last_token_end;
                         lhs = (
                             Expr::Call {
                                 function: Chain::new(lhs),
@@ -604,7 +604,7 @@ impl Parser<'_> {
                 let error = (error.name != sym::UNDERSCORE).then_some(error);
                 let body_start = self.peek_span().start;
                 let body = self.parse_block()?;
-                let end = self.peek_span().start;
+                let end = self.last_token_end;
                 lhs = (
                     Expr::Handle {
                         operand: Box::new(lhs),
@@ -681,7 +681,7 @@ impl Parser<'_> {
             if self.peek() == Some(&Token::Is) {
                 self.advance(); // consume `is`
                 let rhs = self.parse_expr_bp(rbp)?;
-                let end = self.peek_span().start;
+                let end = self.last_token_end;
                 lhs = (
                     Expr::Is {
                         lhs: Box::new(lhs),
@@ -704,7 +704,7 @@ impl Parser<'_> {
                     self.error("an inclusive range requires an end".to_string());
                     return None;
                 }
-                let end = self.peek_span().start;
+                let end = self.last_token_end;
                 lhs = (
                     Expr::Range {
                         start: Some(Box::new(lhs)),
@@ -716,7 +716,7 @@ impl Parser<'_> {
                 continue;
             }
             let rhs = self.parse_expr_bp(rbp)?;
-            let end = self.peek_span().start;
+            let end = self.last_token_end;
             let step = BinaryStep {
                 op,
                 right: rhs,
@@ -1049,7 +1049,7 @@ impl Parser<'_> {
                     let args = args?;
                     return Some((
                         Expr::MacroInvocation { name, args },
-                        start..self.peek_span().start,
+                        start..self.last_token_end,
                     ));
                 }
 
@@ -1237,7 +1237,7 @@ impl Parser<'_> {
                 // block, so struct literals in array elements are unambiguous.
                 let _allow_struct = self.set_no_struct_literal(false);
                 if self.eat(&Token::RightBracket) {
-                    return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
+                    return Some((Expr::Array(Vec::new()), start..self.last_token_end));
                 }
 
                 let first = self.parse_array_element()?;
@@ -1253,14 +1253,14 @@ impl Parser<'_> {
                                 .to_string(),
                             semicolon_span,
                         );
-                        return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
+                        return Some((Expr::Array(Vec::new()), start..self.last_token_end));
                     };
                     return Some((
                         Expr::ArrayRepeat {
                             value: Box::new(value),
                             count: Box::new(count),
                         },
-                        start..self.peek_span().start,
+                        start..self.last_token_end,
                     ));
                 }
 
@@ -1395,7 +1395,7 @@ impl Parser<'_> {
                     return None;
                 }
                 let body_block = self.parse_block()?;
-                let body_end = self.peek_span().start;
+                let body_end = self.last_token_end;
                 let body = Box::new((Expr::Block(body_block), start..body_end));
 
                 return Some((
@@ -1405,7 +1405,7 @@ impl Parser<'_> {
                         return_type,
                         body,
                     },
-                    start..self.peek_span().start,
+                    start..self.last_token_end,
                 ));
             }
             Token::Spawn => {
@@ -1451,11 +1451,11 @@ impl Parser<'_> {
                 // Regular spawn: `spawn Actor`, `spawn module.Actor { key: value }`
                 // or `spawn Actor<T> { .. }` with explicit type arguments.
                 let name = self.expect_ident()?;
-                let name_end = self.peek_span().start;
+                let name_end = self.last_token_end;
                 let mut target = (Expr::Ident(name), start..name_end);
                 while self.eat(&Token::Dot) {
                     let actor_name = self.expect_ident_spanned()?;
-                    let actor_end = self.peek_span().start;
+                    let actor_end = self.last_token_end;
                     target = (
                         Expr::FieldAccess {
                             object: Chain::new(target),
@@ -1600,7 +1600,7 @@ impl Parser<'_> {
                 // break-detection soundness argument to cover.
                 let label = self.parse_control_flow_label();
                 self.refuse_break_operand(BreakValuePosition::Expression);
-                let stmt_span = start..self.peek_span().start;
+                let stmt_span = start..self.last_token_end;
                 Expr::Block(Block {
                     stmts: vec![(Stmt::Break { label, value: None }, stmt_span)],
                     trailing_expr: None,
@@ -1611,7 +1611,7 @@ impl Parser<'_> {
                 // `continue ['label]` in expression position — same desugar
                 // rationale as `Token::Break` above.
                 let label = self.parse_control_flow_label();
-                let stmt_span = start..self.peek_span().start;
+                let stmt_span = start..self.last_token_end;
                 Expr::Block(Block {
                     stmts: vec![(Stmt::Continue { label }, stmt_span)],
                     trailing_expr: None,
@@ -1766,10 +1766,8 @@ impl Parser<'_> {
         // generic application or call. Downstream diagnostics use this fact.
         let end = if matches!(expr, Expr::Ident(_)) {
             token_span.end
-        } else if matches!(expr, Expr::Match { .. }) {
-            self.last_token_end
         } else {
-            self.peek_span().start
+            self.last_token_end
         };
         Some((expr, start..end))
     }
@@ -1834,7 +1832,7 @@ impl Parser<'_> {
             }
             let body_start = self.peek_span().start;
             let body_block = self.parse_block()?;
-            let body_end = self.peek_span().start;
+            let body_end = self.last_token_end;
             Box::new((Expr::Block(body_block), body_start..body_end))
         } else {
             if matches!(
@@ -2019,7 +2017,7 @@ impl Parser<'_> {
         if let Some(Token::Integer(n)) = self.peek() {
             let field = (self.ident_at(n, &self.peek_span()), self.peek_span());
             self.advance();
-            let end = self.peek_span().start;
+            let end = self.last_token_end;
             return Some((
                 Expr::FieldAccess {
                     object: Chain::new(lhs),
@@ -2041,7 +2039,7 @@ impl Parser<'_> {
                 self.advance();
                 let (fields, field_labels, base) =
                     self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
-                let end = self.peek_span().start;
+                let end = self.last_token_end;
                 return Some((
                     Expr::StructInit {
                         path,
@@ -2061,7 +2059,7 @@ impl Parser<'_> {
             let args = self.parse_call_args()?;
 
             self.expect(&Token::RightParen)?;
-            let end = self.peek_span().start;
+            let end = self.last_token_end;
 
             Some((
                 Expr::MethodCall {
@@ -2311,7 +2309,7 @@ impl Parser<'_> {
         let args = self.parse_call_args()?;
 
         self.expect(&Token::RightParen)?;
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
 
         let (function, type_args) = match lhs {
             (Expr::GenericApplySuffix { target, type_args }, _) => (target, Some(type_args)),
@@ -2363,7 +2361,7 @@ impl Parser<'_> {
                 Some(Box::new(self.parse_expr()?))
             };
             self.expect(&Token::RightBracket)?;
-            let end_pos = self.peek_span().start;
+            let end_pos = self.last_token_end;
             let range_span = dotdot_span.start..end_pos;
             let range_expr = (
                 Expr::Range {
@@ -2409,7 +2407,7 @@ impl Parser<'_> {
                 Some(Box::new(self.parse_expr()?))
             };
             self.expect(&Token::RightBracket)?;
-            let end_pos = self.peek_span().start;
+            let end_pos = self.last_token_end;
             let range_span = range_start_pos..end_pos;
             let range_expr = (
                 Expr::Range {
@@ -2439,7 +2437,7 @@ impl Parser<'_> {
         let _ = bracket_start_span;
 
         self.expect(&Token::RightBracket)?;
-        let end = self.peek_span().start;
+        let end = self.last_token_end;
 
         Some((
             Expr::Index {

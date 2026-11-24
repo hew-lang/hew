@@ -5513,18 +5513,18 @@ fn chains_nest_only_across_precedence_and_parentheses() {
 
 #[test]
 fn binary_chain_steps_keep_the_nested_prefix_spans() {
-    // Each step's span is the span the left-deep node for that prefix had:
-    // from the first operand to the start of the next token.
+    // Each step's span covers from the first operand through the end of
+    // that prefix's final operand without trailing whitespace.
     let expr = parse_let_expr("a + b - c * d + e");
     let (first, steps) = binary_chain(&expr);
     let base = first.1.start;
     assert_eq!(first.1.end - base, 1);
     let rel = |span: &std::ops::Range<usize>| (span.start - base)..(span.end - base);
     let spans: Vec<_> = steps.iter().map(|step| rel(&step.span)).collect();
-    assert_eq!(spans, [0..6, 0..14, 0..17]);
-    assert_eq!(rel(&steps[1].right.1), 8..14);
+    assert_eq!(spans, [0..5, 0..13, 0..17]);
+    assert_eq!(rel(&steps[1].right.1), 8..13);
     let (_, product) = binary_chain(&steps[1].right.0);
-    assert_eq!(rel(&product[0].span), 8..14);
+    assert_eq!(rel(&product[0].span), 8..13);
 }
 
 #[test]

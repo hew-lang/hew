@@ -1,0 +1,22 @@
+//! Verify aligned column formatting for `std.cli` option and subcommand help.
+
+import std.cli;
+
+#[test]
+fn test_cli_help_aligns_options_and_commands() {
+    var app = cli.command("repostat", "Inspect repository stats");
+    app.argument(cli.flag("verbose", .Some("v"), "Verbose output"));
+    app.argument(cli.option("format", .Some("f"), "KIND", "Output format"));
+    app.subcommand(cli.command("scan", "Walk files"));
+    app.subcommand(cli.command("summarise-all", "Aggregate metrics"));
+    match app.parse(["--help"]) {
+        .Ok(.Help(text)) => {
+            assert(text.contains("  -h, --help           Show this help\n"));
+            assert(text.contains("  -v, --verbose        Verbose output\n"));
+            assert(text.contains("  -f, --format <KIND>  Output format\n"));
+            assert(text.contains("  scan           Walk files\n"));
+            assert(text.contains("  summarise-all  Aggregate metrics\n"));
+        }
+        _ => panic("expected help outcome"),
+    }
+}

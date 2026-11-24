@@ -29,6 +29,8 @@ impl Display for ParseError {
     }
 }
 
+impl Error for ParseError {}
+
 /// A value cannot be represented as JSON text.
 pub enum EncodeError {
     Invalid(string);
@@ -43,6 +45,8 @@ impl Display for EncodeError {
         }
     }
 }
+
+impl Error for EncodeError {}
 
 /// A checked access or mutation failed without changing the value.
 pub enum AccessError {
@@ -63,6 +67,8 @@ impl Display for AccessError {
         }
     }
 }
+
+impl Error for AccessError {}
 
 /// An owning JSON value. Assignment and extraction produce independent values.
 /// Cleanup is automatic; the representation remains private.

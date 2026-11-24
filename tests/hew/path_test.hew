@@ -334,3 +334,21 @@ fn test_path_error_display_prints_the_carried_detail() {
     let out_of_range = PathError.IndexOutOfRange("index 3 out of range");
     assert(to_string(out_of_range) == "index 3 out of range");
 }
+
+// ── stem ───────────────────────────────────────────────────────────────────
+#[test]
+fn test_stem_extracts_base_without_final_extension() {
+    assert(path.stem("photo.jpg") == "photo");
+    assert(path.stem("/home/user/archive.tar.gz") == "archive.tar");
+    assert(path.stem("README") == "README");
+    assert(path.stem(".gitignore") == ".gitignore");
+    assert(path.stem(".env.local") == ".env");
+    assert(path.stem("a.") == "a");
+    assert(path.stem("/dir/sub/") == "sub");
+    assert(path.stem(".") == ".");
+    assert(path.stem("..") == "..");
+    assert(path.stem("/") == "");
+    assert(path.stem("") == "");
+    let heap = "/tmp/" + "report.final.csv";
+    assert(path.stem(heap) == "report.final");
+}

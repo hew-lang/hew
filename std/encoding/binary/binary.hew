@@ -63,6 +63,8 @@ impl Display for BinaryError {
     }
 }
 
+impl Error for BinaryError {}
+
 // ── Internal width helpers ─────────────────────────────────────────────
 
 // INTERNAL-ABI: explicit `let masked: i64` annotation keeps the mask in i64

@@ -514,3 +514,47 @@ fn recovery_keeps_the_closing_brace_of_the_block() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn malformed_let_statement_reports_a_single_error_and_recovers() {
+    let single = "fn main() { let x = 1 + ); }";
+    let parsed = hew_parser::parse(single);
+    assert_eq!(
+        parsed.errors.len(),
+        1,
+        "expected a single error on malformed let statement, got: {:?}",
+        parsed.errors
+    );
+
+    let followed = "fn main() {\n    let x = 1 + )\n    let y = 2;\n}\n";
+    let parsed = hew_parser::parse(followed);
+    assert_eq!(
+        parsed.errors.len(),
+        1,
+        "expected recovery at following `let` without cascade, got: {:?}",
+        parsed.errors
+    );
+    let Item::Function(func) = &parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    assert_eq!(func.body.stmts.len(), 1);
+}
+
+#[test]
+fn statement_and_expression_spans_exclude_trailing_whitespace() {
+    let source = "fn main() {\n    let unused = 42;\n    let sum = 1 + 2 ;\n}\n";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(func) = &parsed.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let (_, first_span) = &func.body.stmts[0];
+    assert_eq!(&source[first_span.clone()], "let unused = 42;");
+
+    let (Stmt::Let { pattern, value, .. }, second_span) = &func.body.stmts[1] else {
+        panic!("expected second let");
+    };
+    assert_eq!(&source[pattern.1.clone()], "sum");
+    assert_eq!(&source[value.as_ref().unwrap().1.clone()], "1 + 2");
+    assert_eq!(&source[second_span.clone()], "let sum = 1 + 2 ;");
+}

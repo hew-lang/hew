@@ -719,22 +719,27 @@ fn hover_binding_in_stmt(
             body,
             ..
         } => {
-            if let Some(result) = type_output
-                .expr_types
+            if let Some(elem_ty) = type_output
+                .for_loop_plans
                 .get(&SpanKey::from(&iterable.1))
-                .and_then(iterable_element_type)
-                .and_then(|elem_ty| {
-                    hover_pattern_binding(
-                        pattern,
-                        &elem_ty,
-                        type_output.types(),
-                        word,
-                        word_span,
-                        offset,
-                    )
+                .map(|plan| plan.item_type.clone())
+                .or_else(|| {
+                    type_output
+                        .expr_types
+                        .get(&SpanKey::from(&iterable.1))
+                        .and_then(iterable_element_type)
                 })
             {
-                return Some(result);
+                if let Some(result) = hover_pattern_binding(
+                    pattern,
+                    &elem_ty,
+                    type_output.types(),
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
             }
             hover_binding_in_block(body, type_output, word, word_span, offset)
         }
@@ -2649,5 +2654,48 @@ mod tests {
 
         // The call must complete without panicking; no assertion on the content.
         let _ = hover(source, &pr, Some(&tc), offset);
+    }
+
+    #[test]
+    fn hover_for_loop_binding_over_iterator_uses_plan_item_type() {
+        let source = concat!(
+            "type PairIter {\n",
+            "    remaining: i64;\n",
+            "}\n",
+            "impl Iterator for PairIter {\n",
+            "    type Item = (i64, string);\n",
+            "    fn next(var self) -> Option<(i64, string)> {\n",
+            "        if self.remaining <= 0 {\n",
+            "            .None\n",
+            "        } else {\n",
+            "            self.remaining = self.remaining - 1;\n",
+            "            .Some((self.remaining, \"item\"))\n",
+            "        }\n",
+            "    }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let it = PairIter { remaining: 2 };\n",
+            "    for (idx, word) in it {\n",
+            "        let _ = idx;\n",
+            "        let _ = word;\n",
+            "    }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+
+        let idx_offset = source.find("idx, word").unwrap();
+        let idx_hover = hover(source, &pr, Some(&tc), idx_offset).expect("hover on idx");
+        assert!(idx_hover.contents.contains("i64"), "{}", idx_hover.contents);
+
+        let word_offset = source.find("word) in").unwrap();
+        let word_hover = hover(source, &pr, Some(&tc), word_offset).expect("hover on word");
+        assert!(
+            word_hover.contents.contains("string"),
+            "{}",
+            word_hover.contents
+        );
     }
 }

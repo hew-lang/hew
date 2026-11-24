@@ -119,7 +119,7 @@ fn needless_range_loop_warning_points_at_loop_header() {
     assert!(
         stderr.contains("prog.hew:3:9:")
             && stderr.contains("3 |     for i in 0..xs.len() {")
-            && stderr.contains("|         ^^^^^^^^^^^^^^^^^\n")
+            && stderr.contains("|         ^^^^^^^^^^^^^^^^\n")
             && stderr.contains(LINT_MESSAGE),
         "the needless_range_loop warning must point at the loop header:\n{stderr}"
     );

@@ -1,0 +1,110 @@
+//! Verify standard library error types implement `Error` and coerce to `dyn Error`.
+
+import std.encoding.binary;
+import std.encoding.json;
+import std.encoding.toml;
+import std.encoding.utf8;
+import std.encoding.yaml;
+import std.machine.watch;
+import std.metrics;
+import std.net;
+import std.observe;
+import std.os;
+import std.path;
+import std.process;
+
+fn fail_env() -> i64 fails dyn Error {
+    return error os.EnvError.InvalidName("BAD=NAME");
+}
+
+fn fail_path() -> i64 fails dyn Error {
+    return error path.PathError.GlobFailed("bad glob");
+}
+
+fn fail_process() -> i64 fails dyn Error {
+    return error process.ProcessError.NotPiped;
+}
+
+fn fail_json_parse() -> i64 fails dyn Error {
+    return error json.ParseError.Invalid("bad json");
+}
+
+fn fail_json_encode() -> i64 fails dyn Error {
+    return error json.EncodeError.NonFiniteFloat;
+}
+
+fn fail_json_access() -> i64 fails dyn Error {
+    return error json.AccessError.IntegerRange;
+}
+
+fn fail_toml_parse() -> i64 fails dyn Error {
+    return error toml.ParseError.Invalid("bad toml");
+}
+
+fn fail_toml_access() -> i64 fails dyn Error {
+    return error toml.AccessError.InvalidIndex(-1);
+}
+
+fn fail_yaml_parse() -> i64 fails dyn Error {
+    return error yaml.ParseError.Invalid("bad yaml");
+}
+
+fn fail_yaml_encode() -> i64 fails dyn Error {
+    return error yaml.EncodeError.Invalid("bad yaml encode");
+}
+
+fn fail_yaml_access() -> i64 fails dyn Error {
+    return error yaml.AccessError.IntegerRange;
+}
+
+fn fail_utf8() -> i64 fails dyn Error {
+    return error utf8.Utf8Error { valid_up_to: 2, error_len: .Some(1) };
+}
+
+fn fail_binary() -> i64 fails dyn Error {
+    return error binary.BinaryError.Overflow;
+}
+
+fn fail_watch() -> i64 fails dyn Error {
+    return error watch.SubscribeError.Closed;
+}
+
+fn fail_metrics() -> i64 fails dyn Error {
+    return error metrics.MetricsError.Rejected("invalid metric");
+}
+
+fn fail_net() -> i64 fails dyn Error {
+    return error net.NetError.TimedOut(110);
+}
+
+fn fail_observe() -> i64 fails dyn Error {
+    return error observe.ObserveError.TimedOut;
+}
+
+fn format_dyn(res: Result<i64, dyn Error>) -> string {
+    match res {
+        .Ok(_) => panic("expected error"),
+        .Err(err) => f"{err}",
+    }
+}
+
+#[test]
+fn test_stdlib_errors_coerce_to_dyn_error() {
+    assert(format_dyn(fail_env()).len() > 0);
+    assert(format_dyn(fail_path()) == "bad glob");
+    assert(format_dyn(fail_process()).len() > 0);
+    assert(format_dyn(fail_json_parse()) == "bad json");
+    assert(format_dyn(fail_json_encode()).len() > 0);
+    assert(format_dyn(fail_json_access()).len() > 0);
+    assert(format_dyn(fail_toml_parse()) == "bad toml");
+    assert(format_dyn(fail_toml_access()).len() > 0);
+    assert(format_dyn(fail_yaml_parse()) == "bad yaml");
+    assert(format_dyn(fail_yaml_encode()) == "bad yaml encode");
+    assert(format_dyn(fail_yaml_access()).len() > 0);
+    assert(format_dyn(fail_utf8()).contains("invalid UTF-8"));
+    assert(format_dyn(fail_binary()) == "Overflow");
+    assert(format_dyn(fail_watch()).len() > 0);
+    assert(format_dyn(fail_metrics()) == "invalid metric");
+    assert(format_dyn(fail_net()) == "TimedOut(110)");
+    assert(format_dyn(fail_observe()).len() > 0);
+}

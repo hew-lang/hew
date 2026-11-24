@@ -140,6 +140,8 @@ impl Display for NetError {
     }
 }
 
+impl Error for NetError {}
+
 // Canonical error-kind tags mirrored from `hew-runtime/src/stream_error.rs`.
 const IO_ERROR_KIND_TIMED_OUT: i32 = 4;
 

@@ -223,6 +223,88 @@ fn hover_field_at_offset(
         .or_else(|| hover_field_access_at_offset(source, type_output, offset))
 }
 
+/// Locate a field declaration's identifier span (`name: Type`) while skipping
+/// line, doc, and nested block comments as well as attribute literals.
+///
+/// When `ty_span` has a valid start after `search_from`, the field identifier is
+/// the non-comment token immediately preceding the final `:` before `ty_span.start`.
+/// For synthetic ASTs without a type span, scans forward from `search_from` over
+/// non-comment tokens and prefers a match followed by `:`.
+fn find_field_name_span(
+    source: &str,
+    search_from: usize,
+    ty_span: &Span,
+    name: &str,
+) -> Option<OffsetSpan> {
+    if ty_span.start > search_from && ty_span.start <= source.len() {
+        if let Some(slice) = source.get(search_from..ty_span.start) {
+            let mut prev: Option<hew_lexer::Span> = None;
+            let mut last: Option<(hew_lexer::Token<'_>, hew_lexer::Span)> = None;
+            for (tok, tok_span) in hew_lexer::Lexer::new(slice) {
+                if matches!(
+                    tok,
+                    hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+                ) {
+                    continue;
+                }
+                prev = last.map(|(_, span)| span);
+                last = Some((tok, tok_span));
+            }
+            if let (Some(name_span), Some((hew_lexer::Token::Colon, _))) = (prev, last) {
+                if slice.get(name_span.start..name_span.end) == Some(name) {
+                    return Some(OffsetSpan {
+                        start: search_from + name_span.start,
+                        end: search_from + name_span.end,
+                    });
+                }
+            }
+        }
+    }
+
+    let tail = source.get(search_from..)?;
+    let mut tokens = hew_lexer::Lexer::new(tail)
+        .filter(|(tok, _)| {
+            !matches!(
+                tok,
+                hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+            )
+        })
+        .peekable();
+    let mut first_match = None;
+    while let Some((_, tok_span)) = tokens.next() {
+        if tail.get(tok_span.start..tok_span.end) == Some(name) {
+            let abs = OffsetSpan {
+                start: search_from + tok_span.start,
+                end: search_from + tok_span.end,
+            };
+            if matches!(tokens.peek(), Some((hew_lexer::Token::Colon, _))) {
+                return Some(abs);
+            }
+            first_match.get_or_insert(abs);
+        }
+    }
+    first_match
+}
+
+fn find_non_comment_token_span(source: &str, search_from: usize, name: &str) -> Option<OffsetSpan> {
+    let tail = source.get(search_from..)?;
+    for (tok, tok_span) in hew_lexer::Lexer::new(tail) {
+        if matches!(
+            tok,
+            hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+        ) {
+            continue;
+        }
+        if tail.get(tok_span.start..tok_span.end) == Some(name) {
+            return Some(OffsetSpan {
+                start: search_from + tok_span.start,
+                end: search_from + tok_span.end,
+            });
+        }
+    }
+    None
+}
+
 fn hover_field_declaration_at_offset(
     source: &str,
     parse_result: &ParseResult,
@@ -230,45 +312,56 @@ fn hover_field_declaration_at_offset(
     offset: usize,
 ) -> Option<HoverResult> {
     for (item, item_span) in &parse_result.program.items {
+        if !span_contains_offset(item_span, offset) {
+            continue;
+        }
         match item {
             Item::TypeDecl(type_decl) => {
                 let mut search_from = item_span.start;
                 for body_item in &type_decl.body {
                     match body_item {
                         TypeBodyItem::Field { name, ty, .. } => {
-                            let span = crate::util::find_name_span(
+                            let span = find_field_name_span(
                                 source,
                                 search_from,
+                                &ty.1,
                                 name.name.as_str(),
                             );
-                            if span.start <= offset && offset < span.end {
-                                let ty_text = method_resolution::lookup_type_def(
-                                    &type_output.defs,
-                                    &type_output.type_defs,
-                                    type_decl.name.name.as_str(),
-                                )
-                                .and_then(|type_def| {
-                                    type_def
-                                        .fields
-                                        .get(name.name.as_str())
-                                        .map(|ty| ty.user_facing().to_string())
-                                })
-                                .unwrap_or_else(|| format_type_expr_hover(&ty.0));
-                                return Some(field_hover_result(
-                                    name.name.as_str(),
-                                    &ty_text,
-                                    span,
-                                ));
+                            if let Some(span) = span {
+                                if span.start <= offset && offset < span.end {
+                                    let ty_text = method_resolution::lookup_type_def(
+                                        &type_output.defs,
+                                        &type_output.type_defs,
+                                        type_decl.name.name.as_str(),
+                                    )
+                                    .and_then(|type_def| {
+                                        type_def
+                                            .fields
+                                            .get(name.name.as_str())
+                                            .map(|ty| ty.user_facing().to_string())
+                                    })
+                                    .unwrap_or_else(|| format_type_expr_hover(&ty.0));
+                                    return Some(field_hover_result(
+                                        name.name.as_str(),
+                                        &ty_text,
+                                        span,
+                                    ));
+                                }
+                                search_from = ty.1.end.max(span.end);
+                            } else {
+                                search_from = search_from.max(ty.1.end);
                             }
-                            search_from = ty.1.end.max(span.end);
                         }
                         TypeBodyItem::Variant(variant) => {
-                            search_from = crate::util::find_name_span(
+                            if variant.span.end > search_from && variant.span.end <= source.len() {
+                                search_from = variant.span.end;
+                            } else if let Some(span) = find_non_comment_token_span(
                                 source,
                                 search_from,
                                 variant.name.name.as_str(),
-                            )
-                            .end;
+                            ) {
+                                search_from = span.end;
+                            }
                         }
                     }
                 }
@@ -280,31 +373,36 @@ fn hover_field_declaration_at_offset(
                 if let RecordKind::Named(fields) = &record_decl.kind {
                     let mut search_from = item_span.start;
                     for field in fields {
-                        let span = crate::util::find_name_span(
+                        let span = find_field_name_span(
                             source,
                             search_from,
+                            &field.ty.1,
                             field.name.name.as_str(),
                         );
-                        if span.start <= offset && offset < span.end {
-                            let ty_text = method_resolution::lookup_type_def(
-                                &type_output.defs,
-                                &type_output.type_defs,
-                                record_decl.name.name.as_str(),
-                            )
-                            .and_then(|type_def| {
-                                type_def
-                                    .fields
-                                    .get(field.name.name.as_str())
-                                    .map(|ty| ty.user_facing().to_string())
-                            })
-                            .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
-                            return Some(field_hover_result(
-                                field.name.name.as_str(),
-                                &ty_text,
-                                span,
-                            ));
+                        if let Some(span) = span {
+                            if span.start <= offset && offset < span.end {
+                                let ty_text = method_resolution::lookup_type_def(
+                                    &type_output.defs,
+                                    &type_output.type_defs,
+                                    record_decl.name.name.as_str(),
+                                )
+                                .and_then(|type_def| {
+                                    type_def
+                                        .fields
+                                        .get(field.name.name.as_str())
+                                        .map(|ty| ty.user_facing().to_string())
+                                })
+                                .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
+                                return Some(field_hover_result(
+                                    field.name.name.as_str(),
+                                    &ty_text,
+                                    span,
+                                ));
+                            }
+                            search_from = field.ty.1.end.max(span.end);
+                        } else {
+                            search_from = search_from.max(field.ty.1.end);
                         }
-                        search_from = field.ty.1.end.max(span.end);
                     }
                 }
             }
@@ -2809,5 +2907,189 @@ mod tests {
             "{}",
             result.contents
         );
+    }
+
+    #[test]
+    fn hover_type_field_declaration_skips_preceding_comments() {
+        let source = concat!(
+            "type Point {\n",
+            "    // x: horizontal coordinate (x)\n",
+            "    x: i32;\n",
+            "    /// y: vertical coordinate (y)\n",
+            "    y: i64;\n",
+            "    /* outer /* z: nested */ z comment */\n",
+            "    z: f64;\n",
+            "    w /* w */ : bool;\n",
+            "}\n",
+            "type label {\n",
+            "    // label in comment\n",
+            "    label: string;\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+
+        for (comment_needle, field_needle, name, expected_ty) in [
+            ("x: horizontal", "x: i32;", "x", "i32"),
+            ("y: vertical", "y: i64;", "y", "i64"),
+            ("z: nested", "z: f64;", "z", "f64"),
+            ("/* w */", "w /* w */", "w", "bool"),
+        ] {
+            let comment_offset = source.find(comment_needle).unwrap()
+                + usize::from(comment_needle.starts_with("/* ")) * 3;
+            assert!(
+                hover(source, &pr, Some(&tc), comment_offset).is_none(),
+                "hover inside comment mentioning `{name}` must not match field declaration"
+            );
+
+            let field_offset = source.find(field_needle).unwrap();
+            let result = hover(source, &pr, Some(&tc), field_offset)
+                .unwrap_or_else(|| panic!("hover on `{name}` field declaration must succeed"));
+            assert_eq!(
+                result.contents,
+                format!("```hew\n(field) {name}: {expected_ty};\n```")
+            );
+            assert_eq!(
+                result.span,
+                Some(OffsetSpan {
+                    start: field_offset,
+                    end: field_offset + name.len(),
+                })
+            );
+        }
+
+        // Field sharing the declaring type's name after a comment mentioning it.
+        let label_comment = source.find("label in comment").unwrap();
+        let label_comment_hover = hover(source, &pr, Some(&tc), label_comment);
+        assert!(
+            label_comment_hover
+                .as_ref()
+                .is_none_or(|h| !h.contents.contains("(field) label")),
+            "hover on `label` in comment must not match field declaration: {label_comment_hover:?}"
+        );
+        let label_field = source.find("label: string;").unwrap();
+        let label_hover = hover(source, &pr, Some(&tc), label_field)
+            .expect("hover on `label` field declaration must succeed");
+        assert_eq!(label_hover.contents, "```hew\n(field) label: string;\n```");
+        assert_eq!(
+            label_hover.span,
+            Some(OffsetSpan {
+                start: label_field,
+                end: label_field + "label".len(),
+            })
+        );
+    }
+
+    fn make_record_parse_result(source_len: usize, fields: Vec<(&str, &str, Span)>) -> ParseResult {
+        use hew_parser::ast::{Path, Program, RecordDecl, RecordField, Visibility};
+
+        let record_fields = fields
+            .into_iter()
+            .map(|(name, ty_name, ty_span)| RecordField {
+                name: Ident::new(name),
+                ty: (
+                    TypeExpr::Named {
+                        path: Path::single(Ident::new(ty_name), ty_span.clone()),
+                        type_args: None,
+                    },
+                    ty_span,
+                ),
+                doc_comment: None,
+                span: 0..0,
+            })
+            .collect();
+
+        ParseResult {
+            program: Program {
+                items: vec![(
+                    Item::Record(RecordDecl {
+                        visibility: Visibility::Private,
+                        name: Ident::new("Metric"),
+                        type_params: None,
+                        where_clause: None,
+                        kind: RecordKind::Named(record_fields),
+                        doc_comment: None,
+                        span: 0..source_len,
+                    }),
+                    0..source_len,
+                )],
+                module_doc: None,
+                module_graph: None,
+                expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+            },
+            errors: vec![],
+            contextual_keyword_starts: vec![],
+        }
+    }
+
+    #[test]
+    fn hover_record_field_declaration_skips_preceding_comments() {
+        let source = concat!(
+            "record Metric {\n",
+            "    // count: sample count before declaration\n",
+            "    count: i64;\n",
+            "    /// /* nested /* label: tag */ */ label doc\n",
+            "    /* label: block comment */\n",
+            "    label: string;\n",
+            "}\n",
+        );
+        let count_ty_start = source.find("i64;").unwrap();
+        let label_ty_start = source.find("string;").unwrap();
+        let count_comment = source.find("count: sample").unwrap();
+        let count_decl = source.find("count: i64;").unwrap();
+        let label_comment = source.find("label: block").unwrap();
+        let label_decl = source.find("label: string;").unwrap();
+
+        let tc = TypeCheckOutput::default();
+        for (case, pr) in [
+            (
+                "with type spans",
+                make_record_parse_result(
+                    source.len(),
+                    vec![
+                        ("count", "i64", count_ty_start..count_ty_start + "i64".len()),
+                        (
+                            "label",
+                            "string",
+                            label_ty_start..label_ty_start + "string".len(),
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "with synthetic spans",
+                make_record_parse_result(
+                    source.len(),
+                    vec![("count", "i64", 0..0), ("label", "string", 0..0)],
+                ),
+            ),
+        ] {
+            for (comment_offset, name) in [(count_comment, "count"), (label_comment, "label")] {
+                assert!(
+                    hover(source, &pr, Some(&tc), comment_offset).is_none(),
+                    "{case}: comment mentioning `{name}` must not hover as field"
+                );
+            }
+            for (decl_offset, name, ty_name) in [
+                (count_decl, "count", "i64"),
+                (label_decl, "label", "string"),
+            ] {
+                let result = hover(source, &pr, Some(&tc), decl_offset)
+                    .unwrap_or_else(|| panic!("{case}: hover on `{name}` must succeed"));
+                assert_eq!(
+                    result.contents,
+                    format!("```hew\n(field) {name}: {ty_name};\n```")
+                );
+                assert_eq!(
+                    result.span,
+                    Some(OffsetSpan {
+                        start: decl_offset,
+                        end: decl_offset + name.len(),
+                    })
+                );
+            }
+        }
     }
 }

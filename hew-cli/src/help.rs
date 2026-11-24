@@ -10,17 +10,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::IsTerminal as _;
 
 use clap::Command;
 
-/// Width the generated listing wraps to.
-///
-/// WHY: clap's own default when stdout is not a terminal, which is what the
-/// help tests and every piped invocation see. WHEN: replace this with the live
-/// terminal width once the listing is rendered at print time rather than baked
-/// into the template string. WHAT: a real solution asks clap for `term_w`,
-/// which is private to its help renderer today.
-const LISTING_WIDTH: usize = 100;
+/// Fallback wrapping width when stdout is not a terminal (piped invocations,
+/// CI, and help tests) or when the terminal width cannot be queried. Matches
+/// clap's own non-TTY default so captured help output remains deterministic.
+const DEFAULT_LISTING_WIDTH: usize = 100;
 
 /// Indent before a command name.
 const INDENT: &str = "  ";
@@ -89,9 +86,95 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
 /// Parsing goes through this rather than `Cli::command()` so `--help` and the
 /// parser can never describe different command sets.
 pub(crate) fn hew_command() -> Command {
-    let command = <crate::args::Cli as clap::CommandFactory>::command().bin_name("hew");
-    let template = help_template(&command);
+    hew_command_with_width(listing_width())
+}
+
+fn hew_command_with_width(width: usize) -> Command {
+    let command = <crate::args::Cli as clap::CommandFactory>::command()
+        .bin_name("hew")
+        .term_width(width);
+    let template = help_template(&command, width);
     command.help_template(template)
+}
+
+/// Live wrapping width for the help listing.
+///
+/// Queries the terminal size when stdout is a TTY (falling back to `COLUMNS`
+/// when the terminal driver reports no column count, matching clap's own
+/// `dimensions()` precedence) and returns [`DEFAULT_LISTING_WIDTH`] for all
+/// non-TTY invocations so piped help output and snapshot tests are
+/// deterministic.
+fn listing_width() -> usize {
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    if !stdout_is_terminal {
+        return DEFAULT_LISTING_WIDTH;
+    }
+    let terminal_width = stdout_terminal_width();
+    let columns = std::env::var("COLUMNS").ok();
+    resolve_listing_width(true, terminal_width, columns.as_deref())
+}
+
+fn resolve_listing_width(
+    stdout_is_terminal: bool,
+    terminal_width: Option<usize>,
+    columns_env: Option<&str>,
+) -> usize {
+    if !stdout_is_terminal {
+        return DEFAULT_LISTING_WIDTH;
+    }
+    terminal_width
+        .filter(|&width| width > 0)
+        .or_else(|| columns_env.and_then(parse_positive_width))
+        .unwrap_or(DEFAULT_LISTING_WIDTH)
+}
+
+fn parse_positive_width(raw: &str) -> Option<usize> {
+    raw.trim().parse::<usize>().ok().filter(|&width| width > 0)
+}
+
+#[cfg(unix)]
+fn stdout_terminal_width() -> Option<usize> {
+    let mut winsize = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `TIOCGWINSZ` writes a `libc::winsize` struct to the valid
+    // mutable pointer for `STDOUT_FILENO`; returns 0 on success.
+    let rc = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &raw mut winsize) };
+    if rc == 0 && winsize.ws_col > 0 {
+        Some(usize::from(winsize.ws_col))
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn stdout_terminal_width() -> Option<usize> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: `GetStdHandle` and `GetConsoleScreenBufferInfo` are standard
+    // Win32 console queries; `info` is zero-initialised and valid for writes.
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(handle, &raw mut info) == 0 {
+            return None;
+        }
+        let width = i32::from(info.srWindow.Right) - i32::from(info.srWindow.Left) + 1;
+        usize::try_from(width).ok().filter(|&width| width > 0)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn stdout_terminal_width() -> Option<usize> {
+    None
 }
 
 /// Build the help template: clap's own layout with the flat `{all-args}`
@@ -99,7 +182,7 @@ pub(crate) fn hew_command() -> Command {
 ///
 /// Literal template text is emitted verbatim, so the two-column alignment
 /// survives; `{before-help}` would be re-wrapped by clap and lose it.
-fn help_template(command: &Command) -> String {
+fn help_template(command: &Command, width: usize) -> String {
     let styles = command.get_styles();
     let header = styles.get_header();
 
@@ -135,7 +218,7 @@ fn help_template(command: &Command) -> String {
     for (heading, members) in &groups {
         let _ = write!(template, "\n{header}{heading}:{header:#}\n");
         for sub in members {
-            push_entry(&mut template, sub, name_column, styles);
+            push_entry(&mut template, sub, name_column, width, styles);
         }
     }
     let _ = write!(template, "\n{header}Options:{header:#}\n");
@@ -144,7 +227,13 @@ fn help_template(command: &Command) -> String {
 }
 
 /// Write one `  name    description` row, wrapped and hanging-indented.
-fn push_entry(out: &mut String, sub: &Command, name_column: usize, styles: &clap::builder::Styles) {
+fn push_entry(
+    out: &mut String,
+    sub: &Command,
+    name_column: usize,
+    width: usize,
+    styles: &clap::builder::Styles,
+) {
     let literal = styles.get_literal();
     let name = sub.get_name();
     let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
@@ -158,7 +247,7 @@ fn push_entry(out: &mut String, sub: &Command, name_column: usize, styles: &clap
     }
     out.push_str(&" ".repeat(name_column - name.chars().count()));
 
-    for (index, line) in wrap(&about, LISTING_WIDTH.saturating_sub(indent))
+    for (index, line) in wrap(&about, width.saturating_sub(indent))
         .into_iter()
         .enumerate()
     {
@@ -194,7 +283,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{hew_command, COMMAND_GROUPS, LISTING_WIDTH, UNFILED_HEADING};
+    use super::{
+        hew_command, hew_command_with_width, resolve_listing_width, COMMAND_GROUPS,
+        DEFAULT_LISTING_WIDTH, UNFILED_HEADING,
+    };
 
     #[test]
     fn tool_usage_keeps_the_public_command_name() {
@@ -287,9 +379,63 @@ mod tests {
         let help = rendered_help();
         for line in listing_lines(&help) {
             assert!(
-                line.chars().count() <= LISTING_WIDTH,
+                line.chars().count() <= DEFAULT_LISTING_WIDTH,
                 "line exceeds the listing width: {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolve_listing_width_uses_fallback_when_not_a_terminal() {
+        assert_eq!(
+            resolve_listing_width(false, Some(160), Some("72")),
+            DEFAULT_LISTING_WIDTH
+        );
+        assert_eq!(
+            resolve_listing_width(false, None, Some("60")),
+            DEFAULT_LISTING_WIDTH
+        );
+    }
+
+    #[test]
+    fn resolve_listing_width_prefers_terminal_size_then_columns_then_default() {
+        assert_eq!(resolve_listing_width(true, Some(132), Some("80")), 132);
+        assert_eq!(resolve_listing_width(true, None, Some("72")), 72);
+        assert_eq!(resolve_listing_width(true, Some(0), Some(" 88 ")), 88);
+        assert_eq!(
+            resolve_listing_width(true, None, Some("0")),
+            DEFAULT_LISTING_WIDTH
+        );
+        assert_eq!(
+            resolve_listing_width(true, None, Some("not-a-number")),
+            DEFAULT_LISTING_WIDTH
+        );
+        assert_eq!(
+            resolve_listing_width(true, None, None),
+            DEFAULT_LISTING_WIDTH
+        );
+    }
+
+    #[test]
+    fn hew_command_with_width_wraps_to_requested_width() {
+        let narrow = hew_command_with_width(60).render_help().to_string();
+        let narrow_lines = listing_lines(&narrow);
+        for line in &narrow_lines {
+            assert!(
+                line.chars().count() <= 60,
+                "narrow line exceeds 60 columns: {line:?}"
+            );
+        }
+
+        let wide = hew_command_with_width(140).render_help().to_string();
+        let wide_lines = listing_lines(&wide);
+        assert!(
+            narrow_lines.len() >= wide_lines.len(),
+            "narrow width should wrap at least as many lines as wide width"
+        );
+
+        // Very narrow width (smaller than hanging indent) must not panic.
+        let tiny = hew_command_with_width(8).render_help().to_string();
+        assert!(!listing_lines(&tiny).is_empty());
     }
 }

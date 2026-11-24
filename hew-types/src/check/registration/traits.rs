@@ -31,6 +31,9 @@ impl Checker {
         sd: &SupervisorDecl,
         identity: &str,
     ) {
+        let Some(declaration) = self.named_item_declaration(sd.name) else {
+            return;
+        };
         let type_params = self.declaration_parameter_heads(Ident::new(identity));
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let fields = sd
@@ -44,8 +47,8 @@ impl Checker {
         for parameter in &type_params {
             bounds.push(parameter.id, send.clone());
         }
-        self.insert_type_def(
-            identity,
+        self.file_type_def(
+            crate::NominalId::of_declaration(declaration),
             TypeDef {
                 kind: TypeDefKind::Supervisor,
                 name: identity.to_string(),
@@ -133,6 +136,10 @@ impl Checker {
     /// identity so two same-named actors from different modules occupy
     /// distinct entries instead of last-write-wins clobbering.
     pub(in crate::check) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
+        let Some(declaration) = self.named_item_declaration(ad.name) else {
+            return;
+        };
+        let nominal = crate::NominalId::of_declaration(declaration);
         // Extract type-param names from the declaration so the TypeDef's
         // positional `type_params` vector and ordinary nominal bounds share
         // one declaration authority. Actor arguments must also be Send.
@@ -180,15 +187,10 @@ impl Checker {
         };
 
         // Actors are always Send
-        self.registry.register_actor(
-            self.head_of_declaration(
-                self.nominal_head_for_key(identity)
-                    .expect("actor has a declaration")
-                    .id,
-            ),
-        );
+        self.registry
+            .register_actor(self.head_of_declaration(nominal));
 
-        self.insert_type_def(identity, type_def);
+        self.file_type_def(nominal, type_def);
         // A new handle-bearing candidate entered `type_defs`; invalidate the
         // cached handle-bearing classification the same way the qualified
         // type-alias path does.

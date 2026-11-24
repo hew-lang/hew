@@ -373,7 +373,7 @@ impl Checker {
         module_path: &str,
         name: hew_parser::ast::Symbol,
         key: &str,
-    ) {
+    ) -> Option<crate::DefId> {
         let declaration = if let Some(existing) = self.lookup_declaration(key) {
             existing
         } else {
@@ -406,7 +406,7 @@ impl Checker {
                         0..0,
                         format!("extern declaration `{key}` in `{module_path}`: {error}"),
                     ));
-                    return;
+                    return None;
                 }
             }
         };
@@ -417,6 +417,7 @@ impl Checker {
                 Some(module_path.to_string()),
             );
         }
+        Some(declaration)
     }
 
     #[expect(

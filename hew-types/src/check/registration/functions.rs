@@ -311,27 +311,19 @@ impl Checker {
                 if self.reject_protected_prelude_declaration(fd.name.name.as_str(), span) {
                     return;
                 }
-                // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
-                // CANONICALIZED with `fn_sigs` — one key shape per
-                // declaration, so declaration-authority probes never miss on
-                // key misalignment. The stored declaring module stays
-                // `current_module` (None = root): it is the display/provenance
-                // axis, and the legacy root render at publication boundaries
-                // derives from it.
                 let scoped_name = self.named_item_declaration(fd.name).map_or_else(
                     || Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
                     |id| self.defs.path(id).to_string(),
                 );
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
-                    // Root diagnostics render the bare leaf, exactly as the
-                    // declaration is spelled in source.
-                    let display_name = self
-                        .root_owned_fn_leaf(&scoped_name)
-                        .unwrap_or(&scoped_name)
-                        .to_string();
+                    let display_name = if self.current_module.is_none() {
+                        fd.name.name.as_str()
+                    } else {
+                        &scoped_name
+                    };
                     self.errors.push(TypeError::duplicate_definition(
                         span.clone(),
-                        &display_name,
+                        display_name,
                         prev_span.clone(),
                     ));
                 } else {
@@ -675,13 +667,8 @@ impl Checker {
                                     ..FnSig::default()
                                 };
                                 self.inherit_default_parameters(&mut sig, Some(trait_id), &target);
-                                match default_body {
-                                    Some(declaration) => {
-                                        self.insert_fn_sig(&method_key, declaration, sig.clone());
-                                    }
-                                    None => self.insert_fn_sig_at(&method_key, sig.clone()),
-                                }
                                 if let Some(declaration) = default_body {
+                                    self.insert_fn_sig(&method_key, declaration, sig.clone());
                                     self.impl_method_binders
                                         .insert(declaration, default_binders);
                                     if let Some((declaring_trait, _)) =
@@ -956,14 +943,21 @@ impl Checker {
         }
     }
 
-    /// Register a signature under `name`, filed under `declaration` when the
-    /// caller holds it and otherwise under the declaration `name` spells.
+    /// Register the signature of an inventoried function.
     pub(in crate::check) fn register_fn_sig_with_name(
         &mut self,
         name: &str,
         fd: &FnDecl,
         declaration: Option<crate::DefId>,
     ) {
+        let Some(declaration) = declaration else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &fd.fn_span,
+                format!("internal: function `{name}` has no declaration"),
+            );
+            return;
+        };
         let skip = usize::from(fd.params.first().is_some_and(|p| p.is_receiver));
         // Push the bounds BEFORE resolving the signature so the resolver can
         // validate `T.Bar` projections that appear in param/return types.
@@ -1000,11 +994,10 @@ impl Checker {
             fd,
             declared_return,
             fd.return_type.as_ref().map(|(_, s)| s),
-            declaration,
+            Some(declaration),
         );
 
-        let default_owner =
-            declaration.map_or_else(|| name.to_string(), |id| self.defs.path(id).to_string());
+        let default_owner = self.defs.path(declaration).to_string();
         let param_defaults = self.register_default_parameters(&default_owner, &fd.params, skip);
         let sig = FnSig {
             inferred_return: fd
@@ -1045,28 +1038,9 @@ impl Checker {
             ..FnSig::default()
         };
 
-        // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
-        // module — a root free function keys `{root_module}.{name}`,
-        // identical to the key the same declaration mints when its module is
-        // imported. The side registries (`fn_sig_inference_holes`,
-        // `intrinsic_declarations`) are co-minted under this same key.
-        let key = declaration.map_or_else(
-            || {
-                scoped_module_item_name(self.canonical_fn_owner(), name)
-                    .unwrap_or_else(|| name.to_string())
-            },
-            |id| self.defs.path(id).to_string(),
-        );
-        let resolved_declaration = declaration.or_else(|| self.fn_sig_keys.get(&key).copied());
-        match declaration {
-            Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
-            None => self.insert_fn_sig_at(&key, sig),
-        }
-        if let Some(declaration) =
-            resolved_declaration.or_else(|| self.fn_sig_keys.get(&key).copied())
-        {
-            self.record_fn_sig_inference_holes(declaration, hole_vars);
-        }
+        let key = self.defs.path(declaration).to_string();
+        self.insert_fn_sig(&key, declaration, sig);
+        self.record_fn_sig_inference_holes(declaration, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
         // skip the body and wire to the catalog.

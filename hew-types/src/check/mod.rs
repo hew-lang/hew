@@ -1041,31 +1041,6 @@ impl Checker {
             .insert(target_identity);
     }
 
-    /// When `key` is a ROOT-owned canonical free-fn key (`{root}.{leaf}`),
-    /// return its bare leaf; with no minted root identity, a bare free-fn key
-    /// IS root-owned and returns itself. `None` for module/method keys.
-    ///
-    /// Two consumers: root-fn detection where the legacy code tested "key has
-    /// no dot" (dead-code entry points and warn set), and the LEGACY RENDER of
-    /// root declarations at publication boundaries (published `CallTarget`
-    /// `DefId`s, published `fn_sigs` keys, diagnostics), where downstream
-    /// consumers still resolve root items by bare spelling.
-    /// WHEN OBSOLETE: the rc2 identity continuation's render-canonicalization
-    /// stage re-keys those consumers by `DefId`; the render half of this helper
-    /// is deleted with them. The detection half stays until then.
-    pub(super) fn root_owned_fn_leaf<'k>(&self, key: &'k str) -> Option<&'k str> {
-        if key.contains("::") {
-            return None;
-        }
-        match self.defs.root_module_path() {
-            Some(root) => key
-                .strip_prefix(root)
-                .and_then(|rest| rest.strip_prefix('.'))
-                .filter(|leaf| !leaf.contains('.')),
-            None => (!key.contains('.')).then_some(key),
-        }
-    }
-
     /// Mint the compile's module identities before declaration inventory.
     ///
     /// One minting authority, run once at `check_program` entry: every graph
@@ -1128,12 +1103,13 @@ impl Checker {
                 self.defs.mint_source_file_module(&canonical, source);
             }
         }
-        if self.repl_fragment && self.session_type_seed.is_none() {
+        let fragment_needs_root = self.repl_fragment && self.session_type_seed.is_none();
+        let root = (!fragment_needs_root)
+            .then(|| module_graph.modules.get(&module_graph.root))
+            .flatten()
+            .and_then(|root| self.defs.mint_root_module(&root.source_paths));
+        if root.is_none() {
             self.defs.mint_synthetic_root();
-        } else if let Some(root) = module_graph.modules.get(&module_graph.root) {
-            if self.defs.mint_root_module(&root.source_paths).is_none() {
-                self.defs.mint_synthetic_root();
-            }
         }
     }
 

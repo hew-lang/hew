@@ -1072,7 +1072,7 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.insert_fn_sig_at(&qualified, sig);
+                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
@@ -1321,6 +1321,29 @@ impl Checker {
             &flat_items,
             import_spec,
         );
+    }
+
+    fn publish_module_fn_signature(
+        &mut self,
+        module_path: &str,
+        function: &FnDecl,
+        span: &Span,
+        key: &str,
+        sig: FnSig,
+    ) {
+        let binding = self.defs.module_for_path(module_path).and_then(|module| {
+            self.scopes
+                .item(self.scopes.namespace_of(module), function.name)
+        });
+        if let Some(super::scope::Binding::Fn(declaration)) = binding {
+            self.insert_fn_sig(key, declaration, sig);
+        } else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("internal: function `{key}` has no declaration"),
+            );
+        }
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.
@@ -2061,7 +2084,7 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.insert_fn_sig_at(&qualified, sig);
+                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
                     if spec.is_none() && !self.has_fn_sig(&surface_qualified) {
                         self.alias_fn_sig(&surface_qualified, &qualified);
                     }
@@ -2363,7 +2386,11 @@ impl Checker {
         source_def: &TypeDef,
     ) {
         let qualified = format!("{module_full_path}.{name}");
-        self.insert_type_def(&qualified, source_def.clone());
+        let Some(declaration) = self.lookup_declaration(&qualified) else {
+            return;
+        };
+        let nominal = crate::NominalId::of_declaration(declaration);
+        self.file_type_def(nominal, source_def.clone());
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
@@ -2377,31 +2404,23 @@ impl Checker {
         let members = if source_def.kind == TypeDefKind::Enum {
             Self::structural_member_types_for_type(source_def)
         } else if source_def.kind == TypeDefKind::Record && source_def.fields.is_empty() {
-            self.fn_sig(&qualified).map_or_else(Vec::new, |signature| {
-                signature
-                    .params
-                    .iter()
-                    .map(|parameter| parameter.ty.clone())
-                    .collect()
-            })
+            self.fn_sigs
+                .get(&declaration)
+                .map_or_else(Vec::new, |signature| {
+                    signature
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.ty.clone())
+                        .collect()
+                })
         } else {
             source_def.fields.values().cloned().collect()
         };
         let members = self.expand_for_marker_registration(&members);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&qualified)
-                    .expect("published type has a declaration")
-                    .id,
-            ),
-            members,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(nominal), members);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&qualified)
-                    .expect("published type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(nominal),
             source_def.type_params.clone(),
         );
         self.handle_bearing_dirty = true;

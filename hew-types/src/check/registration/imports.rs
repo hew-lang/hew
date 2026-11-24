@@ -803,13 +803,14 @@ impl Checker {
                             ),
                             ..FnSig::default()
                         };
-                        self.declare_contractless_extern(
+                        if let Some(declaration) = self.declare_contractless_extern(
                             registry_module,
                             &canonical_owner,
                             hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
-                        );
-                        self.insert_fn_sig_at(&func.name, sig);
+                        ) {
+                            self.insert_fn_sig(&func.name, declaration, sig);
+                        }
                     }
 
                     // Register module and clean names

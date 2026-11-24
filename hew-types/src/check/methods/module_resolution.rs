@@ -262,22 +262,25 @@ impl Checker {
         self.fn_sigs.insert(declaration, sig);
     }
 
-    /// File the constructor signature of the member `name` of the declaration
-    /// `owner` spells (a variant, a machine state), reachable by `key`.
+    /// Publish a constructor signature on the owner's declared member.
     pub(in crate::check) fn insert_member_sig(
         &mut self,
-        key: &str,
-        owner: &str,
+        owner: crate::DefId,
         name: Symbol,
         kind: crate::DeclarationKind,
         sig: FnSig,
     ) {
-        match self
-            .lookup_declaration(owner)
-            .and_then(|owner| self.defs.member_of_kind(owner, name, kind))
-        {
-            Some(member) => self.insert_fn_sig(key, member, sig),
-            None => self.insert_fn_sig_at(key, sig),
+        if let Some(member) = self.defs.member_of_kind(owner, name, kind) {
+            self.insert_fn_sig(name.as_str(), member, sig);
+        } else {
+            self.errors.push(crate::error::TypeError::new(
+                crate::error::TypeErrorKind::InvalidOperation,
+                0..0,
+                format!(
+                    "internal: `{}::{name}` has no constructor declaration",
+                    self.defs.path(owner)
+                ),
+            ));
         }
     }
 
@@ -297,48 +300,6 @@ impl Checker {
         }
     }
 
-    /// File `sig` under the declaration `key` names: an established
-    /// signature key, an impl or trait method key, or a declaration path.
-    /// A key that names no declaration is an internal error, never dropped.
-    ///
-    /// TRANSITION(A1 commit 4): registration passes the declaration id.
-    pub(in crate::check) fn insert_fn_sig_at(&mut self, key: &str, sig: FnSig) {
-        let declaration = self
-            .fn_sig_keys
-            .get(key)
-            .copied()
-            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
-            .or_else(|| self.trait_method_ids.get(key).map(|(_, method)| *method))
-            .or_else(|| self.lookup_declaration(key))
-            .or_else(|| {
-                self.current_module_identity()
-                    .and_then(|owner| self.lookup_declaration(&format!("{owner}.{key}")))
-            })
-            .or_else(|| {
-                let (owner, member) = key.rsplit_once("::")?;
-                let owner = self
-                    .lookup_declaration(owner)
-                    .or_else(|| self.lookup_declaration(&self.canonical_nominal_name(owner)?))?;
-                self.defs.member(owner, Symbol::intern(member))
-            })
-            .or_else(|| {
-                // A module function a registry publishes before its source is
-                // read: the source declaration adopts this row.
-                (key.contains('.') && !key.contains("::")).then(|| {
-                    self.defs
-                        .mint_sourceless(key, crate::DeclarationKind::Function)
-                })
-            });
-        match declaration {
-            Some(declaration) => self.insert_fn_sig(key, declaration, sig),
-            None => self.errors.push(crate::error::TypeError::new(
-                crate::error::TypeErrorKind::InvalidOperation,
-                0..0,
-                format!("internal: signature `{key}` names no declaration"),
-            )),
-        }
-    }
-
     /// The trait declaration `id` names, when registered.
     pub(in crate::check) fn trait_info(&self, id: crate::DefId) -> Option<&TraitInfo> {
         self.trait_defs.get(&id)
@@ -351,14 +312,7 @@ impl Checker {
         path: &str,
         info: TraitInfo,
     ) -> Option<crate::DefId> {
-        // A module trait a route registers before the module's declarations
-        // are minted gets a sourceless row its declaration adopts.
-        let declaration = self.lookup_declaration(path).or_else(|| {
-            path.contains('.').then(|| {
-                self.defs
-                    .mint_sourceless(path, crate::DeclarationKind::Trait)
-            })
-        });
+        let declaration = self.lookup_declaration(path);
         if let Some(declaration) = declaration {
             self.trait_defs.insert(declaration, info);
         } else {
@@ -393,39 +347,22 @@ impl Checker {
         self.type_def_at_mut(name)
     }
 
-    /// File a definition under the declaration a registration key names in
-    /// the current module. A key no declaration answers to is an import
-    /// surface spelling of a declaration filed under its own identity.
-    ///
-    /// TRANSITION(A1 commit 4): registration passes the declaration id.
-    pub(in crate::check) fn insert_type_def(&mut self, key: &str, def: TypeDef) {
-        let declared = |path: &str| {
-            self.lookup_declaration(path)
-                .map(crate::NominalId::from_minted_declaration)
-        };
-        let id = if key.contains('.') {
-            declared(key)
-        } else {
-            self.current_module_identity()
-                .and_then(|owner| declared(&format!("{owner}.{key}")))
-                .or_else(|| declared(key))
-        };
-        if let Some(id) = id {
-            // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
-            // impls published methods onto it, and the rebuilt definition must
-            // keep them. WHEN the dispatch table owns methods, `td.methods` is
-            // deleted and this merge with it. WHAT: impl methods are dispatch
-            // rows keyed by head, never members of the definition.
-            let mut def = def;
-            if let Some(existing) = self.type_defs.get(&id) {
-                for (name, sig) in &existing.methods {
-                    def.methods
-                        .entry(name.clone())
-                        .or_insert_with(|| sig.clone());
-                }
+    /// Publish a checked definition on its minted declaration.
+    pub(in crate::check) fn file_type_def(&mut self, id: crate::NominalId, def: TypeDef) {
+        // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
+        // impls published methods onto it, and the rebuilt definition must
+        // keep them. WHEN the dispatch table owns methods, `td.methods` is
+        // deleted and this merge with it. WHAT: impl methods are dispatch
+        // rows keyed by head, never members of the definition.
+        let mut def = def;
+        if let Some(existing) = self.type_defs.get(&id) {
+            for (name, sig) in &existing.methods {
+                def.methods
+                    .entry(name.clone())
+                    .or_insert_with(|| sig.clone());
             }
-            self.type_defs.insert(id, def);
         }
+        self.type_defs.insert(id, def);
     }
 
     /// Resolve a `(module, type)` pair to its `TypeDef`, gated on the type being

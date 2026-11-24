@@ -867,31 +867,6 @@ impl DefTable {
         self.members.get(&(owner, name))?.first().copied()
     }
 
-    /// Mint (or return) a sourceless row at `path`: a module item registered
-    /// from a route that reads it before the module's own declarations are
-    /// minted, which adopt the row when they are.
-    ///
-    /// TRANSITION(A1 commit 4): WHY registry and module-surface routes
-    /// register a module's items before its declarations are minted. WHEN one
-    /// `Checker` mints every declaration before any registration reads it.
-    /// WHAT: the source `declare` is the only mint.
-    pub(crate) fn mint_sourceless(&mut self, path: &str, kind: DeclarationKind) -> DefId {
-        if let Some(&established) = self.by_path.get(path) {
-            return established;
-        }
-        let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
-        let id = self.push_row(DefRow {
-            name: Ident::from_symbol(name),
-            kind,
-            module: None,
-            owner: None,
-            site: None,
-            path: path.to_string(),
-        });
-        self.by_path.insert(path.to_string(), id);
-        id
-    }
-
     /// The member of `owner` declared as `name` with `kind`.
     #[must_use]
     pub fn member_of_kind(

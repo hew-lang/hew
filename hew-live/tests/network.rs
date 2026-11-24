@@ -20,8 +20,10 @@ fn environment(name: &str) -> PathBuf {
 }
 
 fn runtime() -> PathBuf {
+    // Cargo emits the shared runtime as `hew_native`; only staged SDKs
+    // rename it to `libhew`. Match the Makefile's `LIVE_SDK_RUNTIME`.
     environment("HEW_LIVE_RUNTIME_DIR").join(format!(
-        "{}hew{}",
+        "{}hew_native{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ))

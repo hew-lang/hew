@@ -1592,17 +1592,12 @@ impl Parser<'_> {
             }
             Token::Break => {
                 self.advance();
-                // `break ['label] [expr]` in expression position — desugars
-                // to exactly the same tree `{ break ['label] [expr]; }`
-                // produces: a one-statement block wrapping `Stmt::Break`.
-                // `loop_analysis.rs`'s `Expr::Block` walker already descends
-                // into that shape, so this introduces no new tree for the
-                // break-detection soundness argument to cover.
+                // In expression position, wrap the break statement in a block.
                 let label = self.parse_control_flow_label();
                 self.refuse_break_operand(BreakValuePosition::Expression);
                 let stmt_span = start..self.last_token_end;
                 Expr::Block(Block {
-                    stmts: vec![(Stmt::Break { label, value: None }, stmt_span)],
+                    stmts: vec![(Stmt::Break { label }, stmt_span)],
                     trailing_expr: None,
                 })
             }

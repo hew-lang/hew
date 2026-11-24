@@ -620,12 +620,12 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             }
             walk_block(body, visitor);
         }
-        Stmt::Break { value, .. } | Stmt::Return(value) => {
+        Stmt::Return(value) => {
             if let Some(v) = value {
                 walk_expr(&v.0, &v.1, visitor);
             }
         }
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Defer { body: expr, .. } => walk_expr(&expr.0, &expr.1, visitor),
         Stmt::Expression(expr) => walk_expr(&expr.0, &expr.1, visitor),
     }

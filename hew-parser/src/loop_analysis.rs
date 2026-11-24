@@ -90,34 +90,24 @@ fn ast_block_has_break(block: &Block, query: BreakQuery, depth: usize) -> bool {
 )]
 fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery, depth: usize) -> bool {
     match stmt {
-        Stmt::Break { label, value } => {
-            // Does THIS break leave the region under analysis?
-            let targets_self = match query {
-                BreakQuery::TargetsLoop(self_label) => {
-                    if depth == 0 {
-                        // An unlabeled break, or a break with our own label, exits this loop.
-                        label.is_none() || *label == self_label
-                    } else {
-                        // Inside an inner loop, only a break that explicitly names OUR
-                        // label escapes to the outer loop.
-                        *label == self_label && self_label.is_some()
-                    }
+        Stmt::Break { label } => match query {
+            BreakQuery::TargetsLoop(self_label) => {
+                if depth == 0 {
+                    // An unlabeled break, or a break with our own label, exits this loop.
+                    label.is_none() || *label == self_label
+                } else {
+                    // Inside an inner loop, only a break that explicitly names OUR
+                    // label escapes to the outer loop.
+                    *label == self_label && self_label.is_some()
                 }
-                // A break written directly in the region targets a loop outside
-                // it. A LABELLED break may name a loop inside the region or one
-                // outside it; resolving that needs the label environment, so
-                // treat every labelled break as escaping — over-reporting an
-                // escape only costs a false positive upstream.
-                BreakQuery::LeavesRegion => depth == 0 || label.is_some(),
-            };
-            // The break VALUE (`break (… break @L …)`) is evaluated in the same
-            // scope before the break fires, so a nested break targeting our loop
-            // inside it still counts.
-            targets_self
-                || value
-                    .as_ref()
-                    .is_some_and(|v| ast_expr_has_break(&v.0, query, depth))
-        }
+            }
+            // A break written directly in the region targets a loop outside
+            // it. A LABELLED break may name a loop inside the region or one
+            // outside it; resolving that needs the label environment, so
+            // treat every labelled break as escaping — over-reporting an
+            // escape only costs a false positive upstream.
+            BreakQuery::LeavesRegion => depth == 0 || label.is_some(),
+        },
         // Inner loop: increase depth so an unlabeled break inside the inner
         // loop's body does not count as exiting the outer loop.
         Stmt::Loop { body, .. } => ast_block_has_break(body, query, depth + 1),
@@ -517,16 +507,12 @@ mod tests {
     }
 
     fn bare_break() -> Spanned<Stmt> {
-        sp(Stmt::Break {
-            label: None,
-            value: None,
-        })
+        sp(Stmt::Break { label: None })
     }
 
     fn labeled_break(label: &str) -> Spanned<Stmt> {
         sp(Stmt::Break {
             label: Some(Ident::new(label)),
-            value: None,
         })
     }
 
@@ -729,21 +715,6 @@ mod tests {
         assert!(!loop_body_has_break(&body, None));
     }
 
-    // ── break with value ───────────────────────────────────────────────────
-
-    #[test]
-    fn break_with_value_detected() {
-        // `loop { break 42 }` — a value-carrying break still exits the loop
-        let body = block_with_stmts(vec![sp(Stmt::Break {
-            label: None,
-            value: Some(sp(Expr::Literal(Literal::Integer {
-                value: 42,
-                radix: crate::ast::IntRadix::Decimal,
-            }))),
-        })]);
-        assert!(loop_body_has_break(&body, None));
-    }
-
     // ── Binary / unary expressions ─────────────────────────────────────────
 
     #[test]
@@ -773,8 +744,8 @@ mod tests {
 
     // ── Header / scrutinee / guard / target sub-expression positions ────────
     //
-    // Every condition, scrutinee, iterable, assignment target, match-arm guard,
-    // and break value is a sub-expression the walker must descend into. A break
+    // Every condition, scrutinee, iterable, assignment target and match-arm guard
+    // is a sub-expression the walker must descend into. A break
     // hiding in any of them (via a block-expr) escapes to the enclosing loop;
     // missing one types a breakable loop as `Never` (the B1 soundness hole).
 
@@ -1048,24 +1019,6 @@ mod tests {
         assert!(!loop_body_has_break(
             &block_with_stmts(vec![middle_loop]),
             None
-        ));
-    }
-
-    #[test]
-    fn break_value_with_nested_labeled_break_detected() {
-        // `@outer: loop { @inner: loop { break ({ break @outer }) } }` — the
-        // inner break's VALUE carries a break targeting @outer.
-        let inner_break = sp(Stmt::Break {
-            label: None,
-            value: Some(labeled_break_block_expr("outer")),
-        });
-        let inner_loop = sp(Stmt::Loop {
-            label: Some(Ident::new("inner")),
-            body: block_with_stmts(vec![inner_break]),
-        });
-        assert!(loop_body_has_break(
-            &block_with_stmts(vec![inner_loop]),
-            Some(Ident::new("outer"))
         ));
     }
 }

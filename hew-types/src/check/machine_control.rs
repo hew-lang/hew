@@ -37,7 +37,7 @@ impl NodeVisitor for Scopes {
             | Stmt::For { label, body, .. } => {
                 self.bodies.insert(std::ptr::from_ref(body), *label);
             }
-            Stmt::Break { label, .. } | Stmt::Continue { label } => {
+            Stmt::Break { label } | Stmt::Continue { label } => {
                 let local = label.map_or(!self.active.is_empty(), |label| {
                     self.active
                         .iter()

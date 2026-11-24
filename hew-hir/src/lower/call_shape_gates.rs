@@ -561,7 +561,7 @@ fn scan_expr_for_call_shape_inner(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {
+        HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }
@@ -572,7 +572,7 @@ fn scan_expr_for_call_shape_inner(
         // Leaf / no-sub-expression variants: Literal, RegexLiteralRef,
         // BindingRef, ContextReader, AwaitTask, Yield { value: None },
         // MachineVariantCtor { payload: None }, MachineFieldAccess,
-        // MachineEventFieldAccess, Continue, ActorSelf, Unsupported. Nothing to
+        // MachineEventFieldAccess, Break, Continue, ActorSelf, Unsupported. Nothing to
         // recurse into.
         HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
@@ -580,6 +580,7 @@ fn scan_expr_for_call_shape_inner(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::MachineVariantCtor { payload: None, .. }
+        | HirExprKind::Break { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}

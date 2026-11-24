@@ -80,9 +80,6 @@ fn expr_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(expr: &hew_hir::HirExpr, pr
         | HirExprKind::While { body, .. }
         | HirExprKind::ForRange { body, .. } => block_has_kind(body, pred),
         HirExprKind::Block(block) => block_has_kind(block, pred),
-        HirExprKind::Break {
-            value: Some(value), ..
-        } => expr_has_kind(value, pred),
         _ => false,
     }
 }
@@ -188,8 +185,7 @@ fn break_with_operand_never_reaches_lowering() {
     // `break <value>` is refused at the parser (`E_BREAK_VALUE`,
     // HEW-SPEC-2026 §12.4): a loop produces no value, so the operand has
     // nowhere to go. This is the counterfactual for the bare-`break` tests
-    // above — they must keep lowering, while this spelling never arrives, so
-    // `HirExprKind::Break`'s operand slot has no producer left.
+    // above.
     let parsed = hew_parser::parse(
         r"
         fn main() {
@@ -241,10 +237,7 @@ fn labeled_break_lowers_with_label() {
     assert!(
         block_has_kind(body, |k| matches!(
             k,
-            HirExprKind::Break {
-                label: Some(label),
-                ..
-            } if label == "outer"
+            HirExprKind::Break { label: Some(label) } if label == "outer"
         )),
         "expected labeled break to carry `outer` into MIR"
     );

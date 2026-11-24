@@ -147,11 +147,6 @@ impl Checker {
                     self.scan_expr_for_stack_hints(e);
                 }
             }
-            Stmt::Break { value, .. } => {
-                if let Some((e, _)) = value {
-                    self.scan_expr_for_stack_hints(e);
-                }
-            }
             Stmt::Defer { body: expr, .. } => {
                 self.scan_expr_for_stack_hints(&expr.0);
             }
@@ -159,7 +154,7 @@ impl Checker {
             // Listed explicitly so a future Stmt variant addition forces a
             // compile error here (`exhaustive-traversal-and-lowering` LESSONS
             // row — no silent `_ => {}` in semantic positions).
-            Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
 

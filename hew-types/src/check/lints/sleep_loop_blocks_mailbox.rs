@@ -131,7 +131,7 @@ fn find_in_stmt(
                 find_in_block(ctx, levels, else_block, out);
             }
         }
-        Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => {
+        Stmt::Var { value, .. } | Stmt::Return(value) => {
             if let Some(value) = value {
                 find_in_expr(ctx, levels, &value.0, out);
             }
@@ -142,7 +142,7 @@ fn find_in_stmt(
         }
         Stmt::Defer { body: expr, .. } => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Expression(expr) => find_in_expr(ctx, levels, &expr.0, out),
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 
@@ -552,6 +552,7 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
         | Stmt::For { .. }
         | Stmt::While { .. }
         | Stmt::WhileLet { .. }
+        | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
         Stmt::If {
             condition,
@@ -584,7 +585,7 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
                 .is_some_and(|value| bounded_expr_has_sleep(&value.0))
                 || else_block.as_ref().is_some_and(bounded_contains_sleep)
         }
-        Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => value
+        Stmt::Var { value, .. } | Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|value| bounded_expr_has_sleep(&value.0)),
         Stmt::Assign { target, value, .. } => {
@@ -859,12 +860,12 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
                     .as_ref()
                     .is_some_and(|else_block| assigns_identifier(else_block, name))
         }
-        Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => value
+        Stmt::Var { value, .. } | Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|value| expr_assigns_identifier(&value.0, name)),
         Stmt::Defer { body: expr, .. } => expr_assigns_identifier(&expr.0, name),
         Stmt::Expression(expr) => expr_assigns_identifier(&expr.0, name),
-        Stmt::Continue { .. } => false,
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
     }
 }
 

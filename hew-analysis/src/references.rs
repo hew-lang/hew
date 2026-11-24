@@ -924,9 +924,6 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
         Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
             count_idents_in_expr(&expr.0, counts);
         }
-        Stmt::Break {
-            value: Some(val), ..
-        } => count_idents_in_expr(&val.0, counts),
         _ => {}
     }
 }

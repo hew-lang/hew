@@ -710,20 +710,7 @@ impl LowerCtx<'_> {
                 };
                 HirStmtKind::Expr(loop_expr)
             }
-            Stmt::Break { label, value } => {
-                // `break;` / `break @label;` / `break <value>;` — early exit
-                // from the innermost enclosing loop, or from the nearest
-                // enclosing loop with the requested label. The type checker has
-                // already rejected out-of-loop breaks and unknown labels; MIR
-                // keeps a defense-in-depth diagnostic for malformed HIR.
-                // Carry the operand of `break <value>` so MIR can lower it for
-                // its side effects (and move-checker correctness) before the
-                // jump. Loop-as-expression value return is out of scope; the
-                // produced value is discarded downstream (LESSONS
-                // `cleanup-all-exits`).
-                let value_hir = value
-                    .as_ref()
-                    .map(|v| Box::new(self.lower_expr(v, IntentKind::Read)));
+            Stmt::Break { label } => {
                 let break_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -731,7 +718,6 @@ impl LowerCtx<'_> {
                     intent: IntentKind::Read,
                     kind: HirExprKind::Break {
                         label: label.map(|ident| ident.to_string()),
-                        value: value_hir,
                     },
                     span: span.clone(),
                 };

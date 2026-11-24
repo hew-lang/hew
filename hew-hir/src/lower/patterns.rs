@@ -1808,10 +1808,7 @@ impl LowerCtx<'_> {
                 site: self.ids.site(),
                 ty: ResolvedTy::Unit,
                 intent: IntentKind::Read,
-                kind: HirExprKind::Break {
-                    label: None,
-                    value: None,
-                },
+                kind: HirExprKind::Break { label: None },
                 span: span.clone(),
             },
         }

@@ -252,8 +252,9 @@ fn retirement_wakes_observers_once_without_reporting_again() {
     let observer = Arc::new(crate::hew_node::observation::NodeObservation::default());
     cluster.set_observer(Arc::downgrade(&observer));
     let events = Box::into_raw(Box::new(Mutex::new(Vec::<(u16, u8)>::new())));
-    *cluster.membership_callback_binding.lock_or_recover() =
-        MembershipCallbackBinding::new(Some(record), events.cast());
+    cluster
+        .membership_callback_binding
+        .replace(MembershipCallbackBinding::new(Some(record), events.cast()));
 
     bury(&cluster, 2, 7, MEMBER_DEAD, 3);
     cluster.retire_buried(0);
@@ -277,7 +278,9 @@ fn retirement_wakes_observers_once_without_reporting_again() {
     assert_eq!(unsafe { &*events }.lock_or_recover().clone(), reported);
     assert!(cluster.events.lock_or_recover().is_empty());
 
-    *cluster.membership_callback_binding.lock_or_recover() = MembershipCallbackBinding::default();
+    cluster
+        .membership_callback_binding
+        .replace(MembershipCallbackBinding::default());
     // SAFETY: the binding no longer refers to the recorder.
     drop(unsafe { Box::from_raw(events) });
 }

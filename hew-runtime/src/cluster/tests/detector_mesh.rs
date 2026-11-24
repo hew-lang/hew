@@ -89,8 +89,11 @@ impl Mesh {
             }
             node.events.lock_or_recover().clear();
             let user_data = std::ptr::from_ref::<EventLog>(log).cast_mut().cast();
-            *node.membership_callback_binding.lock_or_recover() =
-                MembershipCallbackBinding::new(Some(record_event), user_data);
+            node.membership_callback_binding
+                .replace(MembershipCallbackBinding::new(
+                    Some(record_event),
+                    user_data,
+                ));
         }
         Self {
             nodes,
@@ -155,10 +158,11 @@ impl Mesh {
         let node = HewCluster::new(make_config(slot));
         node.upsert_member(slot, MEMBER_ALIVE, 1, &[]);
         node.events.lock_or_recover().clear();
-        *node.membership_callback_binding.lock_or_recover() = self.nodes[index]
-            .membership_callback_binding
-            .lock_or_recover()
-            .clone();
+        node.membership_callback_binding.replace(
+            self.nodes[index]
+                .membership_callback_binding
+                .snapshot_binding(),
+        );
         self.nodes[index] = node;
         if self.stalled == Some(slot) {
             self.stalled = None;

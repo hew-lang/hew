@@ -43,11 +43,11 @@
 
 use crate::node_identity::{HewLocation, Location};
 use crate::phi_accrual::PhiAccrualDetector;
-use crate::util::MutexExt;
+use crate::util::{CondvarExt, MutexExt};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 // ── Member states ──────────────────────────────────────────────────────
 
@@ -432,7 +432,6 @@ type MemberChangeCallback = unsafe extern "C" fn(u16, i32, u64);
 pub type HewMembershipCallback = extern "C" fn(u16, u8, *mut c_void);
 
 /// Snapshot of the currently installed membership callback slot.
-/// Snapshot of the currently installed membership callback slot.
 #[derive(Debug, Default)]
 pub(crate) struct MembershipCallbackBinding {
     pub(crate) callback: Option<HewMembershipCallback>,
@@ -493,6 +492,139 @@ impl Clone for RegistryCallbackBinding {
     }
 }
 
+trait CallbackBindingPresence {
+    fn has_callback(&self) -> bool;
+}
+
+impl CallbackBindingPresence for MembershipCallbackBinding {
+    fn has_callback(&self) -> bool {
+        self.callback.is_some()
+    }
+}
+
+impl CallbackBindingPresence for RegistryCallbackBinding {
+    fn has_callback(&self) -> bool {
+        self.callback.is_some()
+    }
+}
+
+#[derive(Debug, Default)]
+struct CallbackSlotState<B> {
+    binding: B,
+    generation: u64,
+    active: Vec<(u64, std::thread::ThreadId)>,
+    waiters: usize,
+}
+
+/// Synchronized callback binding slot that drains in-flight foreign invocations
+/// on replacement without holding the mutex across callbacks or deadlocking on
+/// re-entrant replacement from within a callback.
+#[derive(Debug, Default)]
+pub(crate) struct CallbackSlot<B> {
+    state: Mutex<CallbackSlotState<B>>,
+    drained: Condvar,
+}
+
+struct ActiveCallbackGuard<'a, B> {
+    slot: &'a CallbackSlot<B>,
+    generation: u64,
+    thread_id: std::thread::ThreadId,
+}
+
+impl<B> Drop for ActiveCallbackGuard<'_, B> {
+    fn drop(&mut self) {
+        let should_notify = {
+            let mut state = self.slot.state.lock_or_recover();
+            if let Some(pos) = state.active.iter().rposition(|&(generation, tid)| {
+                generation == self.generation && tid == self.thread_id
+            }) {
+                state.active.swap_remove(pos);
+            }
+            state.waiters > 0
+        };
+        if should_notify {
+            self.slot.drained.notify_all();
+        }
+    }
+}
+
+impl<B> CallbackSlot<B> {
+    pub(crate) fn new(binding: B) -> Self {
+        Self {
+            state: Mutex::new(CallbackSlotState {
+                binding,
+                generation: 0,
+                active: Vec::new(),
+                waiters: 0,
+            }),
+            drained: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn replace(&self, binding: B) {
+        let current_thread = std::thread::current().id();
+        let mut state = self.state.lock_or_recover();
+        let retired_generation = state.generation;
+        state.binding = binding;
+        state.generation = state.generation.saturating_add(1);
+        // Only drain dispatches from earlier generations running on OTHER
+        // threads: newer generations already observe `binding`, and waiting on
+        // the current thread would deadlock re-entrant replacement inside a
+        // callback.
+        if state
+            .active
+            .iter()
+            .any(|&(generation, tid)| generation <= retired_generation && tid != current_thread)
+        {
+            state.waiters += 1;
+            while state
+                .active
+                .iter()
+                .any(|&(generation, tid)| generation <= retired_generation && tid != current_thread)
+            {
+                state = self.drained.wait_or_recover(state);
+            }
+            state.waiters -= 1;
+        }
+    }
+
+    fn dispatch<R>(&self, invoke: impl FnOnce(&B) -> R) -> Option<R>
+    where
+        B: Clone + CallbackBindingPresence,
+    {
+        let (binding, generation, thread_id) = {
+            let mut state = self.state.lock_or_recover();
+            if !state.binding.has_callback() {
+                return None;
+            }
+            let binding = state.binding.clone();
+            let generation = state.generation;
+            let thread_id = std::thread::current().id();
+            state.active.push((generation, thread_id));
+            (binding, generation, thread_id)
+        };
+        let _guard = ActiveCallbackGuard {
+            slot: self,
+            generation,
+            thread_id,
+        };
+        Some(invoke(&binding))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot_binding(&self) -> B
+    where
+        B: Clone,
+    {
+        self.state.lock_or_recover().binding.clone()
+    }
+
+    #[cfg(test)]
+    fn waiter_count(&self) -> usize {
+        self.state.lock_or_recover().waiters
+    }
+}
+
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -524,9 +656,9 @@ pub struct HewCluster {
     /// Membership change callback.
     callback: Mutex<Option<MemberChangeCallback>>,
     /// Membership event callback binding.
-    membership_callback_binding: Mutex<MembershipCallbackBinding>,
+    pub(crate) membership_callback_binding: CallbackSlot<MembershipCallbackBinding>,
     /// Registry gossip callback binding.
-    registry_callback_binding: Mutex<RegistryCallbackBinding>,
+    registry_callback_binding: CallbackSlot<RegistryCallbackBinding>,
     /// Monotonic timestamp of last tick.
     ///
     /// Atomic so `tick` takes `&self` (the SWIM driver thread drives the
@@ -866,8 +998,8 @@ impl HewCluster {
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: AtomicU64::new(1),
             callback: Mutex::new(None),
-            membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
-            registry_callback_binding: Mutex::new(RegistryCallbackBinding::default()),
+            membership_callback_binding: CallbackSlot::new(MembershipCallbackBinding::default()),
+            registry_callback_binding: CallbackSlot::new(RegistryCallbackBinding::default()),
             last_tick_ms: AtomicU64::new(0),
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
@@ -1696,16 +1828,18 @@ impl HewCluster {
         }
     }
 
-    /// Snapshot the current membership callback binding.
+    /// Invoke the currently installed membership callback while pinning it
+    /// against concurrent replacement.
     fn with_membership_callback_dispatch<R>(
         &self,
         invoke: impl FnOnce(HewMembershipCallback, *mut c_void) -> R,
     ) -> Option<R> {
-        let (callback, user_data) = {
-            let binding = self.membership_callback_binding.lock_or_recover();
-            (binding.callback?, binding.user_data())
-        };
-        Some(invoke(callback, user_data))
+        self.membership_callback_binding.dispatch(|binding| {
+            let callback = binding
+                .callback
+                .expect("dispatch only enters when a membership callback is registered");
+            invoke(callback, binding.user_data())
+        })
     }
 
     /// Get pending gossip events (up to `max_count`), incrementing
@@ -2430,18 +2564,21 @@ impl HewCluster {
 
     /// Process an inbound registry gossip event received from a peer.
     pub fn apply_registry_event(&self, name: &str, location: Location, is_add: bool) {
-        let (cb, user_data) = {
-            let binding = self.registry_callback_binding.lock_or_recover();
+        let _ = self.registry_callback_binding.dispatch(|binding| {
+            let Ok(c_name) = std::ffi::CString::new(name) else {
+                return;
+            };
             let Some(cb) = binding.callback else {
                 return;
             };
-            (cb, binding.user_data())
-        };
-        let Ok(c_name) = std::ffi::CString::new(name) else {
-            return;
-        };
-        let location = HewLocation::from(location);
-        cb(c_name.as_ptr(), &raw const location, is_add, user_data);
+            let location = HewLocation::from(location);
+            cb(
+                c_name.as_ptr(),
+                &raw const location,
+                is_add,
+                binding.user_data(),
+            );
+        });
     }
 
     // ── SWIM membership gossip (piggyback dissemination) ────────────────
@@ -2992,11 +3129,18 @@ pub unsafe extern "C" fn hew_cluster_set_callback(
 /// The callback receives `(node_id, event, user_data)` where `event` is one
 /// of `HEW_MEMBERSHIP_EVENT_NODE_*`.
 ///
+/// Replacing an existing callback waits for any in-flight invocation on
+/// another thread to finish before returning, so callers may safely reclaim
+/// previous `user_data` once replacement returns. Re-entrant replacement from
+/// inside an active callback does not deadlock against its own invocation.
+///
 /// # Safety
 ///
 /// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-/// - `callback` must remain valid for the cluster lifetime.
-/// - `user_data` must remain valid while callback is registered.
+/// - `callback` must remain valid while registered and until any replacement
+///   completes.
+/// - `user_data` must remain valid while callback is registered and until
+///   replacement/unregistration returns.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cluster_set_membership_callback(
     cluster: *mut HewCluster,
@@ -3015,7 +3159,8 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
     };
 }
 
-/// Replace the current membership callback binding.
+/// Replace the current membership callback binding, waiting for any in-flight
+/// callback on another thread to complete before returning.
 ///
 /// # Safety
 ///
@@ -3029,7 +3174,7 @@ pub(crate) unsafe fn hew_cluster_replace_membership_callback(
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    *cluster.membership_callback_binding.lock_or_recover() = binding;
+    cluster.membership_callback_binding.replace(binding);
 }
 
 #[cfg(test)]
@@ -3053,11 +3198,18 @@ pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
 ///
 /// The callback receives `(name, location, is_add, user_data)`.
 ///
+/// Replacing an existing callback waits for any in-flight invocation on
+/// another thread to finish before returning, so callers may safely reclaim
+/// previous `user_data` once replacement returns. Re-entrant replacement from
+/// inside an active callback does not deadlock against its own invocation.
+///
 /// # Safety
 ///
 /// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-/// - `callback` must remain valid for the cluster lifetime.
-/// - `user_data` must remain valid while callback is registered.
+/// - `callback` must remain valid while registered and until any replacement
+///   completes.
+/// - `user_data` must remain valid while callback is registered and until
+///   replacement/unregistration returns.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cluster_set_registry_callback(
     cluster: *mut HewCluster,
@@ -3069,8 +3221,9 @@ pub unsafe extern "C" fn hew_cluster_set_registry_callback(
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    *cluster.registry_callback_binding.lock_or_recover() =
-        RegistryCallbackBinding::new(Some(callback), user_data);
+    cluster
+        .registry_callback_binding
+        .replace(RegistryCallbackBinding::new(Some(callback), user_data));
 }
 
 /// Queue a registry-add gossip event for dissemination.
@@ -5051,8 +5204,12 @@ mod tests {
 
         let cluster = HewCluster::new(make_config(1));
         let mut collected: Vec<(String, Location, bool)> = Vec::new();
-        *cluster.registry_callback_binding.lock_or_recover() =
-            RegistryCallbackBinding::new(Some(collect_registry), (&raw mut collected).cast());
+        cluster
+            .registry_callback_binding
+            .replace(RegistryCallbackBinding::new(
+                Some(collect_registry),
+                (&raw mut collected).cast(),
+            ));
 
         cluster.apply_registry_event("counter", test_location(0x42), true);
         cluster.apply_registry_event("timer", test_location(0x99), false);
@@ -5306,8 +5463,12 @@ mod tests {
             panic!("callback should not be invoked for invalid name");
         }
         let cluster = HewCluster::new(make_config(1));
-        *cluster.registry_callback_binding.lock_or_recover() =
-            RegistryCallbackBinding::new(Some(should_not_be_called), std::ptr::null_mut());
+        cluster
+            .registry_callback_binding
+            .replace(RegistryCallbackBinding::new(
+                Some(should_not_be_called),
+                std::ptr::null_mut(),
+            ));
 
         // Name with interior null byte — CString::new fails, early return.
         cluster.apply_registry_event("bad\0name", test_location(42), true);
@@ -5995,5 +6156,325 @@ mod tests {
         cluster.apply_registry_event("svc", test_location(7), true);
         assert!(MEMBER_HITS.load(Ordering::Relaxed) >= 1);
         assert!(REGISTRY_HITS.load(Ordering::Relaxed) >= 1);
+    }
+
+    struct BlockingCallbackState {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        post_release_reads: AtomicUsize,
+        freed: Arc<AtomicBool>,
+    }
+
+    impl BlockingCallbackState {
+        fn new_pair() -> (
+            *mut Self,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+            Arc<AtomicBool>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let freed = Arc::new(AtomicBool::new(false));
+            let raw = Box::into_raw(Box::new(Self {
+                entered: entered_tx,
+                release: Mutex::new(release_rx),
+                post_release_reads: AtomicUsize::new(0),
+                freed: Arc::clone(&freed),
+            }));
+            (raw, entered_rx, release_tx, freed)
+        }
+
+        fn enter_and_wait(&self) {
+            self.entered.send(()).expect("signal callback entry");
+            self.release
+                .lock_or_recover()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("test releases blocked callback");
+            assert!(
+                !self.freed.load(Ordering::Acquire),
+                "old user_data must not be freed while callback is still in flight"
+            );
+            self.post_release_reads.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    impl Drop for BlockingCallbackState {
+        fn drop(&mut self) {
+            self.freed.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn membership_callback_replace_waits_for_inflight_callback_and_frees_user_data() {
+        extern "C" fn blocking_old_cb(_node_id: u16, _event: u8, user_data: *mut c_void) {
+            // SAFETY: replacement blocks until this callback exits, so `BlockingCallbackState` remains live.
+            unsafe { &*user_data.cast::<BlockingCallbackState>() }.enter_and_wait();
+        }
+
+        extern "C" fn new_cb(_node_id: u16, _event: u8, user_data: *mut c_void) {
+            // SAFETY: `new_hits` remains live for the test scope.
+            let hits = unsafe { &*user_data.cast::<AtomicUsize>() };
+            hits.fetch_add(1, Ordering::AcqRel);
+        }
+
+        let (old_state, entered_rx, release_tx, freed) = BlockingCallbackState::new_pair();
+        let new_hits = AtomicUsize::new(0);
+
+        let cluster = Arc::new(HewCluster::new(make_config(1)));
+        // SAFETY: `cluster` outlives all worker threads joined below.
+        unsafe {
+            hew_cluster_set_membership_callback(
+                (&raw const *cluster).cast_mut(),
+                blocking_old_cb,
+                old_state.cast(),
+            );
+        }
+
+        let dispatch_cluster = Arc::clone(&cluster);
+        let dispatcher = std::thread::spawn(move || {
+            // SAFETY: `dispatch_cluster` keeps `HewCluster` live for this thread.
+            unsafe {
+                hew_cluster_test_fire_membership_callback(
+                    (&raw const *dispatch_cluster).cast_mut(),
+                    2,
+                    HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+                );
+            }
+        });
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("in-flight callback must enter before replace");
+
+        let (replace_done_tx, replace_done_rx) = std::sync::mpsc::channel();
+        let replace_cluster = Arc::clone(&cluster);
+        let old_addr = old_state as usize;
+        let new_addr = (&raw const new_hits).cast_mut() as usize;
+        let replacer = std::thread::spawn(move || {
+            // SAFETY: `replace_cluster` keeps `HewCluster` live; `old_addr` stays
+            // uniquely owned to be freed only after replacement drains.
+            unsafe {
+                hew_cluster_replace_membership_callback(
+                    (&raw const *replace_cluster).cast_mut(),
+                    MembershipCallbackBinding::new(Some(new_cb), new_addr as *mut c_void),
+                );
+                drop(Box::from_raw(old_addr as *mut BlockingCallbackState));
+            }
+            replace_done_tx.send(()).expect("signal replace completion");
+        });
+
+        while cluster.membership_callback_binding.waiter_count() == 0 {
+            std::thread::yield_now();
+        }
+        assert!(
+            replace_done_rx.try_recv().is_err(),
+            "replacement must block while old membership callback is in flight"
+        );
+        assert!(
+            !freed.load(Ordering::Acquire),
+            "old user_data must stay live while blocked in replacement"
+        );
+
+        // New dispatches must not be starved or deadlocked while replacement drains old callbacks.
+        // SAFETY: `cluster` is live and `new_hits` outlives this call.
+        unsafe {
+            hew_cluster_test_fire_membership_callback(
+                (&raw const *cluster).cast_mut(),
+                3,
+                HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+            );
+        }
+        assert_eq!(new_hits.load(Ordering::Acquire), 1);
+        assert!(
+            replace_done_rx.try_recv().is_err(),
+            "replacement must remain blocked until the old-generation callback returns"
+        );
+
+        release_tx.send(()).expect("unblock old callback");
+        replace_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("replacement must complete once in-flight callback exits");
+        dispatcher.join().unwrap();
+        replacer.join().unwrap();
+        assert!(freed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn registry_callback_replace_waits_for_inflight_callback_and_frees_user_data() {
+        extern "C" fn blocking_old_registry_cb(
+            _name: *const c_char,
+            _loc: *const HewLocation,
+            _is_add: bool,
+            user_data: *mut c_void,
+        ) {
+            // SAFETY: replacement blocks until this callback returns.
+            unsafe { &*user_data.cast::<BlockingCallbackState>() }.enter_and_wait();
+        }
+
+        extern "C" fn new_registry_cb(
+            _name: *const c_char,
+            _loc: *const HewLocation,
+            _is_add: bool,
+            user_data: *mut c_void,
+        ) {
+            // SAFETY: `new_hits` outlives this test.
+            let hits = unsafe { &*user_data.cast::<AtomicUsize>() };
+            hits.fetch_add(1, Ordering::AcqRel);
+        }
+
+        let (old_state, entered_rx, release_tx, freed) = BlockingCallbackState::new_pair();
+        let new_hits = AtomicUsize::new(0);
+
+        let cluster = Arc::new(HewCluster::new(make_config(1)));
+        // SAFETY: `cluster` outlives all spawned threads.
+        unsafe {
+            hew_cluster_set_registry_callback(
+                (&raw const *cluster).cast_mut(),
+                blocking_old_registry_cb,
+                old_state.cast(),
+            );
+        }
+
+        let dispatch_cluster = Arc::clone(&cluster);
+        let dispatcher = std::thread::spawn(move || {
+            dispatch_cluster.apply_registry_event("svc_old", test_location(11), true);
+        });
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("registry callback must enter before replacement");
+
+        let (replace_done_tx, replace_done_rx) = std::sync::mpsc::channel();
+        let replace_cluster = Arc::clone(&cluster);
+        let old_addr = old_state as usize;
+        let new_addr = (&raw const new_hits).cast_mut() as usize;
+        let replacer = std::thread::spawn(move || {
+            // SAFETY: `replace_cluster` keeps `HewCluster` live; `old_addr` is freed
+            // only once `hew_cluster_set_registry_callback` finishes draining.
+            unsafe {
+                hew_cluster_set_registry_callback(
+                    (&raw const *replace_cluster).cast_mut(),
+                    new_registry_cb,
+                    new_addr as *mut c_void,
+                );
+                drop(Box::from_raw(old_addr as *mut BlockingCallbackState));
+            }
+            replace_done_tx.send(()).expect("signal replace completion");
+        });
+
+        while cluster.registry_callback_binding.waiter_count() == 0 {
+            std::thread::yield_now();
+        }
+        assert!(
+            replace_done_rx.try_recv().is_err(),
+            "registry callback replacement must wait for in-flight invocation"
+        );
+        assert!(!freed.load(Ordering::Acquire));
+
+        // Dispatches arriving after replacement starts observe the new callback without starving.
+        cluster.apply_registry_event("svc_new", test_location(12), true);
+        assert_eq!(new_hits.load(Ordering::Acquire), 1);
+        assert!(replace_done_rx.try_recv().is_err());
+
+        release_tx.send(()).expect("unblock old registry callback");
+        replace_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("replacement must return once in-flight registry callback completes");
+        dispatcher.join().unwrap();
+        replacer.join().unwrap();
+        assert!(freed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn registry_callback_reentrant_replace_does_not_deadlock() {
+        struct ReentrantCtx {
+            cluster: *mut HewCluster,
+            new_hits: *const AtomicUsize,
+            outer_calls: AtomicUsize,
+        }
+
+        extern "C" fn inner_registry_cb(
+            _name: *const c_char,
+            _loc: *const HewLocation,
+            _is_add: bool,
+            user_data: *mut c_void,
+        ) {
+            // SAFETY: `new_hits` remains live for the test scope.
+            unsafe { &*user_data.cast::<AtomicUsize>() }.fetch_add(1, Ordering::AcqRel);
+        }
+
+        extern "C" fn outer_registry_cb(
+            _name: *const c_char,
+            _loc: *const HewLocation,
+            _is_add: bool,
+            user_data: *mut c_void,
+        ) {
+            // SAFETY: `ReentrantCtx` remains live for the test scope.
+            let ctx = unsafe { &*user_data.cast::<ReentrantCtx>() };
+            ctx.outer_calls.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: re-entrant replacement from inside the callback must not deadlock.
+            unsafe {
+                hew_cluster_set_registry_callback(
+                    ctx.cluster,
+                    inner_registry_cb,
+                    ctx.new_hits.cast_mut().cast(),
+                );
+            }
+        }
+
+        let new_hits = AtomicUsize::new(0);
+        let mut cluster = HewCluster::new(make_config(1));
+        let mut ctx = ReentrantCtx {
+            cluster: &raw mut cluster,
+            new_hits: &raw const new_hits,
+            outer_calls: AtomicUsize::new(0),
+        };
+        // SAFETY: `cluster` and `ctx` remain live across both dispatches.
+        unsafe {
+            hew_cluster_set_registry_callback(
+                &raw mut cluster,
+                outer_registry_cb,
+                (&raw mut ctx).cast(),
+            );
+        }
+
+        cluster.apply_registry_event("first", test_location(1), true);
+        cluster.apply_registry_event("second", test_location(2), true);
+        assert_eq!(ctx.outer_calls.load(Ordering::Acquire), 1);
+        assert_eq!(new_hits.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn membership_callback_unwinding_dispatch_clears_inflight_and_unblocks_replace() {
+        extern "C" fn noop_cb(_: u16, _: u8, _: *mut c_void) {}
+        let mut cluster = HewCluster::new(make_config(1));
+        let mut tag = 0_u8;
+        // SAFETY: pointers remain valid for this scope.
+        unsafe {
+            hew_cluster_replace_membership_callback(
+                &raw mut cluster,
+                MembershipCallbackBinding::new(Some(noop_cb), (&raw mut tag).cast()),
+            );
+        }
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cluster.with_membership_callback_dispatch(|_, _| -> () {
+                panic!("simulated callback unwind");
+            });
+        }));
+        assert!(unwound.is_err());
+
+        // Replacement from another thread must not hang after an unwound dispatch.
+        let cluster_addr = (&raw mut cluster) as usize;
+        let handle = std::thread::spawn(move || {
+            // SAFETY: `cluster` stays live until `handle.join()` below.
+            unsafe {
+                hew_cluster_replace_membership_callback(
+                    cluster_addr as *mut HewCluster,
+                    MembershipCallbackBinding::default(),
+                );
+            }
+        });
+        handle.join().unwrap();
     }
 }

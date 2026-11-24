@@ -1477,7 +1477,7 @@ impl Checker {
             self.current_module_idx = importer_file_idx;
         }
 
-        // Phase 1a-prep: Trait shells before type/signature resolution.
+        // Phase 1a-prep: Trait shells and type aliases before type/signature resolution.
         for (item_idx, (item, span)) in items.iter().enumerate() {
             self.current_item_source = item_source_paths.get(item_idx).cloned();
             self.current_item_ordinal = item_idx;
@@ -1511,6 +1511,50 @@ impl Checker {
                 self.insert_trait_def(&qualified_trait, info);
                 self.current_module = saved_importer_module;
                 self.current_module_idx = importer_file_idx;
+            }
+        }
+        for (item_idx, (item, span)) in items.iter().enumerate() {
+            self.current_item_source = item_source_paths.get(item_idx).cloned();
+            self.current_item_ordinal = item_idx;
+            let declaring_file_idx = item_source_paths
+                .get(item_idx)
+                .and_then(|source| self.file_span_indices.path_index(source))
+                .unwrap_or(fallback_file_idx);
+            if let Item::TypeAlias(decl) = item {
+                let saved_module = self.current_module.replace(module_full_path.to_string());
+                self.current_module_idx = declaring_file_idx;
+                self.register_type_alias_decl(decl, span);
+                self.current_module = saved_module;
+                self.current_module_idx = importer_file_idx;
+                if !decl.visibility.is_pub() {
+                    continue;
+                }
+                self.record_module_type_export(module_full_path, decl.name.name.as_str());
+                if spec.is_none() {
+                    self.record_module_type_export(module_short, decl.name.name.as_str());
+                }
+                if Self::should_import_name(decl.name.name.as_str(), spec) {
+                    let binding = Self::resolve_import_name(spec, decl.name.name.as_str())
+                        .unwrap_or_else(|| decl.name.to_string());
+                    let source = format!("{module_full_path}.{}", decl.name);
+                    self.import_type_name_aliases.insert(
+                        (
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            binding.clone(),
+                        ),
+                        source.clone(),
+                    );
+                    self.record_published_bare_type(&binding, &source);
+                    self.unqualified_to_module.insert(
+                        (
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            binding,
+                        ),
+                        module_full_path.to_string(),
+                    );
+                }
             }
         }
 

@@ -4025,3 +4025,128 @@ fn struct_variant_rejects_record_update_and_duplicate_fields_on_named_and_contex
         ctx_ok_out.resolutions
     );
 }
+
+#[test]
+fn user_import_registers_type_alias_and_publishes_bindings() {
+    let module_items = parsed_import_items(
+        "pub type PairAlias = LocalPair;\npub type IdAlias = i64;\npub type LocalPair {\n    x: i64;\n}\n",
+    );
+    let import = make_user_import(
+        &["mylib", "aliases"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: Ident::new("IdAlias"),
+                alias: Some(Ident::new("UserId")),
+            },
+            ImportName {
+                name: Ident::new("PairAlias"),
+                alias: None,
+            },
+            ImportName {
+                name: Ident::new("LocalPair"),
+                alias: None,
+            },
+        ])),
+        module_items,
+    );
+    let mut items = vec![(Item::Import(import), 0..0)];
+    items.extend(parsed_import_items(
+        "fn use_aliases(id: UserId, p: PairAlias) -> i64 {\n    id + p.x\n}\n",
+    ));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        module_graph: None,
+        items,
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "imported user type aliases must register and expand cleanly: {:#?}",
+        output.errors
+    );
+    let exports = checker
+        .module_type_exports
+        .get("mylib.aliases")
+        .expect("mylib.aliases exports recorded");
+    assert!(exports.contains("IdAlias"), "exports: {exports:?}");
+    assert!(exports.contains("PairAlias"), "exports: {exports:?}");
+    assert_eq!(
+        output
+            .import_type_name_aliases
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&"mylib.aliases.IdAlias".to_string())
+    );
+    assert_eq!(
+        checker
+            .published_bare_type_owners
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&std::collections::BTreeSet::from([
+            "mylib.aliases.IdAlias".to_string()
+        ]))
+    );
+    assert_eq!(
+        checker
+            .published_bare_type_owners
+            .get(&(None, 0, "PairAlias".to_string())),
+        Some(&std::collections::BTreeSet::from([
+            "mylib.aliases.PairAlias".to_string()
+        ]))
+    );
+    let sigs = output.sigs();
+    let sig = sigs.get("use_aliases").expect("use_aliases sig");
+    assert_eq!(sig.params.first().map(|p| &p.ty), Some(&Ty::I64));
+    assert!(
+        matches!(
+            sig.params.get(1).map(|p| &p.ty),
+            Some(Ty::Named { head, .. }) if head.receiver_path(&output.defs) == "mylib.aliases.LocalPair"
+        ),
+        "PairAlias parameter must expand to mylib.aliases.LocalPair, got {:?}",
+        sig.params
+    );
+    assert_eq!(
+        checker
+            .unqualified_to_module
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&"mylib.aliases".to_string())
+    );
+    assert_eq!(
+        checker
+            .unqualified_to_module
+            .get(&(None, 0, "PairAlias".to_string())),
+        Some(&"mylib.aliases".to_string())
+    );
+}
+
+#[test]
+fn user_whole_module_import_records_type_alias_exports() {
+    let import = make_user_import(
+        &["pkg", "whole_aliases"],
+        None,
+        parsed_import_items("pub type WholeId = i64;\n"),
+    );
+    let mut items = vec![(Item::Import(import), 0..0)];
+    items.extend(parsed_import_items(
+        "fn take_id(id: whole_aliases.WholeId) -> i64 {\n    id\n}\n",
+    ));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        module_graph: None,
+        items,
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "qualified imported user type alias must resolve cleanly: {:#?}",
+        output.errors
+    );
+    assert!(checker
+        .module_type_exports
+        .get("pkg.whole_aliases")
+        .is_some_and(|exports| exports.contains("WholeId")));
+    assert!(checker
+        .module_type_exports
+        .get("whole_aliases")
+        .is_some_and(|exports| exports.contains("WholeId")));
+}

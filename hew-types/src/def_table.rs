@@ -55,8 +55,6 @@ pub enum DeclarationKind {
     MachineTransition,
     /// An enum variant, a member of its enum.
     Variant,
-    /// A sourceless builtin receiver anchor (`i64`, `Vec`).
-    BuiltinType,
     /// A trait default body materialized for one concrete receiver.
     DefaultImplMethod,
     /// The request record the checker synthesizes for a handler with no

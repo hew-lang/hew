@@ -87,9 +87,9 @@ is identified directly; its runtime-status cell states the current behavior.
 | `std-os` | `std.os.*` (args, env, cwd, home, hostname, pid, temp-dir) | std.os environment and path operations | Reject (`OsEnv`) | the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32 | Hew OS/env helpers are native-only today even where WASI may offer host data |
 | `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `std.net.cluster` observation operations, remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32 | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only |
 | `stdin-input` | Standard input reads | Standard input reads | Pass | — | Native and WASI standard input is host-provided |
-| `crypto-random` | `std.crypto.hash.random_bytes` | std.crypto.hash.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists |
-| `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set | Native-only AES-256-GCM companion crate; not linked for wasm32 |
-| `crypto-sign` | `std.crypto.sign.*` | std.crypto.sign operations | Reject (`CryptoSign`) | the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set | Native-only Ed25519 companion crate; not linked for wasm32 |
+| `crypto-random` | `std.crypto.hash.random_bytes` | std.crypto.hash.random_bytes operations | Pass | — | Implemented via OS entropy on native targets and WASI `random_get` (`getrandom`) on `wasm32-wasip1`; fails closed when entropy is unavailable |
+| `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Pass | — | Implemented in pure Rust (`aes-gcm` + `getrandom`) across native and `wasm32-wasip1` |
+| `crypto-sign` | `std.crypto.sign.*` | std.crypto.sign operations | Pass | — | Implemented in pure Rust (`ed25519-dalek` + `getrandom`) across native and `wasm32-wasip1` |
 | `unseeded-random` | Unseeded UUID and password-salt generation | Unseeded UUID and password-salt generation | Pass | — | Native UUID and password helpers use host entropy rather than the seeded program PRNG |
 | `filesystem-inspection` | Filesystem inspection outside std.fs | Filesystem inspection outside std.fs | Pass | — | Path metadata and glob expansion read the host filesystem directly |
 
@@ -119,9 +119,6 @@ where available, a supported alternative. In particular:
 
 - File and socket streams depend on the native I/O reactor. Networking,
   subprocess, and distributed-node APIs are native-only.
-- `hash.random_bytes`, encryption, and signing require native cryptographic
-  implementations. Tier 2 rejects them rather than substituting an insecure
-  source or algorithm.
 
 ### ⚠️ Unclassified host capability
 

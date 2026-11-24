@@ -69,6 +69,8 @@ rmp-serde = "1"
 stacker = "0.1"
 finl_unicode = "1"
 sha2 = "0.11"
+hmac = { version = "0.13", features = ["zeroize"] }
+subtle = "2.6"
 indexmap = "2"
 
 [workspace.lints.rust]

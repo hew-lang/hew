@@ -17,8 +17,11 @@ crate-type = ["staticlib", "lib"]
 # must share with production code. Never enabled by a shipped build.
 fuzzing = []
 
-# Wasm + native deps. Every native-only crate (ring, socket2, reqwest, …) lives
-# in the cfg(not(wasm)) block below.
+# Wasm + native deps. The wasm32-wasip1 build compiles the wire codecs,
+# dependency-free modules, and pure-Rust cryptography (`sha2`, `hmac`,
+# `aes-gcm`, `ed25519-dalek`, `subtle`, `getrandom`, `zeroize`). Native-only
+# networking/TLS/Argon2 crates live in the cfg(not(wasm)) block below because
+# several of them (`ring`, `socket2`, `argon2`, …) do not target wasm32.
 
 [dependencies]
 hew-codec = { path = "../hew-codec" }
@@ -28,7 +31,7 @@ regex = "1.12.4"
 hew-cabi = { path = "../hew-cabi" }
 hew-runtime = { path = "../hew-runtime", default-features = false }
 
-# Wire-codec + pure-module deps (wasm-safe).
+# Wire-codec + pure-module deps (wasm + native).
 base64.workspace = true
 flate2 = "1"
 libc.workspace = true
@@ -42,12 +45,11 @@ url = "2"
 # Host + WASI deps (excluded only on bare wasm32-unknown-unknown where getrandom
 # requires a custom JS/host entropy backend).
 [target.'cfg(any(not(target_family = "wasm"), target_os = "wasi"))'.dependencies]
-uuid = { version = "1.23.3", features = ["v4", "v7"] }
-
-# Native-only module deps (union of the former per-module crates). Gated off the
-# wasm build, where their crates do not compile.
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-argon2 = "0.6"
+aes-gcm = { version = "0.10.3", default-features = false, features = [
+  "aes",
+  "alloc",
+  "zeroize",
+] }
 ed25519-dalek = { version = "3", default-features = false, features = [
   "digest",
   "fast",
@@ -55,6 +57,17 @@ ed25519-dalek = { version = "3", default-features = false, features = [
   "pkcs8",
   "zeroize",
 ] }
+getrandom = "0.4"
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+uuid = { version = "1.23.3", features = ["v4", "v7"] }
+zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
+
+# Native-only module deps (union of the former per-module crates). Gated off the
+# wasm build, where their crates do not compile.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+argon2 = "0.6"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
@@ -66,7 +79,6 @@ lettre = { version = "0.11.24", default-features = false, features = [
 parking_lot = "0.12"
 quinn = "0.11"
 rcgen = "0.14.8"
-ring = "0.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 tiny_http = "0.12"
 tokio = { version = "1", default-features = false, features = [
@@ -80,7 +92,9 @@ tokio = { version = "1", default-features = false, features = [
 tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 reqwest.workspace = true
 webpki-roots = "1.0.10"
-zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+ring = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }

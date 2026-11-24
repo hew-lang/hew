@@ -3,10 +3,10 @@
 //! Provides cryptographic hashing (SHA-256/384/512), HMAC-SHA256,
 //! cryptographically secure random bytes, and constant-time comparison
 //! for compiled Hew programs.
-use ring::digest;
-use ring::hmac;
-use ring::rand::{SecureRandom, SystemRandom};
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::cell::Cell;
+use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 type BytesTriple = hew_runtime::bytes::BytesTriple;
@@ -67,8 +67,17 @@ const fn take_forced_rng_failure() -> bool {
 }
 
 fn abort_crypto_failure() -> ! {
-    // SAFETY: abort terminates fail-closed; no fabricated crypto bytes escape.
-    unsafe { libc::abort() }
+    std::process::abort()
+}
+
+fn fill_system_random(buf: &mut [u8]) -> Result<(), ()> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+    if take_forced_rng_failure() {
+        return Err(());
+    }
+    getrandom::fill(buf).map_err(|_| ())
 }
 
 /// Copy a Hew `bytes` value's active region out of a caller-provided
@@ -109,14 +118,13 @@ fn bytes_from_slice(bytes: &[u8]) -> BytesTriple {
     unsafe { hew_runtime::bytes::hew_bytes_from_static(bytes.as_ptr(), len) }
 }
 
-/// Compute the SHA-256 hash of `data` and write the 32-byte digest to `out`.
+/// Compute digest `D` over `data` and copy its output bytes into `out`.
 ///
 /// # Safety
 ///
 /// - `data` must be valid for reading `len` bytes (may be null only if `len == 0`).
-/// - `out` must be valid for writing 32 bytes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_sha256(data: *const u8, len: usize, out: *mut u8) {
+/// - `out` must be valid for writing `D::output_size()` bytes when non-null.
+unsafe fn hash_into<D: Digest>(data: *const u8, len: usize, out: *mut u8) {
     if out.is_null() {
         return;
     }
@@ -127,9 +135,21 @@ pub unsafe extern "C" fn hew_sha256(data: *const u8, len: usize, out: *mut u8) {
         // SAFETY: data is non-null and valid for len bytes per caller contract.
         unsafe { std::slice::from_raw_parts(data, len) }
     };
-    let hash = digest::digest(&digest::SHA256, input);
-    // SAFETY: out is valid for 32 bytes per caller contract; SHA-256 always produces 32 bytes.
-    unsafe { std::ptr::copy_nonoverlapping(hash.as_ref().as_ptr(), out, 32) };
+    let digest = D::digest(input);
+    // SAFETY: out is valid for `digest.len()` bytes per caller contract.
+    unsafe { std::ptr::copy_nonoverlapping(digest.as_ptr(), out, digest.len()) };
+}
+
+/// Compute the SHA-256 hash of `data` and write the 32-byte digest to `out`.
+///
+/// # Safety
+///
+/// - `data` must be valid for reading `len` bytes (may be null only if `len == 0`).
+/// - `out` must be valid for writing 32 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sha256(data: *const u8, len: usize, out: *mut u8) {
+    // SAFETY: caller satisfies `data`/`len`/`out` requirements for 32-byte SHA-256.
+    unsafe { hash_into::<Sha256>(data, len, out) };
 }
 
 /// Compute the SHA-384 hash of `data` and write the 48-byte digest to `out`.
@@ -140,19 +160,8 @@ pub unsafe extern "C" fn hew_sha256(data: *const u8, len: usize, out: *mut u8) {
 /// - `out` must be valid for writing 48 bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha384(data: *const u8, len: usize, out: *mut u8) {
-    if out.is_null() {
-        return;
-    }
-    // SAFETY: data is valid for len bytes per caller contract (or len == 0).
-    let input = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        // SAFETY: data is non-null and valid for len bytes per caller contract.
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
-    let hash = digest::digest(&digest::SHA384, input);
-    // SAFETY: out is valid for 48 bytes per caller contract; SHA-384 always produces 48 bytes.
-    unsafe { std::ptr::copy_nonoverlapping(hash.as_ref().as_ptr(), out, 48) };
+    // SAFETY: caller satisfies `data`/`len`/`out` requirements for 48-byte SHA-384.
+    unsafe { hash_into::<Sha384>(data, len, out) };
 }
 
 /// Compute the SHA-512 hash of `data` and write the 64-byte digest to `out`.
@@ -163,19 +172,8 @@ pub unsafe extern "C" fn hew_sha384(data: *const u8, len: usize, out: *mut u8) {
 /// - `out` must be valid for writing 64 bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha512(data: *const u8, len: usize, out: *mut u8) {
-    if out.is_null() {
-        return;
-    }
-    // SAFETY: data is valid for len bytes per caller contract (or len == 0).
-    let input = if data.is_null() || len == 0 {
-        &[]
-    } else {
-        // SAFETY: data is non-null and valid for len bytes per caller contract.
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
-    let hash = digest::digest(&digest::SHA512, input);
-    // SAFETY: out is valid for 64 bytes per caller contract; SHA-512 always produces 64 bytes.
-    unsafe { std::ptr::copy_nonoverlapping(hash.as_ref().as_ptr(), out, 64) };
+    // SAFETY: caller satisfies `data`/`len`/`out` requirements for 64-byte SHA-512.
+    unsafe { hash_into::<Sha512>(data, len, out) };
 }
 
 /// Compute HMAC-SHA256 over `data` using `key` and write the 32-byte tag to
@@ -206,10 +204,13 @@ pub unsafe extern "C" fn hew_hmac_sha256(
         // SAFETY: data is non-null and valid for data_len bytes per caller contract.
         unsafe { std::slice::from_raw_parts(data, data_len) }
     };
-    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, key_bytes);
-    let tag = hmac::sign(&signing_key, data_bytes);
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(key_bytes) else {
+        abort_crypto_failure();
+    };
+    mac.update(data_bytes);
+    let tag = mac.finalize().into_bytes();
     // SAFETY: out is valid for 32 bytes per caller contract; HMAC-SHA256 produces 32 bytes.
-    unsafe { std::ptr::copy_nonoverlapping(tag.as_ref().as_ptr(), out, 32) };
+    unsafe { std::ptr::copy_nonoverlapping(tag.as_ptr(), out, 32) };
 }
 
 /// Fill `buf` with `len` cryptographically secure random bytes.
@@ -224,8 +225,8 @@ pub unsafe extern "C" fn hew_random_bytes(buf: *mut u8, len: usize) {
     }
     // SAFETY: buf is valid for writing len bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
-    let rng = SystemRandom::new();
-    if rng.fill(slice).is_err() {
+    if fill_system_random(slice).is_err() {
+        slice.zeroize();
         abort_crypto_failure();
     }
 }
@@ -247,16 +248,11 @@ pub unsafe extern "C" fn hew_constant_time_eq(a: *const u8, b: *const u8, len: u
     let a_slice = unsafe { std::slice::from_raw_parts(a, len) };
     // SAFETY: b is valid for len bytes per caller contract.
     let b_slice = unsafe { std::slice::from_raw_parts(b, len) };
-    // XOR all bytes and accumulate; constant-time because every byte is visited.
-    let mut diff: u8 = 0;
-    for i in 0..len {
-        diff |= a_slice[i] ^ b_slice[i];
-    }
-    i32::from(diff == 0)
+    i32::from(bool::from(a_slice.ct_eq(b_slice)))
 }
 
 // ---------------------------------------------------------------------------
-// BytesTriple-ABI wrappers (used by std/crypto.hew)
+// BytesTriple-ABI wrappers (used by std/crypto/hash/hash.hew)
 // ---------------------------------------------------------------------------
 
 /// Compute SHA-256 of a `bytes` value, returning a 32-byte `bytes` value.
@@ -315,9 +311,13 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
     data: *const BytesTriple,
 ) -> BytesTriple {
     // SAFETY: caller guarantees valid Hew `bytes` values.
-    let key_bytes = unsafe { bytes_triple_to_vec(key) }.unwrap_or_else(|| abort_crypto_failure());
+    let mut key_bytes =
+        unsafe { bytes_triple_to_vec(key) }.unwrap_or_else(|| abort_crypto_failure());
     // SAFETY: caller guarantees valid Hew `bytes` values.
-    let data_bytes = unsafe { bytes_triple_to_vec(data) }.unwrap_or_else(|| abort_crypto_failure());
+    let data_bytes = unsafe { bytes_triple_to_vec(data) }.unwrap_or_else(|| {
+        key_bytes.zeroize();
+        abort_crypto_failure()
+    });
     let mut out = [0u8; 32];
     // SAFETY: key_bytes and data_bytes slices are valid; out is a 32-byte buffer.
     unsafe {
@@ -329,7 +329,10 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
             out.as_mut_ptr(),
         );
     };
-    bytes_from_slice(&out)
+    key_bytes.zeroize();
+    let result = bytes_from_slice(&out);
+    out.zeroize();
+    result
 }
 
 /// Fill and return a `bytes` value of `len` cryptographically random bytes.
@@ -364,13 +367,10 @@ pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> BytesTriple {
         return empty;
     }
     let mut buf = vec![0u8; n];
-    if n > 0 {
-        let rng = SystemRandom::new();
-        if take_forced_rng_failure() || rng.fill(&mut buf).is_err() {
-            buf.zeroize();
-            set_last_random_error(HEW_RANDOM_RNG_FAILURE);
-            return empty;
-        }
+    if n > 0 && fill_system_random(&mut buf).is_err() {
+        buf.zeroize();
+        set_last_random_error(HEW_RANDOM_RNG_FAILURE);
+        return empty;
     }
     set_last_random_error(HEW_RANDOM_OK);
     let out = bytes_from_slice(&buf);
@@ -391,14 +391,21 @@ pub unsafe extern "C" fn hew_constant_time_eq_hew(
     b: *const BytesTriple,
 ) -> i32 {
     // SAFETY: caller guarantees valid Hew `bytes` values.
-    let a_bytes = unsafe { bytes_triple_to_vec(a) }.unwrap_or_else(|| abort_crypto_failure());
+    let mut a_bytes = unsafe { bytes_triple_to_vec(a) }.unwrap_or_else(|| abort_crypto_failure());
     // SAFETY: caller guarantees valid Hew `bytes` values.
-    let b_bytes = unsafe { bytes_triple_to_vec(b) }.unwrap_or_else(|| abort_crypto_failure());
-    if a_bytes.len() != b_bytes.len() {
-        return 0;
-    }
-    // SAFETY: both slices are valid and same length.
-    unsafe { hew_constant_time_eq(a_bytes.as_ptr(), b_bytes.as_ptr(), a_bytes.len()) }
+    let mut b_bytes = unsafe { bytes_triple_to_vec(b) }.unwrap_or_else(|| {
+        a_bytes.zeroize();
+        abort_crypto_failure()
+    });
+    let eq = if a_bytes.len() == b_bytes.len() {
+        // SAFETY: both slices are valid and same length.
+        unsafe { hew_constant_time_eq(a_bytes.as_ptr(), b_bytes.as_ptr(), a_bytes.len()) }
+    } else {
+        0
+    };
+    a_bytes.zeroize();
+    b_bytes.zeroize();
+    eq
 }
 
 #[cfg(test)]
@@ -795,6 +802,81 @@ mod tests {
             // SAFETY: both are valid for 1 byte.
             unsafe { hew_constant_time_eq(a.as_ptr(), b.as_ptr(), 1) },
             0
+        );
+    }
+
+    /// HMAC-SHA256 RFC 4231 Test Case 1 (20-byte key) and Test Case 6 (131-byte key > block size).
+    #[test]
+    fn hmac_sha256_rfc4231_additional_vectors() {
+        let tc1_key = [0x0bu8; 20];
+        let tc1_data = b"Hi There";
+        let tc1_expected = [
+            0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53, 0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b,
+            0xf1, 0x2b, 0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7, 0x26, 0xe9, 0x37, 0x6c,
+            0x2e, 0x32, 0xcf, 0xf7,
+        ];
+        let mut out = [0u8; 32];
+        // SAFETY: key, data, and out are valid buffers.
+        unsafe {
+            hew_hmac_sha256(
+                tc1_key.as_ptr(),
+                tc1_key.len(),
+                tc1_data.as_ptr(),
+                tc1_data.len(),
+                out.as_mut_ptr(),
+            );
+        }
+        assert_eq!(out, tc1_expected);
+
+        let tc6_key = [0xaau8; 131];
+        let tc6_data = b"Test Using Larger Than Block-Size Key - Hash Key First";
+        let tc6_expected = [
+            0x60, 0xe4, 0x31, 0x59, 0x1e, 0xe0, 0xb6, 0x7f, 0x0d, 0x8a, 0x26, 0xaa, 0xcb, 0xf5,
+            0xb7, 0x7f, 0x8e, 0x0b, 0xc6, 0x21, 0x37, 0x28, 0xc5, 0x14, 0x05, 0x46, 0x04, 0x0f,
+            0x0e, 0xe3, 0x7f, 0x54,
+        ];
+        // SAFETY: key, data, and out are valid buffers.
+        unsafe {
+            hew_hmac_sha256(
+                tc6_key.as_ptr(),
+                tc6_key.len(),
+                tc6_data.as_ptr(),
+                tc6_data.len(),
+                out.as_mut_ptr(),
+            );
+        }
+        assert_eq!(out, tc6_expected);
+    }
+
+    #[test]
+    fn bytes_triple_wrappers_respect_offset_and_return_expected_digests() {
+        let mut buf = b"XXabcYY".to_vec();
+        let slice_triple = BytesTriple {
+            ptr: buf.as_mut_ptr(),
+            offset: 2,
+            len: 3,
+        };
+        // SAFETY: `slice_triple` points to "abc" inside `buf`.
+        let digest = unsafe { hew_sha256_hew(&raw const slice_triple) };
+        let mut raw = [0u8; 32];
+        // SAFETY: "abc" and `raw` are valid buffers.
+        unsafe { hew_sha256(b"abc".as_ptr(), 3, raw.as_mut_ptr()) };
+        assert_eq!(digest.len, 32);
+        // SAFETY: `digest` owns a 32-byte allocation from `hew_sha256_hew`.
+        assert_eq!(unsafe { std::slice::from_raw_parts(digest.ptr, 32) }, &raw);
+        // SAFETY: `digest.ptr` is released once after inspection.
+        unsafe { hew_runtime::bytes::hew_bytes_drop(digest.ptr) };
+
+        let mut other = b"Zabc".to_vec();
+        let other_triple = BytesTriple {
+            ptr: other.as_mut_ptr(),
+            offset: 1,
+            len: 3,
+        };
+        assert_eq!(
+            // SAFETY: both triples point to live "abc" slices.
+            unsafe { hew_constant_time_eq_hew(&raw const slice_triple, &raw const other_triple) },
+            1
         );
     }
 }

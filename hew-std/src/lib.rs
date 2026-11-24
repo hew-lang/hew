@@ -18,15 +18,11 @@
 extern crate hew_runtime;
 
 // ── WASM build surface ────────────────────────────────────────────────────
-// The wasm32 target (browser playground wire codecs) compiles only the
-// wire-codec and dependency-free modules. Every native-only module is gated
-// behind `cfg(not(wasm))` because its crates (ring, quinn/tokio's socket2,
-// flate2, getrandom, argon2, aws-lc, …) hard-`compile_error!` on wasm32. This
-// preserves the pre-consolidation surface: wasm exports the pure-Rust codecs
-// (json, yaml, toml, csv, hex, base64, log, math, mem, uuid) and dependency-free
-// modules, while native-only deps remain behind cfg gates. The .hew-path module
-// resolution and the native dead-strip are unaffected; this only narrows what
-// compiles for wasm.
+// The wasm32-wasip1 target compiles the wire-codec, dependency-free, pure-Rust
+// codec, and host+WASI (`crypto`, `encrypt`, `sign`, `uuid`) modules. Every
+// remaining native-only module stays gated behind `cfg(not(wasm))` because its
+// crates (`ring` for TLS/QUIC, `quinn`/tokio's `socket2`, `argon2`, `aws-lc`,
+// …) do not target wasm32.
 
 // encoding — wire codecs (wasm + native)
 pub mod json;
@@ -53,6 +49,12 @@ pub mod xml;
 
 // Host + WASI modules (wasm32-wasip1 has WASI clock/entropy; excluded on bare wasm32)
 #[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+pub mod crypto;
+#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+pub mod encrypt;
+#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+pub mod sign;
+#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
 pub mod uuid;
 
 // net (pure-Rust URL parser available on native + wasm)
@@ -60,17 +62,11 @@ pub mod url;
 
 // ── Native-only modules ───────────────────────────────────────────────────
 
-// crypto
-#[cfg(not(target_family = "wasm"))]
-pub mod crypto;
-#[cfg(not(target_family = "wasm"))]
-pub mod encrypt;
+// crypto (native-only)
 #[cfg(not(target_family = "wasm"))]
 pub mod jwt;
 #[cfg(not(target_family = "wasm"))]
 pub mod password;
-#[cfg(not(target_family = "wasm"))]
-pub mod sign;
 
 // misc
 // net

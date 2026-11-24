@@ -421,16 +421,6 @@ impl Checker {
             .map(|rejection| rejection.feature)
     }
 
-    /// Whether a lexical module spelling proves the exact shipped crypto
-    /// module.  Secure-randomness is a member-level restriction, unlike the
-    /// manifest's native-only module rows, so it shares the same owner and
-    /// provenance admission boundary explicitly.
-    pub(super) fn is_shipped_crypto_module(&self, surface_module: &str) -> bool {
-        let source_module = self.canonical_module_import_owner(surface_module);
-        source_module == "std.crypto.hash"
-            && self.canonical_std_module_sources.contains(&source_module)
-    }
-
     pub(super) fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
         self.errors.push(TypeError {
             fixes: Vec::new(),

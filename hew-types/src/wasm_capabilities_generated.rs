@@ -42,9 +42,6 @@ pub enum WasmUnsupportedFeature {
     Dns,
     OsEnv,
     Distributed,
-    CryptoRandom,
-    CryptoEncrypt,
-    CryptoSign,
 }
 
 #[allow(clippy::match_same_arms, reason = "one generated arm per manifest row keeps identity and mutation coverage explicit")]
@@ -67,9 +64,6 @@ impl WasmUnsupportedFeature {
         Self::Dns,
         Self::OsEnv,
         Self::Distributed,
-        Self::CryptoRandom,
-        Self::CryptoEncrypt,
-        Self::CryptoSign,
     ];
 
     /// Stable manifest identity.
@@ -92,9 +86,6 @@ impl WasmUnsupportedFeature {
             Self::Dns => WasmCapabilityId("dns"),
             Self::OsEnv => WasmCapabilityId("std-os"),
             Self::Distributed => WasmCapabilityId("distributed"),
-            Self::CryptoRandom => WasmCapabilityId("crypto-random"),
-            Self::CryptoEncrypt => WasmCapabilityId("crypto-encrypt"),
-            Self::CryptoSign => WasmCapabilityId("crypto-sign"),
         }
     }
 
@@ -118,9 +109,6 @@ impl WasmUnsupportedFeature {
             Self::Dns => WasmFeatureDisposition::Reject,
             Self::OsEnv => WasmFeatureDisposition::Reject,
             Self::Distributed => WasmFeatureDisposition::Reject,
-            Self::CryptoRandom => WasmFeatureDisposition::Reject,
-            Self::CryptoEncrypt => WasmFeatureDisposition::Reject,
-            Self::CryptoSign => WasmFeatureDisposition::Reject,
         }
     }
 
@@ -144,9 +132,6 @@ impl WasmUnsupportedFeature {
             Self::Dns => "std.net.dns resolver operations",
             Self::OsEnv => "std.os environment and path operations",
             Self::Distributed => "Distributed node and remote-actor operations",
-            Self::CryptoRandom => "std.crypto.hash.random_bytes operations",
-            Self::CryptoEncrypt => "std.crypto.encrypt operations",
-            Self::CryptoSign => "std.crypto.sign operations",
         }
     }
 
@@ -170,9 +155,6 @@ impl WasmUnsupportedFeature {
             Self::Dns => "the std.net.dns resolver uses the native OS resolver and has no wasm32 implementation",
             Self::OsEnv => "the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32",
             Self::Distributed => "the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32",
-            Self::CryptoRandom => "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe",
-            Self::CryptoEncrypt => "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set",
-            Self::CryptoSign => "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set",
         }
     }
 }
@@ -186,9 +168,6 @@ pub mod wasm_capability_ids {
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");
     pub const BLOCKING_POOL: WasmCapabilityId = WasmCapabilityId("blocking-pool");
     pub const COOPERATIVE_YIELD: WasmCapabilityId = WasmCapabilityId("cooperative-yield");
-    pub const CRYPTO_ENCRYPT: WasmCapabilityId = WasmCapabilityId("crypto-encrypt");
-    pub const CRYPTO_RANDOM: WasmCapabilityId = WasmCapabilityId("crypto-random");
-    pub const CRYPTO_SIGN: WasmCapabilityId = WasmCapabilityId("crypto-sign");
     pub const DESCRIPTOR_READINESS: WasmCapabilityId = WasmCapabilityId("descriptor-readiness");
     pub const DIAGNOSTIC_SOURCE_MAP: WasmCapabilityId = WasmCapabilityId("diagnostic-source-map");
     pub const DISTRIBUTED: WasmCapabilityId = WasmCapabilityId("distributed");
@@ -243,8 +222,6 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
     WasmModuleRejection { module: "std.net.quic", feature: WasmUnsupportedFeature::Quic },
     WasmModuleRejection { module: "std.net.dns", feature: WasmUnsupportedFeature::Dns },
     WasmModuleRejection { module: "std.os", feature: WasmUnsupportedFeature::OsEnv },
-    WasmModuleRejection { module: "std.crypto.encrypt", feature: WasmUnsupportedFeature::CryptoEncrypt },
-    WasmModuleRejection { module: "std.crypto.sign", feature: WasmUnsupportedFeature::CryptoSign },
 ];
 
 /// Generated exact-function rejection classification.
@@ -276,8 +253,6 @@ pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
     "std.net.quic",
     "std.net.dns",
     "std.os",
-    "std.crypto.encrypt",
-    "std.crypto.sign",
 ];
 
 /// A manifest-owned host-operation refusal.

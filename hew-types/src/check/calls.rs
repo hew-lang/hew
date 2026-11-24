@@ -1194,7 +1194,7 @@ impl Checker {
             return;
         }
         // These diagnostics exist to fail closed on the *stdlib primitives*
-        // (`sleep`, `link`, `random_bytes`, `Node::*`, ...) that have no
+        // (`sleep`, `link`, `Node::*`, ...) that have no
         // wasm32 implementation. They must not fire for an ordinary user
         // function that merely happens to share one of these bare names —
         // `fn_sigs` cannot distinguish the two (a user declaration silently
@@ -1222,13 +1222,6 @@ impl Checker {
             // WASM programs can use timers with the degraded-semantics caveat.
             "sleep" | "sleep_until" => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Timers);
-            }
-            // crypto.random_bytes depends on a secure native-only entropy source
-            // that is absent from the wasm32 link set. Reject at check time so
-            // secure randomness fails closed instead of compiling to a non-secure
-            // host import or fallback.
-            "random_bytes" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
             }
             // The `Node::*` distributed cluster API (`Node::start`,
             // `Node::connect`, `Node::load_keys`, `Node::register`,
@@ -1387,9 +1380,6 @@ impl Checker {
         }
         self.require_unsafe(&key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
-        if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
-            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-        }
         let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);

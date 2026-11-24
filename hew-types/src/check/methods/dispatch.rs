@@ -517,14 +517,6 @@ impl Checker {
                 // Call and value-position references share the manifest's
                 // canonical member/module capability selection.
                 self.reject_wasm_native_only_module_function(name.name.as_str(), method, span);
-                // crypto.random_bytes and its fallible twin depend on a
-                // native-only secure entropy source absent from the wasm32 link
-                // set; reject so secure randomness fails closed on wasm32.
-                if self.is_shipped_crypto_module(name.name.as_str())
-                    && matches!(method, "random_bytes" | "try_random_bytes")
-                {
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-                }
                 if let Some(sig) = self.fn_sig(&key).cloned() {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(

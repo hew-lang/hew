@@ -1,21 +1,19 @@
 //! Hew runtime: `encrypt` module.
 //!
-//! Provides AES-256-GCM seal/open helpers for compiled Hew programs.
+//! Provides pure-Rust AES-256-GCM seal/open helpers for compiled Hew programs.
 //! Returned `bytes` use the runtime `HewVec` allocation path. The Hew-facing
 //! entrypoints (`*_hew`) return managed strings, released with
 //! `hew_string_drop`; the raw two-pass entrypoints still return strings from
 //! `str_to_malloc` (the header-aware C-string allocator), freed with
 //! `free_cstring`.
-// WASM-TODO(crypto-encrypt): `std::crypto::encrypt` mirrors the sibling native-only crypto
-// modules and is excluded from the wasm runtime's ecosystem-FFI link set.
+use aes_gcm::{
+    aead::{AeadInPlace, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::BytesTriple;
-use ring::{
-    aead::{self, Aad, LessSafeKey, Nonce, UnboundKey},
-    rand::{SecureRandom, SystemRandom},
-};
 use std::{cell::Cell, ffi::c_char, ptr};
 use zeroize::Zeroize;
 
@@ -110,29 +108,28 @@ unsafe fn input_bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-fn make_key(key_bytes: &[u8]) -> Result<LessSafeKey, EncryptError> {
+fn make_key(key_bytes: &[u8]) -> Result<Aes256Gcm, EncryptError> {
     if key_bytes.len() != AES_256_KEY_LEN {
         return Err(EncryptError::InvalidKeyLength);
     }
-    let key = UnboundKey::new(&aead::AES_256_GCM, key_bytes)
-        .map_err(|_| EncryptError::InvalidKeyLength)?;
-    Ok(LessSafeKey::new(key))
+    Aes256Gcm::new_from_slice(key_bytes).map_err(|_| EncryptError::InvalidKeyLength)
 }
 
 fn seal_impl(key_bytes: &[u8], plaintext: &str) -> Result<Vec<u8>, EncryptError> {
-    let key = make_key(key_bytes)?;
-    let rng = SystemRandom::new();
+    let cipher = make_key(key_bytes)?;
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    if take_forced_seal_rng_failure() {
+    if take_forced_seal_rng_failure() || getrandom::fill(&mut nonce_bytes).is_err() {
+        nonce_bytes.zeroize();
         return Err(EncryptError::RngFailure);
     }
-    rng.fill(&mut nonce_bytes)
-        .map_err(|_| EncryptError::RngFailure)?;
 
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut in_out = plaintext.as_bytes().to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| EncryptError::RngFailure)?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let mut in_out = Vec::with_capacity(plaintext.len() + TAG_LEN);
+    in_out.extend_from_slice(plaintext.as_bytes());
+    if cipher.encrypt_in_place(nonce, b"", &mut in_out).is_err() {
+        in_out.zeroize();
+        return Err(EncryptError::RngFailure);
+    }
 
     let mut ciphertext = Vec::with_capacity(NONCE_LEN + in_out.len());
     ciphertext.extend_from_slice(&nonce_bytes);
@@ -145,15 +142,18 @@ fn open_impl(key_bytes: &[u8], ciphertext: &[u8]) -> Result<String, EncryptError
         return Err(EncryptError::ShortCiphertext);
     }
 
-    let key = make_key(key_bytes)?;
+    let cipher = make_key(key_bytes)?;
     let (nonce_bytes, encrypted) = ciphertext.split_at(NONCE_LEN);
-    let nonce =
-        Nonce::try_assume_unique_for_key(nonce_bytes).map_err(|_| EncryptError::ShortCiphertext)?;
+    let nonce = Nonce::from_slice(nonce_bytes);
     let mut in_out = encrypted.to_vec();
-    let plaintext = key
-        .open_in_place(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| EncryptError::AuthFailed)?;
-    String::from_utf8(plaintext.to_vec()).map_err(|_| EncryptError::InvalidUtf8)
+    if cipher.decrypt_in_place(nonce, b"", &mut in_out).is_err() {
+        in_out.zeroize();
+        return Err(EncryptError::AuthFailed);
+    }
+    String::from_utf8(in_out).map_err(|err| {
+        err.into_bytes().zeroize();
+        EncryptError::InvalidUtf8
+    })
 }
 
 unsafe fn copy_bytes_to_out(out: *mut u8, out_len: usize, bytes: &[u8]) -> usize {
@@ -317,11 +317,13 @@ pub unsafe extern "C" fn hew_encrypt_open(
         return 0;
     };
     match open_impl(key_bytes, ciphertext_bytes) {
-        Ok(plaintext) => {
-            let mut buf = plaintext.into_bytes();
+        Ok(mut plaintext) => {
+            let mut buf = std::mem::take(&mut plaintext).into_bytes();
             buf.push(0);
             // SAFETY: `out` is a caller-provided buffer under this function's contract.
-            unsafe { copy_bytes_to_out(out, out_len, &buf) }
+            let written = unsafe { copy_bytes_to_out(out, out_len, &buf) };
+            buf.zeroize();
+            written
         }
         Err(_) => 0,
     }
@@ -362,8 +364,9 @@ pub unsafe extern "C" fn hew_encrypt_try_open(
     };
 
     match open_impl(key_bytes, ciphertext_bytes) {
-        Ok(plaintext) => {
+        Ok(mut plaintext) => {
             let ptr = str_to_malloc(&plaintext);
+            plaintext.zeroize();
             if ptr.is_null() {
                 // SAFETY: `err_out` is an optional caller-provided out-pointer.
                 unsafe { write_encrypt_err_out(err_out, HewEncryptError::AllocationFailure) };
@@ -409,9 +412,11 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
     let result = open_impl(&key_bytes, &ciphertext_bytes);
     key_bytes.zeroize();
     match result {
-        Ok(plaintext) => {
+        Ok(mut plaintext) => {
             set_last_open_error(HewEncryptError::None);
-            string_from_str(&plaintext)
+            let out = string_from_str(&plaintext);
+            plaintext.zeroize();
+            out
         }
         Err(err) => {
             set_last_open_error(err.into());
@@ -813,5 +818,63 @@ mod tests {
              return i32 to match the Rust `#[no_mangle] -> i32` signature; \
              found: {signature:?}"
         );
+    }
+
+    #[test]
+    fn nist_aes_256_gcm_known_answer_vectors_decrypt_cleanly() {
+        // NIST SP 800-38D Test Case 13: 256-bit all-zero key, 96-bit all-zero IV, empty plaintext.
+        let zero_key = [0u8; AES_256_KEY_LEN];
+        let tc13_wire: Vec<u8> = [0u8; NONCE_LEN]
+            .into_iter()
+            .chain([
+                0x53, 0x0f, 0x8a, 0xfb, 0xc7, 0x45, 0x36, 0xb9, 0xa9, 0x63, 0xb4, 0xf1, 0xc4, 0xcb,
+                0x73, 0x8b,
+            ])
+            .collect();
+        assert_eq!(open_impl(&zero_key, &tc13_wire).unwrap(), "");
+
+        // Cross-checked AES-256-GCM vector with non-zero nonce and plaintext.
+        let nonce = [
+            0x10u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+        ];
+        let ct_and_tag = [
+            0x15u8, 0x9b, 0xef, 0x36, 0x27, 0xa0, 0x49, 0xc7, 0xea, 0x03, 0x6d, 0x7e, 0x7b, 0x16,
+            0x1b, 0xb6, 0x34, 0x3e, 0x09, 0x16, 0xc9, 0xc5, 0xe3, 0xd8, 0xc8, 0x2b, 0xd0, 0x08,
+            0xa2, 0x5d, 0x5a,
+        ];
+        let wire: Vec<u8> = nonce.into_iter().chain(ct_and_tag).collect();
+        assert_eq!(open_impl(&TEST_KEY, &wire).unwrap(), "hew nist vector");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn aes_gcm_wire_format_interoperates_with_ring() {
+        use ring::aead::{Aad, LessSafeKey, Nonce as RingNonce, UnboundKey, AES_256_GCM};
+
+        let ring_key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &TEST_KEY).unwrap());
+
+        // Direction 1: pure-Rust seal -> ring open.
+        let sealed = seal_impl(&TEST_KEY, "hew cross-impl parity").unwrap();
+        let (nonce_bytes, ct) = sealed.split_at(NONCE_LEN);
+        let ring_nonce = RingNonce::try_assume_unique_for_key(nonce_bytes).unwrap();
+        let mut buf = ct.to_vec();
+        let decrypted = ring_key
+            .open_in_place(ring_nonce, Aad::empty(), &mut buf)
+            .unwrap();
+        assert_eq!(decrypted, b"hew cross-impl parity");
+
+        // Direction 2: ring seal -> pure-Rust open.
+        let fixed_nonce = [0x42u8; NONCE_LEN];
+        let mut ring_buf = b"ring-to-hew".to_vec();
+        ring_key
+            .seal_in_place_append_tag(
+                RingNonce::assume_unique_for_key(fixed_nonce),
+                Aad::empty(),
+                &mut ring_buf,
+            )
+            .unwrap();
+        let mut wire = fixed_nonce.to_vec();
+        wire.extend_from_slice(&ring_buf);
+        assert_eq!(open_impl(&TEST_KEY, &wire).unwrap(), "ring-to-hew");
     }
 }

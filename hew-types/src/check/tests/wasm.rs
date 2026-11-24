@@ -508,7 +508,7 @@ mod wasm_rejects {
         );
     }
 
-    // ── TLS / QUIC / DNS / OS / CryptoRandom reject ────────────────────────
+    // ── TLS / QUIC / DNS / OS reject ───────────────────────────────────────
 
     fn check_wasm_with_registry(source: &str) -> TypeCheckOutput {
         let result = hew_parser::parse(source);
@@ -813,22 +813,17 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_crypto_random_bytes() {
-        // hash.random_bytes requires secure entropy. On wasm32, no secure
-        // implementation is linked, so the checker must fail closed.
+    fn wasm_admits_crypto_random_bytes() {
+        // hash.random_bytes is implemented via WASI random_get on wasm32-wasip1,
+        // so the checker must admit it without PlatformLimitation errors.
         let source = concat!(
             "import std.crypto.hash;\n",
-            "fn main() { hash.random_bytes(16); }\n",
+            "fn main() { let _ = hash.random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
-            has_platform_limitation_error(&output),
-            "hash.random_bytes should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "random_bytes"),
-            "error message should mention hash.random_bytes; got: {:?}",
+            output.errors.is_empty(),
+            "hash.random_bytes should be admitted on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -838,19 +833,15 @@ mod wasm_rejects {
         );
     }
 
-    /// Regression for PR #920: the bare-identifier `"random_bytes"` arm in
-    /// `reject_if_wasm_incompatible_call` fired on raw name alone, so an
-    /// ordinary user function bare-named `random_bytes` (nothing to do with
-    /// `std::hash.random_bytes`) hard-failed a WASM build with the
-    /// crypto-entropy diagnostic pointed at the user's own call — not just a
-    /// spurious warning, a genuine compile break for an unrelated function.
+    /// Regression for PR #920: a user-defined bare function named
+    /// `random_bytes` must never trigger any `PlatformLimitation` diagnostic.
     #[test]
     fn wasm_user_defined_random_bytes_does_not_reject() {
         let output =
             check_wasm("fn random_bytes(n: i64) -> i64 { n * 2 } fn main() { random_bytes(21); }");
         assert!(
             !has_platform_limitation_error(&output),
-            "a user-defined `random_bytes` function must not trigger the CryptoRandom PlatformLimitation error; got errors: {:?}",
+            "a user-defined `random_bytes` function must not trigger any PlatformLimitation error; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -860,25 +851,20 @@ mod wasm_rejects {
         );
     }
 
-    // ── Issue #2135: value-position (first-class fn reference) wasm rejects ──
+    // ── Issue #2135: value-position (first-class fn reference) wasm checks ─
 
     #[test]
-    fn wasm_rejects_crypto_random_bytes_value_position() {
+    fn wasm_admits_crypto_random_bytes_value_position() {
         // Taking hash.random_bytes as a first-class function value on wasm32
-        // must be rejected with PlatformLimitation, not silently allowed.
+        // must be admitted cleanly now that WASI random_get backs it.
         let source = concat!(
             "import std.crypto.hash;\n",
             "fn main() { let _f = hash.random_bytes; }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
-            has_platform_limitation_error(&output),
-            "hash.random_bytes value-position reference must be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "random_bytes"),
-            "error message should mention random_bytes; got: {:?}",
+            output.errors.is_empty(),
+            "hash.random_bytes value-position reference should be admitted on WASM; got errors: {:?}",
             output.errors
         );
     }
@@ -938,15 +924,15 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_encrypt_seal_value_position() {
+    fn wasm_admits_encrypt_seal_value_position() {
         let source = concat!(
             "import std.crypto.encrypt;\n",
             "fn main() { let _f = encrypt.seal; }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
-            has_platform_limitation_error(&output),
-            "encrypt.seal value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors.is_empty(),
+            "encrypt.seal value-position reference should be admitted on WASM; got: {:?}",
             output.errors
         );
     }

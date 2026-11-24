@@ -37,13 +37,63 @@ use super::handlers::language_features::{
 use super::handlers::navigation::rename_error_to_jsonrpc;
 use super::handlers::text_sync::build_initialize_result_from_caps_json;
 use super::handlers::workspace::extract_run_test_name;
-use super::navigation::{
-    build_prepare_rename_response, build_workspace_edit, plan_workspace_rename,
-};
+use super::navigation::build_prepare_rename_response;
 use super::test_runner::build_run_test_invocation;
 use super::testing::TestFailureBatch;
 use super::workspace::{build_code_lenses, collect_workspace_symbols};
+use super::workspace_index::WorkspaceIndex;
 use super::*;
+
+fn build_reference_locations(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    include_declaration: bool,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<Location> {
+    super::navigation::build_reference_locations(
+        uri,
+        doc,
+        offset,
+        include_declaration,
+        documents,
+        &WorkspaceIndex::new(),
+    )
+}
+
+fn plan_workspace_rename(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> std::result::Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
+    super::navigation::plan_workspace_rename(
+        uri,
+        doc,
+        offset,
+        new_name,
+        documents,
+        &WorkspaceIndex::new(),
+    )
+}
+
+fn build_workspace_edit(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> std::result::Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
+    super::navigation::build_workspace_edit(
+        uri,
+        doc,
+        offset,
+        new_name,
+        documents,
+        &WorkspaceIndex::new(),
+    )
+}
 
 struct TestDir {
     path: PathBuf,

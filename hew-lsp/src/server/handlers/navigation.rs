@@ -181,9 +181,13 @@ pub(crate) fn goto_definition(
     // Skip for locally-bound names and params: those are resolved in-file and
     // must not jump to an unrelated top-level definition in another file.
     if !is_local_or_param {
-        if let Some((target_uri, range)) =
-            find_stdlib_definition(uri, &imports, &word, &server.documents)
-        {
+        if let Some((target_uri, range)) = find_stdlib_definition(
+            uri,
+            &imports,
+            &word,
+            &server.documents,
+            &server.workspace_index,
+        ) {
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: target_uri,
                 range,
@@ -211,6 +215,7 @@ pub(crate) fn references(
         offset,
         include_declaration,
         &server.documents,
+        &server.workspace_index,
     );
     non_empty(locations)
 }

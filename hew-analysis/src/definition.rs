@@ -1,5 +1,7 @@
 //! Go-to-definition analysis: find the definition site of an identifier in the AST.
 
+use std::ops::ControlFlow;
+
 use hew_parser::ast::Ident;
 use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
@@ -32,47 +34,44 @@ pub fn find_matching_import(parse_result: &ParseResult, word: &str) -> Option<Of
     None
 }
 
-/// Search for a definition matching `word` in the AST, including nested items.
-///
-/// Returns the byte-offset span of the **name identifier** within the defining
-/// item, not the span of the whole item. Returns `None` if no matching
-/// definition is found.
-#[must_use]
-pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> Option<OffsetSpan> {
+/// Visit every named definition site in `parse_result` (top-level items and
+/// nested fields, variants, methods, receive handlers, trait items, and extern
+/// functions) in exact declaration order.
+fn visit_definitions<B>(
+    source: &str,
+    parse_result: &ParseResult,
+    mut visit: impl FnMut(&str, OffsetSpan) -> ControlFlow<B>,
+) -> ControlFlow<B> {
     for (item, span) in &parse_result.program.items {
         // Top-level name matching.
-        let name = ast_visit::top_level_item_name(item);
-        if name.is_some_and(|n| n == word) {
-            return Some(crate::util::find_name_span(source, span.start, word));
+        if let Some(name) = ast_visit::top_level_item_name(item) {
+            let name_span = crate::util::find_name_span(source, span.start, name);
+            visit(name, name_span)?;
         }
 
         // Search inside actors for fields, receive methods, and methods.
         if let Item::Actor(a) = item {
             for field in &a.fields {
-                if field.name == Ident::new(word) {
-                    return Some(crate::util::find_name_span(source, span.start, word));
-                }
+                let name = field.name.name.as_str();
+                visit(name, crate::util::find_name_span(source, span.start, name))?;
             }
             for recv in &a.receive_fns {
-                if recv.name == Ident::new(word) {
-                    // Use the receive fn's own span when available; fall back to
-                    // the enclosing item span.
-                    let search_from = if recv.span.is_empty() {
-                        span.start
-                    } else {
-                        recv.span.start
-                    };
-                    return Some(crate::util::find_name_span(source, search_from, word));
-                }
+                let name = recv.name.name.as_str();
+                // Use the receive fn's own span when available; fall back to
+                // the enclosing item span.
+                let search_from = if recv.span.is_empty() {
+                    span.start
+                } else {
+                    recv.span.start
+                };
+                visit(name, crate::util::find_name_span(source, search_from, name))?;
             }
             for method in &a.methods {
-                if method.name == Ident::new(word) {
-                    return Some(crate::util::find_name_span(
-                        source,
-                        method.decl_span.start,
-                        word,
-                    ));
-                }
+                let name = method.name.name.as_str();
+                visit(
+                    name,
+                    crate::util::find_name_span(source, method.decl_span.start, name),
+                )?;
             }
         }
 
@@ -80,13 +79,20 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::TypeDecl(td) = item {
             for body_item in &td.body {
                 match body_item {
-                    TypeBodyItem::Field { name, .. } if name.name.as_str() == word => {
-                        return Some(crate::util::find_name_span(source, span.start, word));
+                    TypeBodyItem::Field { name, .. } => {
+                        let field_name = name.name.as_str();
+                        visit(
+                            field_name,
+                            crate::util::find_name_span(source, span.start, field_name),
+                        )?;
                     }
-                    TypeBodyItem::Variant(v) if v.name == Ident::new(word) => {
-                        return Some(crate::util::find_name_span(source, span.start, word));
+                    TypeBodyItem::Variant(v) => {
+                        let variant_name = v.name.name.as_str();
+                        visit(
+                            variant_name,
+                            crate::util::find_name_span(source, span.start, variant_name),
+                        )?;
                     }
-                    _ => {}
                 }
             }
         }
@@ -95,13 +101,20 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::Trait(t) = item {
             for trait_item in &t.items {
                 match trait_item {
-                    TraitItem::Method(m) if m.name == Ident::new(word) => {
-                        return Some(crate::util::find_name_span(source, span.start, word));
+                    TraitItem::Method(m) => {
+                        let method_name = m.name.name.as_str();
+                        visit(
+                            method_name,
+                            crate::util::find_name_span(source, span.start, method_name),
+                        )?;
                     }
-                    TraitItem::AssociatedType { name, .. } if name.name.as_str() == word => {
-                        return Some(crate::util::find_name_span(source, span.start, word));
+                    TraitItem::AssociatedType { name, .. } => {
+                        let assoc_name = name.name.as_str();
+                        visit(
+                            assoc_name,
+                            crate::util::find_name_span(source, span.start, assoc_name),
+                        )?;
                     }
-                    _ => {}
                 }
             }
         }
@@ -109,22 +122,59 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside Impl for methods.
         if let Item::Impl(i) = item {
             for method in &i.methods {
-                if method.name == Ident::new(word) {
-                    return Some(crate::util::find_name_span(source, span.start, word));
-                }
+                let method_name = method.name.name.as_str();
+                visit(
+                    method_name,
+                    crate::util::find_name_span(source, span.start, method_name),
+                )?;
             }
         }
 
         // Search inside extern blocks for function declarations.
         if let Item::ExternBlock(extern_block) = item {
             for function in &extern_block.functions {
-                if function.name == Ident::new(word) {
-                    return Some(crate::util::find_name_span(source, span.start, word));
-                }
+                let fn_name = function.name.name.as_str();
+                visit(
+                    fn_name,
+                    crate::util::find_name_span(source, span.start, fn_name),
+                )?;
             }
         }
     }
-    None
+    ControlFlow::Continue(())
+}
+
+/// Collect every named definition site in `parse_result` in declaration order.
+///
+/// Shares the exact traversal used by [`find_definition`] so workspace symbol
+/// indexes stay in lockstep with single-file go-to-definition.
+#[must_use]
+pub fn collect_definitions(source: &str, parse_result: &ParseResult) -> Vec<(String, OffsetSpan)> {
+    let mut definitions = Vec::new();
+    let _ = visit_definitions(source, parse_result, |name, span| {
+        definitions.push((name.to_owned(), span));
+        ControlFlow::<()>::Continue(())
+    });
+    definitions
+}
+
+/// Search for a definition matching `word` in the AST, including nested items.
+///
+/// Returns the byte-offset span of the **name identifier** within the defining
+/// item, not the span of the whole item. Returns `None` if no matching
+/// definition is found.
+#[must_use]
+pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> Option<OffsetSpan> {
+    match visit_definitions(source, parse_result, |name, span| {
+        if name == word {
+            ControlFlow::Break(span)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }) {
+        ControlFlow::Break(span) => Some(span),
+        ControlFlow::Continue(()) => None,
+    }
 }
 
 /// Find the definition site of a local `let`/`var` binding that is in scope at

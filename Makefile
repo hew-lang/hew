@@ -379,12 +379,18 @@ RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/$(CARGO_LIBHEW_NAME)
 
 TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 
+# Allow CI to reuse a prebuilt xtask binary from the build job rather than
+# compiling xtask independently in every downstream shard.
+XTASK_BIN ?=
+XTASK := $(if $(strip $(XTASK_BIN)),$(XTASK_BIN),cargo run -p xtask --)
+
 # Ordinary development and pull-request runs keep executing known failing tests
 # while rejecting every unrecorded failure, changed outcome, missing test,
 # process signal, setup error, or malformed report. Release gates use the same
 # nextest invocation through `test-strict`, but require an all-pass exit.
 NEXTEST_WORKSPACE_FILTER ?=
 NEXTEST_PARTITION ?=
+NEXTEST_PARTITION_MODE ?= hash
 NEXTEST_WORKSPACE_EXCLUDE ?=
 NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi $(foreach package,$(NEXTEST_WORKSPACE_EXCLUDE),--exclude $(package)) --profile ci
 NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
@@ -406,10 +412,10 @@ endif
 ifneq ($(strip $(NEXTEST_PARTITION)),)
 # Partitioned PR jobs still pass the full and selected inventories to the
 # ratchet, so expected tests in the other partition are not treated as lost.
-NEXTEST_WORKSPACE_ARGS += --partition 'hash:$(NEXTEST_PARTITION)'
+NEXTEST_WORKSPACE_ARGS += --partition '$(NEXTEST_PARTITION_MODE):$(NEXTEST_PARTITION)'
 NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" --selected-inventory "$(NEXTEST_SELECTED_INVENTORY)"
 NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
-NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) $(if $(NEXTEST_WORKSPACE_FILTER),--filterset '$(NEXTEST_WORKSPACE_FILTER)') --partition 'hash:$(NEXTEST_PARTITION)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
+NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) $(if $(NEXTEST_WORKSPACE_FILTER),--filterset '$(NEXTEST_WORKSPACE_FILTER)') --partition '$(NEXTEST_PARTITION_MODE):$(NEXTEST_PARTITION)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
 endif
 # nextest keeps its store under the workspace's `target/nextest`, not under
 # `CARGO_TARGET_DIR`, so an out-of-tree build still reports here.
@@ -454,7 +460,10 @@ endif
 endif
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
+HOST_TRIPLE ?=
+ifeq ($(strip $(HOST_TRIPLE)),)
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
+endif
 EFFECTIVE_CARGO_TARGET := $(shell $(PYTHON) scripts/cargo-output-dir.py --triple $(CARGO_TARGET_FLAG))
 # Make assembles a runnable host toolchain. Cross-target native archives have
 # dedicated targets; accepting a foreign Cargo default here would mislabel that
@@ -543,6 +552,13 @@ DEBUGGER_TEST_ARGS ?=
 test-debugger: require-host-cargo-target ## Test: run live debugger fixtures with full runtime symbols
 	cargo build -p hew-runtime -p hew-lib -p hew-cli --profile debugger $(CARGO_TARGET_FLAG)
 	$(TEST_RUN_ENV) cargo nextest run --profile ci --cargo-profile debugger -p hew-cli --test dwarf_debugger_locals_e2e $(DEBUGGER_TEST_ARGS)
+
+.PHONY: hew-cli-debug xtask-debug
+hew-cli-debug:
+	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
+
+xtask-debug:
+	cargo build -p xtask $(CARGO_TARGET_FLAG)
 
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib in the same Cargo profile.
@@ -851,10 +867,10 @@ playground-manifest-check: wasm-capability-check
 
 .PHONY: syntax-data syntax-data-check editor-syntax
 syntax-data:
-	cargo run -p xtask -- syntax-data --write
+	$(XTASK) syntax-data --write
 
 syntax-data-check:
-	cargo run -p xtask -- syntax-data --check
+	$(XTASK) syntax-data --check
 
 editor-syntax: syntax-data
 	node tools/downstream/generate-nano.mjs
@@ -863,17 +879,17 @@ editor-syntax: syntax-data
 	cp dist/hew.tmLanguage.json editors/sublime/Hew.tmLanguage.json
 
 sandbox-fixtures:
-	cargo run -p xtask -- sandbox-fixtures
+	$(XTASK) sandbox-fixtures
 
 sandbox-fixtures-check:
-	cargo run -p xtask -- sandbox-fixtures --check
+	$(XTASK) sandbox-fixtures --check
 
 # Regenerate fixture bytecode and its golden trace by running the VM. Goldens
 # are never hand-edited; a review reads the trace family sequence and the final
 # state. Needs the built VM package, unlike the node-free check above.
 sandbox-fixtures-record: sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
-	cargo run -p xtask -- sandbox-fixtures --record
+	$(XTASK) sandbox-fixtures --record
 
 # Release dependency tools: cargo-deny 0.19.6 and cargo-about 0.9.0.
 # Duplicate crate versions are not a release defect. Enforce only actionable
@@ -946,22 +962,31 @@ sandbox-vm-test: sandbox-vm-deps
 	npm --prefix hew-sandbox-vm run build
 	HEW_NATIVE_BIN="$(HEW_NATIVE_BIN)" node --test $(SANDBOX_VM_TEST_ARGS) hew-sandbox-vm/test/*.test.mjs
 
+PLAYGROUND_CHECK_TESTS := \
+	v05_wasm_coverage \
+	sandbox_actor_package \
+	sandbox_embedded_std \
+	sandbox_spread_profile \
+	sandbox_project
+
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
 # The local browser package supplies the same codec bridge used by the VM.
-SANDBOX_PARITY_ARGS ?=
+SANDBOX_PARITY_SKIP_PLAYGROUND ?= 0
+SANDBOX_PARITY_ARGS ?= $(if $(filter 1,$(SANDBOX_PARITY_SKIP_PLAYGROUND)),$(addprefix --test ,$(filter-out $(PLAYGROUND_CHECK_TESTS),$(basename $(notdir $(wildcard hew-wasm/tests/*.rs))))),)
 SANDBOX_PARITY_RUNNER ?= cargo test -p hew-wasm
 sandbox-parity: hew-native sandbox-vm-deps $(if $(strip $(HEW_WASM_MODULE)),,wasm)
 	npm --prefix hew-sandbox-vm run build
 	$(TEST_RUN_ENV) $(SANDBOX_PARITY_RUNNER) $(SANDBOX_PARITY_ARGS)
+ifeq ($(strip $(SANDBOX_PARITY_SKIP_PLAYGROUND)),1)
+	$(TEST_RUN_ENV) $(SANDBOX_PARITY_RUNNER) --doc
+endif
 
 # Browser analysis and source-to-VM execution need Node and the built VM, but
 # not LLVM. Native comparisons run with the complete package in sandbox-parity.
 playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and build the playground package
 	npm --prefix hew-sandbox-vm run build
-	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib \
-		--test v05_wasm_coverage --test sandbox_actor_package \
-		--test sandbox_embedded_std --test sandbox_spread_profile --test sandbox_project
+	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib $(addprefix --test ,$(PLAYGROUND_CHECK_TESTS))
 	$(MAKE) wasm
 	node --test hew-wasm/tests/project_wasm.mjs
 
@@ -1353,7 +1378,7 @@ test: test-artifacts ## Test: run the ratcheted Rust workspace test suite
 	@$(NEXTEST_PREPARE_SELECTED_INVENTORY)
 	@status=0; \
 		$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS) || status=$$?; \
-		cargo xtask ratchet check \
+		$(XTASK) ratchet check \
 			--suite nextest \
 			--junit "$(NEXTEST_JUNIT)" \
 			--output "$(NEXTEST_RATCHET_JUNIT)" \
@@ -1381,7 +1406,7 @@ ratchet-accounting-nextest: ## Check: nextest expected-failure accounting
 # citing a closed issue and open `ratchet:` issues no row cites; never
 # fails and never edits a ledger.
 ledger-issues: ## Check: report closed and uncited ratchet issues
-	cargo xtask ratchet issues
+	$(XTASK) ratchet issues
 
 test-ratchet-accounting-runner: ## Test: accounting runner executes all families after failures
 	TMPDIR="$${TMPDIR:-/tmp}" scripts/tests/test_ratchet_accounting_runner.sh
@@ -1400,10 +1425,13 @@ macos-leak-oracle: test-leak-oracle-selftest hew-native
 # contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
 # inspector commands and incomplete work witnesses; the shell counterfactuals
 # prove empty/shrunken inventories and a missing ffi authority are red.
-test-leak-oracle-selftest: hew-native
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
+.PHONY: test-leak-oracle-scripts
+test-leak-oracle-scripts: hew-native
 	scripts/tests/test_macos_leak_oracle_runner.sh
 	HEW_BIN="$(DEBUG_HEW)" scripts/tests/test_actor_leak_oracle_counterfactual.sh
+
+test-leak-oracle-selftest: hew-native test-leak-oracle-scripts
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
 
 # The C-ABI crate, run on its own.
 #
@@ -1451,7 +1479,7 @@ test-compiler-pipeline: test-artifacts
 # edge; xtask only drives that already-built binary for its O0 and O2 outcomes.
 CORE_ACCEPTANCE_ARGS ?=
 core-acceptance: hew-native ## Test: run audited native core acceptance cases
-	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
+	$(XTASK) core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
 HOST_CLIENT_ARGS ?=
 EXTERN_BYTES_ARGS ?=
@@ -1465,10 +1493,12 @@ test-extern-bytes-safety: core-safety-build ## Test: instrument C and Hew extern
 		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
 		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/extern-bytes" --sanitize $(EXTERN_BYTES_ARGS)
 
-.PHONY: test-host-client
-test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
+.PHONY: test-host-client test-host-client-c
+test-host-client-c: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
 	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \
 		--out-dir "$(abspath $(DEBUG_DIR))/host-client" $(HOST_CLIENT_ARGS)
+
+test-host-client: test-host-client-c ## Test: execute C11 and C++17 clients and host_export_e2e
 	HEW_BIN="$(DEBUG_HEW)" cargo test -p hew-cli --test host_export_e2e
 
 # Build the compiler and runtime together so the selected compiler resolves the
@@ -1487,7 +1517,7 @@ core-safety-build:
 		RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer"
 
 core-safety: core-safety-build ## Test: run native ownership cases with generated and runtime ASan/LSan
-	ASAN_SYMBOLIZER_PATH="$(ASAN_SYMBOLIZER)" cargo run -p xtask -- core-acceptance --suite safety \
+	ASAN_SYMBOLIZER_PATH="$(ASAN_SYMBOLIZER)" $(XTASK) core-acceptance --suite safety \
 		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" $(CORE_ACCEPTANCE_ARGS)
 
 .PHONY: test-host-safety
@@ -1535,7 +1565,7 @@ compile-determinism-verify: hew-native
 # inputs: tests/ll-oracle/corpus/*.hew tests/ll-oracle/ir-budget.tsv xtask/src/ir_size.rs
 # inputs: hew-hir/src/*.rs hew-sir/src/*.rs hew-mir/src/*.rs hew-codegen-rs/src/*.rs
 ir-size-verify: hew-native
-	cargo run -p xtask -- ir-size --hew-bin "$(DEBUG_HEW)"
+	$(XTASK) ir-size --hew-bin "$(DEBUG_HEW)"
 
 # inputs: scripts/tests/test_compile_determinism_corpus.py scripts/compile-determinism-corpus.sh
 compile-determinism-selftest:
@@ -1795,6 +1825,7 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_check_stage_dest.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
+	$(PYTHON) scripts/tests/test_stdlib_user_build_clean.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
 	$(PYTHON) scripts/tests/test_packaged_debug_sdk.py
 	$(MAKE) test-release-channels
@@ -1823,7 +1854,7 @@ hew-fmt-fidelity: ## Check: prove every .hew source reprints faithfully through 
 
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -type f -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
-hew-fmt-check: hew-native hew-fmt-fidelity
+hew-fmt-check: hew-cli-debug hew-fmt-fidelity
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
 	@total=$$(find std examples -type f -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
@@ -1975,7 +2006,7 @@ test-extern-string-abi:
 
 # Generate declaration-owned metadata before projecting the complete C ABI.
 cabi-surface:
-	cargo run -p xtask -- runtime-declarations --write
+	$(XTASK) runtime-declarations --write
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
@@ -1985,7 +2016,7 @@ failure-kinds-check:
 
 LINT_GATES += cabi-surface-check
 cabi-surface-check:
-	cargo run -p xtask -- runtime-declarations --check
+	$(XTASK) runtime-declarations --check
 	$(PYTHON) scripts/generate-cabi-surface.py --check
 
 # Python only; no artifacts.
@@ -2115,20 +2146,20 @@ clean: ## Develop: remove generated build and test artifacts
 .PHONY: sandbox-bytecode sandbox-bytecode-check
 LINT_GATES += sandbox-bytecode-check
 sandbox-bytecode: sandbox-vm-deps ## Generate: Rust-owned sandbox instruction types and schema
-	cargo run -p xtask -- sandbox-bytecode --write
+	$(XTASK) sandbox-bytecode --write
 	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --write
 
 sandbox-bytecode-check: sandbox-vm-deps ## Check: generated sandbox instruction types and schema
-	cargo run -p xtask -- sandbox-bytecode --check
+	$(XTASK) sandbox-bytecode --check
 	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --check
 
 .PHONY: node-protocol node-protocol-check
 node-protocol: ## Generate: checked internal node control bindings and CDDL
-	cargo run -p xtask -- node-protocol --write
+	$(XTASK) node-protocol --write
 
 LINT_GATES += node-protocol-check
 node-protocol-check: ## Check: internal node control bindings match checked Hew plans
-	cargo run -p xtask -- node-protocol --check
+	$(XTASK) node-protocol --check
 
 # Timing experiments are opt-in: wall-clock performance is host dependent.
 .PHONY: profile-timers

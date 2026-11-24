@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shutil
@@ -52,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--stdlib-dir", type=Path, default=DEFAULT_STDLIB)
     parser.add_argument("--module", action="append", default=[])
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="number of worker threads (default: bounded host CPU count)",
+    )
     return parser.parse_args()
 
 
@@ -271,6 +278,9 @@ def verify_broken_stdlib_refuses_user_builds(
 
 def main() -> int:
     args = parse_args()
+    if args.jobs is not None and args.jobs < 1:
+        print("error: --jobs must be at least 1", file=sys.stderr)
+        return 1
     hew_bin = args.hew_bin.resolve()
     stdlib_dir = args.stdlib_dir.resolve()
     if not hew_bin.is_file():
@@ -291,14 +301,28 @@ def main() -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
+    workers = min(
+        len(modules),
+        args.jobs if args.jobs is not None else max(1, os.cpu_count() or 1),
+    )
     print("==> Stdlib user-build diagnostic gate")
-    print(f"Modules: {len(modules)}")
+    print(f"Modules: {len(modules)} (jobs: {workers})")
     buckets: collections.Counter[str] = collections.Counter()
     failed = False
     with tempfile.TemporaryDirectory(prefix="hew-stdlib-user-build-") as tmp:
-        package_dir = Path(tmp) / "package"
-        for index, module in enumerate(modules, 1):
-            result = audit_module(hew_bin, stdlib_dir, module, package_dir)
+        tmp_root = Path(tmp)
+
+        def run_one(item: tuple[int, Module]) -> ModuleResult:
+            index, module = item
+            return audit_module(
+                hew_bin, stdlib_dir, module, tmp_root / f"package-{index}"
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(run_one, enumerate(modules, 1)))
+
+        for index, result in enumerate(results, 1):
+            module = result.module
             for command in result.commands:
                 if command_failed(command):
                     failed = True

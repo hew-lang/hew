@@ -30,6 +30,7 @@
 # Environment:
 #   HEW_BIN                         compiler binary (default: target/debug/hew)
 #   COMPILE_DETERMINISM_MIN_VERIFIED  minimum verified compiler outcomes (default: 16; may only raise)
+#   COMPILE_DETERMINISM_JOBS        concurrent fixture workers (default: host CPU count)
 
 set -euo pipefail
 
@@ -54,6 +55,20 @@ MIN_VERIFIED="${COMPILE_DETERMINISM_MIN_VERIFIED:-$VERIFIED_FLOOR}"
 # passing through hashed containers.
 DETERMINISM_RUNS=6
 
+detect_default_jobs() {
+    if command -v nproc >/dev/null 2>&1; then
+        nproc
+    elif command -v getconf >/dev/null 2>&1; then
+        getconf _NPROCESSORS_ONLN 2>/dev/null || printf '4\n'
+    elif command -v sysctl >/dev/null 2>&1; then
+        sysctl -n hw.ncpu 2>/dev/null || printf '4\n'
+    else
+        printf '4\n'
+    fi
+}
+
+DETERMINISM_JOBS="${COMPILE_DETERMINISM_JOBS:-$(detect_default_jobs)}"
+
 usage() {
     cat <<'EOF'
 Usage: scripts/compile-determinism-corpus.sh [fixture.hew | directory ...]
@@ -65,6 +80,7 @@ arguments, runs every top-level .hew fixture in tests/ll-oracle/corpus.
 Environment:
   HEW_BIN                           compiler binary (default: target/debug/hew)
   COMPILE_DETERMINISM_MIN_VERIFIED  minimum verified compiler outcomes (default: 16; may only raise)
+  COMPILE_DETERMINISM_JOBS          concurrent fixture workers (default: host CPU count)
 EOF
 }
 
@@ -80,6 +96,10 @@ require_nonnegative_integer() {
 require_nonnegative_integer COMPILE_DETERMINISM_MIN_VERIFIED "$MIN_VERIFIED"
 if ((MIN_VERIFIED < VERIFIED_FLOOR)); then
     echo "compile-determinism: COMPILE_DETERMINISM_MIN_VERIFIED may not lower the committed floor $VERIFIED_FLOOR" >&2
+    exit 2
+fi
+if [[ ! "$DETERMINISM_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "compile-determinism: COMPILE_DETERMINISM_JOBS must be a positive integer, got '$DETERMINISM_JOBS'" >&2
     exit 2
 fi
 
@@ -166,25 +186,26 @@ physical_dump() {
     cat "$output_path"
 }
 
-failures=0
-successes=0
-verified_outcomes=0
+check_fixture() {
+    local index="$1"
+    local fixture="$2"
+    local label="${fixture#"$ROOT"/}"
+    local baseline_out="$tmpdir/$index.baseline.out"
+    local baseline_err="$tmpdir/$index.baseline.err"
+    local baseline_edges="$tmpdir/$index.baseline.edges"
+    local stdout_log="$tmpdir/$index.summary.out"
+    local stderr_log="$tmpdir/$index.summary.err"
+    local result_file="$tmpdir/$index.result"
+    local baseline_status=0
+    local fixture_failed=0
+    local run repeated_out repeated_err repeated_edges repeated_status
 
-for index in "${!fixtures[@]}"; do
-    fixture="${fixtures[$index]}"
-    label="${fixture#"$ROOT"/}"
-    baseline_out="$tmpdir/$index.baseline.out"
-    baseline_err="$tmpdir/$index.baseline.err"
-    baseline_edges="$tmpdir/$index.baseline.edges"
-
-    baseline_status=0
     run_compile "$baseline_out" "$baseline_err" \
         "$HEW_BIN" tool compile --dump-mir physical "$fixture" || baseline_status=$?
     physical_dump "$baseline_out" >"$baseline_edges"
 
-    fixture_failed=0
     if [[ "$baseline_status" -ne 0 && "$baseline_status" -ne 1 ]]; then
-        echo "FAIL $label: compiler exited abnormally with status $baseline_status" >&2
+        printf 'FAIL %s: compiler exited abnormally with status %s\n' "$label" "$baseline_status" >>"$stderr_log"
         fixture_failed=1
     fi
 
@@ -197,23 +218,74 @@ for index in "${!fixtures[@]}"; do
             "$HEW_BIN" tool compile --dump-mir physical "$fixture" || repeated_status=$?
         physical_dump "$repeated_out" >"$repeated_edges"
         if [[ "$baseline_status" -ne "$repeated_status" ]]; then
-            echo "FAIL $label: repeated compile $run changed exit status from $baseline_status to $repeated_status" >&2
+            printf 'FAIL %s: repeated compile %s changed exit status from %s to %s\n' \
+                "$label" "$run" "$baseline_status" "$repeated_status" >>"$stderr_log"
             fixture_failed=1
         fi
-        if ! diff -u "$baseline_edges" "$repeated_edges"; then
-            echo "FAIL $label: repeated compile $run changed the physical MIR dump" >&2
+        if ! diff -u "$baseline_edges" "$repeated_edges" >>"$stdout_log" 2>>"$stderr_log"; then
+            printf 'FAIL %s: repeated compile %s changed the physical MIR dump\n' \
+                "$label" "$run" >>"$stderr_log"
             fixture_failed=1
         fi
-        if ! diff -u "$baseline_err" "$repeated_err"; then
-            echo "FAIL $label: repeated compile $run changed diagnostic emission" >&2
+        if ! diff -u "$baseline_err" "$repeated_err" >>"$stdout_log" 2>>"$stderr_log"; then
+            printf 'FAIL %s: repeated compile %s changed diagnostic emission\n' \
+                "$label" "$run" >>"$stderr_log"
             fixture_failed=1
         fi
     done
 
+    if [[ "$fixture_failed" -eq 0 ]]; then
+        if [[ "$baseline_status" -eq 1 ]]; then
+            printf 'ok   %s  (deterministic diagnostic rejection)\n' "$label" >>"$stdout_log"
+        else
+            printf 'ok   %s\n' "$label" >>"$stdout_log"
+        fi
+    fi
+
+    printf '%s %s\n' "$fixture_failed" "$baseline_status" >"$result_file"
+}
+
+failures=0
+successes=0
+verified_outcomes=0
+
+workers="$DETERMINISM_JOBS"
+if ((workers > ${#fixtures[@]})); then
+    workers=${#fixtures[@]}
+fi
+
+pids=()
+for ((worker = 0; worker < workers; worker++)); do
+    (
+        for ((index = worker; index < ${#fixtures[@]}; index += workers)); do
+            check_fixture "$index" "${fixtures[$index]}"
+        done
+    ) &
+    pids+=("$!")
+done
+
+worker_failed=0
+for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+        worker_failed=1
+    fi
+done
+if ((worker_failed)); then
+    echo "compile-determinism: worker failed abnormally" >&2
+    exit 1
+fi
+
+for index in "${!fixtures[@]}"; do
+    if [[ -s "$tmpdir/$index.summary.out" ]]; then
+        cat "$tmpdir/$index.summary.out"
+    fi
+    if [[ -s "$tmpdir/$index.summary.err" ]]; then
+        cat "$tmpdir/$index.summary.err" >&2
+    fi
+    read -r fixture_failed baseline_status <"$tmpdir/$index.result"
     if [[ "$baseline_status" -eq 0 ]]; then
         successes=$((successes + 1))
     fi
-
     if [[ "$fixture_failed" -ne 0 ]]; then
         failures=$((failures + 1))
     else
@@ -221,11 +293,6 @@ for index in "${!fixtures[@]}"; do
         # missing corpus execution: its status, physical dump and exact
         # stderr have all passed the repeated-compile assertions.
         verified_outcomes=$((verified_outcomes + 1))
-        if [[ "$baseline_status" -eq 1 ]]; then
-            printf 'ok   %s  (deterministic diagnostic rejection)\n' "$label"
-        else
-            printf 'ok   %s\n' "$label"
-        fi
     fi
 done
 

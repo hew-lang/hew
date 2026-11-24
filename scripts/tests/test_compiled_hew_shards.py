@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -548,6 +549,35 @@ class CompiledHewShardTests(unittest.TestCase):
             cwd=ROOT,
             check=True,
         )
+
+    def test_finalize_skips_xtask_when_prerequisites_fail(self) -> None:
+        published = self.root / "published"
+        env = dict(os.environ)
+        env["HEW_XTASK_BIN"] = str(self.root / "missing-xtask")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "finalize",
+                "--reports-dir",
+                str(self.reports),
+                "--output-dir",
+                str(published),
+                "--full-inventory",
+                str(self.full_path),
+                "--prerequisites-succeeded",
+                "false",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 1)
+        failure_report = ET.parse(published / "compiled-hew-finalization.xml")
+        failure = failure_report.find(".//failure")
+        self.assertIsNotNone(failure)
+        self.assertIn("did not succeed", failure.get("message", ""))
 
 
 if __name__ == "__main__":

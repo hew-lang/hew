@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -33,6 +35,69 @@ def test_make_help_renders_the_current_target_index() -> None:
     )
     assert "make all " in result.stdout, result.stdout
     assert "make hew-debug " in result.stdout, result.stdout
+
+
+def test_sandbox_parity_complement_covers_all_hew_wasm_tests() -> None:
+    env = dict(os.environ)
+    env.setdefault("CARGO_TARGET_DIR", "target")
+    env.setdefault("HOST_TRIPLE", "x86_64-unknown-linux-gnu")
+    playground = subprocess.run(
+        [
+            "make",
+            "-n",
+            "-o",
+            "playground-manifest-check",
+            "-o",
+            "sandbox-vm-deps",
+            "playground-check",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    parity = subprocess.run(
+        [
+            "make",
+            "-n",
+            "-o",
+            "hew-native",
+            "-o",
+            "wasm-runtime",
+            "-o",
+            "sandbox-vm-deps",
+            "SANDBOX_PARITY_SKIP_PLAYGROUND=1",
+            "HEW_WASM_MODULE=file:///dev/null",
+            "sandbox-parity",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    playground_cmds = [
+        line
+        for line in playground.stdout.splitlines()
+        if "cargo test -p hew-wasm" in line
+    ]
+    parity_cmds = [
+        line for line in parity.stdout.splitlines() if "cargo test -p hew-wasm" in line
+    ]
+    assert len(playground_cmds) == 1, playground.stdout
+    assert len(parity_cmds) == 2, parity.stdout
+    playground_tests = set(re.findall(r"--test\s+([A-Za-z0-9_]+)", playground_cmds[0]))
+    parity_tests = set(re.findall(r"--test\s+([A-Za-z0-9_]+)", parity_cmds[0]))
+    all_tests = {p.stem for p in (ROOT / "hew-wasm" / "tests").glob("*.rs")}
+    assert "--lib" in playground_cmds[0], playground_cmds[0]
+    assert "--doc" not in parity_cmds[0], parity_cmds[0]
+    assert parity_cmds[1].strip().endswith("--doc"), parity_cmds[1]
+    assert playground_tests.isdisjoint(parity_tests), playground_tests & parity_tests
+    assert (playground_tests | parity_tests) == all_tests, (
+        all_tests - (playground_tests | parity_tests),
+        (playground_tests | parity_tests) - all_tests,
+    )
 
 
 def test_shell_lint_discovers_tracked_nested_scripts_only() -> None:

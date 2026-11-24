@@ -13,6 +13,9 @@ trap 'rm -rf "$stage"' EXIT
 tar -xzf "$archive" -C "$stage"
 mkdir -p target/debug target/wasm32-wasip1/debug
 install -m 755 "$stage/compiled-hew/debug/hew" target/debug/hew
+if [[ -f "$stage/compiled-hew/debug/xtask" ]]; then
+    install -m 755 "$stage/compiled-hew/debug/xtask" target/debug/xtask
+fi
 install -m 644 "$stage/compiled-hew/debug/libhew_native.a" target/debug/libhew_native.a
 install -m 755 "$stage/compiled-hew/debug/libhew_native.so" target/debug/libhew_native.so
 # Keep the versioned link beside the shared runtime.

@@ -55,13 +55,17 @@ jobs:
     name: Clippy & format
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -69,6 +73,10 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
+
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -112,7 +120,7 @@ jobs:
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -128,21 +136,29 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
   # Runs analysis and source-to-VM tests, checks manifest freshness and builds
-  # the browser WASM artifact consumed by native parity in the corpus job.
+  # the browser WASM artifact consumed by native parity in the sandbox-parity job.
   # ─────────────────────────────────────────────────────────────────────────
   playground-wasm-build:
     name: Playground WASM build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
+
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -192,7 +208,7 @@ jobs:
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -208,12 +224,12 @@ jobs:
           targets: wasm32-wasip1
           cache-shared-key: compiled-hew-linux
 
-      - name: Build compiler, native archive and WASI runtime once
+      - name: Build compiler, native archive, WASI runtime and xtask once
         run: |
-          make hew-native wasm-runtime-debug
+          make hew-native wasm-runtime-debug xtask-debug
           mkdir -p compiled-hew/debug compiled-hew/wasm32-wasip1/debug
-          cp target/debug/hew target/debug/libhew_native.a target/debug/libhew_native.so \
-            target/debug/libhew_runtime.a compiled-hew/debug/
+          cp target/debug/hew target/debug/xtask target/debug/libhew_native.a \
+            target/debug/libhew_native.so target/debug/libhew_runtime.a compiled-hew/debug/
           # The versioned name the shared runtime records (a link to libhew_native.so).
           cp -P target/debug/libhew.so.* compiled-hew/debug/
           cp target/wasm32-wasip1/debug/libhew_runtime.a \
@@ -248,7 +264,7 @@ jobs:
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -295,20 +311,25 @@ jobs:
         compiled-hew-linux,
         compiled-hew-shards,
         acceptance,
+        doc-examples,
         nextest,
-        corpus,
+        hew-corpus,
+        sandbox-parity,
         tooling,
       ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      CARGO_TARGET_DIR: target
+      HOST_TRIPLE: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: ./.github/actions/setup-ubuntu-dns
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
         if: always()
@@ -365,6 +386,9 @@ jobs:
 
       - name: List the independent full suite inventory
         id: full-inventory
+        if: >-
+          always() &&
+          needs.compiled-hew-linux.result == 'success'
         run: |
           "${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/hew" \
             test tests/hew --list > "${{ runner.temp }}/compiled-hew-full.txt"
@@ -375,6 +399,9 @@ jobs:
           always() &&
           steps.require-every-shard.outcome == 'success' &&
           steps.full-inventory.outcome == 'success'
+        env:
+          XTASK_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/xtask
+          HEW_XTASK_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/xtask
         run: >-
           make test-hew-ratchet
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
@@ -387,6 +414,9 @@ jobs:
           always() &&
           steps.require-every-shard.outcome == 'success' &&
           steps.full-inventory.outcome == 'success'
+        env:
+          XTASK_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/xtask
+          HEW_XTASK_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/xtask
         run: >-
           make test-o2-differential
           HEW_SHARD_REPORT_DIR="${{ runner.temp }}/compiled-hew-reports"
@@ -395,6 +425,8 @@ jobs:
 
       - name: Finalize compiled Hew JUnit reports
         if: always()
+        env:
+          HEW_XTASK_BIN: ${{ runner.temp }}/compiled-hew-artifact/compiled-hew/debug/xtask
         run: >-
           python3 scripts/compiled-hew-shards.py finalize
           --reports-dir "${{ runner.temp }}/compiled-hew-reports"
@@ -415,12 +447,14 @@ jobs:
         if: always()
         env:
           ACCEPTANCE_RESULT: ${{ needs.acceptance.result }}
+          DOC_EXAMPLES_RESULT: ${{ needs.doc-examples.result }}
           NEXTEST_RESULT: ${{ needs.nextest.result }}
-          CORPUS_RESULT: ${{ needs.corpus.result }}
+          HEW_CORPUS_RESULT: ${{ needs.hew-corpus.result }}
+          SANDBOX_PARITY_RESULT: ${{ needs.sandbox-parity.result }}
           TOOLING_RESULT: ${{ needs.tooling.result }}
         run: |
           status=0
-          for leg in ACCEPTANCE_RESULT NEXTEST_RESULT CORPUS_RESULT TOOLING_RESULT; do
+          for leg in ACCEPTANCE_RESULT DOC_EXAMPLES_RESULT NEXTEST_RESULT HEW_CORPUS_RESULT SANDBOX_PARITY_RESULT TOOLING_RESULT; do
             result="${!leg}"
             if [ "$result" != success ]; then
               echo "::error::$leg is '$result' (expected success)"
@@ -429,34 +463,46 @@ jobs:
           done
           exit "$status"
 
-  # The remaining pull-request gates consume the same compiler and static
+  # The remaining pull-request gates consume the same compiler, xtask and static
   # archives. Make's -o flag marks the already-installed artefacts as current;
   # each source gate still runs its normal recipe and checks actual behaviour.
   acceptance:
-    name: Core acceptance and integrations (${{ matrix.shard }}/3)
+    name: Core acceptance and integrations (${{ matrix.shard }}/4)
     needs: compiled-hew-linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        shard: [0, 1, 2, 3]
+    env:
+      CARGO_TARGET_DIR: target
+      HOST_TRIPLE: x86_64-unknown-linux-gnu
+      XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
+      HEW_XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      - name: Avoid implicit rustup bootstrap on non-Cargo shards
+        if: matrix.shard != 0
+        run: |
+          echo "CARGO_TARGET_DIR=target" >> "$GITHUB_ENV"
+          echo "HOST_TRIPLE=x86_64-unknown-linux-gnu" >> "$GITHUB_ENV"
+
       - uses: ./.github/actions/setup-ubuntu-dns
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install MQTT clients
-        if: matrix.shard == 2
+        if: matrix.shard == 3
         timeout-minutes: 5
         run: .github/scripts/install-ubuntu-packages.sh mosquitto-clients
       - uses: ./.github/actions/setup-llvm
+      # Only package-import and package-install invoke Cargo/rustup directly.
       - uses: ./.github/actions/setup-rust-build
+        if: matrix.shard == 0
         with:
-          tools: ${{ matrix.shard == 2 && 'nextest@0.9.120' || '' }}
-          cache-shared-key: acceptance-${{ matrix.shard }}
+          cache-shared-key: acceptance-pkg
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: compiled-hew-linux-${{ github.sha }}
@@ -465,53 +511,82 @@ jobs:
         id: native_bundle
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Run core acceptance partition
-        run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/3"
-      - name: Run documentation examples
-        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 2 }}
-        run: make -o hew-native test-doc-examples
+        run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/4"
       - name: Run package integration
         if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 0 }}
-        run: make -k -o hew-native observe-functional-test test-pkg-import test-package-install
-      - name: Run C extern and host client integrations
+        run: make -k -o hew-native test-pkg-import test-package-install
+      - name: Run determinism and stdlib integrations
         if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 1 }}
-        run: >-
-          make -k -o hew-native compile-determinism-verify
-          stdlib-user-build-clean stdlib-errno-gate
-          test-extern-bytes test-host-client
-      - name: Run migration and MQTT integrations
+        run: make -k -o hew-native compile-determinism-verify stdlib-user-build-clean stdlib-errno-gate
+      # Workspace nextest owns host_export_e2e; run the C/C++ client oracle here.
+      - name: Run C extern and host client integrations
         if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 2 }}
-        run: make -k -o hew-native test-leak-oracle-selftest test-migrate-corpus mqtt-broker-e2e
+        run: make -k -o hew-native test-extern-bytes test-host-client-c
+      - name: Run migration and MQTT integrations
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 3 }}
+        run: make -k -o hew-native test-migrate-corpus mqtt-broker-e2e
+
+  doc-examples:
+    name: Documentation examples
+    needs: compiled-hew-linux
+    if: ${{ !cancelled() && needs.compiled-hew-linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_TARGET_DIR: target
+      HOST_TRIPLE: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/setup-ubuntu-dns
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-llvm
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+      - name: Install compiled Hew artefacts
+        id: native_bundle
+        run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+      - name: Run documentation examples
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' }}
+        run: make -o hew-native test-doc-examples
 
   nextest:
-    name: Workspace nextest (${{ matrix.shard }}/2)
+    name: Workspace nextest (${{ matrix.shard }}/4)
     needs: compiled-hew-linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
+      HEW_XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
+      NEXTEST_PARTITION_MODE: count
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: ./.github/actions/setup-ubuntu-dns
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Free runner disk
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
-          sudo docker system prune -af >/dev/null 2>&1 || true
-      - name: Install GDB
+      - name: Install mold and GDB
         timeout-minutes: 5
-        run: .github/scripts/install-ubuntu-packages.sh gdb
+        run: .github/scripts/install-ubuntu-packages.sh mold gdb
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:
           targets: wasm32-wasip1
           tools: nextest@0.9.120
-          cache-shared-key: nextest-${{ matrix.shard }}
+          cache-shared-key: nextest
       - name: Install wasmtime
         env:
           GH_TOKEN: ${{ github.token }}
@@ -532,37 +607,85 @@ jobs:
         id: native_bundle
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Run workspace test partition with ratchet accounting
-        run: make -o test-artifacts test NEXTEST_PARTITION="${{ matrix.shard }}/2"
+        run: make -o test-artifacts test NEXTEST_PARTITION="${{ matrix.shard }}/4"
       - name: Run C ABI crate tests
-        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 1 }}
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 4 }}
         run: make test-cabi
+      - name: Run functional observe harness
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 3 }}
+        run: make -o hew-native observe-functional-test
+      # Workspace nextest owns leak_harness_fail_closed; run the nextest-backed
+      # and actor leak-balance counterfactual scripts where nextest is installed.
+      - name: Run leak oracle counterfactual scripts
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 4 }}
+        run: make -o hew-native test-leak-oracle-scripts
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           report_paths: "{target/nextest/ci/ratchet.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Test Results (Linux nextest ${{ matrix.shard }}/2)
+          check_name: Test Results (Linux nextest ${{ matrix.shard }}/4)
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
 
-  corpus:
-    name: Source corpus and sandbox parity
+  hew-corpus:
+    name: Source corpus check
+    needs: compiled-hew-linux
+    if: ${{ !cancelled() && needs.compiled-hew-linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: target
+      HOST_TRIPLE: x86_64-unknown-linux-gnu
+      XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
+      HEW_XTASK_BIN: ${{ github.workspace }}/target/debug/xtask
+      # Acceptance shard 1 checks every stdlib source more strictly, and
+      # its result is required by the same Linux aggregate as this job.
+      HEW_CORPUS_SKIP_STDLIB: "1"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/actions/setup-ubuntu-dns
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compiled-hew-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/compiled-hew-download
+      - name: Install compiled Hew artefacts
+        id: native_bundle
+        run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
+      - name: Run full source corpus check
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' }}
+        run: make -o hew-native hew-check-all
+
+  sandbox-parity:
+    name: Sandbox parity
     needs: [compiled-hew-linux, playground-wasm-build]
     if: ${{ !cancelled() && needs.compiled-hew-linux.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 35
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - uses: ./.github/actions/setup-ubuntu-dns
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.1.0
         with:
           python-version: "3.12"
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:
-          cache-shared-key: corpus
+          cache-shared-key: sandbox-parity
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -582,18 +705,18 @@ jobs:
         with:
           name: playground-wasm-${{ github.sha }}
           path: hew-wasm/pkg
-      - name: Check sandbox unit tests, parity and source corpus
+      - name: Check sandbox VM and parity suite
         if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' }}
         env:
           HEW_WASM_MODULE: file://${{ github.workspace }}/hew-wasm/pkg/hew_wasm.js
           BROWSER_PACKAGE_RESULT: ${{ steps.browser_compiler.outcome }}
-          # Acceptance shard 1 checks every stdlib source more strictly, and
-          # its result is required by the same Linux aggregate as this job.
-          HEW_CORPUS_SKIP_STDLIB: "1"
+          # Playground WASM build already ran --lib and PLAYGROUND_CHECK_TESTS
+          # under make playground-check; run all remaining tests plus --doc.
+          SANDBOX_PARITY_SKIP_PLAYGROUND: "1"
         run: |
           if [[ "$BROWSER_PACKAGE_RESULT" != success ]]; then
             echo "::error::Sandbox parity requires the tested browser compiler artifact."
-            make -k -o hew-native -o wasm-runtime sandbox-vm-test hew-check-all
+            make -k -o hew-native -o wasm-runtime sandbox-vm-test
             exit 1
           fi
-          make -k -o hew-native -o wasm-runtime sandbox-vm-test sandbox-parity hew-check-all
+          make -k -o hew-native -o wasm-runtime sandbox-vm-test sandbox-parity

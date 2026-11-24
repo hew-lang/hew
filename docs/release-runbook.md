@@ -686,34 +686,36 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 ## Coverage matrix summary
 
-| Check                                | Where it runs                                                           | Blocking?                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------- |
-| Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                       |
-| Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                       |
-| Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                       |
-| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Browser-required scope in 0.6; standalone advisory        |
-| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                               |
-| Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                       |
-| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                       |
-| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                               | Linux required; macOS follows platform policy             |
-| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                               | Platform policy                                           |
-| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                                   | Platform policy                                           |
-| Linux package install smoke          | release.yml (`linux-packages`)                                          | Required when shipped; unavailable outputs recorded       |
-| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Required when shipped; unavailable outputs recorded       |
-| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                       |
-| Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                  |
-| macOS build + tests                  | ci.yml + release-gate.yml                                               | Platform policy                                           |
-| Windows build + tests                | ci.yml + release-gate.yml                                               | Platform policy                                           |
-| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Platform policy                                           |
-| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Platform policy                                           |
-| Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Select for affected contracts; an executed gate must pass |
-| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review when relevant               |
-| Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review when relevant               |
-| Bounded parser fuzz smoke            | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review when relevant               |
-| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
-| Miri                                 | Local `make miri`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
-| Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                  |
-| Local cross-platform build           | `make pre-release`                                                      | Recommended                                               |
+| Check                                 | Where it runs                                                           | Blocking?                                                 |
+| ------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------- |
+| Clippy + rustfmt                      | ci.yml (every PR)                                                       | Yes                                                       |
+| Rust workspace tests                  | ci.yml + release-gate.yml                                               | Yes                                                       |
+| Codegen E2E (native)                  | ci.yml + release-gate.yml                                               | Yes                                                       |
+| Codegen E2E (WASM)                    | ci.yml + release-gate.yml                                               | Browser-required scope in 0.6; standalone advisory        |
+| Native↔sandbox-VM parity              | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                               |
+| Smoke test (compile+run)              | release-gate.yml                                                        | Yes                                                       |
+| Release-library consumer link+run     | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                       |
+| Packaged archive smoke (Linux/macOS)  | release.yml (Unix matrix)                                               | Linux required; macOS follows platform policy             |
+| Packaged archive smoke (Windows zip)  | release.yml (Windows job)                                               | Platform policy                                           |
+| FreeBSD packaged archive smoke        | release.yml (FreeBSD VM, x86_64 only)                                   | Platform policy                                           |
+| Linux package install smoke           | release.yml (`linux-packages`)                                          | Required when shipped; unavailable outputs recorded       |
+| Docker image clean-room install test  | release.yml (`docker-image`, the image that ships)                      | Required when shipped; unavailable outputs recorded       |
+| Release identity + `release-checks`   | release-gate.yml + release.yml (`validate`)                             | Yes                                                       |
+| Full release DAG dry run              | release.yml on `release/**` pushes                                      | Yes for release branches                                  |
+| macOS build + tests                   | ci.yml + release-gate.yml                                               | Platform policy                                           |
+| Windows build + tests                 | ci.yml + release-gate.yml                                               | Platform policy                                           |
+| FreeBSD x86_64 build + tests          | release-gate.yml, freebsd.yml (nightly)                                 | Platform policy                                           |
+| FreeBSD aarch64 compiler + smoke      | release-gate.yml                                                        | Platform policy                                           |
+| Rust runtime ASan (`make asan`)       | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Select for affected contracts; an executed gate must pass |
+| Generated-code/runtime ASan/LSan      | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review when relevant               |
+| Host and extern-byte safety           | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review when relevant               |
+| Bounded parser fuzz smoke             | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review when relevant               |
+| Minimal runtime, link-race & lowering | nightly-extras.yml (daily / manual dispatch)                            | Blocks nightly result; dispatch before same-day cut       |
+| Runtime E2E and workspace coverage    | coverage-nightly.yml (daily / manual dispatch)                          | Informational; dispatch when coverage evidence needed     |
+| TSan (Rust runtime)                   | Local `make tsan`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
+| Miri                                  | Local `make miri`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
+| Codegen silent-failure lint           | codegen-lint.yml (PR)                                                   | Advisory                                                  |
+| Local cross-platform build            | `make pre-release`                                                      | Recommended                                               |
 
 The table describes checks and their normal release use. Platform-dependent
 rows follow the [platform policy](#platform-policy), including the major

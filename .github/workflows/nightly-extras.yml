@@ -1,28 +1,15 @@
-name: Compiler and runtime checks
+name: Nightly compiler and runtime checks
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "hew-*/**"
-      - "std/**"
-      - "xtask/**"
-      - "tests/**"
-      - "examples/**"
-      - "docs/**"
-      - "scripts/**"
-      - "tools/**"
-      - "protocol/**"
-      - "Cargo.*"
-      - "Makefile"
-      - "*.toml"
-      - "*.md"
-      - ".cargo/**"
-      - ".config/**"
-      - ".github/actions/**"
-      - ".github/scripts/**"
-      - ".github/workflows/nightly-extras.yml"
+  schedule:
+    # Offset from nightly-sanitizers (06:00), coverage-nightly (07:00), and
+    # nightly-ratchet-accounting (08:00) to spread daily runner demand.
+    - cron: "0 9 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -34,8 +21,7 @@ jobs:
   runtime-unit:
     if: >-
       github.repository == 'hew-lang/hew' &&
-      (github.ref == 'refs/heads/main' ||
-       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     name: Runtime unit tests (minimal features)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -55,11 +41,12 @@ jobs:
   link-race:
     if: >-
       github.repository == 'hew-lang/hew' &&
-      (github.ref == 'refs/heads/main' ||
-       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     name: Native archive link race
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -67,10 +54,9 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ubuntu-dns
-      - name: Install native link prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -80,11 +66,12 @@ jobs:
   linear-lowering:
     if: >-
       github.repository == 'hew-lang/hew' &&
-      (github.ref == 'refs/heads/main' ||
-       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/')))
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     name: Linear physical lowering
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -92,10 +79,9 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ubuntu-dns
-      - name: Install native link prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+      - name: Install mold
+        timeout-minutes: 5
+        run: .github/scripts/install-ubuntu-packages.sh mold
       - uses: ./.github/actions/setup-llvm
       - uses: ./.github/actions/setup-rust-build
         with:

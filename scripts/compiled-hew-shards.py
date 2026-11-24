@@ -177,7 +177,7 @@ def finalize_reports(
     reports_dir: Path,
     output_dir: Path,
     full_inventory: Path,
-    expected_failures_path: Path,
+    expected_failures_path: Path | None,
     prerequisites_succeeded: bool,
 ) -> int:
     """Prepare the JUnit input for GitHub after raw aggregate gates finish."""
@@ -201,8 +201,9 @@ def finalize_reports(
         return 1
 
     try:
+        resolved_expected = resolve_expected_failures_path(expected_failures_path)
         full = set(read_inventory(full_inventory))
-        expected = expected_failures(expected_failures_path, full)
+        expected = expected_failures(resolved_expected, full)
         actual: dict[str, str] = {}
         o0_outcomes: dict[str, str] = {}
         o2_outcomes: dict[str, str] = {}
@@ -385,31 +386,44 @@ def ratchet_platform() -> str:
     die(f"unsupported ratchet platform: {sys.platform}")
 
 
+def _xtask_command() -> list[str]:
+    xtask_bin = os.environ.get("HEW_XTASK_BIN", "").strip()
+    if xtask_bin and (
+        (
+            os.path.sep in xtask_bin
+            and Path(xtask_bin).is_file()
+            and os.access(xtask_bin, os.X_OK)
+        )
+        or (os.path.sep not in xtask_bin and shutil.which(xtask_bin) is not None)
+    ):
+        return [xtask_bin]
+    return ["cargo", "run", "--quiet", "-p", "xtask", "--"]
+
+
 def resolve_expected_failures_path(explicit: Path | None) -> Path:
     """The hew-suite rows of the one unified ledger, read through the shared
     xtask adapter so this script keeps no ledger format of its own."""
     if explicit is not None:
         return explicit
-    result = subprocess.run(
-        [
-            "cargo",
-            "run",
-            "--quiet",
-            "-p",
-            "xtask",
-            "--",
-            "ratchet",
-            "rows",
-            "--suite",
-            "hew-suite",
-            "--platform",
-            ratchet_platform(),
-        ],
-        cwd=REPO_ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    xtask_cmd = _xtask_command()
+    try:
+        result = subprocess.run(
+            [
+                *xtask_cmd,
+                "ratchet",
+                "rows",
+                "--suite",
+                "hew-suite",
+                "--platform",
+                ratchet_platform(),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        die(f"cannot execute xtask ({xtask_cmd[0]}): {error}")
     if result.returncode:
         die(f"cargo xtask ratchet rows failed: {result.stderr.strip()}")
     generated = REPO_ROOT / "scripts" / ".hew-suite-expected-failures.generated.txt"
@@ -600,7 +614,7 @@ def main(argv: list[str]) -> int:
             args.reports_dir,
             args.output_dir,
             args.full_inventory,
-            resolve_expected_failures_path(args.expected_failures),
+            args.expected_failures,
             args.prerequisites_succeeded == "true",
         )
     else:

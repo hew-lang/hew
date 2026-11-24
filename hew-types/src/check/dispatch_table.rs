@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use hew_parser::ast::Symbol;
 
-use crate::{DefId, NominalId, NominalInstance};
+use crate::{DefId, ReceiverInstance, TypeHead};
 
 /// Whose method a declaration is: the receiver type's own (`impl T`, a type
 /// body method) or a trait's (`impl Trait for T`, a materialized default).
@@ -34,8 +34,8 @@ pub enum MethodSelection {
 /// generic method of the same owner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DispatchTable {
-    by_head: HashMap<(NominalId, Symbol), Vec<(MethodOwner, DefId)>>,
-    specialized: HashMap<(NominalInstance, Symbol), Vec<(MethodOwner, DefId)>>,
+    by_head: HashMap<(TypeHead, Symbol), Vec<(MethodOwner, DefId)>>,
+    specialized: HashMap<(ReceiverInstance, Symbol), Vec<(MethodOwner, DefId)>>,
 }
 
 /// File one method. A later inherent method of the name replaces an earlier
@@ -58,7 +58,7 @@ impl DispatchTable {
     /// File a method serving every instance of `head`.
     pub fn insert_generic(
         &mut self,
-        head: NominalId,
+        head: TypeHead,
         owner: MethodOwner,
         name: Symbol,
         method: DefId,
@@ -69,7 +69,7 @@ impl DispatchTable {
     /// File a method serving exactly `instance`.
     pub fn insert_specialized(
         &mut self,
-        instance: NominalInstance,
+        instance: ReceiverInstance,
         owner: MethodOwner,
         name: Symbol,
         method: DefId,
@@ -87,8 +87,8 @@ impl DispatchTable {
     #[must_use]
     pub fn candidates(
         &self,
-        head: NominalId,
-        instance: Option<&NominalInstance>,
+        head: TypeHead,
+        instance: Option<&ReceiverInstance>,
         name: Symbol,
     ) -> Vec<(MethodOwner, DefId)> {
         let mut found: Vec<(MethodOwner, DefId)> = instance
@@ -110,8 +110,8 @@ impl DispatchTable {
     #[must_use]
     pub fn select(
         &self,
-        head: NominalId,
-        instance: Option<&NominalInstance>,
+        head: TypeHead,
+        instance: Option<&ReceiverInstance>,
         name: Symbol,
     ) -> MethodSelection {
         let candidates = self.candidates(head, instance, name);
@@ -142,8 +142,8 @@ impl DispatchTable {
     #[must_use]
     pub fn select_trait(
         &self,
-        head: NominalId,
-        instance: Option<&NominalInstance>,
+        head: TypeHead,
+        instance: Option<&ReceiverInstance>,
         declaring: DefId,
         name: Symbol,
     ) -> MethodSelection {
@@ -168,8 +168,8 @@ impl DispatchTable {
     #[must_use]
     pub fn method_of(
         &self,
-        head: NominalId,
-        instance: Option<&NominalInstance>,
+        head: TypeHead,
+        instance: Option<&ReceiverInstance>,
         owner: MethodOwner,
         name: Symbol,
     ) -> Option<DefId> {
@@ -182,7 +182,7 @@ impl DispatchTable {
     /// included.
     pub fn methods_of(
         &self,
-        head: NominalId,
+        head: TypeHead,
     ) -> impl Iterator<Item = (Symbol, MethodOwner, DefId)> + '_ {
         let generic = self
             .by_head
@@ -196,12 +196,27 @@ impl DispatchTable {
         let specialized = self
             .specialized
             .iter()
-            .filter(move |((instance, _), _)| instance.nominal == head)
+            .filter(move |((instance, _), _)| instance.head == head)
             .flat_map(|((_, name), entries)| {
                 entries
                     .iter()
                     .map(move |(owner, method)| (*name, *owner, *method))
             });
+        generic.chain(specialized)
+    }
+
+    /// Every filed method across all receiver heads, specialisations included.
+    pub fn all_methods(&self) -> impl Iterator<Item = (Symbol, MethodOwner, DefId)> + '_ {
+        let generic = self.by_head.iter().flat_map(|((_, name), entries)| {
+            entries
+                .iter()
+                .map(move |(owner, method)| (*name, *owner, *method))
+        });
+        let specialized = self.specialized.iter().flat_map(|((_, name), entries)| {
+            entries
+                .iter()
+                .map(move |(owner, method)| (*name, *owner, *method))
+        });
         generic.chain(specialized)
     }
 }
@@ -210,9 +225,12 @@ impl DispatchTable {
 mod tests {
     use super::*;
 
-    fn ids() -> (NominalId, DefId, DefId, DefId, DefId) {
+    fn ids() -> (TypeHead, DefId, DefId, DefId, DefId) {
         (
-            NominalId::for_test("dispatch.T"),
+            TypeHead::Nominal(crate::NominalHead::new(
+                crate::NominalId::for_test("dispatch.T"),
+                "dispatch.T",
+            )),
             DefId::for_test("dispatch.Show"),
             DefId::for_test("dispatch.Label"),
             DefId::for_test("dispatch.T::show#inherent"),
@@ -260,12 +278,12 @@ mod tests {
         let (head, show, _, _, generic) = ids();
         let special = DefId::for_test("dispatch.T$$i64::show");
         let name = Symbol::intern("show");
-        let i64_box = NominalInstance {
-            nominal: head,
+        let i64_box = ReceiverInstance {
+            head,
             args: vec![crate::ResolvedTy::I64],
         };
-        let bool_box = NominalInstance {
-            nominal: head,
+        let bool_box = ReceiverInstance {
+            head,
             args: vec![crate::ResolvedTy::Bool],
         };
         let mut table = DispatchTable::default();

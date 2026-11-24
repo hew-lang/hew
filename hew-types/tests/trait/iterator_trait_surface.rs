@@ -312,10 +312,25 @@ fn stdlib_builtins_carries_iterator_and_intoiterator_decls() {
 
     // Run the checker end-to-end so registration paths execute. Pre-existing
     // reds are tolerated — this test asserts trait surface, not stdlib cleanness.
+    let root = hew_parser::module::ModulePath::root();
+    let builtins = hew_parser::module::ModulePath::new(["std", "builtins"]);
+    let mut graph = hew_parser::module::ModuleGraph::new(root.clone());
+    graph
+        .add_module(hew_parser::module::Module {
+            id: builtins.clone(),
+            items: parsed.program.items,
+            imports: Vec::new(),
+            source_paths: vec![path],
+            doc: None,
+        })
+        .expect("fresh module graph accepts std.builtins");
+    graph.topo_order = vec![builtins, root];
+    let program = hew_parser::ast::Program {
+        items: Vec::new(),
+        module_doc: None,
+        module_graph: Some(graph),
+        expansions: parsed.program.expansions,
+    };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let _ = checker.check_embedded_builtins(
-        &parsed.program,
-        &hew_types::DefTable::new(),
-        std::sync::Arc::new(parsed.program.clone()),
-    );
+    let _ = checker.check_program(&program);
 }

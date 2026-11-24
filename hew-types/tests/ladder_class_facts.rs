@@ -171,7 +171,7 @@ fn a_resource_declaration_has_no_clone_path() {
     let facts = row_matching(
         &output,
         "the `Conn` resource",
-        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling() == "Conn"),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)), .. } if name_head.spelling() == "Conn"),
     );
     assert_eq!(
         (ValueClass::AffineResource, CloneKind::None),
@@ -593,7 +593,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported enum `rec.Tree`",
-        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Tree")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)), .. } if name_head.spelling().ends_with("Tree")),
     );
     assert_eq!(
         (ValueClass::CowValue, CloneKind::FieldWise),
@@ -617,7 +617,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported record `rec.Reply`",
-        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Reply")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)), .. } if name_head.spelling().ends_with("Reply")),
     );
     assert_ne!(
         (ValueClass::BitCopy, CloneKind::Bits),
@@ -646,7 +646,7 @@ fn main() -> i64 {
         let facts = row_matching(
             &output,
             &format!("imported `rec.{name}`"),
-            |ty| matches!(ty, ResolvedTy::Named { head: actual_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if actual_head.spelling().ends_with(name)),
+            |ty| matches!(ty, ResolvedTy::Named { head: actual_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)), .. } if actual_head.spelling().ends_with(name)),
         );
         assert_ne!(
             (ValueClass::BitCopy, CloneKind::Bits),
@@ -690,7 +690,7 @@ fn main() -> i64 {
     let facts = row_matching(
         &output,
         "the imported record `rec.Holder`",
-        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)), .. } if name_head.spelling().ends_with("Holder")),
+        |ty| matches!(ty, ResolvedTy::Named { head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)), .. } if name_head.spelling().ends_with("Holder")),
     );
     assert_eq!(
         (ValueClass::BitCopy, CloneKind::Bits),

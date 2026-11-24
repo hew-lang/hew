@@ -3074,8 +3074,10 @@ fn registry_imported_extern_call_requires_unsafe() {
                 source_items: Vec::new(),
                 functions: vec![crate::stdlib_loader::CFunction {
                     name: "pkg_raw".to_string(),
-                    params: vec![crate::CallableParameter::borrowed(Ty::I64)],
-                    return_type: Ty::I64,
+                    params: vec![crate::CallableParameter::borrowed(
+                        crate::stdlib_loader::RegistryTy::Ty(Ty::I64),
+                    )],
+                    return_type: crate::stdlib_loader::RegistryTy::Ty(Ty::I64),
                 }],
                 clean_names: Vec::new(),
                 handle_types: Vec::new(),

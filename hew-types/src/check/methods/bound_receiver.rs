@@ -112,19 +112,6 @@ impl Checker {
                 .iter()
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
-            if declaring_trait == "std.builtins.Pid" && method == "send" {
-                // TODO(A640): replace this fail-closed branch with
-                // a first-class `P::Msg: Serializable` projection
-                // bound once the checker can express that shape on
-                // pid-polymorphic call sites. If the projection is
-                // already concretely bound (for example
-                // `P: Pid<Msg = Ping>`), the regular Serializable
-                // gate below proves it and the call may proceed.
-                if !self.enforce_pid_polymorphic_send_serializable_args(args, name) {
-                    return Some(Ty::Error);
-                }
-                self.enforce_actor_method_send_args(args);
-            }
             self.record_method_call_receiver_kind(
                 span,
                 MethodCallReceiverKind::NamedTypeInstance {

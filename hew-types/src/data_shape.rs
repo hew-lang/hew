@@ -198,10 +198,7 @@ impl TypeFactService {
                 _ => refuse(NotDataReason::Other),
             },
             ResolvedTy::Named {
-                head:
-                    head @ (crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_)),
+                head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
                 is_opaque: false,
                 ..
             } => {

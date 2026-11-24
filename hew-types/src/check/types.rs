@@ -1440,7 +1440,7 @@ pub struct DynCoercion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructuralWitness {
     pub declaring_trait: crate::DefId,
-    pub self_type: crate::NominalId,
+    pub self_type: crate::TypeHead,
     /// The trait method declaration.
     pub method: crate::DefId,
     /// The method declaration that fills it: an inherent method, or another
@@ -4037,24 +4037,11 @@ pub struct Checker {
     /// registration pass (own-module registration and import registration
     /// both visit the same return-type annotation).
     pub(super) reported_gen_return_spellings: HashSet<SpanKey>,
-    /// `false` until `collect_types` has registered every type declaration.
-    /// The undefined-named-type guard in `resolve_type_expr_tracking_holes`
-    /// only fires once this is `true`: type-declaration member resolution runs
-    /// during registration, before forward-referenced sibling types are known,
-    /// so emitting there would false-positive on legal forward references.
-    /// Signature and body resolution run strictly after registration completes.
-    pub(super) type_decls_registered: bool,
-    /// When `true`, the undefined-named-type guard in
-    /// `resolve_type_expr_tracking_holes` resolves an unknown name to an
-    /// opaque `Ty::named` (its pre-F1 behaviour) WITHOUT emitting a diagnostic
-    /// or substituting `Ty::Error`. Set around `reresolve_member_types_after_imports`,
-    /// the secondary pass that recomputes type-declaration MEMBER types once
-    /// imports are visible: a declaration's members are out of this diagnostic's
-    /// remit (they keep the existing `E_MIR: unknown type` path), and emitting
-    /// there would also let the guard overwrite a member's already-computed type
-    /// with `Ty::Error`, corrupting it and tripping the HIR field-access
-    /// checker-boundary conversion downstream.
-    pub(super) suppress_undefined_type_report: bool,
+    /// `false` until registration has processed every declaration and `impl`
+    /// block. Bound admissibility checks (`Eq` bounds, `HashMap` key
+    /// capabilities, `HashSet` element capabilities) defer until this is `true`
+    /// so forward-declared types and trait impls are complete before validating.
+    pub(super) impls_registered: bool,
     /// Every type-parameter name declared anywhere in the program — on type /
     /// record / trait / impl / machine / actor declarations and on every
     /// generic method or free function. The undefined-named-type guard treats
@@ -4197,16 +4184,8 @@ pub struct Checker {
     pub(super) defs: crate::DefTable,
     /// The spelling boundary: every module, file and prelude scope.
     pub(super) scopes: super::scope::Scopes,
-    /// Registering a compiler-embedded std source, whose spans have no file
-    /// index of their own.
-    ///
-    /// TRANSITION(IDENT-B1): WHY embedded std sources are registered under
-    /// the importer's file index. WHEN the embedded builtins run is deleted
-    /// and every std source has its own index, this flag goes. WHAT: one file
-    /// index per checked source.
-    pub(super) registering_embedded_source: bool,
     /// The table the next `check_program` mints into instead of a fresh one;
-    /// set only by [`crate::Checker::check_embedded_builtins`].
+    /// used by incremental/session seeding and dependency checkpoints.
     pub(super) seed_defs: Option<crate::DefTable>,
     pub(super) session_type_seed: Option<std::sync::Arc<crate::session::SessionTypeSeed>>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B).
@@ -4351,9 +4330,10 @@ pub struct Checker {
     /// user-declared enum in `local_type_defs` has a variant with the same bare
     /// name, body-checking (`check_identifier`) prefers the user's declaration.
     pub(super) in_stdlib_registration: bool,
-    /// Allows declarations from the compiler-embedded builtin source to
-    /// provide names that the prelude protects from user replacement.
-    pub(super) checking_embedded_builtins: bool,
+    /// Allows test fixtures to redeclare prelude traits/types (`Iterator`,
+    /// `Display`, `Option`, `Result`) in the root module.
+    #[cfg(any(test, feature = "test"))]
+    pub(crate) allow_prelude_redeclaration: bool,
     /// The compilation's one builtin AST, including nested builtin checking.
     pub(super) selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
     /// Whether this checker has completed its first `check_program` entry.
@@ -4593,6 +4573,36 @@ impl Checker {
         clippy::too_many_lines,
         reason = "initialises every checker field; splitting would scatter defaults"
     )]
+    /// Allocate or return the file span index for a compiler-embedded or
+    /// non-graph stdlib module so its spans never collide with the root file.
+    pub(in crate::check) fn allocate_embedded_file_index(&mut self, dotted_module: &str) -> u32 {
+        std::sync::Arc::make_mut(&mut self.file_span_indices)
+            .allocate_embedded_module_index(dotted_module)
+    }
+
+    pub(super) fn allows_prelude_redeclaration(&self) -> bool {
+        #[cfg(any(test, feature = "test"))]
+        {
+            self.allow_prelude_redeclaration
+        }
+        #[cfg(not(any(test, feature = "test")))]
+        {
+            false
+        }
+    }
+
+    /// Allow the root compilation unit in a unit or integration test to
+    /// redeclare protected prelude bindings.
+    #[cfg(any(test, feature = "test"))]
+    pub fn set_allow_prelude_redeclaration_for_test(&mut self, allow: bool) {
+        self.allow_prelude_redeclaration = allow;
+    }
+
+    #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "initialises all Checker state fields"
+    )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
             file_span_indices: std::sync::Arc::default(),
@@ -4807,8 +4817,7 @@ impl Checker {
             reported_undefined_named_types: HashSet::new(),
             reported_borrow_types_outside_extern: HashSet::new(),
             reported_gen_return_spellings: HashSet::new(),
-            type_decls_registered: false,
-            suppress_undefined_type_report: false,
+            impls_registered: false,
             declared_type_param_names: HashSet::new(),
             scope_local_type_params_only: false,
             declared_nominal_type_names: HashSet::new(),
@@ -4829,7 +4838,6 @@ impl Checker {
             current_module: None,
             defs: crate::DefTable::new(),
             scopes: super::scope::Scopes::new(),
-            registering_embedded_source: false,
             seed_defs: None,
             session_type_seed: None,
             extern_table: crate::extern_table::ExternTable::new(),
@@ -4858,7 +4866,8 @@ impl Checker {
             repl_fragment: false,
             is_stdlib_source: false,
             in_stdlib_registration: false,
-            checking_embedded_builtins: false,
+            #[cfg(any(test, feature = "test"))]
+            allow_prelude_redeclaration: false,
             selected_builtin_program: None,
             must_use_types: HashSet::new(),
             has_checked_program: false,

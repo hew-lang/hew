@@ -79,7 +79,6 @@ impl LowerCtx<'_> {
                 }
                 hew_types::TypeHead::Builtin(builtin) => Some(builtin.canonical_name().to_string()),
                 hew_types::TypeHead::Param(param) => Some(param.spelling.to_string()),
-                hew_types::TypeHead::Unresolved(sym) => Some(sym.to_string()),
             },
             ResolvedTy::Unit => Some("()".to_string()),
             primitive => Some(primitive.user_facing().to_string()),

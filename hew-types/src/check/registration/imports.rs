@@ -371,102 +371,6 @@ impl Checker {
         }
     }
 
-    /// Pass 1.5 — re-resolve type-declaration MEMBER types after import
-    /// processing (#2202).
-    ///
-    /// `collect_types` (Pass 1) resolves record/struct field types, enum-variant
-    /// payload types, and machine state/event field types BEFORE
-    /// `collect_functions` (Pass 2) processes imports and populates the
-    /// import-alias maps (`published_bare_type_owners` / `import_type_name_aliases`).
-    /// A bare import alias used in member position therefore froze as an
-    /// unresolved `Named("Tag")` while its construction (Pass 3) resolves to the
-    /// canonical `aliassrc.Payload`, producing a spurious mismatch.
-    ///
-    /// This pass runs immediately after `collect_functions`, when every module's
-    /// alias maps are live, and re-resolves each type declaration's member types
-    /// under the OWNING module's context. A member that upgrades from a bare
-    /// alias to its canonical qualified identity is committed back into
-    /// `type_defs` (bare + module-qualified keys) and the member-derived facts
-    /// are re-run over the canonical types: the structural marker set
-    /// (`register_type` — Send/Copy/Frozen/Clone/Encode), the
-    /// `Serializable` member set, the per-module qualified marker
-    /// mirror (the ask-reply Send-gate anti-clobber), the variant-constructor
-    /// `fn_sigs`, the wire codec layout, and the `Encode`-driven JSON/YAML/TOML
-    /// methods. Members that did not change are left untouched, so the common
-    /// (alias-free) path is a no-op and no derivation is re-run.
-    ///
-    /// The local-shadow rule is preserved: a local `type U` shadowing an import
-    /// alias keeps `local_type_defs`/`source_type_defs` populated for the owning
-    /// module, so `published_bare_type_qualified` returns `None` and the member
-    /// stays bound to the local definition. Diagnostics emitted while
-    /// re-resolving are dropped by this driver: Pass 1 already emitted for
-    /// genuinely-unresolvable members and the value/use sites (Pass 3) re-emit,
-    /// so this upgrade-only pass must never be the sole emitter.
-    pub(in crate::check) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
-        let errors_before = self.errors.len();
-        let warnings_before = self.warnings.len();
-        let preferred_modules = collision_preferred_package_module_ids(program);
-        // Member re-resolution is a secondary fix-up pass (it overwrites the
-        // member types computed during `collect_types` once imports are
-        // visible) and runs with `type_decls_registered` already true. Suppress
-        // the undefined-named-type guard for its duration: a type declaration's
-        // members are out of the F1 diagnostic's remit (they keep the existing
-        // `E_MIR: unknown type` path), and emitting here would also let the
-        // guard substitute `Ty::Error` for the member type, overwriting the
-        // good type computed during `collect_types` and tripping the HIR
-        // field-access checker-boundary conversion downstream.
-        let prev_suppress = self.suppress_undefined_type_report;
-        self.suppress_undefined_type_report = true;
-
-        if let Some(ref mg) = program.module_graph {
-            let span_indices = std::sync::Arc::clone(&self.file_span_indices);
-            for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
-                    continue;
-                }
-                let Some(module) = mg.modules.get(mod_id) else {
-                    continue;
-                };
-                self.current_module = Some(mod_id.dotted());
-                let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
-                let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
-                self.seed_member_reresolution_scope(&module.items);
-                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
-                    self.current_module_idx = span_indices
-                        .item_index(mod_id, item_idx)
-                        .unwrap_or_default();
-                    if member_item_is_absorbed_from_distinct_child(
-                        program,
-                        &preferred_modules,
-                        mod_id,
-                        item,
-                        item_span,
-                    ) {
-                        continue;
-                    }
-                    self.reresolve_item_member_types(item);
-                }
-                self.local_type_defs = saved_local_type_defs;
-                self.source_type_defs = saved_source_type_defs;
-            }
-        }
-
-        self.current_module = None;
-        self.current_module_idx = 0;
-        let saved_local_type_defs = self.local_type_defs.clone();
-        let saved_source_type_defs = self.source_type_defs.clone();
-        self.seed_member_reresolution_scope(&program.items);
-        for (item, _) in &program.items {
-            self.reresolve_item_member_types(item);
-        }
-        self.local_type_defs = saved_local_type_defs;
-        self.source_type_defs = saved_source_type_defs;
-
-        self.errors.truncate(errors_before);
-        self.warnings.truncate(warnings_before);
-        self.suppress_undefined_type_report = prev_suppress;
-    }
-
     /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
     /// declaring file does not itself declare resolves through the declaring
     /// module's DIRECT imports — through the names each import actually
@@ -728,6 +632,23 @@ impl Checker {
                     .collect();
                 files.push(primary);
                 self.declare_minted_items_in_scope(&files, primary);
+                for (index, (item, span)) in items.iter().enumerate() {
+                    let module = decl
+                        .resolved_item_source_paths
+                        .get(index)
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .unwrap_or(primary);
+                    if self.item_needs_mint_in_scope(primary, item) {
+                        self.mint_item_declaration_identities(
+                            Some(module),
+                            Some(primary),
+                            crate::check::NominalNamespace::Owned,
+                            index,
+                            item,
+                            span,
+                        );
+                    }
+                }
             } else {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
@@ -796,6 +717,18 @@ impl Checker {
                     self.assign_module_packages();
                     if self.defs.module_has_source_declarations(registry_module) {
                         self.declare_minted_items_in_scope(&[registry_module], registry_module);
+                        for (ordinal, (item, span)) in registry_source_items.iter().enumerate() {
+                            if self.item_needs_mint_in_scope(registry_module, item) {
+                                self.mint_item_declaration_identities(
+                                    Some(registry_module),
+                                    Some(registry_module),
+                                    crate::check::NominalNamespace::Owned,
+                                    ordinal,
+                                    item,
+                                    span,
+                                );
+                            }
+                        }
                     } else {
                         for (ordinal, (item, span)) in registry_source_items.iter().enumerate() {
                             self.mint_item_declaration_identities(
@@ -828,6 +761,24 @@ impl Checker {
                     // not itself provenance proof.
                     let importer = self.current_module.clone();
                     self.record_canonical_lifecycle_import_authority(decl, importer.as_deref());
+
+                    // Register the stdlib module's own Hew declarations and
+                    // imports FIRST so its `Scope` and `DefTable` can resolve
+                    // every C ABI signature below directly.
+                    let resolved_items = decl.resolved_items.as_deref().or_else(|| {
+                        (!registry_source_items.is_empty()).then_some(registry_source_items)
+                    });
+                    if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
+                        let module_full_path = canonical_owner.clone();
+                        self.register_resolved_stdlib_hew_source(
+                            decl,
+                            &module_full_path,
+                            short.name.as_str(),
+                            &module_full_path,
+                            resolved_items,
+                            StdlibBarePublication::Import(&decl.spec),
+                        );
+                    }
 
                     // Register extern C function signatures
                     for func in functions {
@@ -898,31 +849,6 @@ impl Checker {
                         .collect::<Vec<_>>();
                     self.known_types.extend(canonical_known_types);
 
-                    // An import needs the Hew declaration, not just the
-                    // registry ABI summary: the declaration is the authority
-                    // for a bare binding's original source identity and it is
-                    // the only place a module's `impl Trait for T` blocks
-                    // exist.  Which declarations a module owns is a property
-                    // of the module, not of how the importer spelled the
-                    // import, so a bare `import std.net;` registers the same
-                    // source items a selected `import std.net.{NetError};`
-                    // does.  Bare-name publication stays gated on the spec in
-                    // `publish_imported_hew_bindings`, so a plain module import
-                    // still publishes only the `net.` namespace.
-                    let resolved_items = decl.resolved_items.as_deref().or_else(|| {
-                        (!registry_source_items.is_empty()).then_some(registry_source_items)
-                    });
-                    if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
-                        let module_full_path = canonical_owner.clone();
-                        self.register_resolved_stdlib_hew_source(
-                            decl,
-                            &module_full_path,
-                            short.name.as_str(),
-                            &module_full_path,
-                            resolved_items,
-                            StdlibBarePublication::Import(&decl.spec),
-                        );
-                    }
                     // Hew declarations own complete signatures. Clean names only
                     // adapt an extern symbol when no Hew declaration owns the name.
                     for (method, c_symbol) in clean_names {
@@ -1694,40 +1620,6 @@ impl Checker {
             }
         }
         colliding
-    }
-
-    /// Owner-qualify ONLY the cross-module-colliding record names inside a reply
-    /// type, recursing through generic arguments exactly as HIR's
-    /// `qualify_colliding_module_record_ty` does. Builtins, already-qualified
-    /// names, and non-colliding records are returned unchanged, so a reply
-    /// `Result<Unique, Colliding>` becomes `Result<Unique, {module}.Colliding>`
-    /// — the same identity HIR produces — rather than qualifying `Unique` too
-    /// (which MIR's actor-reply equality would reject). Only a name the module
-    /// actually declares (`{module}.{name}` present in `type_defs`) is
-    /// qualified; otherwise the bare name is preserved (#2208).
-    pub(super) fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
-        let Ty::Named { head, args } = ty else {
-            return ty.clone();
-        };
-        let args: Vec<Ty> = args
-            .iter()
-            .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
-            .collect();
-        // A resolved head already names its declaration; only a spelling the
-        // registry mirror left unresolved can still collide across modules.
-        let crate::TypeHead::Unresolved(spelling) = head else {
-            return Ty::Named { head: *head, args };
-        };
-        let name = spelling.as_str();
-        let qualified = format!("{module_short}.{name}");
-        if !name.contains('.')
-            && self.cross_module_colliding_record_names.contains(name)
-            && self.type_def_at(&qualified).is_some()
-        {
-            self.named_ty_for_key(&qualified, args)
-        } else {
-            self.named_ty_for_key(name, args)
-        }
     }
 
     /// Retire the temporary source-leaf and lexical-module keys for an imported

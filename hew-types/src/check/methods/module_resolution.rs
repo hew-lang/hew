@@ -172,15 +172,7 @@ impl Checker {
     /// The definition a type head names: a nominal's or actor's own, a
     /// builtin's std declaration.
     pub(in crate::check) fn head_type_def(&self, head: crate::TypeHead) -> Option<&TypeDef> {
-        match head {
-            // TRANSITION(A1c4): WHY the module registry's signature mirror
-            // still writes spellings no declaration was found for. WHEN its
-            // signatures resolve through `Scope`, `TypeHead::Unresolved` and
-            // this arm are deleted. WHAT: the mirror reads the checker's
-            // resolved signatures.
-            crate::TypeHead::Unresolved(spelling) => self.type_def_at(spelling.as_str()),
-            _ => self.type_defs.get(&head.declaration(&self.defs)?),
-        }
+        self.type_defs.get(&head.declaration(&self.defs)?)
     }
 
     /// The definition the head of a named type names.
@@ -521,16 +513,7 @@ impl Checker {
     /// checked. Use this for declaration identity and layout-facing type
     /// lookup.
     pub(in crate::check) fn current_module_identity(&self) -> Option<&str> {
-        self.current_module.as_deref().or_else(|| {
-            self.checking_embedded_builtins
-                .then(|| {
-                    self.defs
-                        .root_module()
-                        .map(|root| self.defs.module_path(root))
-                        .filter(|path| *path != "#synthetic-root")
-                })
-                .flatten()
-        })
+        self.current_module.as_deref()
     }
 
     /// The identity a declaration written in the scope currently being checked

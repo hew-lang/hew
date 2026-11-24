@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use crate::{node::HirItem, ItemId};
-use hew_types::{DefId, NominalInstance};
+use hew_types::{DefId, ReceiverInstance};
 
 /// One impl-method entry in the structured static-dispatch registry.
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ pub type TraitImplIndex = HashMap<TraitImplKey, Vec<TraitImplMethodEntry>>;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TraitImplKey {
     pub declaring_trait: DefId,
-    pub self_type: NominalInstance,
+    pub self_type: ReceiverInstance,
     pub method: DefId,
 }
 
@@ -87,14 +87,14 @@ pub fn build_trait_impl_method_index(
         let HirItem::Impl(block) = item else { continue };
         // A target with no impl-dispatch anchor can never be reached from a
         // receiver, so it contributes no entries.
-        let (Some(_), Some(nominal)) = (&block.trait_id, &block.self_type) else {
+        let (Some(_), Some(head)) = (&block.trait_id, block.self_type) else {
             continue;
         };
-        // Generic impls are registered under their declaration nominal with no
+        // Generic impls are registered under their receiver head with no
         // concrete instance args. A specialised impl retains the concrete args
         // structurally instead of encoding them into a mangled string key.
-        let self_type = NominalInstance {
-            nominal: *nominal,
+        let self_type = ReceiverInstance {
+            head,
             args: if block.type_params.is_empty() {
                 block.self_type_args.clone()
             } else {
@@ -151,8 +151,8 @@ pub fn build_trait_impl_method_index(
             {
                 let key = TraitImplKey {
                     declaring_trait: witness.declaring_trait,
-                    self_type: NominalInstance {
-                        nominal: witness.self_type,
+                    self_type: ReceiverInstance {
+                        head: witness.self_type,
                         args: Vec::new(),
                     },
                     method: witness.method,
@@ -195,9 +195,9 @@ pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, Strin
     index
 }
 
-/// Resolve canonical trait, nominal-instance, and method identities against
+/// Resolve canonical trait, receiver-instance, and method identities against
 /// the static-dispatch index. Concrete specialisations are tried first; the
-/// only permitted fallback is the exact same nominal's generic impl entry.
+/// only permitted fallback is the exact same receiver head's generic impl entry.
 ///
 /// Within a key, a sole entry answers: the checker proved the bound the call
 /// relies on. Several entries are impls of one generic trait at different
@@ -207,11 +207,11 @@ pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, Strin
 pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
     index: &'a HashMap<TraitImplKey, Vec<TraitImplMethodEntry>, S>,
     declaring_trait: &DefId,
-    self_type: &NominalInstance,
+    self_type: &ReceiverInstance,
     trait_args: &[hew_types::ResolvedTy],
     method: &DefId,
 ) -> Option<&'a TraitImplMethodEntry> {
-    let select = |self_type: NominalInstance| {
+    let select = |self_type: ReceiverInstance| {
         let entries = index.get(&TraitImplKey {
             declaring_trait: *declaring_trait,
             self_type,
@@ -232,8 +232,8 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
     if self_type.args.is_empty() {
         return None;
     }
-    select(NominalInstance {
-        nominal: self_type.nominal,
+    select(ReceiverInstance {
+        head: self_type.head,
         args: Vec::new(),
     })
 }
@@ -241,7 +241,9 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
 #[cfg(test)]
 mod tests {
     use super::{lookup_trait_impl_entry_by_id, TraitImplKey, TraitImplMethodEntry};
-    use hew_types::{BuiltinType, DefId, NominalId, NominalInstance, ResolvedTy};
+    use hew_types::{
+        BuiltinType, DefId, NominalHead, NominalId, ReceiverInstance, ResolvedTy, TypeHead,
+    };
     use std::collections::HashMap;
 
     fn entry(method: DefId, symbol: &str) -> TraitImplMethodEntry {
@@ -261,12 +263,18 @@ mod tests {
         let alpha_method = DefId::for_test("alpha.Render::show");
         let beta_trait = DefId::for_test("beta.Render");
         let beta_method = DefId::for_test("beta.Render::show");
-        let alpha_thing = NominalInstance {
-            nominal: NominalId::for_test("alpha.Thing"),
+        let alpha_thing = ReceiverInstance {
+            head: TypeHead::Nominal(NominalHead::new(
+                NominalId::for_test("alpha.Thing"),
+                "alpha.Thing",
+            )),
             args: Vec::new(),
         };
-        let beta_thing = NominalInstance {
-            nominal: NominalId::for_test("beta.Thing"),
+        let beta_thing = ReceiverInstance {
+            head: TypeHead::Nominal(NominalHead::new(
+                NominalId::for_test("beta.Thing"),
+                "beta.Thing",
+            )),
             args: Vec::new(),
         };
         let mut index = HashMap::new();
@@ -311,16 +319,18 @@ mod tests {
     fn canonical_static_dispatch_prefers_specialized_instance_then_exact_generic() {
         let trait_id = DefId::for_test("render.Render");
         let method_id = DefId::for_test("render.Render::show");
-        let generic = NominalInstance {
-            nominal: NominalId::for_test("pkg.Box"),
+        let box_head =
+            TypeHead::Nominal(NominalHead::new(NominalId::for_test("pkg.Box"), "pkg.Box"));
+        let generic = ReceiverInstance {
+            head: box_head,
             args: Vec::new(),
         };
-        let i64_instance = NominalInstance {
-            nominal: NominalId::for_test("pkg.Box"),
+        let i64_instance = ReceiverInstance {
+            head: box_head,
             args: vec![ResolvedTy::I64],
         };
-        let string_instance = NominalInstance {
-            nominal: NominalId::for_test("pkg.Box"),
+        let string_instance = ReceiverInstance {
+            head: box_head,
             args: vec![ResolvedTy::String],
         };
         let mut index = HashMap::new();
@@ -360,25 +370,25 @@ mod tests {
             vec![ResolvedTy::I64, ResolvedTy::String],
         );
         let mut defs = hew_types::DefTable::new();
-        let cursor = defs.mint_for_test("std.builtins.HashMapIter");
         let shadow = defs.mint_for_test("HashMapIter");
         let user = ResolvedTy::named_user(
-            hew_types::NominalHead::new(
-                hew_types::NominalId::of_declaration(shadow),
-                "HashMapIter",
-            ),
+            NominalHead::new(NominalId::of_declaration(shadow), "HashMapIter"),
             vec![ResolvedTy::I64, ResolvedTy::String],
         );
         let builtin_instance = builtin
-            .impl_receiver_instance(&defs)
-            .expect("the compiler cursor has an exact std impl identity");
-        assert_eq!(builtin_instance.nominal.declaration(), cursor);
+            .impl_receiver_instance()
+            .expect("the compiler cursor has an exact builtin impl identity");
         assert_eq!(
-            user.impl_receiver_instance(&defs)
+            builtin_instance.head,
+            TypeHead::Builtin(BuiltinType::HashMapIter)
+        );
+        assert_eq!(
+            user.impl_receiver_instance()
                 .expect("the user nominal remains independently dispatchable")
-                .nominal
-                .declaration(),
-            shadow
+                .head
+                .nominal()
+                .map(hew_types::NominalId::declaration),
+            Some(shadow)
         );
     }
 
@@ -386,8 +396,11 @@ mod tests {
     fn impls_of_one_generic_trait_are_told_apart_by_their_arguments() {
         let from = DefId::for_test("std.From");
         let from_method = DefId::for_test("std.From::from");
-        let app_error = NominalInstance {
-            nominal: NominalId::for_test("app.AppError"),
+        let app_error = ReceiverInstance {
+            head: TypeHead::Nominal(NominalHead::new(
+                NominalId::for_test("app.AppError"),
+                "app.AppError",
+            )),
             args: Vec::new(),
         };
         let low = ResolvedTy::named_for_test("app.LowError", Vec::new());

@@ -272,7 +272,7 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
                 method_name: "peer".to_string(),
                 c_symbol: symbol.to_string(),
                 params: Vec::new(),
-                return_type: Ty::named_for_test(return_name, vec![]),
+                return_type: crate::stdlib_loader::RegistryTy::named(return_name, vec![]),
                 dispatch_through_impl: false,
             }],
             drop_types: Vec::new(),
@@ -292,6 +292,8 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
         shared_info("vendor_b_peer", "vendor_a.shared.Handle"),
     );
     let mut checker = Checker::new(registry);
+    checker.test_declaration("vendor_a.shared.Handle");
+    checker.test_declaration("vendor_b.shared.Handle");
 
     assert!(checker.receiver_is_opaque_handle("vendor_a.shared.Handle"));
     assert!(checker.receiver_is_opaque_handle("vendor_b.shared.Handle"));
@@ -300,7 +302,8 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
         "an ambiguous legacy receiver must not enter direct handle rewriting"
     );
 
-    let a_ty = Ty::named_for_test("vendor_a.shared.Handle", vec![]);
+    let a_ty = checker.test_named("vendor_a.shared.Handle", vec![]);
+    let b_ty = checker.test_named("vendor_b.shared.Handle", vec![]);
     assert_eq!(
         checker.canonical_handle_receiver_type_name(&a_ty),
         Some("vendor_a.shared.Handle".to_string())
@@ -309,15 +312,8 @@ fn checker_handle_rewrite_requires_exact_receiver_owner() {
         .lookup_named_method_sig("vendor_a.shared.Handle", &[], "peer")
         .expect("exact vendor_a method should resolve");
     assert_eq!(
-        a_sig.return_type,
-        Ty::named_for_test("vendor_b.shared.Handle", vec![]),
+        a_sig.return_type, b_ty,
         "an already-qualified foreign return must retain its own owner"
-    );
-    assert_eq!(
-        checker
-            .qualify_method_return_to_receiver_owner("vendor_a.shared.Handle", &a_sig.return_type),
-        Ty::named_for_test("vendor_b.shared.Handle", vec![]),
-        "receiver-owner qualification must not rewrite B.Handle to A.Handle"
     );
 
     let call_span = 10..11;

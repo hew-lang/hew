@@ -100,9 +100,7 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert!(matches!(
             ty,
             Ty::Named {
-                head: crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_),
+                head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
                 ..
             }
         ));
@@ -287,9 +285,7 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
     assert!(matches!(
         ty,
         Ty::Named {
-            head: crate::TypeHead::Nominal(_)
-                | crate::TypeHead::Param(_)
-                | crate::TypeHead::Unresolved(_),
+            head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
             ..
         }
     ));

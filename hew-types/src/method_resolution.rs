@@ -385,6 +385,7 @@ pub fn collect_method_sigs_for_named_type(
 ) -> Vec<(String, FnSig)> {
     collect_named_method_sigs(
         lookup_user_type_def(defs, type_defs, type_name),
+        None,
         fn_sigs,
         type_name,
         type_args,
@@ -393,20 +394,26 @@ pub fn collect_method_sigs_for_named_type(
 
 fn collect_named_method_sigs(
     user: Option<&TypeDef>,
+    receiver_ty: Option<&Ty>,
     fn_sigs: FnSigView<'_>,
     type_name: &str,
     type_args: &[Ty],
 ) -> Vec<(String, FnSig)> {
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
-    let receiver_ty = Ty::registry_named(type_name, type_args.to_vec());
+    let builtin_receiver = receiver_ty.cloned().or_else(|| {
+        crate::builtin_type::lookup_builtin_type(type_name)
+            .map(|builtin| Ty::named_head(crate::TypeHead::Builtin(builtin), type_args.to_vec()))
+    });
     let receiver_type_params = type_def_with_builtin(user, type_name)
         .map(|type_def| type_def.type_params)
         .unwrap_or_default();
 
-    if let Some(sig) = lookup_collection_clone_method_sig(&receiver_ty, "clone") {
-        seen.insert("clone".to_string());
-        methods.push(("clone".to_string(), sig));
+    if let Some(receiver) = builtin_receiver.as_ref() {
+        if let Some(sig) = lookup_collection_clone_method_sig(receiver, "clone") {
+            seen.insert("clone".to_string());
+            methods.push(("clone".to_string(), sig));
+        }
     }
 
     if let Some(type_def) = type_def_with_builtin(user, type_name) {
@@ -415,8 +422,10 @@ fn collect_named_method_sigs(
                 // A source declaration and its builtin methods have distinct
                 // generic parameter identities. Instantiate builtin signatures
                 // through their own receiver contract, as lookup_method_sig does.
-                let sig =
-                    lookup_builtin_method_sig(&receiver_ty, &method_name).unwrap_or_else(|| {
+                let sig = builtin_receiver
+                    .as_ref()
+                    .and_then(|receiver| lookup_builtin_method_sig(receiver, &method_name))
+                    .unwrap_or_else(|| {
                         instantiate_named_method_sig(sig, &type_def.type_params, type_args)
                     });
                 methods.push((method_name, sig));
@@ -463,6 +472,7 @@ pub fn collect_method_sigs_for_receiver(
     };
     collect_named_method_sigs(
         crate::check::TypeDefView::new(defs, type_defs).of_ty(receiver_ty),
+        Some(receiver_ty),
         fn_sigs,
         type_name,
         type_args,

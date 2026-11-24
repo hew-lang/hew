@@ -570,10 +570,7 @@ fn verify_nominal_release(
         return Err("producer declarations or signatures disagree with checked lifecycle".into());
     }
     let ResolvedTy::Named {
-        head:
-            head @ (hew_types::TypeHead::Nominal(_)
-            | hew_types::TypeHead::Param(_)
-            | hew_types::TypeHead::Unresolved(_)),
+        head: head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)),
         args,
         is_opaque: true,
         ..

@@ -2855,9 +2855,8 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(
-                        hew_parser::ast::Ident::new(field_type),
-                        0..0,
+                    path: hew_parser::ast::Path::from_spellings(
+                        &field_type.split('.').collect::<Vec<_>>(),
                     ),
                     type_args: None,
                 },
@@ -3088,7 +3087,7 @@ fn local_type_shadows_import_alias_in_member_position() {
 #[test]
 fn aliased_member_matches_qualified_member_type() {
     // The aliased member (`item: Tag`) and the qualified member
-    // (`item: myapp.mod_a.Payload`) must resolve to the SAME stored field type, so
+    // (`item: mod_a.Payload`) must resolve to the SAME stored field type, so
     // every member-derived fact (Send/Copy/Frozen markers) is
     // identical regardless of which spelling the user wrote (Risk #1).
     let payload = make_pub_struct("Payload", "code");
@@ -3101,7 +3100,7 @@ fn aliased_member_matches_qualified_member_type() {
         vec![(Item::TypeDecl(payload), 0..0)],
     );
     let aliased = make_struct_with_field_ty("AliasedBox", "item", "Tag");
-    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "myapp.mod_a.Payload");
+    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "mod_a.Payload");
     let output = check_items(vec![
         (Item::Import(import), 0..0),
         (Item::TypeDecl(aliased), 0..0),
@@ -3121,7 +3120,7 @@ fn aliased_member_matches_qualified_member_type() {
     );
     assert_eq!(
         aliased_field, qualified_field,
-        "aliased member `Tag` and qualified member `myapp.mod_a.Payload` must resolve to \
+        "aliased member `Tag` and qualified member `mod_a.Payload` must resolve to \
          the identical stored field type"
     );
 }

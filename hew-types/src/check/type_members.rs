@@ -635,14 +635,9 @@ impl Checker {
         if let crate::check::dispatch_table::MethodSelection::Ambiguous(traits) =
             self.select_method(&receiver, method)
         {
-            if let Some(result) = self.check_concrete_from_call(
-                &receiver,
-                &head.canonical_type,
-                method,
-                &traits,
-                args,
-                span,
-            ) {
+            if let Some(result) =
+                self.check_concrete_from_call(&receiver, method, &traits, args, span)
+            {
                 return Some(result);
             }
             for arg in args {
@@ -719,9 +714,6 @@ impl Checker {
                 c_symbol: internal_member,
             },
         );
-        Some(self.qualify_method_return_to_receiver_owner(
-            &head.canonical_type,
-            &self.subst.resolve(&applied.return_type),
-        ))
+        Some(self.subst.resolve(&applied.return_type))
     }
 }

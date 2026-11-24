@@ -2813,9 +2813,7 @@ fn main() -> i64 {
         "nested constructors for a source-defined Option<T> must typecheck: {:#?}",
         output.errors
     );
-    let option_types: Vec<&Ty> = output
-        .expr_types
-        .values()
+    let option_types: Vec<&Ty> = root_values(&output.expr_types)
         .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
@@ -2823,9 +2821,7 @@ fn main() -> i64 {
             && option_types.iter().all(|ty| matches!(
                 ty,
                 Ty::Named {
-                    head: crate::TypeHead::Nominal(_)
-                        | crate::TypeHead::Param(_)
-                        | crate::TypeHead::Unresolved(_),
+                    head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
                     ..
                 }
             )),
@@ -2856,9 +2852,7 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
         "true builtin Option<T> constructors must remain valid: {:#?}",
         output.errors
     );
-    let option_types: Vec<&Ty> = output
-        .expr_types
-        .values()
+    let option_types: Vec<&Ty> = root_values(&output.expr_types)
         .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(

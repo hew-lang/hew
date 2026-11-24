@@ -180,42 +180,148 @@ impl Checker {
     /// another module declares.
     pub(super) fn canonicalize_registry_signature(
         &self,
-        ty: &crate::ty::Ty,
+        ty: &crate::stdlib_loader::RegistryTy,
         canonical_owner: &str,
         binders: &[crate::ParamHead],
     ) -> crate::ty::Ty {
-        let mapped = ty.map_children_pub(&|child| {
-            self.canonicalize_registry_signature(child, canonical_owner, binders)
-        });
-        let crate::ty::Ty::Named {
-            head: crate::TypeHead::Unresolved(spelling),
-            args,
-        } = mapped
-        else {
-            return mapped;
+        use crate::stdlib_loader::RegistryTy;
+        match ty {
+            RegistryTy::Ty(ty) => ty.clone(),
+            RegistryTy::Builtin { builtin, args } => crate::ty::Ty::named_head(
+                crate::TypeHead::Builtin(*builtin),
+                args.iter()
+                    .map(|child| {
+                        self.canonicalize_registry_signature(child, canonical_owner, binders)
+                    })
+                    .collect(),
+            ),
+            RegistryTy::Named { path, args } => {
+                let args: Vec<_> = args
+                    .iter()
+                    .map(|child| {
+                        self.canonicalize_registry_signature(child, canonical_owner, binders)
+                    })
+                    .collect();
+                let spelling = path.as_str();
+                if args.is_empty() {
+                    if let Some(parameter) = binders
+                        .iter()
+                        .find(|binder| binder.spelling.as_str() == spelling)
+                    {
+                        return crate::ty::Ty::param(*parameter);
+                    }
+                }
+                let name = self
+                    .resolve_nominal_declaration(
+                        NominalOrigin::RegistrySignature { canonical_owner },
+                        spelling,
+                    )
+                    .unwrap_or_else(|| path.clone());
+                if let Some(kind) = self
+                    .resolved_builtin_type(&name)
+                    .filter(|kind| kind.is_encoding_value())
+                {
+                    return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
+                }
+                if let Some(resolved) =
+                    self.resolve_registry_named_via_scope(canonical_owner, spelling, &name, &args)
+                {
+                    return resolved;
+                }
+                self.named_ty_for_key(&name, args)
+            }
+            RegistryTy::Tuple(elems) => crate::ty::Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|child| {
+                        self.canonicalize_registry_signature(child, canonical_owner, binders)
+                    })
+                    .collect(),
+            ),
+            RegistryTy::Array { element, size } => crate::ty::Ty::Array(
+                Box::new(self.canonicalize_registry_signature(element, canonical_owner, binders)),
+                *size,
+            ),
+            RegistryTy::ActorFn { msg, ret } => crate::ty::Ty::actor_fn(
+                self.canonicalize_registry_signature(msg, canonical_owner, binders),
+                self.canonicalize_registry_signature(ret, canonical_owner, binders),
+            ),
+            RegistryTy::Function {
+                capabilities,
+                params,
+                ret,
+            } => crate::ty::Ty::Function {
+                capabilities: *capabilities,
+                params: params
+                    .iter()
+                    .map(|parameter| {
+                        parameter.map(|child| {
+                            self.canonicalize_registry_signature(child, canonical_owner, binders)
+                        })
+                    })
+                    .collect(),
+                ret: Box::new(self.canonicalize_registry_signature(ret, canonical_owner, binders)),
+            },
+            RegistryTy::Pointer {
+                is_mutable,
+                pointee,
+            } => crate::ty::Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(self.canonicalize_registry_signature(
+                    pointee,
+                    canonical_owner,
+                    binders,
+                )),
+            },
+            RegistryTy::Borrow { pointee } => crate::ty::Ty::Borrow {
+                pointee: Box::new(self.canonicalize_registry_signature(
+                    pointee,
+                    canonical_owner,
+                    binders,
+                )),
+            },
+        }
+    }
+
+    fn resolve_registry_named_via_scope(
+        &self,
+        canonical_owner: &str,
+        spelling: &str,
+        resolved_name: &str,
+        args: &[crate::ty::Ty],
+    ) -> Option<crate::ty::Ty> {
+        let resolution_to_ty = |resolution: super::scope::Resolution| match resolution {
+            super::scope::Resolution::Def(id) => Some(crate::ty::Ty::named_head(
+                self.head_of_declaration(crate::NominalId::from_minted_declaration(id)),
+                args.to_vec(),
+            )),
+            _ => None,
         };
-        let spelling = spelling.as_str();
-        if args.is_empty() {
-            if let Some(parameter) = binders
-                .iter()
-                .find(|binder| binder.spelling.as_str() == spelling)
+        if let Some(owner_module) = self.defs.module_for_path(canonical_owner) {
+            let short_owner = crate::short_name(canonical_owner);
+            let local_spelling = spelling
+                .strip_prefix(canonical_owner)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .or_else(|| {
+                    spelling
+                        .strip_prefix(short_owner)
+                        .and_then(|rest| rest.strip_prefix('.'))
+                })
+                .unwrap_or(spelling);
+            let segments: Vec<&str> = local_spelling.split('.').collect();
+            if let Some(ty) = self
+                .scopes
+                .lookup_type_path(owner_module, &segments)
+                .and_then(resolution_to_ty)
             {
-                return crate::ty::Ty::param(*parameter);
+                return Some(ty);
             }
         }
-        let name = self
-            .resolve_nominal_declaration(
-                NominalOrigin::RegistrySignature { canonical_owner },
-                spelling,
-            )
-            .unwrap_or_else(|| spelling.to_string());
-        if let Some(kind) = self
-            .resolved_builtin_type(&name)
-            .filter(|kind| kind.is_encoding_value())
-        {
-            return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
-        }
-        self.named_ty_for_key(&name, args)
+        let (target_owner, leaf) = resolved_name.rsplit_once('.')?;
+        let target_module = self.defs.module_for_path(target_owner)?;
+        self.scopes
+            .lookup_type_path(target_module, &[leaf])
+            .and_then(resolution_to_ty)
     }
 
     /// The canonical identity of an extern signature's nominal type, resolved
@@ -272,15 +378,12 @@ impl Checker {
                 args,
             );
         }
-        Ty::Named {
-            head: crate::TypeHead::Unresolved(crate::Symbol::intern(key)),
-            args,
-        }
+        Ty::Error
     }
 
     /// The head a declared nominal names in this run.
     pub(super) fn head_of_declaration(&self, nominal: crate::NominalId) -> crate::TypeHead {
-        if let Some(known) = self.known_declaration(nominal) {
+        if let Some(known) = crate::KnownDecl::of(nominal) {
             return known.head();
         }
         crate::TypeHead::of_declaration(&self.defs, nominal)
@@ -288,33 +391,13 @@ impl Checker {
 }
 
 impl Checker {
-    /// The known `std.builtins` declaration a nominal is. The embedded
-    /// builtin run re-declares the cursors at its own root; those rows are
-    /// the same declarations (TRANSITION(P2): deleted with that run, B1).
-    fn known_declaration(&self, nominal: crate::NominalId) -> Option<crate::KnownDecl> {
-        crate::KnownDecl::of(nominal).or_else(|| {
-            let declaration = nominal.declaration();
-            (self.checking_embedded_builtins
-                && self.defs.module(declaration) == self.defs.root_module())
-            .then(|| crate::KnownDecl::from_leaf(self.defs.name(declaration)))
-            .flatten()
-            .filter(|known| {
-                matches!(
-                    known,
-                    crate::KnownDecl::VecIter | crate::KnownDecl::HashMapIter
-                )
-            })
-        })
-    }
-
     /// The file the checker is currently reading, for the spelling boundary.
     pub(super) fn scope_site(&self) -> Option<super::scope::ScopeSite> {
         let file = self.current_declaration_module()?;
-        let publish = !self.registering_embedded_source;
         Some(super::scope::ScopeSite {
             file,
             span_file: self.current_module_idx,
-            publish,
+            publish: true,
         })
     }
 
@@ -868,24 +951,6 @@ impl Checker {
                 return crate::Ty::named_head(crate::TypeHead::Builtin(builtin), args);
             }
         }
-        let unresolved = crate::Ty::Named {
-            head: crate::TypeHead::Unresolved(Symbol::intern(&name)),
-            args: args.clone(),
-        };
-        // TRANSITION(A1c4): WHY stdlib registration collects member
-        // signatures before importer scopes exist, a registry-loaded std
-        // module does not load its own imports, and `Self.X` projections are
-        // matched by spelling. WHEN registration resolves after every import
-        // is bound and projections resolve through `Scope`, these report like
-        // any other path. WHAT: one resolution pass over bound scopes.
-        let std_source = self
-            .current_module
-            .as_deref()
-            .is_some_and(|module| self.checking_canonical_stdlib_source(module));
-        let self_headed = head == Some(hew_parser::ast::sym::SELF_TYPE);
-        if self.in_stdlib_registration || std_source || self_headed {
-            return unresolved;
-        }
         let exporters: Vec<String> = match (site, head) {
             (Some(site), Some(head)) => self
                 .scopes
@@ -898,15 +963,6 @@ impl Checker {
         let leaf = path.segments.last().map(|(leaf, _)| leaf.name);
         let lifecycle =
             leaf.and_then(|leaf| crate::lookup_source_owned_lifecycle_type(leaf.as_str()));
-        let hinted = lifecycle.is_some() || (path.segments.len() == 1 && !exporters.is_empty());
-        // TRANSITION(A1c4): WHY registration resolves signatures before
-        // every import is bound. WHEN registration resolves in declaration
-        // order through `Scope`, every failure reports here and
-        // `TypeHead::Unresolved` goes. WHAT: one resolution pass after
-        // minting and import binding.
-        if !hinted && (!self.type_decls_registered || self.suppress_undefined_type_report) {
-            return unresolved;
-        }
         let key = super::types::SpanKey::in_module(span, self.current_module_idx);
         if !self
             .reported_undefined_named_types

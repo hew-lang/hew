@@ -72,8 +72,9 @@ impl Checker {
                 ..
             } = &mut ty
             {
-                head.spelling =
-                    hew_parser::ast::Symbol::intern(checker.defs.display(head.id.declaration()));
+                head.spelling = hew_parser::ast::Symbol::intern(
+                    checker.defs.display(head.id.declaration()).as_ref(),
+                );
             }
             ty
         }

@@ -302,10 +302,10 @@ pub struct HirImplBlock {
     /// User nominal target, e.g. `"VecIter"`. Builtin nominals are rejected
     /// at lowering time with `ImplBlockShapeNotLowered`.
     pub self_type_name: String,
-    /// Checker-owned nominal identity of the impl target, as a receiver of
+    /// Checker-owned receiver type head of the impl target, as a receiver of
     /// that type dispatches through it (`ResolvedTy::impl_receiver_instance`).
     /// `None` when the target cannot anchor trait dispatch.
-    pub self_type: Option<hew_types::NominalId>,
+    pub self_type: Option<hew_types::TypeHead>,
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
     pub type_params: Vec<hew_types::ParamHead>,

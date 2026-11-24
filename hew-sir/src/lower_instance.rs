@@ -1447,14 +1447,12 @@ impl<'a> InstanceService<'a> {
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<SemCallable, SirLoweringError> {
-        let self_type = self_ty
-            .impl_receiver_instance(&self.module.defs)
-            .ok_or_else(|| {
-                SirLoweringError::from(format!(
-                    "static trait `Self` type `{}` cannot anchor an implementation",
-                    self_ty.user_facing()
-                ))
-            })?;
+        let self_type = self_ty.impl_receiver_instance().ok_or_else(|| {
+            SirLoweringError::from(format!(
+                "static trait `Self` type `{}` cannot anchor an implementation",
+                self_ty.user_facing()
+            ))
+        })?;
         let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.table.trait_impls,
             &declaring_trait,

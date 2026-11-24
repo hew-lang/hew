@@ -14,9 +14,146 @@ use hew_parser::ast::{
 use hew_parser::parse;
 
 use crate::builtin_type::{lookup_builtin_type, BuiltinType};
-use crate::check::admissibility::signature_contains_error_type;
 use crate::module_registry::ModuleError;
-use crate::ty::{Ty, TypeHead};
+use crate::ty::Ty;
+
+/// Unresolved type representation extracted from `.hew` stdlib headers prior to
+/// checker `Scope` and declaration resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryTy {
+    Ty(Ty),
+    Named {
+        path: String,
+        args: Vec<RegistryTy>,
+    },
+    Builtin {
+        builtin: BuiltinType,
+        args: Vec<RegistryTy>,
+    },
+    Tuple(Vec<RegistryTy>),
+    Array {
+        element: Box<RegistryTy>,
+        size: u64,
+    },
+    ActorFn {
+        msg: Box<RegistryTy>,
+        ret: Box<RegistryTy>,
+    },
+    Function {
+        capabilities: hew_parser::ast::CallableCapabilities,
+        params: Vec<crate::CallableParameter<RegistryTy>>,
+        ret: Box<RegistryTy>,
+    },
+    Pointer {
+        is_mutable: bool,
+        pointee: Box<RegistryTy>,
+    },
+    Borrow {
+        pointee: Box<RegistryTy>,
+    },
+}
+
+impl RegistryTy {
+    pub const UNIT: Self = Self::Ty(Ty::Unit);
+
+    #[must_use]
+    pub fn named(path: impl Into<String>, args: Vec<Self>) -> Self {
+        Self::Named {
+            path: path.into(),
+            args,
+        }
+    }
+
+    #[must_use]
+    pub fn builtin(builtin: BuiltinType, args: Vec<Self>) -> Self {
+        Self::Builtin { builtin, args }
+    }
+
+    #[must_use]
+    pub fn option(inner: Self) -> Self {
+        Self::Builtin {
+            builtin: BuiltinType::Option,
+            args: vec![inner],
+        }
+    }
+
+    #[must_use]
+    pub fn result(ok: Self, err: Self) -> Self {
+        Self::Builtin {
+            builtin: BuiltinType::Result,
+            args: vec![ok, err],
+        }
+    }
+
+    #[must_use]
+    pub fn map_children(&self, f: &mut impl FnMut(&Self) -> Self) -> Self {
+        match self {
+            Self::Ty(ty) => Self::Ty(ty.clone()),
+            Self::Named { path, args } => Self::Named {
+                path: path.clone(),
+                args: args.iter().map(&mut *f).collect(),
+            },
+            Self::Builtin { builtin, args } => Self::Builtin {
+                builtin: *builtin,
+                args: args.iter().map(&mut *f).collect(),
+            },
+            Self::Tuple(elems) => Self::Tuple(elems.iter().map(f).collect()),
+            Self::Array { element, size } => Self::Array {
+                element: Box::new(f(element)),
+                size: *size,
+            },
+            Self::ActorFn { msg, ret } => Self::ActorFn {
+                msg: Box::new(f(msg)),
+                ret: Box::new(f(ret)),
+            },
+            Self::Function {
+                capabilities,
+                params,
+                ret,
+            } => Self::Function {
+                capabilities: *capabilities,
+                params: params.iter().map(|param| param.map(&mut *f)).collect(),
+                ret: Box::new(f(ret)),
+            },
+            Self::Pointer {
+                is_mutable,
+                pointee,
+            } => Self::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(f(pointee)),
+            },
+            Self::Borrow { pointee } => Self::Borrow {
+                pointee: Box::new(f(pointee)),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn contains_error(&self) -> bool {
+        match self {
+            Self::Ty(ty) => matches!(ty, Ty::Error),
+            Self::Named { args, .. } | Self::Builtin { args, .. } | Self::Tuple(args) => {
+                args.iter().any(Self::contains_error)
+            }
+            Self::Array { element, .. }
+            | Self::Pointer {
+                pointee: element, ..
+            }
+            | Self::Borrow { pointee: element } => element.contains_error(),
+            Self::ActorFn { msg, ret } => msg.contains_error() || ret.contains_error(),
+            Self::Function { params, ret, .. } => {
+                params.iter().any(|p| p.ty.contains_error()) || ret.contains_error()
+            }
+        }
+    }
+}
+
+fn signature_contains_registry_error_type(
+    params: &[crate::CallableParameter<RegistryTy>],
+    return_type: &RegistryTy,
+) -> bool {
+    params.iter().any(|p| p.ty.contains_error()) || return_type.contains_error()
+}
 
 /// A C function signature extracted from an `extern` block.
 #[derive(Debug, Clone)]
@@ -24,9 +161,9 @@ pub struct CFunction {
     /// The C symbol name (e.g. `"hew_json_parse"`).
     pub name: String,
     /// Parameter types.
-    pub params: Vec<crate::CallableParameter<Ty>>,
+    pub params: Vec<crate::CallableParameter<RegistryTy>>,
     /// Return type.
-    pub return_type: Ty,
+    pub return_type: RegistryTy,
 }
 
 /// A handle method mapping extracted from an `impl` block.
@@ -39,9 +176,9 @@ pub struct HandleMethod {
     /// The C symbol the method resolves to (e.g. `"hew_json_value_get_string"`).
     pub c_symbol: String,
     /// Parameter types (excluding `self`).
-    pub params: Vec<crate::CallableParameter<Ty>>,
+    pub params: Vec<crate::CallableParameter<RegistryTy>>,
     /// Return type.
-    pub return_type: Ty,
+    pub return_type: RegistryTy,
     /// The method's signature is registry-visible, but its real Hew impl must
     /// run because it unwraps or constructs a fielded resource wrapper.
     pub dispatch_through_impl: bool,
@@ -282,7 +419,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             Item::ExternBlock(block) => {
                 for func in &block.functions {
                     let (params, return_type) = extern_fn_sig(func, module_short);
-                    if signature_contains_error_type(&params, &return_type) {
+                    if signature_contains_registry_error_type(&params, &return_type) {
                         info.unsupported_type_signatures
                             .push(format!("extern function `{}`", func.name));
                     }
@@ -500,12 +637,12 @@ fn extract_impl_info(
 fn extern_fn_sig(
     func: &ExternFnDecl,
     module_short: &str,
-) -> (Vec<crate::CallableParameter<Ty>>, Ty) {
+) -> (Vec<crate::CallableParameter<RegistryTy>>, RegistryTy) {
     let params = func
         .params
         .iter()
         .map(|p| crate::CallableParameter {
-            ty: type_expr_to_ty_with_context(
+            ty: type_expr_to_registry_ty_with_context(
                 &p.ty.0,
                 module_short,
                 TypeConversionContext::ExternSignature,
@@ -514,8 +651,12 @@ fn extern_fn_sig(
         })
         .collect();
 
-    let ret = func.return_type.as_ref().map_or(Ty::Unit, |rt| {
-        type_expr_to_ty_with_context(&rt.0, module_short, TypeConversionContext::ExternSignature)
+    let ret = func.return_type.as_ref().map_or(RegistryTy::UNIT, |rt| {
+        type_expr_to_registry_ty_with_context(
+            &rt.0,
+            module_short,
+            TypeConversionContext::ExternSignature,
+        )
     });
 
     (params, ret)
@@ -593,19 +734,19 @@ enum TypeConversionContext {
     ExternSignature,
 }
 
-fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
-    type_expr_to_ty_with_context(texpr, module_short, TypeConversionContext::Ordinary)
+fn type_expr_to_registry_ty(texpr: &TypeExpr, module_short: &str) -> RegistryTy {
+    type_expr_to_registry_ty_with_context(texpr, module_short, TypeConversionContext::Ordinary)
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers all primitive and generic variants"
 )]
-fn type_expr_to_ty_with_context(
+fn type_expr_to_registry_ty_with_context(
     texpr: &TypeExpr,
     module_short: &str,
     context: TypeConversionContext,
-) -> Ty {
+) -> RegistryTy {
     match texpr {
         TypeExpr::Named {
             path: named_path,
@@ -619,34 +760,40 @@ fn type_expr_to_ty_with_context(
             let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
             if !has_args {
                 if let Some(prim) = Ty::from_name(name.as_str()) {
-                    return prim;
+                    return RegistryTy::Ty(prim);
                 }
             }
             match name.as_str() {
-                // Option<T> → Ty::option() helper
                 "Option" => {
                     if let Some(args) = type_args {
                         if let Some(first) = args.first() {
-                            return Ty::option(type_expr_to_ty_with_context(
+                            return RegistryTy::option(type_expr_to_registry_ty_with_context(
                                 &first.0,
                                 module_short,
                                 context,
                             ));
                         }
                     }
-                    Ty::builtin_named(BuiltinType::Option, vec![])
+                    RegistryTy::builtin(BuiltinType::Option, vec![])
                 }
-                // Result<O, E> → Ty::result() helper
                 "Result" => {
                     if let Some(args) = type_args {
                         if args.len() >= 2 {
-                            return Ty::result(
-                                type_expr_to_ty_with_context(&args[0].0, module_short, context),
-                                type_expr_to_ty_with_context(&args[1].0, module_short, context),
+                            return RegistryTy::result(
+                                type_expr_to_registry_ty_with_context(
+                                    &args[0].0,
+                                    module_short,
+                                    context,
+                                ),
+                                type_expr_to_registry_ty_with_context(
+                                    &args[1].0,
+                                    module_short,
+                                    context,
+                                ),
                             );
                         }
                     }
-                    Ty::builtin_named(BuiltinType::Result, vec![])
+                    RegistryTy::builtin(BuiltinType::Result, vec![])
                 }
                 // Canonical named builtins — do NOT module-qualify.
                 other => {
@@ -655,24 +802,24 @@ fn type_expr_to_ty_with_context(
                         .map(|a| {
                             a.iter()
                                 .map(|(te, _)| {
-                                    type_expr_to_ty_with_context(te, module_short, context)
+                                    type_expr_to_registry_ty_with_context(te, module_short, context)
                                 })
                                 .collect()
                         })
                         .unwrap_or_default();
                     if let Some(builtin) = lookup_builtin_type(other) {
-                        Ty::named_head(TypeHead::Builtin(builtin), args)
+                        RegistryTy::builtin(builtin, args)
                     } else if other.contains('.') {
                         // Qualified handle type like "json.Value"
-                        Ty::registry_named(other, args)
+                        RegistryTy::named(other, args)
                     } else {
                         // Unqualified type name — qualify with module short name
-                        Ty::registry_named(&format!("{module_short}.{other}"), args)
+                        RegistryTy::named(format!("{module_short}.{other}"), args)
                     }
                 }
             }
         }
-        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_context(
+        TypeExpr::Option(inner) => RegistryTy::option(type_expr_to_registry_ty_with_context(
             &inner.0,
             module_short,
             context,
@@ -681,28 +828,28 @@ fn type_expr_to_ty_with_context(
         | TypeExpr::Fallible {
             success: ok,
             error: err,
-        } => Ty::result(
-            type_expr_to_ty_with_context(&ok.0, module_short, context),
-            type_expr_to_ty_with_context(&err.0, module_short, context),
+        } => RegistryTy::result(
+            type_expr_to_registry_ty_with_context(&ok.0, module_short, context),
+            type_expr_to_registry_ty_with_context(&err.0, module_short, context),
         ),
-        TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
-        TypeExpr::Tuple(elems) => Ty::Tuple(
+        TypeExpr::Tuple(elems) if elems.is_empty() => RegistryTy::UNIT,
+        TypeExpr::Tuple(elems) => RegistryTy::Tuple(
             elems
                 .iter()
-                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
+                .map(|(te, _)| type_expr_to_registry_ty_with_context(te, module_short, context))
                 .collect(),
         ),
-        TypeExpr::Array { element, size } => Ty::Array(
-            Box::new(type_expr_to_ty_with_context(
+        TypeExpr::Array { element, size } => RegistryTy::Array {
+            element: Box::new(type_expr_to_registry_ty_with_context(
                 &element.0,
                 module_short,
                 context,
             )),
-            *size,
-        ),
-        TypeExpr::Slice(element) => Ty::builtin_named(
+            size: *size,
+        },
+        TypeExpr::Slice(element) => RegistryTy::builtin(
             BuiltinType::Vec,
-            vec![type_expr_to_ty_with_context(
+            vec![type_expr_to_registry_ty_with_context(
                 &element.0,
                 module_short,
                 context,
@@ -716,39 +863,48 @@ fn type_expr_to_ty_with_context(
             ..
         }
         | TypeExpr::QualifiedAssocPath(_)
-        | TypeExpr::TraitObject(_) => Ty::Error,
+        | TypeExpr::TraitObject(_) => RegistryTy::Ty(Ty::Error),
         TypeExpr::ActorFn {
             params,
             return_type,
         } => {
-            let resolved: Vec<Ty> = params
+            let resolved: Vec<RegistryTy> = params
                 .iter()
-                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
+                .map(|(te, _)| type_expr_to_registry_ty_with_context(te, module_short, context))
                 .collect();
             let msg = match resolved.len() {
-                0 => Ty::Tuple(Vec::new()),
-                1 => resolved.into_iter().next().unwrap_or(Ty::Error),
-                _ => Ty::Tuple(resolved),
+                0 => RegistryTy::Tuple(Vec::new()),
+                1 => resolved
+                    .into_iter()
+                    .next()
+                    .unwrap_or(RegistryTy::Ty(Ty::Error)),
+                _ => RegistryTy::Tuple(resolved),
             };
-            Ty::actor_fn(
-                msg,
-                type_expr_to_ty_with_context(&return_type.0, module_short, context),
-            )
+            RegistryTy::ActorFn {
+                msg: Box::new(msg),
+                ret: Box::new(type_expr_to_registry_ty_with_context(
+                    &return_type.0,
+                    module_short,
+                    context,
+                )),
+            }
         }
         TypeExpr::Function {
             capabilities,
             type_params: None,
             params,
             return_type,
-        } => Ty::Function {
+        } => RegistryTy::Function {
             capabilities: *capabilities,
             params: params
                 .iter()
                 .map(|parameter| {
-                    parameter.map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
+                    parameter.map(|(te, _)| {
+                        type_expr_to_registry_ty_with_context(te, module_short, context)
+                    })
                 })
                 .collect(),
-            ret: Box::new(type_expr_to_ty_with_context(
+            ret: Box::new(type_expr_to_registry_ty_with_context(
                 &return_type.0,
                 module_short,
                 context,
@@ -757,17 +913,17 @@ fn type_expr_to_ty_with_context(
         TypeExpr::Pointer {
             is_mutable,
             pointee,
-        } => Ty::Pointer {
+        } => RegistryTy::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(type_expr_to_ty_with_context(
+            pointee: Box::new(type_expr_to_registry_ty_with_context(
                 &pointee.0,
                 module_short,
                 context,
             )),
         },
         TypeExpr::Borrow(inner) if context == TypeConversionContext::ExternSignature => {
-            Ty::Borrow {
-                pointee: Box::new(type_expr_to_ty_with_context(
+            RegistryTy::Borrow {
+                pointee: Box::new(type_expr_to_registry_ty_with_context(
                     &inner.0,
                     module_short,
                     context,
@@ -1229,14 +1385,13 @@ fn extract_handle_methods(
                 .iter()
                 .skip(1)
                 .map(|param| crate::CallableParameter {
-                    ty: type_expr_to_ty(&param.ty.0, module_short),
+                    ty: type_expr_to_registry_ty(&param.ty.0, module_short),
                     ownership: crate::ParameterOwnership::from_consume(param.is_consume),
                 })
                 .collect();
-            let return_type = method
-                .return_type
-                .as_ref()
-                .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+            let return_type = method.return_type.as_ref().map_or(RegistryTy::UNIT, |rt| {
+                type_expr_to_registry_ty(&rt.0, module_short)
+            });
             info.handle_methods.push(HandleMethod {
                 type_name: type_name.clone(),
                 method_name: method.name.to_string(),
@@ -1310,7 +1465,7 @@ mod tests {
             function.params[1].ownership,
             crate::ParameterOwnership::Borrow
         );
-        let Ty::Function { params, .. } = &function.params[1].ty else {
+        let RegistryTy::Function { params, .. } = &function.params[1].ty else {
             panic!("callback")
         };
         assert_eq!(params[0].ownership, crate::ParameterOwnership::Consume);
@@ -1564,8 +1719,11 @@ mod tests {
             .find(|m| m.type_name == "net.Listener" && m.method_name == "close")
             .expect("net.Listener.close should be extracted");
         assert_eq!(close.c_symbol, "hew_tcp_listener_close");
-        assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
-        assert_eq!(close.return_type, Ty::Unit);
+        assert_eq!(
+            close.params,
+            Vec::<crate::CallableParameter<RegistryTy>>::new()
+        );
+        assert_eq!(close.return_type, RegistryTy::UNIT);
         assert!(
             close.dispatch_through_impl,
             "net.Listener.close must retain its authored inherent resource ritual; \
@@ -1591,8 +1749,11 @@ mod tests {
             .find(|m| m.type_name == "server.Request" && m.method_name == "close")
             .expect("server.Request.close should be extracted");
         assert_eq!(close.c_symbol, "hew_http_request_free");
-        assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
-        assert_eq!(close.return_type, Ty::Unit);
+        assert_eq!(
+            close.params,
+            Vec::<crate::CallableParameter<RegistryTy>>::new()
+        );
+        assert_eq!(close.return_type, RegistryTy::UNIT);
     }
 
     #[test]
@@ -1718,10 +1879,11 @@ mod tests {
         let info = load_module("std::encoding::json", &test_root()).unwrap();
 
         // json module should have functions with String params/returns
-        let has_string_fn = info
-            .functions
-            .iter()
-            .any(|f| f.params.iter().any(|parameter| parameter.ty == Ty::String));
+        let has_string_fn = info.functions.iter().any(|f| {
+            f.params
+                .iter()
+                .any(|parameter| parameter.ty == RegistryTy::Ty(Ty::String))
+        });
         assert!(
             has_string_fn,
             "json module should have String-typed functions"
@@ -1822,7 +1984,7 @@ mod tests {
         );
     }
 
-    /// Directly exercises `type_expr_to_ty` for canonical primitive names.
+    /// Directly exercises `type_expr_to_registry_ty` for canonical primitive names.
     /// Retired aliases (str, float, Float, byte, Bool, Char, Bytes) must not
     /// resolve — see `primitive_aliases_rejected` for the negative assertions.
     #[test]
@@ -1848,9 +2010,10 @@ mod tests {
                 path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(name), 0..0),
                 type_args: None,
             };
-            let got = type_expr_to_ty(&texpr, module);
+            let got = type_expr_to_registry_ty(&texpr, module);
             assert_eq!(
-                got, *expected,
+                got,
+                RegistryTy::Ty(expected.clone()),
                 "canonical `{name}` should resolve to {expected:?}, got {got:?}"
             );
         }
@@ -1868,11 +2031,11 @@ mod tests {
                 path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(alias), 0..0),
                 type_args: None,
             };
-            let got = type_expr_to_ty(&texpr, "mymod");
+            let got = type_expr_to_registry_ty(&texpr, "mymod");
             assert!(
                 !matches!(
                     got,
-                    Ty::String | Ty::F64 | Ty::U8 | Ty::Bool | Ty::Char | Ty::Bytes
+                    RegistryTy::Ty(Ty::String | Ty::F64 | Ty::U8 | Ty::Bool | Ty::Char | Ty::Bytes)
                 ),
                 "retired alias `{alias}` must not resolve to a primitive type, got {got:?}"
             );
@@ -1892,8 +2055,8 @@ mod tests {
         )));
 
         assert_eq!(
-            type_expr_to_ty(&texpr, "mymod"),
-            Ty::builtin_named(BuiltinType::Vec, vec![Ty::I32]),
+            type_expr_to_registry_ty(&texpr, "mymod"),
+            RegistryTy::builtin(BuiltinType::Vec, vec![RegistryTy::Ty(Ty::I32)]),
             "slice annotations must alias to Vec<T> in registry-loaded signatures"
         );
     }

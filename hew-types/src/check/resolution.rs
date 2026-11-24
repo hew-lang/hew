@@ -2041,7 +2041,7 @@ impl Checker {
             _ => {
                 let cites = matches
                     .iter()
-                    .map(|trait_id| self.defs.display(*trait_id))
+                    .map(|trait_id| self.defs.display(*trait_id).into_owned())
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.report_error(
@@ -2195,8 +2195,7 @@ impl Checker {
     /// the authored alias head that can own a trait implementation.
     pub(super) fn normalize_preserving_aliases(&self, ty: &Ty) -> Ty {
         let substituted = self.subst.resolve(ty);
-        let projected = self.project_assoc_types(&substituted);
-        self.canonicalize_nominal_identity(&projected)
+        self.project_assoc_types(&substituted)
     }
 
     /// Final checker-output form of a semantic type. Every type-carrying
@@ -2220,28 +2219,6 @@ impl Checker {
         }
         for nested in &mut pattern.nested {
             self.finalize_payload_variant_pattern(nested);
-        }
-    }
-
-    /// Recursively replace a proven nominal presentation alias with the
-    /// checker-owned source identity.  This is deliberately narrower than a
-    /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user
-    /// declarations and returns `None` when no owner proof exists.
-    pub(super) fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
-        match ty {
-            // A head is its identity; only a spelling the interim key
-            // resolution could not settle is resolved again at handoff.
-            // TRANSITION(A1 commit 3): deleted with the spelled heads.
-            Ty::Named {
-                head: crate::TypeHead::Unresolved(spelling),
-                args,
-            } => self.named_ty_for_key(
-                spelling.as_str(),
-                args.iter()
-                    .map(|arg| self.canonicalize_nominal_identity(arg))
-                    .collect(),
-            ),
-            _ => ty.map_children_pub(&|child| self.canonicalize_nominal_identity(child)),
         }
     }
 
@@ -2538,7 +2515,7 @@ impl Checker {
         hole_vars: &mut Vec<TypeVar>,
         context: TypeResolutionContext,
     ) -> Ty {
-        let retained = (self.current_module_idx == 0 && !self.registering_embedded_source)
+        let retained = (self.current_module_idx == 0)
             .then(|| {
                 self.session_type_seed
                     .as_ref()?
@@ -2869,6 +2846,12 @@ impl Checker {
                         }
                         return alias_ty;
                     }
+                    self.report_error(
+                        TypeErrorKind::UndefinedType,
+                        &te.1,
+                        format!("undefined associated type `Self.{alias_name}`"),
+                    );
+                    return Ty::Error;
                 }
                 // REPRESENTATION: `T::Bar` projections — the parser stringifies
                 // these as `Named { name: "T::Bar" }`. Split here, locate `T`
@@ -2881,58 +2864,48 @@ impl Checker {
                 // bounds), missing-assoc (no bound declares `Bar`), and
                 // ambiguous (more than one bound declares `Bar`) are all
                 // typed errors here. No silent pass-through.
-                let is_self_headed =
-                    named_path.segments.first().is_some_and(|(segment, _)| {
-                        segment.name == hew_parser::ast::sym::SELF_TYPE
-                    }) || single.is_some_and(|name| name.starts_with("Self::"));
-                if !is_self_headed {
-                    // Dotted paths are also the module-qualified nominal
-                    // surface. Treat a direct `T.Item` as an associated-type
-                    // projection only when `T` is a type parameter in scope;
-                    // otherwise leave it for nominal resolution below.
-                    if let [(base, _), (assoc_name, _)] = named_path.segments.as_slice() {
-                        if let Some(ty) = self.try_resolve_assoc_projection(
-                            *base,
-                            assoc_name.name.as_str(),
-                            &te.1,
-                        ) {
-                            return ty;
-                        }
+                // Dotted paths are also the module-qualified nominal
+                // surface. Treat a direct `T.Item` as an associated-type
+                // projection only when `T` is a type parameter in scope;
+                // otherwise leave it for nominal resolution below.
+                if let [(base, _), (assoc_name, _)] = named_path.segments.as_slice() {
+                    if let Some(ty) =
+                        self.try_resolve_assoc_projection(*base, assoc_name.name.as_str(), &te.1)
+                    {
+                        return ty;
                     }
-                    if let Some((base_name, assoc_name)) = single.and_then(|s| s.split_once("::")) {
-                        // Reject multi-segment projections (`T::Iter::Bar`)
-                        // explicitly — deferred per the precursor plan.
-                        if assoc_name.contains("::") {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &te.1,
-                                format!(
-                                    "multi-segment associated-type projections like `{base_name}::{assoc_name}` are not supported; \
-                                     introduce an intermediate type parameter"
-                                ),
-                            );
-                            return Ty::Error;
-                        }
-                        if let Some(ty) = self.try_resolve_assoc_projection(
-                            Ident::new(base_name),
-                            assoc_name,
+                }
+                if let Some((base_name, assoc_name)) = single.and_then(|s| s.split_once("::")) {
+                    // Reject multi-segment projections (`T::Iter::Bar`)
+                    // explicitly — deferred per the precursor plan.
+                    if assoc_name.contains("::") {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
                             &te.1,
-                        ) {
-                            return ty;
-                        }
-                        // `base_name` is not a type parameter in scope, so
-                        // `base_name::Type` cannot be an associated-type
-                        // projection. In Hew, module-qualified type references
-                        // use `.` not `::` (e.g. `geometry.Point`). Emit a
-                        // targeted hint so users don't see a bare UndefinedType.
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &te.1,
-                            format!("unknown type `{base_name}::{assoc_name}`; `::` is not the module separator in type position"),
-                            vec![format!("use `{base_name}.{assoc_name}` instead of `{base_name}::{assoc_name}`")],
+                            format!(
+                                "multi-segment associated-type projections like `{base_name}::{assoc_name}` are not supported; \
+                                 introduce an intermediate type parameter"
+                            ),
                         );
                         return Ty::Error;
                     }
+                    if let Some(ty) =
+                        self.try_resolve_assoc_projection(Ident::new(base_name), assoc_name, &te.1)
+                    {
+                        return ty;
+                    }
+                    // `base_name` is not a type parameter in scope, so
+                    // `base_name::Type` cannot be an associated-type
+                    // projection. In Hew, module-qualified type references
+                    // use `.` not `::` (e.g. `geometry.Point`). Emit a
+                    // targeted hint so users don't see a bare UndefinedType.
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::UndefinedType,
+                        &te.1,
+                        format!("unknown type `{base_name}::{assoc_name}`; `::` is not the module separator in type position"),
+                        vec![format!("use `{base_name}.{assoc_name}` instead of `{base_name}::{assoc_name}`")],
+                    );
+                    return Ty::Error;
                 }
                 // Reject user-written `Task<T>` in any type-annotation position.
                 //
@@ -3193,14 +3166,15 @@ impl Checker {
                         parameters: self.callable_type_parameters(&parameters, &bounds),
                         callable: Box::new(callable),
                     };
-                    let owner = parameters[0].id.owner;
-                    let key = self.defs.path(owner).to_string();
-                    self.insert_fn_sig(
-                        &key,
-                        owner,
-                        Self::generic_callable_signature(&scheme)
-                            .expect("quantified callable signature"),
-                    );
+                    if let Some(owner) = parameters[0].id.declaration_owner() {
+                        let key = self.defs.path(owner).to_string();
+                        self.insert_fn_sig(
+                            &key,
+                            owner,
+                            Self::generic_callable_signature(&scheme)
+                                .expect("quantified callable signature"),
+                        );
+                    }
                     scheme
                 }
             }

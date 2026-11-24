@@ -347,9 +347,7 @@ impl Bump for Option<i64> {
         "expected clean typecheck, got: {:?}",
         output.errors,
     );
-    let option_types: Vec<&Ty> = output
-        .expr_types
-        .values()
+    let option_types: Vec<&Ty> = root_values(&output.expr_types)
         .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(

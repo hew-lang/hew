@@ -1077,9 +1077,9 @@ impl LowerCtx<'_> {
                     (receiver_type_param.is_receiver(), trait_method_leaf)
                 {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
-                        if let Some(self_type) = self_ty.impl_receiver_instance(&self.defs) {
+                        if let Some(self_type) = self_ty.impl_receiver_instance() {
                             let c_symbol = crate::node::HirImplBlock::method_symbol(
-                                self.defs.path(self_type.nominal.declaration()),
+                                self_type.head.receiver_path(&self.defs),
                                 &method_leaf,
                             );
                             let concrete_target = self.registered_symbol_target(&c_symbol);

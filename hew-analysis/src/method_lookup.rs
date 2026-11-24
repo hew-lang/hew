@@ -56,7 +56,7 @@ pub(crate) fn collect_method_sigs_for_receiver(
     };
     let mut declared: HashSet<String> = tc
         .dispatch
-        .methods_of(nominal.id)
+        .methods_of(TypeHead::Nominal(*nominal))
         .map(|(name, _, _)| name.to_string())
         .collect();
     if let Some(definition) = tc.type_defs.get(&nominal.id) {
@@ -84,7 +84,7 @@ pub(crate) fn lookup_method_sig(
             .is_some_and(|definition| definition.methods.contains_key(method));
         let declared_in_dispatch = tc
             .dispatch
-            .methods_of(nominal.id)
+            .methods_of(TypeHead::Nominal(*nominal))
             .any(|(name, _, _)| name.as_str() == method);
         if !declared_in_type && !declared_in_dispatch {
             return None;

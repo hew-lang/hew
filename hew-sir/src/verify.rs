@@ -348,12 +348,19 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
                 expected.0, shape.id.0
             ));
         }
-        let carries_instance = shape.aggregate_ty.nominal_instance(&module.defs).as_ref()
-            == Some(&shape.instance)
-            || matches!(
-                &shape.aggregate_ty,
-                ResolvedTy::Named { head: head @ hew_types::TypeHead::Builtin(_), args, .. } if shape.instance.args == *args && module.defs.path(shape.instance.nominal.declaration()) == head.registry_key()
-            );
+        let carries_instance = match &shape.instance {
+            Some(instance) => {
+                shape.aggregate_ty.nominal_instance(&module.defs).as_ref() == Some(instance)
+                    || matches!(
+                        &shape.aggregate_ty,
+                        ResolvedTy::Named { head: head @ hew_types::TypeHead::Builtin(_), args, .. }
+                            if instance.args == *args
+                                && module.defs.path(instance.nominal.declaration())
+                                    == head.registry_key()
+                    )
+            }
+            None => hew_types::range_value::fields(&shape.aggregate_ty).is_some(),
+        };
         if !carries_instance {
             refuse(format!(
                 "concrete type `{}` does not carry the descriptor's nominal instance",
@@ -366,12 +373,14 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
                 shape.aggregate_ty.user_facing()
             ));
         }
-        if !instances.insert(shape.instance.clone()) {
-            refuse(format!(
-                "nominal instance `{}` has more than one descriptor ({:?})",
-                shape.aggregate_ty.user_facing(),
-                shape.aggregate_ty
-            ));
+        if let Some(instance) = &shape.instance {
+            if !instances.insert(instance.clone()) {
+                refuse(format!(
+                    "nominal instance `{}` has more than one descriptor ({:?})",
+                    shape.aggregate_ty.user_facing(),
+                    shape.aggregate_ty
+                ));
+            }
         }
         let mut names = HashSet::new();
         if shape.fields.iter().any(|field| !names.insert(&field.name)) {
@@ -674,9 +683,7 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             || (matches!(
                 key.0,
                 ResolvedTy::Named {
-                    head: hew_types::TypeHead::Nominal(_)
-                        | hew_types::TypeHead::Param(_)
-                        | hew_types::TypeHead::Unresolved(_),
+                    head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_),
                     is_opaque: true,
                     ..
                 }
@@ -3348,9 +3355,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
         || (matches!(
             ty,
             ResolvedTy::Named {
-                head: hew_types::TypeHead::Nominal(_)
-                    | hew_types::TypeHead::Param(_)
-                    | hew_types::TypeHead::Unresolved(_),
+                head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_),
                 is_opaque: true,
                 ..
             }

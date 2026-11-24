@@ -17,7 +17,6 @@
 use std::fmt;
 
 use crate::builtin_type::BuiltinType;
-use crate::def_table::BuiltinAnchor;
 use crate::ty::{TraitObjectBound, Ty, TypeHead, TypeVar};
 use crate::{CallableCapabilities, DefTable, NominalId};
 
@@ -29,6 +28,48 @@ use crate::{CallableCapabilities, DefTable, NominalId};
 pub struct NominalInstance {
     pub nominal: NominalId,
     pub args: Vec<ResolvedTy>,
+}
+
+/// The receiver instance an impl block is registered under and dispatched through.
+///
+/// Builtin and primitive receivers key on `TypeHead::Builtin(BuiltinType)`,
+/// avoiding synthetic declaration rows; user nominals and actors key on
+/// `TypeHead::Nominal`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReceiverInstance {
+    pub head: TypeHead,
+    pub args: Vec<ResolvedTy>,
+}
+
+impl ReceiverInstance {
+    /// Reconstruct the concrete receiver type this impl instance keys.
+    #[must_use]
+    pub fn to_resolved_ty(&self) -> ResolvedTy {
+        match (self.head, self.args.as_slice()) {
+            (TypeHead::Builtin(BuiltinType::I8), []) => ResolvedTy::I8,
+            (TypeHead::Builtin(BuiltinType::I16), []) => ResolvedTy::I16,
+            (TypeHead::Builtin(BuiltinType::I32), []) => ResolvedTy::I32,
+            (TypeHead::Builtin(BuiltinType::I64), []) => ResolvedTy::I64,
+            (TypeHead::Builtin(BuiltinType::U8), []) => ResolvedTy::U8,
+            (TypeHead::Builtin(BuiltinType::U16), []) => ResolvedTy::U16,
+            (TypeHead::Builtin(BuiltinType::U32), []) => ResolvedTy::U32,
+            (TypeHead::Builtin(BuiltinType::U64), []) => ResolvedTy::U64,
+            (TypeHead::Builtin(BuiltinType::Isize), []) => ResolvedTy::Isize,
+            (TypeHead::Builtin(BuiltinType::Usize), []) => ResolvedTy::Usize,
+            (TypeHead::Builtin(BuiltinType::F32), []) => ResolvedTy::F32,
+            (TypeHead::Builtin(BuiltinType::F64), []) => ResolvedTy::F64,
+            (TypeHead::Builtin(BuiltinType::Bool), []) => ResolvedTy::Bool,
+            (TypeHead::Builtin(BuiltinType::Char), []) => ResolvedTy::Char,
+            (TypeHead::Builtin(BuiltinType::String), []) => ResolvedTy::String,
+            (TypeHead::Builtin(BuiltinType::Bytes), []) => ResolvedTy::Bytes,
+            (TypeHead::Builtin(BuiltinType::Duration), []) => ResolvedTy::Duration,
+            _ => ResolvedTy::Named {
+                head: self.head,
+                args: self.args.clone(),
+                is_opaque: false,
+            },
+        }
+    }
 }
 
 /// A fully-resolved, concrete type that has crossed the checker output
@@ -426,16 +467,6 @@ impl ResolvedTy {
     #[must_use]
     pub fn nominal_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
         match self {
-            Self::Named {
-                head: TypeHead::Builtin(BuiltinType::Range),
-                args,
-                ..
-            } => Some(NominalInstance {
-                nominal: crate::NominalId::from_minted_declaration(DefTable::anchor(
-                    crate::def_table::BuiltinAnchor::Range,
-                )),
-                args: args.clone(),
-            }),
             // The two compiler-owned cursor records. Both are declared in
             // `std/builtins.hew` as ordinary generic records and are reached
             // only through their closed builtin discriminator, so each names
@@ -482,92 +513,78 @@ impl ResolvedTy {
         }
     }
 
-    /// The nominal instance a trait impl for this type is registered under,
+    /// The receiver instance a trait impl for this type is registered under,
     /// and the one a receiver of this type dispatches through.
     ///
-    /// Builtin receivers select their identity from the closed builtin
-    /// discriminator, never from the source leaf: a user `type HashMapIter`
-    /// carries `builtin: None` and stays on the ordinary user-nominal arm.
-    /// Primitives anchor on their keyword spelling, which is how
-    /// `impl Show for i64` names them. Returns `None` for shapes that cannot
-    /// anchor an impl (closures, function types, type parameters).
+    /// Builtin and primitive receivers select their identity from the closed
+    /// `TypeHead::Builtin(BuiltinType)` discriminator rather than a synthetic
+    /// declaration row: a user `type HashMapIter` carries `TypeHead::Nominal`
+    /// and stays distinct from `TypeHead::Builtin(BuiltinType::HashMapIter)`.
+    /// Returns `None` for shapes that cannot anchor an impl (closures, function
+    /// types, type parameters).
     #[must_use]
-    pub fn impl_receiver_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
-        let anchored = |anchor: BuiltinAnchor, args: Vec<ResolvedTy>| {
-            Some(NominalInstance {
-                nominal: crate::NominalId::from_minted_declaration(DefTable::anchor(anchor)),
+    pub fn impl_receiver_instance(&self) -> Option<ReceiverInstance> {
+        let builtin = |kind: BuiltinType, args: Vec<ResolvedTy>| {
+            Some(ReceiverInstance {
+                head: TypeHead::Builtin(kind),
                 args,
             })
         };
-        let primitive = |anchor: BuiltinAnchor| anchored(anchor, Vec::new());
         match self {
             Self::Generator {
                 yields, returns, ..
-            } => anchored(
-                BuiltinAnchor::Generator,
+            } => builtin(
+                BuiltinType::Generator,
                 vec![(**yields).clone(), (**returns).clone()],
             ),
             Self::Named {
                 args,
-                head: crate::TypeHead::Builtin(builtin),
+                head: TypeHead::Builtin(kind),
                 ..
-            } => {
-                // An actor is the type of its handle, so its nominal identity
-                // is the actor declaration's own, read off the handle.
-                let anchor = match builtin {
-                    BuiltinType::VecIter | BuiltinType::HashMapIter => {
-                        return self.nominal_instance(defs);
-                    }
-                    BuiltinType::Generator => BuiltinAnchor::Generator,
-                    BuiltinType::Vec => BuiltinAnchor::Vec,
-                    BuiltinType::HashMap => BuiltinAnchor::HashMap,
-                    BuiltinType::HashSet => BuiltinAnchor::HashSet,
-                    BuiltinType::Stream => BuiltinAnchor::Stream,
-
-                    BuiltinType::NodeId => BuiltinAnchor::NodeId,
-                    BuiltinType::Location => BuiltinAnchor::Location,
-                    // A std-declared opaque encoding value (`json.Value`),
-                    // lifecycle record, or monomorphic enum (`SendError`,
-                    // `CrashKind`, ...) anchors on that declaration's id.
-                    other
-                        if other.is_encoding_value()
-                            || other.source_owned_path().is_some()
-                            || crate::builtin_enums::monomorphic_canonical_name(*other)
-                                .is_some() =>
-                    {
-                        return defs
-                            .builtin_declaration(*builtin)
-                            .map(|nominal| NominalInstance {
-                                nominal,
-                                args: args.clone(),
-                            });
-                    }
-                    _ => return None,
-                };
-                anchored(anchor, args.clone())
-            }
+            } => match kind {
+                BuiltinType::VecIter
+                | BuiltinType::HashMapIter
+                | BuiltinType::Generator
+                | BuiltinType::Vec
+                | BuiltinType::HashMap
+                | BuiltinType::HashSet
+                | BuiltinType::Stream
+                | BuiltinType::NodeId
+                | BuiltinType::Location => builtin(*kind, args.clone()),
+                other
+                    if other.is_encoding_value()
+                        || other.source_owned_path().is_some()
+                        || crate::builtin_enums::monomorphic_canonical_name(*other).is_some() =>
+                {
+                    builtin(*kind, args.clone())
+                }
+                _ => None,
+            },
             Self::Named {
-                head: TypeHead::Actor(_),
+                head: TypeHead::Nominal(head) | TypeHead::Actor(head),
+                args,
                 ..
-            } => self.actor_handle_instance(),
-            Self::Named { .. } => self.nominal_instance(defs),
-            Self::I8 => primitive(BuiltinAnchor::I8),
-            Self::I16 => primitive(BuiltinAnchor::I16),
-            Self::I32 => primitive(BuiltinAnchor::I32),
-            Self::I64 => primitive(BuiltinAnchor::I64),
-            Self::U8 => primitive(BuiltinAnchor::U8),
-            Self::U16 => primitive(BuiltinAnchor::U16),
-            Self::U32 => primitive(BuiltinAnchor::U32),
-            Self::U64 => primitive(BuiltinAnchor::U64),
-            Self::Isize => primitive(BuiltinAnchor::Isize),
-            Self::Usize => primitive(BuiltinAnchor::Usize),
-            Self::F32 => primitive(BuiltinAnchor::F32),
-            Self::F64 => primitive(BuiltinAnchor::F64),
-            Self::Bool => primitive(BuiltinAnchor::Bool),
-            Self::Char => primitive(BuiltinAnchor::Char),
-            Self::String => primitive(BuiltinAnchor::String),
-            Self::Bytes => primitive(BuiltinAnchor::Bytes),
-            Self::Duration => primitive(BuiltinAnchor::Duration),
+            } => Some(ReceiverInstance {
+                head: TypeHead::Nominal(*head),
+                args: args.clone(),
+            }),
+            Self::I8 => builtin(BuiltinType::I8, Vec::new()),
+            Self::I16 => builtin(BuiltinType::I16, Vec::new()),
+            Self::I32 => builtin(BuiltinType::I32, Vec::new()),
+            Self::I64 => builtin(BuiltinType::I64, Vec::new()),
+            Self::U8 => builtin(BuiltinType::U8, Vec::new()),
+            Self::U16 => builtin(BuiltinType::U16, Vec::new()),
+            Self::U32 => builtin(BuiltinType::U32, Vec::new()),
+            Self::U64 => builtin(BuiltinType::U64, Vec::new()),
+            Self::Isize => builtin(BuiltinType::Isize, Vec::new()),
+            Self::Usize => builtin(BuiltinType::Usize, Vec::new()),
+            Self::F32 => builtin(BuiltinType::F32, Vec::new()),
+            Self::F64 => builtin(BuiltinType::F64, Vec::new()),
+            Self::Bool => builtin(BuiltinType::Bool, Vec::new()),
+            Self::Char => builtin(BuiltinType::Char, Vec::new()),
+            Self::String => builtin(BuiltinType::String, Vec::new()),
+            Self::Bytes => builtin(BuiltinType::Bytes, Vec::new()),
+            Self::Duration => builtin(BuiltinType::Duration, Vec::new()),
             _ => None,
         }
     }
@@ -1311,10 +1328,13 @@ impl ResolvedTy {
     }
 
     fn path_head(defs: &DefTable, path: &str) -> TypeHead {
-        defs.lookup_nominal(path).map_or_else(
-            || TypeHead::Unresolved(crate::Symbol::intern(path)),
-            |nominal| TypeHead::of_declaration(defs, nominal),
-        )
+        if let Some(nominal) = defs.lookup_nominal(path) {
+            return TypeHead::of_declaration(defs, nominal);
+        }
+        if let Some(builtin) = crate::lookup_builtin_type(path) {
+            return TypeHead::Builtin(builtin);
+        }
+        panic!("no declaration `{path}` in the table")
     }
 
     /// User-facing display wrapper that mirrors [`Ty::user_facing`]: numeric
@@ -1630,7 +1650,14 @@ pub fn mangle_resolved_ty_segment(
                 .iter()
                 .map(|parameter| {
                     let id = parameter.parameter.id;
-                    format!("{}i{}", id.owner.index_u32(), id.index)
+                    match id.owner {
+                        crate::ParamOwner::Declaration(def) => {
+                            format!("{}i{}", def.index_u32(), id.index)
+                        }
+                        crate::ParamOwner::Builtin(builtin) => {
+                            format!("b{}i{}", builtin as u32, id.index)
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("c");
@@ -1856,16 +1883,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hashset_impl_receiver_uses_its_builtin_anchor() {
-        let defs = crate::DefTable::new();
+    fn hashset_impl_receiver_keys_on_builtin_type_head() {
         let receiver =
             ResolvedTy::named_builtin(crate::BuiltinType::HashSet, vec![ResolvedTy::I64]);
         let instance = receiver
-            .impl_receiver_instance(&defs)
+            .impl_receiver_instance()
             .expect("HashSet impl identity");
         assert_eq!(
-            instance.nominal.declaration(),
-            crate::DefTable::anchor(BuiltinAnchor::HashSet)
+            instance.head,
+            TypeHead::Builtin(crate::BuiltinType::HashSet)
         );
         assert_eq!(instance.args, vec![ResolvedTy::I64]);
     }
@@ -2247,7 +2273,7 @@ mod tests {
         let user = ResolvedTy::named_for_test("Connection", vec![]);
         assert!(matches!(
             user,
-            ResolvedTy::Named { head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_)), .. } if head.registry_key() == "Connection"
+            ResolvedTy::Named { head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)), .. } if head.registry_key() == "Connection"
         ));
 
         let builtin = ResolvedTy::named_builtin(crate::BuiltinType::Vec, vec![ResolvedTy::I32]);

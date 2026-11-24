@@ -451,10 +451,7 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
     checker.mint_module_identities(&program);
     checker.mint_source_declaration_identities(&program);
     checker.register_builtins();
-    checker.collect_types(&program);
-    checker.collect_declared_type_param_names(&program);
-    checker.type_decls_registered = true;
-    checker.collect_functions(&program);
+    checker.collect_declarations(&program);
     checker
 }
 
@@ -517,10 +514,7 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
     checker.mint_module_identities(&program);
     checker.mint_source_declaration_identities(&program);
     checker.register_builtins();
-    checker.collect_types(&program);
-    checker.collect_declared_type_param_names(&program);
-    checker.type_decls_registered = true;
-    checker.collect_functions(&program);
+    checker.collect_declarations(&program);
     checker
 }
 

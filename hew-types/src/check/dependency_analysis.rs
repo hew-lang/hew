@@ -129,7 +129,6 @@ impl DependencyAnalysisCache {
             || checker.repl_fragment
             || checker.entry_selection.is_some()
             || checker.test_entry_selections.is_some()
-            || checker.checking_embedded_builtins
         {
             return checker.check_program(program);
         }
@@ -278,11 +277,8 @@ impl DependencyAnalysisCache {
                 fork.module_item_sources.insert(owner, sources.clone());
             }
         }
-        fork.collect_types(&root);
-        fork.collect_declared_type_param_names(&root);
-        fork.collect_functions(&root);
-        fork.resolve_alias_declarations(&root);
-        fork.reresolve_member_types_after_imports(&root);
+        fork.impls_registered = false;
+        fork.collect_declarations(&root);
         // The ordinary dependency-body pass restores this context before root
         // bodies; root-only registration above must preserve the same boundary.
         fork.current_item_source = None;

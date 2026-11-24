@@ -52,13 +52,9 @@ pub fn typecheck_isolated(source: &str) -> TypeCheckOutput {
 
 pub fn typecheck_embedded_builtins_isolated(source: &str) -> TypeCheckOutput {
     let program = parse_program(source);
-    let full_builtins = parse_program(include_str!("../../../std/builtins.hew"));
     let mut checker = isolated_checker();
-    checker.check_embedded_builtins(
-        &program,
-        &hew_types::DefTable::new(),
-        std::sync::Arc::new(full_builtins),
-    )
+    checker.set_allow_prelude_redeclaration_for_test(true);
+    checker.check_program(&program)
 }
 
 pub fn parse_and_typecheck_inline(source: &str) -> (hew_parser::ast::Program, TypeCheckOutput) {

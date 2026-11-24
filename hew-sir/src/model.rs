@@ -592,7 +592,7 @@ pub struct SemAggregateField {
 pub struct SemAggregateShape {
     pub id: AggregateShapeId,
     pub aggregate_ty: ResolvedTy,
-    pub instance: NominalInstance,
+    pub instance: Option<NominalInstance>,
     /// Exact declaration discipline, independent of the classes of members.
     /// A plain record containing a resource is still structurally projectable;
     /// a resource or linear declaration cannot be partially dismantled.
@@ -881,7 +881,7 @@ pub fn runtime_variant_shape_refs(
                 error_ty.user_facing()
             )
         })?;
-    if error_ty.nominal_instance(defs).as_ref() != Some(&error.instance) {
+    if error.instance.is_none() || error_ty.nominal_instance(defs) != error.instance {
         return Err(format!(
             "runtime variant error `{}` descriptor has the wrong nominal identity",
             error_ty.user_facing()

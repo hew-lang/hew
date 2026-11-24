@@ -870,7 +870,7 @@ impl Checker {
     pub(super) fn reject_sealed_delivery_access(&mut self, ty: &Ty, span: &Span) -> bool {
         if matches!(ty, Ty::Named { head, .. } if *head == crate::KnownDecl::Call.head()
             || *head == crate::KnownDecl::Outcome.head()
-            || (*head == crate::KnownDecl::ActorId.head() && !self.checking_embedded_builtins
+            || (*head == crate::KnownDecl::ActorId.head()
                 && self.current_module.as_deref() != Some("std.builtins")))
         {
             self.report_error(

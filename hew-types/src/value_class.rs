@@ -866,6 +866,20 @@ fn classify_uncached(
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
+            | BuiltinType::I8
+            | BuiltinType::I16
+            | BuiltinType::I32
+            | BuiltinType::I64
+            | BuiltinType::U8
+            | BuiltinType::U16
+            | BuiltinType::U32
+            | BuiltinType::U64
+            | BuiltinType::Isize
+            | BuiltinType::Usize
+            | BuiltinType::F32
+            | BuiltinType::F64
+            | BuiltinType::Bool
+            | BuiltinType::Char
             // the class table decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
             | BuiltinType::ActorHandle
@@ -873,6 +887,7 @@ fn classify_uncached(
             // owns the actor no more than `ActorHandle` does.
             | BuiltinType::ActorFn
             | BuiltinType::HewActor => bits,
+            BuiltinType::String | BuiltinType::Bytes => cow_retain,
             // Enums whose class is the join over their payload arguments.
             BuiltinType::Option | BuiltinType::Result => {
                 aggregate_facts(&classify_all(args, decls, walk)?)
@@ -909,10 +924,7 @@ fn classify_uncached(
             }
         },
         ResolvedTy::Named {
-            head:
-                head @ (crate::TypeHead::Nominal(_)
-                | crate::TypeHead::Param(_)
-                | crate::TypeHead::Unresolved(_)),
+            head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
             args,
             ..
         } => {

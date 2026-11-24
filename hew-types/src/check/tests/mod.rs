@@ -131,7 +131,7 @@ fn check_source_in_module_with_prelude_policy(
         module_doc: None,
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.checking_embedded_builtins = allow_prelude_redeclaration;
+    checker.allow_prelude_redeclaration = allow_prelude_redeclaration;
     (checker.check_program(&program), module_idx)
 }
 
@@ -487,7 +487,7 @@ pub(super) fn check_source_allowing_prelude_redeclaration(source: &str) -> TypeC
         parse_result.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     checker.check_program(&parse_result.program)
 }
 

@@ -10,7 +10,11 @@ pub(super) fn impl_receiver_is(
     impl_block: &crate::node::HirImplBlock,
     declaration: hew_types::DefId,
 ) -> bool {
-    impl_block.self_type == Some(hew_types::NominalId::of_declaration(declaration))
+    impl_block.self_type
+        == Some(hew_types::TypeHead::of_declaration(
+            identity,
+            hew_types::NominalId::of_declaration(declaration),
+        ))
         || impl_block.self_type_name == identity.path(declaration)
         || identity
             .lookup_path(&impl_block.self_type_name)

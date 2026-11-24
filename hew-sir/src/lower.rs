@@ -655,7 +655,7 @@ fn concrete_record_fields(
     module: &HirModule,
     facts: &TypeFactService,
     aggregate_ty: &ResolvedTy,
-) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), SirLoweringError> {
+) -> Result<(Option<hew_types::NominalInstance>, Vec<SemAggregateField>), SirLoweringError> {
     if matches!(
         facts.declaration_marker(aggregate_ty)?,
         hew_types::DeclarationMarker::Resource
@@ -1466,9 +1466,7 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
     matches!(
         ty,
         ResolvedTy::Named {
-            head: hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_),
+            head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_),
             is_opaque: true,
             ..
         }
@@ -1482,7 +1480,7 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
 /// a checker-discovered one names the producers that mint the handle, and an
 /// authored one is the `close` HIR admitted as the type's own release.
 fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty() || hew_types::runtime_call::ServiceHandleKind::of_ty(ty).is_some())
+    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_), is_opaque: true, args, .. } if args.is_empty() || hew_types::runtime_call::ServiceHandleKind::of_ty(ty).is_some())
         && (crate::resource::authored_opaque_lifecycle(module, ty).is_some()
             || module
                 .type_classes

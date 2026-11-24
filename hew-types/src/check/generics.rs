@@ -204,10 +204,12 @@ impl Checker {
         // inference variable belongs to its captured environment or an outer
         // monomorphic slot, and must remain shared across invocations.
         if sig.type_params.first().is_some_and(|parameter| {
-            matches!(
-                self.defs.kind(parameter.id.owner),
-                crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
-            )
+            parameter.id.declaration_owner().is_some_and(|owner| {
+                matches!(
+                    self.defs.kind(owner),
+                    crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
+                )
+            })
         }) {
             for ty in sig
                 .params
@@ -418,7 +420,7 @@ impl Checker {
             // codegen backend. `drain_deferred_bound_checks` revisits the
             // deferred entry once post-inference defaulting settles.
             if resolved_arg.has_inference_var()
-                || (!self.type_decls_registered
+                || (!self.impls_registered
                     && param_bounds
                         .iter()
                         .any(|bound| self.trait_marker(bound.trait_id) == Some(MarkerTrait::Eq)))
@@ -494,7 +496,7 @@ impl Checker {
             // an ordinary comparison. Bare parameters still need their declared
             // bound in the active scope.
             if marker == Some(MarkerTrait::Eq)
-                && !matches!(resolved_arg, Ty::Named { args, head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. } if args.is_empty())
+                && !matches!(resolved_arg, Ty::Named { args, head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_), .. } if args.is_empty())
                 && resolved_arg.has_type_parameters()
             {
                 self.record_eq_requirement(resolved_arg, span);
@@ -1188,8 +1190,8 @@ impl Checker {
     ) {
         let Some(self_type) = ResolvedTy::from_ty(concrete_ty)
             .ok()
-            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
-            .map(|instance| instance.nominal)
+            .and_then(|ty| ty.impl_receiver_instance())
+            .map(|instance| instance.head)
         else {
             return;
         };

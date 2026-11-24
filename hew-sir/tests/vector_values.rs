@@ -182,10 +182,12 @@ fn main() -> i64 {
 }
 ",
     );
-    assert!(module
-        .aggregate_shapes
-        .iter()
-        .any(|shape| module.defs.path(shape.instance.nominal.declaration()) == "Leaf"));
+    assert!(module.aggregate_shapes.iter().any(|shape| {
+        shape
+            .instance
+            .as_ref()
+            .is_some_and(|instance| module.defs.path(instance.nominal.declaration()) == "Leaf")
+    }));
     assert!(module
         .variant_shapes
         .iter()

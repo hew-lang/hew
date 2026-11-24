@@ -109,10 +109,7 @@ impl LifecycleRegistry {
     #[must_use]
     pub fn opaque_resource_for_ty(&self, ty: &ResolvedTy) -> Option<&OpaqueResourceLifecycle> {
         let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
+            head: head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)),
             ..
         } = ty
         else {

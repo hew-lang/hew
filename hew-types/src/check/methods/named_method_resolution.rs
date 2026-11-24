@@ -111,7 +111,7 @@ impl Checker {
     pub(in crate::check) fn dispatch_receiver(
         &self,
         receiver: &Ty,
-    ) -> Option<(crate::NominalId, Option<crate::NominalInstance>)> {
+    ) -> Option<(crate::TypeHead, Option<crate::ReceiverInstance>)> {
         let resolved = self.subst.resolve(receiver);
         let head_only = match &resolved {
             Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
@@ -119,11 +119,11 @@ impl Checker {
         };
         let head = ResolvedTy::from_ty(&head_only)
             .ok()?
-            .impl_receiver_instance(&self.defs)?
-            .nominal;
+            .impl_receiver_instance()?
+            .head;
         let instance = ResolvedTy::from_ty(&resolved)
             .ok()
-            .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+            .and_then(|ty| ty.impl_receiver_instance());
         Some((head, instance))
     }
 
@@ -288,7 +288,7 @@ impl Checker {
             }
             None => self.record_named_source_method_rewrite(receiver_ty, method, &sig, span),
         }
-        Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
+        Some(return_type)
     }
 
     /// The key a named type's source method is published under in
@@ -401,84 +401,6 @@ impl Checker {
         );
     }
 
-    /// Restore the source owner on bare nominal types in a qualified receiver's
-    /// method result.
-    ///
-    /// Impl signatures are registered while their declaring module is active,
-    /// where a self-module type is legitimately spelled bare (`Listener::accept
-    /// -> Connection`). At an imported call site the receiver has already
-    /// acquired its exact identity (`net.Listener`), so letting that bare return
-    /// escape would lose the owner again and make downstream layout/codegen
-    /// confuse it with a root or foreign `Connection`.
-    ///
-    /// Only names proven in the same owner's `type_defs` are qualified. An
-    /// already-qualified result (including `foo.Connection`) is authoritative
-    /// and unchanged, as are builtins and a method on a bare/root receiver.
-    pub(in crate::check) fn qualify_method_return_to_receiver_owner(
-        &self,
-        receiver_name: &str,
-        ty: &Ty,
-    ) -> Ty {
-        let canonical_registry_receiver = self
-            .module_registry
-            .canonical_method_receiver_identity(receiver_name);
-        let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
-            canonical
-        } else if self.type_def_at(receiver_name).is_some() {
-            receiver_name
-        } else {
-            return ty.clone();
-        };
-        let Some((owner, _)) = exact_receiver.rsplit_once('.') else {
-            return ty.clone();
-        };
-        self.qualify_method_return_to_owner(owner, ty)
-    }
-
-    pub(super) fn qualify_method_return_to_owner(&self, owner: &str, ty: &Ty) -> Ty {
-        let mapped =
-            ty.map_children_pub(&|child| self.qualify_method_return_to_owner(owner, child));
-        // Only a spelling the registry mirror left unresolved is qualified;
-        // a resolved head already names its declaration.
-        let Ty::Named {
-            head: crate::TypeHead::Unresolved(spelling),
-            args,
-        } = mapped
-        else {
-            return mapped;
-        };
-        let name = spelling.as_str();
-        if name.contains('.') {
-            let name = self
-                .module_registry
-                .canonical_registry_signature_type_identity(name, owner)
-                .unwrap_or_else(|| name.to_string());
-            return self.named_ty_for_key(&name, args);
-        }
-        let qualified = format!("{owner}.{name}");
-        self.named_ty_for_key(
-            &if self.type_def_at(&qualified).is_some()
-                || self.module_registry.is_method_receiver_type(&qualified)
-            {
-                qualified
-            } else {
-                name.to_string()
-            },
-            args,
-        )
-    }
-
-    pub(super) fn call_arg_types(&self, args: &[CallArg]) -> Vec<Option<Ty>> {
-        args.iter()
-            .map(|arg| {
-                let (_expr, sp) = arg.expr();
-                self.expr_types
-                    .get(&SpanKey::in_module(sp, self.current_module_idx))
-                    .cloned()
-            })
-            .collect()
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "handles all named-type method dispatch; splitting would scatter related intercepts"
@@ -549,10 +471,7 @@ impl Checker {
         // `unclonable-leaf-fails-closed-transitively`.
         if method_name == "clone" && args.is_empty() {
             if let Ty::Named {
-                head:
-                    head @ (crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_)),
+                head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
                 args: type_args,
                 ..
             } = receiver_ty
@@ -709,10 +628,7 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
-            head:
-                head @ (crate::TypeHead::Nominal(_)
-                | crate::TypeHead::Param(_)
-                | crate::TypeHead::Unresolved(_)),
+            head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
             args: type_args,
             ..
         } = receiver_ty

@@ -88,6 +88,22 @@ pub enum BuiltinType {
     Timestamp,
     Trap,
     CancellationToken,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Isize,
+    Usize,
+    F32,
+    F64,
+    Bool,
+    Char,
+    String,
+    Bytes,
 }
 
 /// One constructor variant registered by a compiler-known generic enum.
@@ -239,6 +255,22 @@ builtin_types! {
     Timestamp => "timestamp",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
+    I8 => "i8",
+    I16 => "i16",
+    I32 => "i32",
+    I64 => "i64",
+    U8 => "u8",
+    U16 => "u16",
+    U32 => "u32",
+    U64 => "u64",
+    Isize => "isize",
+    Usize => "usize",
+    F32 => "f32",
+    F64 => "f64",
+    Bool => "bool",
+    Char => "char",
+    String => "string",
+    Bytes => "bytes",
 }
 
 impl BuiltinType {
@@ -252,6 +284,31 @@ impl BuiltinType {
             ("std.encoding.toml", "Value") => Some(Self::TomlValue),
             _ => None,
         }
+    }
+
+    /// Whether this discriminator names one of the built-in scalar or byte-buffer
+    /// primitive types (`i8`..`bool`, `char`, `string`, `bytes`).
+    #[must_use]
+    pub const fn is_primitive(self) -> bool {
+        matches!(
+            self,
+            Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::Isize
+                | Self::Usize
+                | Self::F32
+                | Self::F64
+                | Self::Bool
+                | Self::Char
+                | Self::String
+                | Self::Bytes
+        )
     }
 
     /// Whether this discriminator owns a format-specific boxed value tree.
@@ -395,7 +452,21 @@ impl BuiltinType {
             | Self::SendError
             | Self::NodeError
             | Self::LookupError
-            | Self::LinkError => BuiltinTypeMarker::BitCopy,
+            | Self::LinkError
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::U8
+            | Self::U16
+            | Self::U32
+            | Self::U64
+            | Self::Isize
+            | Self::Usize
+            | Self::F32
+            | Self::F64
+            | Self::Bool
+            | Self::Char => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -511,6 +582,22 @@ impl BuiltinType {
             | Self::Timestamp
             | Self::Trap
             | Self::CancellationToken
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::U8
+            | Self::U16
+            | Self::U32
+            | Self::U64
+            | Self::Isize
+            | Self::Usize
+            | Self::F32
+            | Self::F64
+            | Self::Bool
+            | Self::Char
+            | Self::String
+            | Self::Bytes
             // An actor handle carries the actor declaration's own type
             // arguments, so it has no fixed builtin arity.
             | Self::ActorHandle => 0,

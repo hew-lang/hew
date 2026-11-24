@@ -2152,7 +2152,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         result.errors
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&result.program);
     // Filter out the expected UnresolvedImport for the dummy stdlib import — the
     // test is about local type naming, not module resolution.

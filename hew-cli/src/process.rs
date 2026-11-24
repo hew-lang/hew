@@ -509,6 +509,60 @@ fn end_immediately(end: ProgramEnd) -> ! {
     }
 }
 
+/// Armed signal/console handlers for a temporary build whose directory has not
+/// been created yet.
+///
+/// Call [`BuildInterrupts::arm`] before creating the temporary directory and
+/// [`Self::watch`] immediately afterwards so an interrupt arriving during
+/// directory creation cannot hit the default disposition and leak the
+/// directory.
+pub(crate) struct ArmedBuildInterrupts {
+    #[cfg(unix)]
+    signals: Option<crate::signal::RunSignals>,
+    #[cfg(windows)]
+    console: ConsoleInterrupts,
+}
+
+impl ArmedBuildInterrupts {
+    /// Begin watching `directory` for interrupts during the compile.
+    ///
+    /// Checks for any interrupt that arrived after [`BuildInterrupts::arm`]
+    /// (including while the directory was being created) immediately so the
+    /// directory is removed and the runner ends at once instead of waiting for
+    /// the watcher thread to start.
+    pub(crate) fn watch(self, directory: &Path) -> BuildInterrupts {
+        if let Some(end) = take_pending_interrupt() {
+            let _ = std::fs::remove_dir_all(directory);
+            end_immediately(end);
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let stop = std::sync::Arc::clone(&stop);
+            let directory = directory.to_path_buf();
+            std::thread::Builder::new()
+                .name("hew-build-interrupts".into())
+                .spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(end) = take_pending_interrupt() {
+                            let _ = std::fs::remove_dir_all(&directory);
+                            end_immediately(end);
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                })
+                .ok()
+        };
+        BuildInterrupts {
+            stop,
+            watcher,
+            #[cfg(unix)]
+            _signals: self.signals,
+            #[cfg(windows)]
+            _console: self.console,
+        }
+    }
+}
+
 /// Interrupts and termination requests while a runner owns a temporary build.
 ///
 /// While the build compiles, a request removes the build directory and ends
@@ -527,35 +581,18 @@ pub(crate) struct BuildInterrupts {
 }
 
 impl BuildInterrupts {
-    pub(crate) fn install(directory: &Path) -> Self {
+    /// Install the runner's interrupt handlers before the temporary build
+    /// directory is created.
+    pub(crate) fn arm() -> ArmedBuildInterrupts {
         #[cfg(unix)]
         let signals = crate::signal::RunSignals::install().ok();
         #[cfg(windows)]
         let console = ConsoleInterrupts::install();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let watcher = {
-            let stop = std::sync::Arc::clone(&stop);
-            let directory = directory.to_path_buf();
-            std::thread::Builder::new()
-                .name("hew-build-interrupts".into())
-                .spawn(move || {
-                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                        if let Some(end) = take_pending_interrupt() {
-                            let _ = std::fs::remove_dir_all(&directory);
-                            end_immediately(end);
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                })
-                .ok()
-        };
-        Self {
-            stop,
-            watcher,
+        ArmedBuildInterrupts {
             #[cfg(unix)]
-            _signals: signals,
+            signals,
             #[cfg(windows)]
-            _console: console,
+            console,
         }
     }
 
@@ -1603,6 +1640,46 @@ mod tests {
             assert!(matches!(outcome, BinaryRunOutcome::Timeout));
             assert!(started.elapsed() < Duration::from_secs(2));
         }
+    }
+
+    #[test]
+    fn armed_build_interrupt_before_watch_removes_directory_and_ends_by_signal() {
+        const FIXTURE: &str = "HEW_ARMED_BUILD_INTERRUPT_FIXTURE";
+        if let Some(directory) = std::env::var_os(FIXTURE) {
+            let directory = std::path::PathBuf::from(directory);
+            let armed = BuildInterrupts::arm();
+            std::fs::create_dir_all(&directory).expect("create build directory");
+            std::fs::write(directory.join("partial.o"), b"partial").expect("write build file");
+            // Simulate SIGINT arriving right after directory creation, before
+            // `watch` has spawned the watcher thread.
+            // SAFETY: raising SIGINT to this child after arming `RunSignals`.
+            assert_eq!(unsafe { libc::raise(libc::SIGINT) }, 0);
+            let _interrupts = armed.watch(&directory);
+            panic!("watch must end the process immediately on a pending interrupt");
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let build_dir = parent.path().join("hew-run-race");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process::tests::armed_build_interrupt_before_watch_removes_directory_and_ends_by_signal",
+                "--nocapture",
+            ])
+            .env(FIXTURE, &build_dir)
+            .output()
+            .expect("run armed build interrupt fixture");
+        assert_eq!(
+            terminating_signal(output.status),
+            Some(libc::SIGINT),
+            "expected SIGINT termination, got status={:?}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !build_dir.exists(),
+            "build directory must be removed even when SIGINT arrives before watch()"
+        );
     }
 
     #[test]

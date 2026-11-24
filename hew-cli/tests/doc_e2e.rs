@@ -192,3 +192,54 @@ fn parse_warnings_report_but_do_not_fail_generation() {
     assert!(out_dir.join("index.html").is_file(), "missing index.html");
     assert!(out_dir.join("warn.html").is_file(), "missing warn.html");
 }
+
+/// Malicious package names in `hew.toml` must fail closed before creating or
+/// writing any documentation files outside `--output-dir`.
+#[test]
+fn malicious_manifest_package_names_fail_closed() {
+    for bad_name in ["../../escape", "/abs/path", r"a\b"] {
+        for format in ["html", "markdown"] {
+            let dir = support::tempdir();
+            let pkg_dir = dir.path().join("pkg");
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(
+                pkg_dir.join("hew.toml"),
+                format!("[package]\nname = {bad_name:?}\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+            std::fs::write(pkg_dir.join("main.hew"), "//! Entry.\nfn main() {}\n").unwrap();
+            let out_dir = dir.path().join("nested").join("docs");
+
+            let output = run_hew(&[
+                "doc",
+                pkg_dir.to_str().unwrap(),
+                "--format",
+                format,
+                "--output-dir",
+                out_dir.to_str().unwrap(),
+            ]);
+
+            assert!(
+                !output.status.success(),
+                "expected nonzero exit for package name {bad_name:?} ({format})\nstderr: {}",
+                String::from_utf8_lossy(&output.stderr),
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("invalid package name"),
+                "expected invalid package name error for {bad_name:?} ({format}), got: {stderr}"
+            );
+            assert!(
+                !out_dir.exists(),
+                "unsafe package name {bad_name:?} ({format}) must not create output directory"
+            );
+            assert!(
+                !dir.path().join("escape.html").exists()
+                    && !dir.path().join("escape.md").exists()
+                    && !dir.path().join("escape.main.html").exists()
+                    && !dir.path().join("escape.main.md").exists(),
+                "unsafe package name {bad_name:?} ({format}) wrote outside output directory"
+            );
+        }
+    }
+}

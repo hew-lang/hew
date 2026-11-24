@@ -91,10 +91,7 @@ impl Checker {
     ) -> IndirectCallCandidates {
         let site = SpanKey::in_module(span, self.current_module_idx);
         if self.dyn_trait_coercions.contains_key(&site) {
-            IndirectCallCandidates::single(CallableCandidate::Erasure {
-                site,
-                value: Box::new(candidates),
-            })
+            candidates.erased(site)
         } else {
             candidates
         }
@@ -283,19 +280,12 @@ impl Checker {
                 })
             };
         if let Some((owner, index)) = identity {
-            let receiver = self.callable_candidates_for_expr(&object.0, &object.1);
-            IndirectCallCandidates {
-                known: receiver
-                    .known
-                    .into_iter()
-                    .map(|receiver| CallableCandidate::Field {
-                        receiver: Box::new(receiver),
-                        owner,
-                        index,
-                    })
-                    .collect(),
-                may_be_unknown: receiver.may_be_unknown,
-            }
+            self.callable_candidates_for_expr(&object.0, &object.1)
+                .project(|receiver| CallableCandidate::Field {
+                    receiver: Box::new(receiver),
+                    owner,
+                    index,
+                })
         } else {
             self.resolved_callable_candidate(&field.1)
         }
@@ -305,11 +295,11 @@ impl Checker {
         &self,
         values: impl Iterator<Item = &'a Spanned<Expr>>,
     ) -> IndirectCallCandidates {
-        IndirectCallCandidates::single(CallableCandidate::Sequence(
+        IndirectCallCandidates::sequence(
             values
                 .map(|value| self.callable_candidates_for_expr(&value.0, &value.1))
                 .collect(),
-        ))
+        )
     }
 
     pub(super) fn callable_candidates_for_block(
@@ -362,19 +352,13 @@ impl Checker {
         if let Expr::FieldAccess { object, field } = &place.0 {
             let key = SpanKey::in_module(&field.1, self.current_module_idx);
             if let Some(Resolution::Field(owner, index)) = self.scopes.resolutions().get(&key) {
-                let source = self.current_place_value_candidates(object);
-                return IndirectCallCandidates {
-                    known: source
-                        .known
-                        .into_iter()
-                        .map(|receiver| CallableCandidate::Field {
-                            receiver: Box::new(receiver),
-                            owner: *owner,
-                            index: *index,
-                        })
-                        .collect(),
-                    may_be_unknown: source.may_be_unknown,
-                };
+                return self
+                    .current_place_value_candidates(object)
+                    .project(|receiver| CallableCandidate::Field {
+                        receiver: Box::new(receiver),
+                        owner: *owner,
+                        index: *index,
+                    });
             }
         }
         self.callable_candidates_for_expr(&place.0, &place.1)
@@ -417,18 +401,11 @@ impl Checker {
                             candidates: if index == selected {
                                 candidates.clone()
                             } else {
-                                IndirectCallCandidates {
-                                    known: base
-                                        .known
-                                        .iter()
-                                        .map(|receiver| CallableCandidate::Field {
-                                            receiver: Box::new(receiver.clone()),
-                                            owner,
-                                            index,
-                                        })
-                                        .collect(),
-                                    may_be_unknown: base.may_be_unknown,
-                                }
+                                base.project(|receiver| CallableCandidate::Field {
+                                    receiver: Box::new(receiver),
+                                    owner,
+                                    index,
+                                })
                             },
                         }
                     })

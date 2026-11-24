@@ -234,3 +234,33 @@ fn a_long_or_pattern_lowers_without_deep_recursion() {
         "f(1_999)",
     );
 }
+
+#[test]
+fn a_long_field_chain_over_a_callable_record_checks_on_a_small_stack() {
+    // A record holding a callable carries call provenance, so each link
+    // projects the provenance of the one below it; past a fixed depth the
+    // provenance is unknown rather than as deep as the chain. Checked and
+    // lowered to HIR only: SIR lowering of this call grows with the square
+    // of the path length.
+    let links = ".kids[0]".repeat(5_000);
+    let source = format!(
+        "type Node {{ kids: Vec<Node>; op: fn(i64) -> i64; }}\n\
+         fn twice(x: i64) -> i64 {{ x * 2 }}\n\
+         fn f(n: Node) -> i64 {{ (n{links}.op)(1) }}\n\
+         fn main() {{ println(f(Node {{ kids: Vec.new(), op: twice }})); }}\n"
+    );
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(move || {
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+            let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+            let types = checker.check_program(&parsed.program);
+            assert!(types.errors.is_empty(), "{:#?}", types.errors);
+            let hir = lower_program_host_target(&parsed.program, &types, &ResolutionCtx);
+            assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+        })
+        .expect("spawn")
+        .join()
+        .expect("a long callable field chain overflowed or failed to check");
+}

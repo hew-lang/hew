@@ -458,18 +458,28 @@ pub fn terminate_process_group(child: &mut Child, label: &str) -> Result<bool, S
 #[cfg(not(unix))]
 pub fn own_process_group(_command: &mut Command) {}
 
-/// Kills and reaps `child` alone on targets without process groups.
+/// Kills and reaps `child` on targets without process groups.
+///
+/// On Windows the whole process tree is terminated with `taskkill /T /F`;
+/// when `taskkill` is unavailable or fails, only the direct child is killed
+/// and the result is `Ok(false)`. Other targets kill the direct child only.
 ///
 /// # Errors
 ///
 /// Returns `Err` if the child cannot be killed or reaped.
 #[cfg(not(unix))]
 pub fn terminate_process_group(child: &mut Child, label: &str) -> Result<bool, String> {
-    kill_child_only(child, label)?;
+    #[cfg(windows)]
+    let tree_killed = taskkill_tree(child, label)?;
+    #[cfg(not(windows))]
+    let tree_killed = {
+        kill_child_only(child, label)?;
+        false
+    };
     child
         .wait()
         .map_err(|error| format!("cannot reap child after kill: {error}"))?;
-    Ok(false)
+    Ok(tree_killed)
 }
 
 #[derive(Debug)]
@@ -582,31 +592,32 @@ fn kill_child_only(child: &mut Child, _label: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 fn windows_kill_taskkill(child: &mut Child, label: &str) -> Result<bool, BoundedExecError> {
+    taskkill_tree(child, label).map_err(|message| BoundedExecError::failed(label, message))
+}
+
+/// Terminates `child` and its descendants with `taskkill /T /F`, falling
+/// back to a direct-child kill (`Ok(false)`) when `taskkill` cannot run or
+/// fails, for example because the process already exited.
+#[cfg(windows)]
+fn taskkill_tree(child: &mut Child, label: &str) -> Result<bool, String> {
     let pid = child.id();
     match Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
     {
         Ok(status) if status.success() => Ok(true),
         Ok(status) => {
             kill_child_only(child, label).map_err(|kill_error| {
-                BoundedExecError::failed(
-                    label,
-                    format!(
-                        "taskkill exited with {status}; fallback child kill failed: {kill_error}"
-                    ),
-                )
+                format!("taskkill exited with {status}; fallback child kill failed: {kill_error}")
             })?;
             Ok(false)
         }
         Err(error) => {
             kill_child_only(child, label).map_err(|kill_error| {
-                BoundedExecError::failed(
-                    label,
-                    format!(
-                        "cannot spawn taskkill: {error}; fallback child kill failed: {kill_error}"
-                    ),
-                )
+                format!("cannot spawn taskkill: {error}; fallback child kill failed: {kill_error}")
             })?;
             Ok(false)
         }
@@ -2450,6 +2461,103 @@ mod windows_job {
         fn drop(&mut self) {
             // SAFETY: self.0 is a valid handle obtained from CreateJobObjectW.
             unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    const ROLE_ENV: &str = "HEW_TESTUTIL_TREE_ROLE";
+    const PID_FILE_ENV: &str = "HEW_TESTUTIL_TREE_PID_FILE";
+
+    fn pid_alive(pid: u32) -> bool {
+        let output = Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH", "/FI", &format!("PID eq {pid}")])
+            .output()
+            .expect("run tasklist");
+        assert!(
+            output.status.success(),
+            "tasklist failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).contains(&format!(",\"{pid}\","))
+    }
+
+    struct ChildTreeGuard {
+        child: Child,
+        disarmed: bool,
+    }
+
+    impl Drop for ChildTreeGuard {
+        fn drop(&mut self) {
+            if !self.disarmed {
+                let _ = terminate_process_group(&mut self.child, "cleanup");
+            }
+        }
+    }
+
+    /// Re-entry point for the spawned test binary: acts as the direct child,
+    /// starts a long-lived grandchild, records its PID, then blocks.
+    #[test]
+    fn tree_child_helper() {
+        if std::env::var(ROLE_ENV).as_deref() != Ok("child") {
+            return;
+        }
+        let mut grandchild = Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn grandchild");
+        let pid_file = std::env::var(PID_FILE_ENV).expect("pid file env");
+        std::fs::write(pid_file, grandchild.id().to_string()).expect("write pid");
+        let _ = grandchild.wait();
+    }
+
+    #[test]
+    fn terminate_process_group_kills_grandchild_tree() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let pid_file = scratch.path().join("grandchild.pid");
+        let mut child_guard = ChildTreeGuard {
+            child: Command::new(std::env::current_exe().expect("current exe"))
+                .args(["--exact", "windows_tests::tree_child_helper", "--nocapture"])
+                .env(ROLE_ENV, "child")
+                .env(PID_FILE_ENV, &pid_file)
+                .spawn()
+                .expect("spawn child"),
+            disarmed: false,
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let grandchild_pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild never reported its pid"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(pid_alive(grandchild_pid), "grandchild should be running");
+
+        let tree_killed =
+            terminate_process_group(&mut child_guard.child, "tree test").expect("terminate tree");
+        child_guard.disarmed = true;
+        assert!(tree_killed, "taskkill /T should report the tree killed");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pid_alive(grandchild_pid) {
+            assert!(
+                Instant::now() < deadline,
+                "grandchild {grandchild_pid} survived terminate_process_group"
+            );
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }

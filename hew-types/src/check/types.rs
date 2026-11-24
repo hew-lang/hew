@@ -1160,6 +1160,10 @@ pub enum CallableCandidate {
         owner: crate::NominalId,
         index: u32,
     },
+    /// Conservative summary of any descendant reachable through projections,
+    /// awaits, erasures, or sequences once candidate nesting reaches
+    /// `MAX_PROJECTION_DEPTH`.
+    AnyMember(Box<Self>),
 }
 
 /// One checker-selected field write in a record initializer.
@@ -1219,6 +1223,82 @@ pub struct IndirectCallCandidates {
     pub may_be_unknown: bool,
 }
 
+/// The deepest nesting depth a callable provenance records before widening to
+/// [`CallableCandidate::AnyMember`].
+const MAX_PROJECTION_DEPTH: usize = 32;
+
+impl CallableCandidate {
+    /// Bounded nesting depth across recursive provenance wrappers (`Field`,
+    /// `Element`, `TaskResult`, `Erasure`, `Sequence`, `AnyMember`), stopping
+    /// once `limit` is reached so deep trees stay O(1)-bounded.
+    fn nesting_depth_capped(&self, limit: usize) -> usize {
+        if limit == 0 {
+            return 0;
+        }
+        match self {
+            Self::AnyMember(_) => MAX_PROJECTION_DEPTH.min(limit),
+            Self::Field { receiver, .. }
+            | Self::Element { receiver, .. }
+            | Self::TaskResult(receiver) => 1 + receiver.nesting_depth_capped(limit - 1),
+            Self::Erasure { value, .. } => 1 + value.max_nesting_depth_capped(limit - 1),
+            Self::Sequence(items) => {
+                let child_limit = limit - 1;
+                let mut max_child = 0;
+                for item in items {
+                    max_child = max_child.max(item.max_nesting_depth_capped(child_limit));
+                    if max_child >= child_limit {
+                        break;
+                    }
+                }
+                1 + max_child
+            }
+            Self::ActorSelf(_)
+            | Self::Declaration(_)
+            | Self::Closure(_)
+            | Self::GeneratorBlock(_)
+            | Self::Generator(_)
+            | Self::GeneratorCall(_)
+            | Self::TaskProducer(_)
+            | Self::Formal(_)
+            | Self::LoopInput { .. }
+            | Self::Aggregate(_)
+            | Self::CallWriteback(_)
+            | Self::CallResult(_) => 0,
+        }
+    }
+
+    /// Collapse recursive wrappers down to non-recursive leaf origins wrapped in
+    /// [`Self::AnyMember`], preserving reachability through arbitrary members.
+    fn widen_to_any_member(&self, out: &mut IndirectCallCandidates) {
+        match self {
+            Self::AnyMember(_) => out.push_unique(self.clone()),
+            Self::Field { receiver, .. }
+            | Self::Element { receiver, .. }
+            | Self::TaskResult(receiver) => receiver.widen_to_any_member(out),
+            Self::Erasure { value, .. } => value.widen_into(out),
+            Self::Sequence(items) => {
+                for item in items {
+                    item.widen_into(out);
+                }
+            }
+            Self::ActorSelf(_)
+            | Self::Declaration(_)
+            | Self::Closure(_)
+            | Self::GeneratorBlock(_)
+            | Self::Generator(_)
+            | Self::GeneratorCall(_)
+            | Self::TaskProducer(_)
+            | Self::Formal(_)
+            | Self::LoopInput { .. }
+            | Self::Aggregate(_)
+            | Self::CallWriteback(_)
+            | Self::CallResult(_) => {
+                out.push_unique(Self::AnyMember(Box::new(self.clone())));
+            }
+        }
+    }
+}
+
 impl IndirectCallCandidates {
     #[must_use]
     pub fn unknown() -> Self {
@@ -1235,42 +1315,104 @@ impl IndirectCallCandidates {
         }
     }
 
-    pub(super) fn task_results(mut self) -> Self {
-        self.known = self
-            .known
-            .into_iter()
-            .map(|candidate| CallableCandidate::TaskResult(Box::new(candidate)))
-            .collect();
-        self
+    fn push_unique(&mut self, candidate: CallableCandidate) {
+        if !self.known.contains(&candidate) {
+            self.known.push(candidate);
+        }
+    }
+
+    fn max_nesting_depth_capped(&self, limit: usize) -> usize {
+        let mut max_depth = 0;
+        for candidate in &self.known {
+            max_depth = max_depth.max(candidate.nesting_depth_capped(limit));
+            if max_depth >= limit {
+                break;
+            }
+        }
+        max_depth
+    }
+
+    fn widen_into(&self, out: &mut Self) {
+        out.may_be_unknown |= self.may_be_unknown;
+        for candidate in &self.known {
+            candidate.widen_to_any_member(out);
+        }
+    }
+
+    fn widen_all(&self) -> Self {
+        let mut widened = Self::unknown();
+        self.widen_into(&mut widened);
+        widened
+    }
+
+    pub(super) fn erased(self, site: SpanKey) -> Self {
+        if self.max_nesting_depth_capped(MAX_PROJECTION_DEPTH) < MAX_PROJECTION_DEPTH {
+            Self::single(CallableCandidate::Erasure {
+                site,
+                value: Box::new(self),
+            })
+        } else {
+            self.widen_all()
+        }
+    }
+
+    pub(super) fn sequence(values: Vec<Self>) -> Self {
+        if values
+            .iter()
+            .any(|item| item.max_nesting_depth_capped(MAX_PROJECTION_DEPTH) >= MAX_PROJECTION_DEPTH)
+        {
+            let mut widened = Self::unknown();
+            for item in values {
+                item.widen_into(&mut widened);
+            }
+            widened
+        } else {
+            Self::single(CallableCandidate::Sequence(values))
+        }
+    }
+
+    pub(super) fn task_results(self) -> Self {
+        self.project(|candidate| CallableCandidate::TaskResult(Box::new(candidate)))
     }
 
     /// Select a checked record field or positional member from each possible source.
     pub(super) fn project_member(&self, owner: Option<crate::NominalId>, index: usize) -> Self {
-        Self {
-            known: self
-                .known
-                .iter()
-                .map(|receiver| match owner {
-                    Some(owner) => CallableCandidate::Field {
-                        receiver: Box::new(receiver.clone()),
-                        owner,
-                        index: u32::try_from(index).expect("checked field index"),
-                    },
-                    None => CallableCandidate::Element {
-                        receiver: Box::new(receiver.clone()),
-                        index,
-                    },
-                })
-                .collect(),
+        self.project(|receiver| match owner {
+            Some(owner) => CallableCandidate::Field {
+                receiver: Box::new(receiver),
+                owner,
+                index: u32::try_from(index).expect("checked field index"),
+            },
+            None => CallableCandidate::Element {
+                receiver: Box::new(receiver),
+                index,
+            },
+        })
+    }
+
+    /// Wrap each source in one more projection. A source already
+    /// [`MAX_PROJECTION_DEPTH`] levels deep widens to [`CallableCandidate::AnyMember`]
+    /// at its leaf origin with `may_be_unknown = true` so deep chains stay
+    /// bounded while preserving conservative descendant escape tracking.
+    pub(super) fn project(&self, wrap: impl Fn(CallableCandidate) -> CallableCandidate) -> Self {
+        let mut projected = Self {
+            known: Vec::new(),
             may_be_unknown: self.may_be_unknown,
+        };
+        for receiver in &self.known {
+            if receiver.nesting_depth_capped(MAX_PROJECTION_DEPTH) < MAX_PROJECTION_DEPTH {
+                projected.push_unique(wrap(receiver.clone()));
+            } else {
+                projected.may_be_unknown = true;
+                receiver.widen_to_any_member(&mut projected);
+            }
         }
+        projected
     }
 
     pub(crate) fn join(&mut self, other: Self) {
         for candidate in other.known {
-            if !self.known.contains(&candidate) {
-                self.known.push(candidate);
-            }
+            self.push_unique(candidate);
         }
         self.may_be_unknown |= other.may_be_unknown;
     }
@@ -4854,5 +4996,49 @@ impl Checker {
 impl Default for Checker {
     fn default() -> Self {
         Self::new(ModuleRegistry::new(vec![]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallableCandidate, IndirectCallCandidates, SpanKey, MAX_PROJECTION_DEPTH};
+    use crate::env::TypeBindingId;
+    use crate::DefTable;
+
+    #[test]
+    fn mixed_candidate_wrappers_stay_depth_bounded_on_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let owner = DefTable::new().mint_nominal_for_test("Node");
+                let site = SpanKey::in_module(&(0..1), 0);
+                let formal = TypeBindingId(1);
+                let mut current = IndirectCallCandidates::single(CallableCandidate::Formal(formal));
+
+                for step in 0..5_000 {
+                    current = match step % 5 {
+                        0 => current.project_member(Some(owner), step),
+                        1 => current.project_member(None, step),
+                        2 => current.task_results(),
+                        3 => current.erased(site.clone()),
+                        _ => IndirectCallCandidates::sequence(vec![current]),
+                    };
+                    assert!(
+                        current.max_nesting_depth_capped(MAX_PROJECTION_DEPTH + 1)
+                            <= MAX_PROJECTION_DEPTH
+                    );
+                }
+
+                assert!(current.may_be_unknown);
+                assert_eq!(
+                    current.known,
+                    vec![CallableCandidate::AnyMember(Box::new(
+                        CallableCandidate::Formal(formal),
+                    ))]
+                );
+            })
+            .expect("spawn")
+            .join()
+            .expect("5000-step candidate wrapping overflowed small stack");
     }
 }

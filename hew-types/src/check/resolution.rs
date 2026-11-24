@@ -1208,7 +1208,10 @@ impl Checker {
         }
 
         crate::ty::TraitObjectBound {
-            trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+            trait_name: trait_id.map_or_else(
+                || bound.path.to_string(),
+                |id| self.defs.display(id).to_string(),
+            ),
             trait_id,
             args,
             assoc_bindings,

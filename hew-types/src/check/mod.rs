@@ -3352,7 +3352,6 @@ impl Checker {
             local_type_defs: self.local_type_defs.clone(),
             source_type_defs: self.source_type_defs.clone(),
             current_self_type: self.current_self_type.clone(),
-            current_impl_surface_target: self.current_impl_surface_target.clone(),
             current_actor_type: self.current_actor_type.clone(),
             actor_field_binding_ids: self.actor_field_binding_ids.clone(),
             current_actor_fields: self.current_actor_fields.clone(),

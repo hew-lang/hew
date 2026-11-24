@@ -3129,21 +3129,19 @@ fn local_trait_implemented_for_an_imported_type_dispatches() {
             .filter(|key| key.ends_with("::tag"))
             .collect::<Vec<_>>()
     );
-    // HIR reconstructs an impl block's emitted symbol from the spelling the
-    // source wrote, so the declaration stays reachable under it as well — one
-    // declaration, not two.
-    let surface = output.impl_method_declaration_ids.get("thing.Thing::tag");
+    // Declaration IDs register under the target's canonical identity (`pkg.thing.Thing::tag`),
+    // never under the caller's surface module spelling (`thing.Thing::tag`).
     assert!(
-        surface.is_some(),
-        "the surface spelling must select a declaration: {:?}",
+        output
+            .impl_method_declaration_ids
+            .contains_key("pkg.thing.Thing::tag"),
+        "the canonical identity must select a declaration: {:?}",
         output.impl_method_declaration_ids
     );
     assert_eq!(
-        surface,
-        output
-            .impl_method_declaration_ids
-            .get("pkg.thing.Thing::tag"),
-        "surface and identity keys must select one declaration: {:?}",
+        output.impl_method_declaration_ids.get("thing.Thing::tag"),
+        None,
+        "surface alias key must not be registered: {:?}",
         output.impl_method_declaration_ids
     );
 }

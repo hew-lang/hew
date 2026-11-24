@@ -178,8 +178,8 @@ else
     info "Mode: generate + distribute"
 fi
 
-# ── Step 1: Validate syntax-data.json against the lexer ──────────────
-next_step "Validating syntax-data.json against lexer..."
+# ── Step 1: Sync docs/syntax-data.json version & validate against lexer ──
+next_step "Syncing and validating syntax-data.json against Cargo.toml and lexer..."
 
 if [ ! -f "$SYNTAX_DATA" ]; then
     fail "docs/syntax-data.json not found!"
@@ -187,8 +187,31 @@ if [ ! -f "$SYNTAX_DATA" ]; then
 fi
 
 cd "$REPO_ROOT"
+
+WORKSPACE_VERSION="$(awk -F'"' '/^\[workspace\.package\]/ { section = 1; next } /^\[/ { section = 0 } section && /^version[[:space:]]*=/ { print $2; exit }' "$REPO_ROOT/Cargo.toml")"
+if [ -z "$WORKSPACE_VERSION" ]; then
+    fail "Could not read [workspace.package] version from Cargo.toml!"
+    exit 1
+fi
+
+SYNTAX_VERSION="$(node -e 'const fs = require("fs"); const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(data.version ?? ""));' "$SYNTAX_DATA")"
+if [ "$SYNTAX_VERSION" != "$WORKSPACE_VERSION" ]; then
+    if $CHECK_ONLY; then
+        fail "Drift detected in docs/syntax-data.json (version $SYNTAX_VERSION != Cargo.toml $WORKSPACE_VERSION)"
+        DRIFTS=$((DRIFTS + 1))
+    else
+        node -e 'const fs = require("fs"); const file = process.argv[1]; const version = process.argv[2]; const data = JSON.parse(fs.readFileSync(file, "utf8")); data.version = version; fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");' "$SYNTAX_DATA" "$WORKSPACE_VERSION"
+        ok "Updated docs/syntax-data.json version ($SYNTAX_VERSION -> $WORKSPACE_VERSION)"
+        UPDATED=$((UPDATED + 1))
+    fi
+else
+    ok "docs/syntax-data.json version matches Cargo.toml ($WORKSPACE_VERSION)"
+fi
+
 if cargo test -p hew-lexer -- syntax_data --quiet 2>/dev/null; then
-    ok "syntax-data.json matches ALL_KEYWORDS"
+    ok "syntax-data.json matches ALL_KEYWORDS and workspace version"
+elif $CHECK_ONLY && [ "$SYNTAX_VERSION" != "$WORKSPACE_VERSION" ]; then
+    warn "Skipped strict lexer version check after reporting syntax-data.json version drift"
 else
     fail "syntax-data.json is OUT OF SYNC with hew-lexer!"
     echo ""

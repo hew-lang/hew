@@ -584,7 +584,7 @@ impl Checker {
             ) else {
                 continue;
             };
-            self.record_fn_sig_inference_holes(&key, hole_vars);
+            self.record_fn_sig_inference_holes(declaration, hole_vars);
             self.insert_fn_sig(&key, declaration, sig);
             if f.is_offload() {
                 self.pending_offloads

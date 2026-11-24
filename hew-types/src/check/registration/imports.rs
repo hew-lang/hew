@@ -18,6 +18,17 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 use hew_parser::module::ModulePath;
 
+fn path_matches_skipped(path: &hew_parser::ast::Path, skipped: &HashSet<String>) -> bool {
+    match path.segments.as_slice() {
+        [(ident, _)] => skipped.contains(ident.name.as_str()),
+        [(owner, _), (leaf, _)] => skipped.iter().any(|name| {
+            name.split_once('.')
+                .is_some_and(|(a, b)| a == owner.name.as_str() && b == leaf.name.as_str())
+        }),
+        _ => false,
+    }
+}
+
 impl Checker {
     /// Report `import` declarations no resolution went through.
     fn record_reportable_import(&mut self, name: &str, span: &Span) {
@@ -1470,8 +1481,7 @@ impl Checker {
                         path: named_path, ..
                     } = &id.target_type.0
                     {
-                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        if skipped_type_names.contains(type_name) {
+                        if path_matches_skipped(named_path, &skipped_type_names) {
                             continue;
                         }
                         let importer_module = self.current_module.take();
@@ -1491,9 +1501,11 @@ impl Checker {
                         // placeholder the dispatch-time binding zips against
                         // the receiver's concrete args.
                         let self_ty = self.resolve_impl_target(id);
-                        let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                            self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                        });
+                        let type_name = self.impl_target_identity(&self_ty);
+                        let primitive_key = id
+                            .trait_bound
+                            .as_ref()
+                            .and_then(|_| Self::canonical_primitive_or_builtin_key(&self_ty));
                         // The enclosing impl's self type, as every other
                         // registration path publishes it. `register_impl_method`
                         // reads it to tell `impl Render for Box<i64>` from
@@ -1516,7 +1528,7 @@ impl Checker {
                                 continue;
                             }
                             let sig = self.register_impl_method(
-                                type_name,
+                                &type_name,
                                 method,
                                 id.type_params.as_ref(),
                                 id.where_clause.as_ref(),

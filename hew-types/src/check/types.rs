@@ -3739,7 +3739,7 @@ pub struct Checker {
     /// private `methods`.
     pub(super) actor_receive_methods: HashSet<crate::DefId>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
-    pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
+    pub(super) fn_sig_inference_holes: HashMap<crate::DefId, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_call_returns: Vec<super::return_inference::CallReturn>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,

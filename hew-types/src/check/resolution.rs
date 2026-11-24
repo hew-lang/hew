@@ -1313,12 +1313,15 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_fn_sig_inference_holes(&mut self, name: &str, hole_vars: Vec<TypeVar>) {
-        if !hole_vars.is_empty() {
-            self.fn_sig_inference_holes
-                .entry(name.to_string())
-                .or_default()
-                .extend(hole_vars);
+    pub(super) fn record_fn_sig_inference_holes(
+        &mut self,
+        declaration: crate::DefId,
+        hole_vars: Vec<TypeVar>,
+    ) {
+        if hole_vars.is_empty() {
+            self.fn_sig_inference_holes.remove(&declaration);
+        } else {
+            self.fn_sig_inference_holes.insert(declaration, hole_vars);
         }
     }
 
@@ -1471,12 +1474,14 @@ impl Checker {
                 let module_name = module_id.dotted();
                 self.report_unresolved_inference_in_items(
                     &module.items,
+                    Some(module_id),
+                    Some(module_graph),
                     Some(module_name.as_str()),
                 );
             }
         }
 
-        self.report_unresolved_inference_in_items(&program.items, None);
+        self.report_unresolved_inference_in_items(&program.items, None, None, None);
 
         // Drain body-level deferred inference holes accumulated across ALL modules
         // (root and every non-root module body checked earlier in check_program).
@@ -1620,6 +1625,8 @@ impl Checker {
     pub(super) fn report_unresolved_inference_in_items(
         &mut self,
         items: &[Spanned<Item>],
+        module_id: Option<&hew_parser::module::ModulePath>,
+        module_graph: Option<&hew_parser::module::ModuleGraph>,
         module_name: Option<&str>,
     ) {
         // Snapshot error count so we can tag newly-emitted errors with the source
@@ -1627,15 +1634,35 @@ impl Checker {
         // non-root module must point to that module's source file when rendered.
         let err_before = self.errors.len();
 
-        for (item, span) in items {
+        for (item_ordinal, (item, span)) in items.iter().enumerate() {
+            let occurrence_module = match (module_graph, module_id) {
+                (Some(graph), Some(mod_id)) => graph
+                    .item_source(mod_id, item_ordinal)
+                    .or_else(|| {
+                        graph
+                            .modules
+                            .get(mod_id)
+                            .and_then(|module| module.source_paths.first())
+                    })
+                    .and_then(|source| self.defs.module_for_source(source))
+                    .or_else(|| module_name.and_then(|name| self.defs.module_for_path(name))),
+                _ => self.defs.root_module(),
+            };
+            let declaration_at = |kind: crate::DeclarationKind, occ_span: &Span, ordinal: usize| {
+                let occ = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    occurrence_module,
+                    occ_span,
+                    item_ordinal,
+                    kind,
+                    ordinal,
+                );
+                self.defs.declaration(occ)
+            };
             match item {
                 Item::Function(fd) => {
-                    if lookup_scoped_item(
-                        &self.fn_sig_inference_holes,
-                        module_name.or_else(|| self.canonical_fn_owner()),
-                        fd.name.name.as_str(),
-                    )
-                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    if declaration_at(crate::DeclarationKind::Function, span, 0)
+                        .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
                         let return_hole = fd.return_type.as_ref().filter(|_| {
                             fd.params
@@ -1708,11 +1735,10 @@ impl Checker {
                         ));
                     }
 
-                    for method in &ad.methods {
+                    for (index, method) in ad.methods.iter().enumerate() {
                         let method_name = format!("{}::{}", ad.name, method.name);
-                        if self
-                            .fn_sig_inference_holes
-                            .get(&method_name)
+                        if declaration_at(crate::DeclarationKind::ActorMethod, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
                             .is_some_and(|hole_vars| {
                                 self.inference_holes_still_unresolved(hole_vars)
                             })
@@ -1724,11 +1750,10 @@ impl Checker {
                         }
                     }
 
-                    for receive_fn in &ad.receive_fns {
+                    for (index, receive_fn) in ad.receive_fns.iter().enumerate() {
                         let receive_name = format!("{}::{}", ad.name, receive_fn.name);
-                        if self
-                            .fn_sig_inference_holes
-                            .get(&receive_name)
+                        if declaration_at(crate::DeclarationKind::ActorReceive, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
                             .is_some_and(|hole_vars| {
                                 self.inference_holes_still_unresolved(hole_vars)
                             })
@@ -1741,13 +1766,12 @@ impl Checker {
                     }
                 }
                 Item::ExternBlock(eb) => {
-                    for function in &eb.functions {
-                        if lookup_scoped_item(
-                            &self.fn_sig_inference_holes,
-                            module_name,
-                            function.name.name.as_str(),
-                        )
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    for (index, function) in eb.functions.iter().enumerate() {
+                        if declaration_at(crate::DeclarationKind::ExternFunction, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
                         {
                             let error_span = first_infer_span_in_extern_fn(function)
                                 .unwrap_or_else(|| span.clone());
@@ -1759,36 +1783,49 @@ impl Checker {
                     }
                 }
                 Item::Impl(id) => {
-                    if let TypeExpr::Named {
-                        path: named_path, ..
-                    } = &id.target_type.0
-                    {
-                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        for method in &id.methods {
-                            let method_name = format!("{type_name}::{}", method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of method `{method_name}`"),
-                                ));
-                            }
+                    for method in &id.methods {
+                        let Some(declaration) =
+                            declaration_at(crate::DeclarationKind::ImplMethod, &method.fn_span, 0)
+                        else {
+                            continue;
+                        };
+                        if self
+                            .fn_sig_inference_holes
+                            .get(&declaration)
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            let diagnostic_path = self.defs.callable_diagnostic_path(declaration);
+                            let method_name = crate::short_name(diagnostic_path.as_ref());
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of method `{method_name}`"),
+                            ));
                         }
                     }
                 }
                 Item::Trait(td) => {
-                    for trait_item in &td.items {
-                        if let TraitItem::Method(method) = trait_item {
-                            let method_name = format!("{}::{}", td.name, method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of trait method `{method_name}`"),
-                                ));
-                            }
+                    for (index, method) in td
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            TraitItem::Method(method) => Some(method),
+                            TraitItem::AssociatedType { .. } => None,
+                        })
+                        .enumerate()
+                    {
+                        let method_name = format!("{}::{}", td.name, method.name);
+                        if declaration_at(crate::DeclarationKind::TraitMethod, span, index)
+                            .and_then(|declaration| self.fn_sig_inference_holes.get(&declaration))
+                            .is_some_and(|hole_vars| {
+                                self.inference_holes_still_unresolved(hole_vars)
+                            })
+                        {
+                            self.errors.push(TypeError::inference_failed(
+                                span.clone(),
+                                &format!("signature of trait method `{method_name}`"),
+                            ));
                         }
                     }
                 }

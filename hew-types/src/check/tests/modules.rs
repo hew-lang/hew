@@ -3194,3 +3194,96 @@ fn repeated_stdlib_import_does_not_grant_ordering_to_unbounded_parameters() {
     assert!(output.errors[0].message.contains("`PartialOrd`"));
     assert_eq!(output.errors[0].source_module, Some("second".to_string()));
 }
+
+fn imported_impl_hole_program(holders_source: &str, root_source: &str) -> TypeCheckOutput {
+    let holders_parsed = hew_parser::parse(holders_source);
+    assert!(
+        holders_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        holders_parsed.errors
+    );
+    let root_parsed = hew_parser::parse(root_source);
+    assert!(
+        root_parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        root_parsed.errors
+    );
+
+    let root_id = ModulePath::root();
+    let holders_id = ModulePath::new(["holders"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: holders_id.clone(),
+            items: holders_parsed.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .unwrap();
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root_parsed.program.items,
+            imports: vec![hew_parser::module::ModuleImport {
+                target: holders_id.clone(),
+                spec: None,
+                span: 0..0,
+            }],
+            source_paths: vec![],
+            doc: None,
+        })
+        .unwrap();
+    graph.topo_order = vec![holders_id, root_id];
+
+    let program = Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+    };
+    Checker::new(ModuleRegistry::new(vec![])).check_program(&program)
+}
+
+#[test]
+fn imported_impl_method_inferred_return_hole_survives_reregistration() {
+    let output = imported_impl_hole_program(
+        "pub type Holder<T> { value: T; }\n\
+         impl<T> Holder<T> {\n\
+             pub fn make(value: T) -> _ { Holder { value: value } }\n\
+         }",
+        "import holders;\n\
+         fn main() {\n\
+             let f = holders.Holder<i64>.make;\n\
+             let _ = f(1).value;\n\
+         }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "imported impl method with inferred return must survive re-registration: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn imported_impl_method_unresolved_hole_still_reports_inference_failed() {
+    let output = imported_impl_hole_program(
+        "pub type Holder<T> { value: T; }\n\
+         impl<T> Holder<T> {\n\
+             pub fn bad(x: _) {}\n\
+         }",
+        "import holders;\nfn main() {}",
+    );
+    let inference_errs: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
+        .collect();
+    assert_eq!(
+        inference_errs.len(),
+        1,
+        "unresolved imported impl signature hole must still report once: {:?}",
+        output.errors
+    );
+    assert_eq!(inference_errs[0].source_module.as_deref(), Some("holders"));
+}

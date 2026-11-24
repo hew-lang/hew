@@ -392,9 +392,17 @@ impl Checker {
                 let previous_self = self
                     .current_self_type
                     .replace((identity.clone(), actor_self));
+                let actor_decl = self.lookup_declaration(&identity);
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
-                    self.register_fn_sig_with_name(&method_name, method, None);
+                    let method_decl = actor_decl.and_then(|owner| {
+                        self.defs.member_of_kind(
+                            owner,
+                            method.name.name,
+                            crate::DeclarationKind::ActorMethod,
+                        )
+                    });
+                    self.register_fn_sig_with_name(&method_name, method, method_decl);
                     // An actor-body plain `fn` is a callable declaration, so it
                     // needs the same declaration row every other source-declared
                     // callable has: `call_target_for_signature` reads
@@ -438,20 +446,9 @@ impl Checker {
                     path: named_path, ..
                 } = &id.target_type.0
                 {
-                    let target_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                                                               // An impl target written through a module binding
-                                                               // (`impl Tagged for json.Value`) names a declaration whose
-                                                               // identity is `std.encoding.json.Value`. Resolve that
-                                                               // surface spelling ONCE, here, so every method table this
-                                                               // arm writes is keyed by the same identity method
-                                                               // resolution looks the receiver up under. Leaving it as
-                                                               // written registers the methods where nothing can find
-                                                               // them, and the impl is silently ignored.
-                    let canonical_target = self.canonical_impl_target_identity(named_path);
-                    let type_name = canonical_target.as_ref().unwrap_or(target_name);
                     let prev_impl_surface_target = self
                         .current_impl_surface_target
-                        .replace(target_name.clone());
+                        .replace(named_path.to_string());
                     // Do NOT push generic_ctx here — type params like T should remain
                     // as Ty::Named so that substitute_type_param can replace them
                     // at method call sites with concrete type arguments.
@@ -459,19 +456,20 @@ impl Checker {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
                     let self_ty = self.resolve_impl_target(id);
-                    self.current_self_type = Some((type_name.clone(), self_ty));
+                    let type_name = self.impl_target_identity(&self_ty);
+                    let type_name = type_name.as_str();
+                    let primitive_key = id
+                        .trait_bound
+                        .as_ref()
+                        .and_then(|_| Self::canonical_primitive_or_builtin_key(&self_ty));
+                    self.current_self_type = Some((type_name.to_string(), self_ty));
                     if !self.admit_source_impl(id, span, SourceImplOrigin::Source) {
                         self.current_self_type = prev_self_type;
                         self.current_impl_surface_target = prev_impl_surface_target;
                         return;
                     }
-                    let scope_pushed =
-                        self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
+                    let scope_pushed = self.enter_impl_scope(id, span, Some(type_name), false);
                     let impl_trait = self.impl_trait_ref(id);
-
-                    let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                        self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                    });
 
                     // Validate the impl provides EXACTLY the trait's method set
                     // (every required method present, no extraneous method),
@@ -778,12 +776,20 @@ impl Checker {
             }
             Item::Supervisor(supervisor) => {
                 let identity = self.declaration_identity(supervisor.name);
+                let supervisor_decl = self.lookup_declaration(&identity);
                 let scope = self.enter_primary_sig_scope(&[(Some(&supervisor.type_params), None)]);
                 for method in &supervisor.methods {
+                    let method_decl = supervisor_decl.and_then(|owner| {
+                        self.defs.member_of_kind(
+                            owner,
+                            method.name.name,
+                            crate::DeclarationKind::SupervisorMethod,
+                        )
+                    });
                     self.register_fn_sig_with_name(
                         &format!("{identity}::{}", method.name),
                         method,
-                        None,
+                        method_decl,
                     );
                 }
                 self.exit_primary_sig_scope(scope);
@@ -1063,11 +1069,16 @@ impl Checker {
             },
             |id| self.defs.path(id).to_string(),
         );
+        let resolved_declaration = declaration.or_else(|| self.fn_sig_keys.get(&key).copied());
         match declaration {
             Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
             None => self.insert_fn_sig_at(&key, sig),
         }
-        self.record_fn_sig_inference_holes(&key, hole_vars);
+        if let Some(declaration) =
+            resolved_declaration.or_else(|| self.fn_sig_keys.get(&key).copied())
+        {
+            self.record_fn_sig_inference_holes(declaration, hole_vars);
+        }
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
         // skip the body and wire to the catalog.
@@ -1812,6 +1823,24 @@ impl Checker {
         }
     }
 
+    /// Derive the canonical impl-target key from a resolved `self_ty` so
+    /// registration paths use Scope-resolved identities instead of AST path
+    /// spellings.
+    pub(in crate::check) fn impl_target_identity(&self, self_ty: &Ty) -> String {
+        match self_ty {
+            Ty::Named { head, .. } => match head {
+                crate::TypeHead::Nominal(nominal) | crate::TypeHead::Actor(nominal) => {
+                    self.defs.path(nominal.id.declaration()).to_string()
+                }
+                crate::TypeHead::Builtin(builtin) => builtin.canonical_name().to_string(),
+                crate::TypeHead::Param(param) => param.spelling.to_string(),
+                crate::TypeHead::Unresolved(sym) => sym.as_str().to_string(),
+            },
+            Ty::Generator { .. } => crate::BuiltinType::Generator.canonical_name().to_string(),
+            _ => self_ty.user_facing().to_string(),
+        }
+    }
+
     /// Derive every key one impl method's declaration identity is published
     /// under, from the shape of the enclosing impl block.
     ///
@@ -2222,7 +2251,7 @@ impl Checker {
             }
         }
         self.actor_receive_methods.insert(handler);
-        self.record_fn_sig_inference_holes(&method_name, hole_vars);
+        self.record_fn_sig_inference_holes(handler, hole_vars);
         self.insert_fn_sig(&method_name, handler, sig);
     }
 

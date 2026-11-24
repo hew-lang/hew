@@ -2022,6 +2022,7 @@ mod tests {
 
     #[test]
     fn live_execution_metadata_uses_the_existing_stream_without_payloads() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
         hew_trace_enable(1);
@@ -2088,11 +2089,23 @@ mod tests {
     }
 
     struct TraceTestSetup {
-        _guard: std::sync::MutexGuard<'static, ()>,
         _ctx: TestExecutionContext,
+        _guard: std::sync::MutexGuard<'static, ()>,
+        // Acquired before `_guard` (matching the crate-wide lock order:
+        // `SCHED_TEST_MUTEX` -> `TRACING_TEST_LOCK`) and dropped last so
+        // concurrent runtime tests cannot emit spans while global tracing is
+        // enabled.
+        _runtime_guard: crate::RuntimeTestGuard,
+    }
+
+    impl Drop for TraceTestSetup {
+        fn drop(&mut self) {
+            hew_trace_reset();
+        }
     }
 
     fn setup() -> TraceTestSetup {
+        let runtime_guard = crate::runtime_test_guard();
         let guard = tracing_test_guard();
         let ctx = TestExecutionContext::install(HewExecutionContext::default());
         hew_trace_reset();
@@ -2107,8 +2120,9 @@ mod tests {
         // assertions on `timestamp_ns` are made.
         let _ = trace_now_ns();
         TraceTestSetup {
-            _guard: guard,
             _ctx: ctx,
+            _guard: guard,
+            _runtime_guard: runtime_guard,
         }
     }
 
@@ -2219,6 +2233,7 @@ mod tests {
 
     #[test]
     fn enable_disable() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
         assert_eq!(hew_trace_is_enabled(), 0);
@@ -2335,6 +2350,7 @@ mod tests {
     /// zero default.
     #[test]
     fn current_context_mints_sampled_root_on_external_send() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
         hew_trace_enable(1);
@@ -2372,6 +2388,7 @@ mod tests {
     /// on a subsequent call (joins the live trace rather than re-rooting).
     #[test]
     fn ensure_supervisor_trace_root_mints_then_inherits() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         let _ctx = TestExecutionContext::install(HewExecutionContext::default());
         hew_trace_reset();
@@ -2966,6 +2983,7 @@ mod tests {
 
     #[test]
     fn enable_publishes_replacement_generation_before_recording() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
 
@@ -3044,6 +3062,7 @@ mod tests {
 
     #[test]
     fn external_send_has_unknown_source_and_real_destination() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
         hew_trace_enable(1);
@@ -3060,6 +3079,7 @@ mod tests {
             record.event.actor_id, 22,
             "legacy C projection remains useful"
         );
+        hew_trace_reset();
     }
 
     #[test]
@@ -3209,6 +3229,7 @@ mod tests {
     /// clobbering `hew_last_error` when invoked outside an actor context.
     #[test]
     fn substrate_cancellation_spans_emit_without_clobbering_last_error() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = tracing_test_guard();
         hew_trace_reset();
         hew_trace_enable(1);
@@ -3218,6 +3239,14 @@ mod tests {
         unsafe {
             let token = crate::cancel_token::hew_cancel_token_new_child(std::ptr::null_mut());
             assert_eq!(crate::cancel_token::hew_cancel_token_is_requested(token), 0);
+            // Non-cancelled polls must not flood the trace ring.
+            assert_eq!(
+                trace_snapshot(None, None, 8)
+                    .expect("pre-cancel snapshot")
+                    .events
+                    .len(),
+                0
+            );
             crate::cancel_token::hew_cancel_token_cancel(token, 7);
             assert_eq!(crate::cancel_token::hew_cancel_token_is_requested(token), 1);
             crate::cancel_token::hew_cancel_token_release(token);
@@ -3227,10 +3256,8 @@ mod tests {
         let err_ptr = crate::hew_last_error();
         assert!(!err_ptr.is_null());
         // SAFETY: hew_last_error returns a valid NUL-terminated C string.
-        assert_eq!(
-            unsafe { std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap() },
-            "prior error"
-        );
+        let err_msg = unsafe { std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap() };
+        assert_eq!(err_msg, "prior error");
 
         // SAFETY: fresh checked scope created, cancelled, and closed here.
         unsafe {
@@ -3272,9 +3299,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn substrate_link_and_monitor_spans_emit_from_real_ops() {
-        let _sched_lock = crate::scheduler::SchedTestLock::acquire();
         let _guard = setup();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0);
+        crate::scheduler::init_real_scheduler_for_test();
 
         // SAFETY: spawn two minimal actors in the active scheduler.
         unsafe {
@@ -3332,7 +3358,7 @@ mod tests {
         crate::scheduler::hew_runtime_cleanup();
     }
 
-    /// Arena max_heap enforcement emits `SPAN_MAX_HEAP_EXCEEDED`.
+    /// Arena `max_heap` enforcement emits `SPAN_MAX_HEAP_EXCEEDED`.
     #[test]
     fn substrate_max_heap_span_emits_on_arena_cap_exceeded() {
         let _guard = setup();

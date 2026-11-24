@@ -1532,8 +1532,9 @@ mod forced_ordering_probe {
 
             // Now that resume settled back to Parked, destroy succeeds exactly once.
             // SAFETY: resume thread joined; tag is Parked.
+            let destroy_outcome = unsafe { destroy_parked(&actor) };
             assert_eq!(
-                unsafe { destroy_parked(&actor) },
+                destroy_outcome,
                 ExecGuard::Ok,
                 "round {round}: destroy must succeed once resume has settled"
             );

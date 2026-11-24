@@ -233,11 +233,13 @@ pub unsafe extern "C" fn hew_cancel_token_is_requested(token: *mut HewCancellati
         // SAFETY: caller guarantees `token` is valid.
         unsafe { cancel_token_is_requested_raw(token) },
     );
-    crate::tracing::record_substrate_event(
-        crate::tracing::current_actor_id_or_zero(),
-        crate::tracing::SPAN_CANCELLATION_COOPERATE_CHECKED,
-        requested,
-    );
+    if requested != 0 {
+        crate::tracing::record_substrate_event(
+            crate::tracing::current_actor_id_or_zero(),
+            crate::tracing::SPAN_CANCELLATION_COOPERATE_CHECKED,
+            requested,
+        );
+    }
     requested
 }
 

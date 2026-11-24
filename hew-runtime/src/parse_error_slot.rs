@@ -160,13 +160,7 @@ pub fn set_error(kind: ErrorSlotKind, msg: impl Into<String>) {
 /// pair an errno from one actor with the detail from another.
 pub fn set_error_with_errno(kind: ErrorSlotKind, errno: i64, msg: impl Into<String>) {
     let actor = crate::actor::current_actor_silent();
-    if !actor.is_null() {
-        // SAFETY: `current_actor_silent` reads the installed canonical context's
-        // live actor pointer, valid for the duration of this dispatch boundary.
-        unsafe { &*actor }
-            .parse_errors
-            .set_with_errno(kind, errno, msg.into());
-    } else {
+    if actor.is_null() {
         THREAD_PARSE_ERROR.with(|slot| {
             slot.borrow_mut().insert(
                 kind,
@@ -176,20 +170,26 @@ pub fn set_error_with_errno(kind: ErrorSlotKind, errno: i64, msg: impl Into<Stri
                 },
             );
         });
+    } else {
+        // SAFETY: `current_actor_silent` reads the installed canonical context's
+        // live actor pointer, valid for the duration of this dispatch boundary.
+        unsafe { &*actor }
+            .parse_errors
+            .set_with_errno(kind, errno, msg.into());
     }
 }
 
 /// Clear the error for `kind` in the current logical context.
 pub fn clear_error(kind: ErrorSlotKind) {
     let actor = crate::actor::current_actor_silent();
-    if !actor.is_null() {
-        // SAFETY: `current_actor_silent` reads the installed canonical context's
-        // live actor pointer, valid for the duration of this dispatch boundary.
-        unsafe { &*actor }.parse_errors.clear(kind);
-    } else {
+    if actor.is_null() {
         THREAD_PARSE_ERROR.with(|slot| {
             slot.borrow_mut().remove(&kind);
         });
+    } else {
+        // SAFETY: `current_actor_silent` reads the installed canonical context's
+        // live actor pointer, valid for the duration of this dispatch boundary.
+        unsafe { &*actor }.parse_errors.clear(kind);
     }
 }
 
@@ -198,12 +198,12 @@ pub fn clear_error(kind: ErrorSlotKind) {
 #[must_use]
 pub fn get_error(kind: ErrorSlotKind) -> Option<String> {
     let actor = crate::actor::current_actor_silent();
-    if !actor.is_null() {
+    if actor.is_null() {
+        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map(|value| value.detail.clone()))
+    } else {
         // SAFETY: `current_actor_silent` reads the installed canonical context's
         // live actor pointer, valid for the duration of this dispatch boundary.
         unsafe { &*actor }.parse_errors.get(kind)
-    } else {
-        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map(|value| value.detail.clone()))
     }
 }
 
@@ -211,12 +211,12 @@ pub fn get_error(kind: ErrorSlotKind) -> Option<String> {
 #[must_use]
 pub fn get_errno(kind: ErrorSlotKind) -> i64 {
     let actor = crate::actor::current_actor_silent();
-    if !actor.is_null() {
+    if actor.is_null() {
+        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map_or(0, |value| value.errno))
+    } else {
         // SAFETY: `current_actor_silent` reads the installed canonical context's
         // live actor pointer, valid for the duration of this dispatch boundary.
         unsafe { &*actor }.parse_errors.get_errno(kind)
-    } else {
-        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map_or(0, |value| value.errno))
     }
 }
 

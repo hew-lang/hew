@@ -252,6 +252,8 @@ struct ConnectionActor {
     /// Null for test-only actors created without a manager; [`close_transport_conn`]
     /// is null-safe so drop is unconditionally safe.
     transport: ConnectionTransport,
+    /// Accept-span context captured at admission for `SPAN_IO_RECV` parenting.
+    accept_span: Option<crate::tracing::IoAcceptSpan>,
     /// Exactly-once close ownership for this connection's transport handle.
     ///
     /// Shared by `Arc` so a caller that loses the claim can still wait for the
@@ -662,6 +664,7 @@ impl ConnectionActor {
             burial_answered: AtomicU64::new(0),
             reconnect: None,
             transport: ConnectionTransport::borrowed(std::ptr::null_mut()),
+            accept_span: None,
             transport_close: Arc::new(TransportClose::default()),
         }
     }

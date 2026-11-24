@@ -57,9 +57,6 @@ fn claim_published(mgr: *mut HewConnMgr, conn_id: c_int, claim_token: u64) -> bo
 /// Cleanup after reader loop exit: remove from manager and attempt reconnection
 /// if the drop was unexpected (not triggered by explicit stop).
 pub(super) fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
-    // Evict any stashed I/O span context (idempotent; no-op if tracing was disabled).
-    crate::tracing::io_span_evict(conn_id);
-
     let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
     if unexpected_drop {
         if !mgr.is_null() {
@@ -104,6 +101,7 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
+    accept_span: Option<crate::tracing::IoAcceptSpan>,
     buried: bool,
 ) {
     let mgr = mgr.0;
@@ -296,7 +294,7 @@ pub(super) fn reader_loop(
                     // parent of the actor-dispatch span.
                     // Fast path: `io_recv_span_begin` returns None when
                     // tracing is disabled (a single atomic load).
-                    let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
+                    let saved_ctx = crate::tracing::io_recv_span_begin(accept_span);
                     let payload_ptr = if envelope.payload.is_empty() {
                         std::ptr::null_mut()
                     } else {

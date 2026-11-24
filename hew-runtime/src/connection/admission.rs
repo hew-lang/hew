@@ -544,9 +544,11 @@ pub(super) unsafe fn add_connection_on_transport(
     let now = unsafe { crate::clock::hew_now_ms() };
     actor.last_activity_ms.store(now, Ordering::Release);
 
-    // I/O span: record accept span and stash context for reader_loop.
+    // I/O span: record accept span and attach its context to the connection
+    // actor so reader_loop parents SPAN_IO_RECV directly without a global map.
     // Fast path: atomic load only when tracing is disabled.
-    crate::tracing::io_accept_span_begin(conn_id);
+    let accept_span = crate::tracing::io_accept_span_begin();
+    actor.accept_span = accept_span;
 
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);
@@ -572,6 +574,7 @@ pub(super) unsafe fn add_connection_on_transport(
                 router,
                 peer_feature_flags,
                 channel,
+                accept_span,
                 buried,
             );
         });

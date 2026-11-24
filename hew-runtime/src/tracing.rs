@@ -28,12 +28,13 @@
 //! - [`hew_trace_drain`] — Drain recorded events into a buffer.
 
 use crate::lifetime::PoisonSafe;
-use crate::util::MutexExt;
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::Mutex;
 
 // ── Trace context ──────────────────────────────────────────────────────
 
@@ -440,13 +441,104 @@ struct InternalCursor {
     after: u64,
 }
 
-static RUST_DRAIN_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
-static C_DRAIN_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+/// Stateful cursor over the non-destructive trace ring for an internal consumer.
+///
+/// Each internal consumer keeps its own `(stream_id, after)` bookmark so
+/// independent readers never steal records from one another or from stateless
+/// `/api/traces` observers.
+struct TraceConsumer {
+    cursor: PoisonSafe<Option<InternalCursor>>,
+}
+
+impl TraceConsumer {
+    const fn new() -> Self {
+        Self {
+            cursor: PoisonSafe::new(None),
+        }
+    }
+
+    fn read_records(&self, max: usize) -> TraceConsumerRecords {
+        if max == 0 {
+            return TraceConsumerRecords {
+                records: Vec::new(),
+                #[cfg(feature = "otel")]
+                discontinuity: false,
+            };
+        }
+        self.cursor.access(|saved| {
+            #[cfg(feature = "otel")]
+            let mut discontinuity = false;
+            let snapshot = match *saved {
+                Some(current) => {
+                    match trace_snapshot_inner(Some(current.stream_id), Some(current.after), max) {
+                        Ok(snapshot) => snapshot,
+                        Err(
+                            TraceSnapshotError::StreamMismatch { .. }
+                            | TraceSnapshotError::FutureCursor { .. },
+                        ) => {
+                            #[cfg(feature = "otel")]
+                            {
+                                discontinuity = true;
+                            }
+                            trace_snapshot_inner(None, None, max)
+                                .expect("cursor-less snapshot cannot fail")
+                        }
+                    }
+                }
+                None => {
+                    trace_snapshot_inner(None, None, max).expect("cursor-less snapshot cannot fail")
+                }
+            };
+            #[cfg(feature = "otel")]
+            {
+                discontinuity |= snapshot.overrun_count != 0;
+            }
+            *saved = Some(InternalCursor {
+                stream_id: snapshot.stream_id,
+                after: snapshot.next_cursor,
+            });
+            TraceConsumerRecords {
+                records: snapshot.events,
+                #[cfg(feature = "otel")]
+                discontinuity,
+            }
+        })
+    }
+
+    fn read_events(&self, max: usize) -> TraceConsumerBatch {
+        let batch = self.read_records(max);
+        TraceConsumerBatch {
+            events: batch
+                .records
+                .into_iter()
+                .map(|record| record.event)
+                .collect(),
+            #[cfg(feature = "otel")]
+            discontinuity: batch.discontinuity,
+        }
+    }
+
+    fn pending_count(&self) -> u64 {
+        self.cursor.access(|cursor| {
+            with_trace_store(|store| {
+                let after = cursor
+                    .filter(|cursor| cursor.stream_id == store.stream_id)
+                    .map_or(0, |cursor| cursor.after);
+                store
+                    .events
+                    .iter()
+                    .filter(|record| record.sequence > after)
+                    .count() as u64
+            })
+        })
+    }
+}
+
+static RUST_DRAIN_CONSUMER: TraceConsumer = TraceConsumer::new();
+static C_DRAIN_CONSUMER: TraceConsumer = TraceConsumer::new();
 #[cfg(feature = "otel")]
-static OTEL_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
-static TEST_REPORT_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
-#[cfg(feature = "profiler")]
-static LEGACY_JSON_CURSOR: PoisonSafe<Option<InternalCursor>> = PoisonSafe::new(None);
+static OTEL_CONSUMER: TraceConsumer = TraceConsumer::new();
+static TEST_REPORT_CONSUMER: TraceConsumer = TraceConsumer::new();
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -490,22 +582,21 @@ fn remote_trace_source_active() -> bool {
     REMOTE_SOURCE_DEPTH.with(|depth| depth.get() != 0)
 }
 
-// ── Per-connection I/O span side table ────────────────────────────────
-//
-// Associates a `conn_id` (transport handle, an `i32`) with the
-// `HewTraceContext` produced when the connection was accepted.  The reader
-// thread looks this up to parent the `SPAN_IO_RECV` span under the accept
-// span, propagating causal IDs into the actor mailbox.
-//
-// SHIM: WHY — `hew_connmgr_add` (accept site) and `reader_loop` (recv site)
-//       run on different OS threads and share only `conn_id`.  A
-//       `Mutex<HashMap>` is the minimal safe cross-thread store.
-//       WHEN — Remove or upgrade if a sharded or lock-free structure is
-//       warranted by profiler data showing this as a bottleneck.
-//       REAL — A per-shard table or embedding the context in `ConnectionActor`
-//       would be lower-contention, but requires ABI/struct changes.
-static IO_SPAN_TABLE: LazyLock<Mutex<HashMap<c_int, HewTraceContext>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// ── Per-connection I/O accept-span context ─────────────────────────────
+
+/// Accept-span context carried directly on `ConnectionActor` and copied into
+/// its reader thread so `SPAN_IO_RECV` spans parent under the connection's
+/// `SPAN_IO_ACCEPT` span without a global side table.
+///
+/// `generation` binds the context to the trace stream active at accept time so
+/// `hew_trace_reset`, `hew_trace_clear`, and disable→enable rotations ignore
+/// stale accept contexts on long-lived connections.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IoAcceptSpan {
+    generation: u64,
+    context: HewTraceContext,
+}
 
 fn trace_context() -> Option<HewTraceContext> {
     let ctx = crate::execution_context::require_current_context();
@@ -725,6 +816,12 @@ fn trace_snapshot_inner(
     })
 }
 
+struct TraceConsumerRecords {
+    records: Vec<TraceEventRecord>,
+    #[cfg(feature = "otel")]
+    discontinuity: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct TraceConsumerBatch {
     pub events: Vec<HewTraceEvent>,
@@ -732,77 +829,22 @@ pub(crate) struct TraceConsumerBatch {
     pub discontinuity: bool,
 }
 
-fn read_internal_consumer(
-    cursor: &PoisonSafe<Option<InternalCursor>>,
-    max: usize,
-) -> TraceConsumerBatch {
-    if max == 0 {
-        return TraceConsumerBatch {
-            events: Vec::new(),
-            #[cfg(feature = "otel")]
-            discontinuity: false,
-        };
-    }
-    cursor.access(|saved| {
-        #[cfg(feature = "otel")]
-        let mut discontinuity = false;
-        let snapshot = match *saved {
-            Some(current) => {
-                match trace_snapshot_inner(Some(current.stream_id), Some(current.after), max) {
-                    Ok(snapshot) => snapshot,
-                    Err(
-                        TraceSnapshotError::StreamMismatch { .. }
-                        | TraceSnapshotError::FutureCursor { .. },
-                    ) => {
-                        #[cfg(feature = "otel")]
-                        {
-                            discontinuity = true;
-                        }
-                        trace_snapshot_inner(None, None, max)
-                            .expect("cursor-less snapshot cannot fail")
-                    }
-                }
-            }
-            None => {
-                trace_snapshot_inner(None, None, max).expect("cursor-less snapshot cannot fail")
-            }
-        };
-        #[cfg(feature = "otel")]
-        {
-            discontinuity |= snapshot.overrun_count != 0;
-        }
-        *saved = Some(InternalCursor {
-            stream_id: snapshot.stream_id,
-            after: snapshot.next_cursor,
-        });
-        TraceConsumerBatch {
-            events: snapshot
-                .events
-                .into_iter()
-                .map(|record| record.event)
-                .collect(),
-            #[cfg(feature = "otel")]
-            discontinuity,
-        }
-    })
-}
-
-/// Read events through the legacy Rust-internal consumer cursor without
+/// Read events through the Rust-internal consumer cursor without
 /// removing records needed by other observers.
 #[must_use]
 pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
-    read_internal_consumer(&RUST_DRAIN_CURSOR, max).events
+    RUST_DRAIN_CONSUMER.read_events(max).events
 }
 
 /// Read through `OTel`'s independent cursor.
 #[cfg(feature = "otel")]
 pub(crate) fn read_otel_events(max: usize) -> TraceConsumerBatch {
-    read_internal_consumer(&OTEL_CURSOR, max)
+    OTEL_CONSUMER.read_events(max)
 }
 
 /// Read through deterministic test reporting's independent cursor.
 pub(crate) fn read_test_report_events(max: usize) -> TraceConsumerBatch {
-    read_internal_consumer(&TEST_REPORT_CURSOR, max)
+    TEST_REPORT_CONSUMER.read_events(max)
 }
 
 // ── Recording ──────────────────────────────────────────────────────────
@@ -1448,9 +1490,9 @@ pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{
-        c_int, hew_trace_reset, monotonic_ns, next_random_id, record_event_for_generation,
-        recording_generation, HewTraceContext, HewTraceEvent, MutexExt, Ordering, IO_SPAN_TABLE,
-        SPAN_END, SPAN_IO_ACCEPT, SPAN_IO_RECV, TRACING_ENABLED,
+        hew_trace_reset, monotonic_ns, next_random_id, record_event_for_generation,
+        recording_generation, HewTraceContext, HewTraceEvent, IoAcceptSpan, SPAN_END,
+        SPAN_IO_ACCEPT, SPAN_IO_RECV,
     };
     #[cfg(feature = "profiler")]
     use super::{with_trace_store, TraceStreamId, PRODUCER_INSTANCE_ID};
@@ -1468,29 +1510,11 @@ mod native {
         with_trace_store(|store| store.stream_id == stream_id)
     }
 
-    /// Stash the `HewTraceContext` of an accepted connection by `conn_id`.
-    ///
-    /// Only called when `TRACING_ENABLED` is true. No-op if tracing is later
-    /// disabled — the entry will be evicted on connection close.
-    pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
-        IO_SPAN_TABLE.lock_or_recover().insert(conn_id, ctx);
-    }
-
-    /// Evict any stashed context for `conn_id` on connection close.
-    ///
-    /// Safe to call even when no entry exists (eviction is idempotent).
-    pub(crate) fn io_span_evict(conn_id: c_int) {
-        IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
-    }
-
     /// Record a single I/O-level event using an explicit `HewTraceContext`.
     ///
     /// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
     /// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
-    fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
-        let Some(generation) = recording_generation() else {
-            return;
-        };
+    fn record_io_event_for_generation(generation: u64, ctx: &HewTraceContext, event_type: i32) {
         record_event_for_generation(
             generation,
             HewTraceEvent {
@@ -1506,43 +1530,48 @@ mod native {
         );
     }
 
-    /// Called at `hew_connmgr_add` when a TCP connection is accepted.
-    ///
-    /// Fast path: returns immediately (no allocation) when tracing is disabled.
-    pub(crate) fn io_accept_span_begin(conn_id: c_int) {
-        if !TRACING_ENABLED.load(Ordering::Acquire) {
+    fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
+        let Some(generation) = recording_generation() else {
             return;
-        }
-        let ctx = HewTraceContext {
+        };
+        record_io_event_for_generation(generation, ctx, event_type);
+    }
+
+    /// Called at `hew_connmgr_add` when a connection is admitted.
+    ///
+    /// Returns the `IoAcceptSpan` to store on `ConnectionActor` and copy into
+    /// `reader_loop`, or `None` when tracing is disabled (single atomic load).
+    pub(crate) fn io_accept_span_begin() -> Option<IoAcceptSpan> {
+        let generation = recording_generation()?;
+        let context = HewTraceContext {
             trace_id_hi: next_random_id(),
             trace_id_lo: next_random_id(),
             span_id: next_random_id(),
             parent_span_id: 0,
             flags: 1, // sampled
         };
-        record_io_event(&ctx, SPAN_IO_ACCEPT);
+        record_io_event_for_generation(generation, &context, SPAN_IO_ACCEPT);
         // Accept is synchronous: immediately emit the end so the span is closed.
-        record_io_event(&ctx, SPAN_END);
-        // Stash so reader_loop can parent io_recv spans under this accept span.
-        io_span_stash(conn_id, ctx);
+        record_io_event_for_generation(generation, &context, SPAN_END);
+        Some(IoAcceptSpan {
+            generation,
+            context,
+        })
     }
 
     /// Called in `reader_loop` before `router_fn` is invoked for a decoded envelope.
     ///
     /// Returns the prior trace context so the caller can restore it after
     /// `router_fn` returns, or `None` when tracing is disabled.
-    pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
-        if !TRACING_ENABLED.load(Ordering::Acquire) {
-            return None;
-        }
+    pub(crate) fn io_recv_span_begin(accept_span: Option<IoAcceptSpan>) -> Option<HewTraceContext> {
+        let generation = recording_generation()?;
 
-        let parent_ctx = IO_SPAN_TABLE
-            .lock_or_recover()
-            .get(&conn_id)
-            .copied()
-            .unwrap_or_default();
+        let parent_ctx = accept_span
+            .filter(|span| span.generation == generation)
+            .map_or_else(HewTraceContext::default, |span| span.context);
 
-        // Build the io_recv span as a child of the accept span.
+        // Build the io_recv span as a child of the accept span when it belongs
+        // to the active trace stream.
         let recv_ctx = HewTraceContext {
             trace_id_hi: if parent_ctx.trace_id_hi != 0 {
                 parent_ctx.trace_id_hi
@@ -1559,7 +1588,7 @@ mod native {
             flags: 1, // sampled
         };
 
-        record_io_event(&recv_ctx, SPAN_IO_RECV);
+        record_io_event_for_generation(generation, &recv_ctx, SPAN_IO_RECV);
 
         let current = crate::execution_context::current_context();
         if current.is_null() {
@@ -1628,12 +1657,9 @@ mod native {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-use native::io_span_stash;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{
-    io_accept_span_begin, io_recv_span_begin, io_recv_span_end, io_span_evict,
-    register_trace_reset_hook,
+    io_accept_span_begin, io_recv_span_begin, io_recv_span_end, register_trace_reset_hook,
 };
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) use native::{producer_instance_id, trace_stream_is_current};
@@ -1663,18 +1689,7 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 /// Return the number of recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
-    C_DRAIN_CURSOR.access(|cursor| {
-        with_trace_store(|store| {
-            let after = cursor
-                .filter(|cursor| cursor.stream_id == store.stream_id)
-                .map_or(0, |cursor| cursor.after);
-            store
-                .events
-                .iter()
-                .filter(|record| record.sequence > after)
-                .count() as u64
-        })
-    })
+    C_DRAIN_CONSUMER.pending_count()
 }
 
 /// Drain up to `max_count` trace events into the provided buffer.
@@ -1687,7 +1702,7 @@ pub extern "C" fn hew_trace_event_count() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32) -> u32 {
     cabi_guard!(out.is_null() || max_count == 0, 0);
-    let batch = read_internal_consumer(&C_DRAIN_CURSOR, max_count as usize);
+    let batch = C_DRAIN_CONSUMER.read_events(max_count as usize);
     for (index, event) in batch.events.iter().copied().enumerate() {
         // SAFETY: out has space for at least max_count events and batch length
         // is bounded by max_count.
@@ -1708,7 +1723,7 @@ pub extern "C" fn hew_trace_clear() {
     with_trace_store(TraceStore::begin_new_stream);
 }
 
-/// Reset all tracing state (disable + clear events + reset context + clear I/O span table).
+/// Reset all tracing state (disable + clear events + reset context).
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
     TRACE_EVENTS.access(|store| {
@@ -1728,7 +1743,6 @@ pub extern "C" fn hew_trace_reset() {
             (*ctx).trace = HewTraceContext::default();
         }
     }
-    IO_SPAN_TABLE.lock_or_recover().clear();
 }
 
 // ── Profiler snapshot ───────────────────────────────────────────────────
@@ -1789,9 +1803,10 @@ fn drain_event_type_label(event_type: i32) -> std::borrow::Cow<'static, str> {
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
 
-    let events = read_internal_consumer(&LEGACY_JSON_CURSOR, 256).events;
+    let records = RUST_DRAIN_CONSUMER.read_records(256).records;
     let mut json = String::from("[");
-    for (i, ev) in events.into_iter().enumerate() {
+    for (i, record) in records.into_iter().enumerate() {
+        let ev = record.event;
         if i > 0 {
             json.push(',');
         }
@@ -1815,41 +1830,24 @@ pub fn drain_events_json() -> String {
         );
         let event_type_str: &str = event_type_label.as_ref();
 
-        // Resolve actor_type_id and actor_type via the profiler actor registry.
-        // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
-        // pointer field to HewTraceEvent (which would break the C ABI).
-        //
-        // SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
-        //       hew_trace_drain callers.  Drain-time lookup is the zero-ABI-
-        //       impact path.
-        //       WHEN: Remove this lookup if a future ABI revision embeds
-        //       actor_type_id directly in HewTraceEvent.
-        //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
+        // Permanent C-ABI architecture: `HewTraceEvent` is frozen by the
+        // `hew_trace_drain` C ABI (`scripts/cabi-surface.json`) and cannot
+        // embed a dispatch pointer. Internal `TraceEventRecord` captures
+        // `subject_dispatch_ptr` while the actor is live, with a live-registry
+        // fallback when absent. A zero `actor_type_id` paired with `null`
+        // `actor_type` explicitly denotes an unattributed or already-reaped
+        // actor rather than a real type.
         let (actor_type_id, actor_type_str, handler_name) = {
-            // INTENTIONAL DEFAULT (not fail-open): a `None` from the
-            // registry means the actor was freed before this drain ran (or
-            // its type was never registered). Unlike the event_type case
-            // above, `0` here is NOT a corruption sentinel — it is the
-            // documented #1260 contract: `actor_type_id == 0` pairs with
-            // `actor_type == null` (handled below) to mean "attribution
-            // unavailable", a legitimate and detectable state distinct from
-            // a valid non-zero dispatch pointer.
-            //   WHY  — actor lifetime is shorter than the drain window; the
-            //          event itself (ids, type) is still valid and worth
-            //          emitting unattributed rather than dropped.
-            //   WHEN — revisit if event records ever carry the dispatch ptr
-            //          inline (ABI-versioned HewTraceEvent), removing the
-            //          lookup race entirely.
-            //   WHAT — consumers read (0, null) as "unattributed", never as
-            //          a real actor type.
-            let dispatch_ptr =
+            let dispatch_ptr = if record.subject_dispatch_ptr != 0 {
+                record.subject_dispatch_ptr
+            } else {
                 crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+            };
             let type_id = dispatch_ptr as u64;
             // Owned variant: the name is copied under DISPATCH_TYPE_REGISTRY's
             // lock, so a concurrent `clear_dispatch_registry` cannot free the
-            // leaked backing allocation between lookup and copy (the borrowing
-            // variant releases the lock before returning — a TOCTOU UAF).
+            // backing allocation between lookup and copy.
             let type_name =
                 crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(dispatch_ptr);
             let hname = if event_carries_handler(ev.event_type) {
@@ -2519,12 +2517,12 @@ mod tests {
     // ── I/O span chain tests ───────────────────────────────────────────
 
     /// Verify that `io_accept_span_begin` emits a `SPAN_IO_ACCEPT` begin event
-    /// followed by a `SPAN_END` event, and stashes a non-zero context.
+    /// followed by a `SPAN_END` event, and returns a non-zero accept span.
     #[test]
     fn io_accept_span_emits_begin_and_end() {
         let _guard = setup();
 
-        io_accept_span_begin(42);
+        let accept_span = io_accept_span_begin().expect("accept span must be returned");
 
         // Two events: SPAN_IO_ACCEPT (begin) + SPAN_END.
         assert_eq!(
@@ -2552,36 +2550,19 @@ mod tests {
             events[0].parent_span_id, 0,
             "accept span must be a root span"
         );
-
-        // Side table must contain the stashed context.
-        let stashed = IO_SPAN_TABLE.lock_or_recover().get(&42).copied();
-        assert!(
-            stashed.is_some(),
-            "accept span context must be stashed in IO_SPAN_TABLE"
-        );
-        assert_eq!(stashed.unwrap().span_id, events[0].span_id);
-
-        // Cleanup.
-        io_span_evict(42);
+        assert_eq!(accept_span.context.span_id, events[0].span_id);
     }
 
-    /// Verify that `io_recv_span_begin`/`io_recv_span_end` emits an `SPAN_IO_RECV`
-    /// begin event parented under the accept span, and a `SPAN_END` event after.
+    /// Verify that `io_recv_span_begin`/`io_recv_span_end` emits a `SPAN_IO_RECV`
+    /// begin event parented under the connection's accept span, and a `SPAN_END` event after.
     #[test]
     fn io_recv_span_parented_under_accept() {
         let _guard = setup();
 
-        // Stash a fake accept context.
-        let accept_ctx = HewTraceContext {
-            trace_id_hi: 0xdead,
-            trace_id_lo: 0xbeef,
-            span_id: 0x1111,
-            parent_span_id: 0,
-            flags: 1,
-        };
-        io_span_stash(99, accept_ctx);
+        let accept_span = io_accept_span_begin().expect("accept span must be returned");
+        let _ = drain_events(2);
 
-        let saved = io_recv_span_begin(99);
+        let saved = io_recv_span_begin(Some(accept_span));
         assert!(
             saved.is_some(),
             "io_recv_span_begin must return Some when tracing is enabled"
@@ -2596,19 +2577,17 @@ mod tests {
         assert_eq!(events[1].event_type, SPAN_END);
 
         // recv span must inherit the accept span's trace ID.
-        assert_eq!(events[0].trace_id_hi, 0xdead);
-        assert_eq!(events[0].trace_id_lo, 0xbeef);
+        assert_eq!(events[0].trace_id_hi, accept_span.context.trace_id_hi);
+        assert_eq!(events[0].trace_id_lo, accept_span.context.trace_id_lo);
         // recv span must be parented under the accept span.
-        assert_eq!(events[0].parent_span_id, 0x1111);
+        assert_eq!(events[0].parent_span_id, accept_span.context.span_id);
         assert_ne!(
-            events[0].span_id, 0x1111,
+            events[0].span_id, accept_span.context.span_id,
             "recv span_id must differ from accept span_id"
         );
 
         // Both events must share the recv span ID.
         assert_eq!(events[0].span_id, events[1].span_id);
-
-        io_span_evict(99);
     }
 
     /// Verify that `io_recv_span_begin` sets the canonical trace lane so that
@@ -2618,18 +2597,11 @@ mod tests {
     fn io_recv_span_propagates_context_to_mailbox_boundary() {
         let _guard = setup();
 
-        // Simulate a stashed accept context.
-        let accept_ctx = HewTraceContext {
-            trace_id_hi: 0xaaaa,
-            trace_id_lo: 0xbbbb,
-            span_id: 0x2222,
-            parent_span_id: 0,
-            flags: 1,
-        };
-        io_span_stash(77, accept_ctx);
+        let accept_span = io_accept_span_begin().expect("accept span must be returned");
 
         // Simulate what reader_loop does before calling router_fn.
-        let saved = io_recv_span_begin(77).expect("begin must succeed when tracing enabled");
+        let saved =
+            io_recv_span_begin(Some(accept_span)).expect("begin must succeed when tracing enabled");
 
         // At this point the canonical trace lane should be the io_recv span.
         let ctx_inside = current_context();
@@ -2638,11 +2610,11 @@ mod tests {
             "context inside recv span must have non-zero span_id"
         );
         assert_eq!(
-            ctx_inside.parent_span_id, 0x2222,
+            ctx_inside.parent_span_id, accept_span.context.span_id,
             "context inside recv span must be parented under accept span"
         );
-        assert_eq!(ctx_inside.trace_id_hi, 0xaaaa);
-        assert_eq!(ctx_inside.trace_id_lo, 0xbbbb);
+        assert_eq!(ctx_inside.trace_id_hi, accept_span.context.trace_id_hi);
+        assert_eq!(ctx_inside.trace_id_lo, accept_span.context.trace_id_lo);
 
         // Simulate router_fn → msg_node_alloc capturing current_context().
         let captured = current_context();
@@ -2657,31 +2629,28 @@ mod tests {
         );
 
         // The captured context (as mailbox would record it) links to the recv span.
-        assert_eq!(captured.parent_span_id, 0x2222);
-
-        io_span_evict(77);
+        assert_eq!(captured.parent_span_id, accept_span.context.span_id);
     }
 
     /// Verify that when tracing is disabled, `io_accept_span_begin` emits no events
-    /// and stashes nothing, and `io_recv_span_begin` returns `None`.
+    /// and returns `None`, and `io_recv_span_begin` returns `None`.
     #[test]
     fn io_span_disabled_path_emits_nothing() {
         let _guard = tracing_test_guard();
         hew_trace_reset();
         // Tracing is disabled after reset.
 
-        io_accept_span_begin(55);
+        assert!(
+            io_accept_span_begin().is_none(),
+            "disabled io_accept_span_begin must return None"
+        );
         assert_eq!(
             hew_trace_event_count(),
             0,
             "disabled io_accept_span_begin must emit no events"
         );
-        assert!(
-            IO_SPAN_TABLE.lock_or_recover().get(&55).is_none(),
-            "disabled io_accept_span_begin must not stash context"
-        );
 
-        let result = io_recv_span_begin(55);
+        let result = io_recv_span_begin(None);
         assert!(
             result.is_none(),
             "disabled io_recv_span_begin must return None"
@@ -2693,22 +2662,37 @@ mod tests {
         );
     }
 
-    /// Verify that `io_span_evict` removes the stashed context for a `conn_id`.
+    /// Verify that `hew_trace_reset` invalidates a previously captured accept span
+    /// so subsequent `io_recv_span_begin` calls in a new stream do not parent under
+    /// the reset stream's span.
     #[test]
-    fn io_span_evict_removes_entry() {
+    fn trace_reset_invalidates_stale_io_accept_span() {
         let _guard = setup();
 
-        io_accept_span_begin(33);
-        assert!(IO_SPAN_TABLE.lock_or_recover().get(&33).is_some());
+        let stale_accept = io_accept_span_begin().expect("accept span must be returned");
 
-        io_span_evict(33);
-        assert!(
-            IO_SPAN_TABLE.lock_or_recover().get(&33).is_none(),
-            "evict must remove the stashed context"
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        let saved =
+            io_recv_span_begin(Some(stale_accept)).expect("recv span enabled in new stream");
+        io_recv_span_end(saved);
+
+        let events = drain_events(2);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, SPAN_IO_RECV);
+        assert_eq!(
+            events[0].parent_span_id, 0,
+            "stale accept span from prior trace generation must be ignored after reset"
         );
-
-        // Second evict is idempotent.
-        io_span_evict(33);
+        assert_ne!(
+            (events[0].trace_id_hi, events[0].trace_id_lo),
+            (
+                stale_accept.context.trace_id_hi,
+                stale_accept.context.trace_id_lo
+            ),
+            "new stream recv must mint a fresh trace id instead of reusing reset stream context"
+        );
     }
 
     // ── Channel lifecycle event tests ─────────────────────────────────────
@@ -2790,22 +2774,6 @@ mod tests {
 
         record_channel_event(0x1234, SPAN_DUPLEX_CREATED);
         assert_eq!(hew_trace_event_count(), 0);
-    }
-
-    /// Verify that `hew_trace_reset` also clears the I/O span side table.
-    #[test]
-    fn trace_reset_clears_io_span_table() {
-        let _guard = setup();
-
-        io_accept_span_begin(11);
-        assert!(IO_SPAN_TABLE.lock_or_recover().get(&11).is_some());
-
-        hew_trace_reset();
-
-        assert!(
-            IO_SPAN_TABLE.lock_or_recover().get(&11).is_none(),
-            "hew_trace_reset must clear IO_SPAN_TABLE"
-        );
     }
 
     #[test]

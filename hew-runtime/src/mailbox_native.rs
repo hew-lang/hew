@@ -273,6 +273,11 @@ pub(crate) unsafe fn poll_request_admission(
         wait.envelope = std::ptr::null_mut();
         wait.channel = std::ptr::null_mut();
     }
+    if matches!(outcome, super::SendOutcome::Closed)
+        && crate::supervisor::actor_role_is_restarting(wait.token)
+    {
+        return Err(AskError::ActorRestarting);
+    }
     Ok(outcome)
 }
 

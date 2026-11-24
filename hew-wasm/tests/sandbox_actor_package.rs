@@ -367,6 +367,22 @@ fn supervisor_backoff_cancellation_keeps_the_unrecovered_fault() {
 }
 
 #[test]
+fn supervised_restarting_role_reports_restarting_and_retries_after_recovery() {
+    let source = include_str!("../../tests/core-acceptance/cases/supervisor-restarting-error.hew");
+    let trace = execute_options(
+        source,
+        "ok",
+        r#"{"replay":{"virtual_clock":{"epoch_ms":0,"current_ms":0,"tick_ms":0}}}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(
+        stdout(&trace),
+        "bare:restarting\nwait:restarting\npolicy:rejected:restarting\nmailbox:rejected:restarting\nretried:ok\nstopped:dead\nbudget:dead\nbudget:policy:dead\nbudget:mailbox:dead\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {
@@ -394,6 +410,7 @@ fn main() {
         .Err(_) => -1,
     });
     let _ = role.fail();
+    restarted(role);
     println(match role.bump() {
         .Ok(n) => n,
         .Err(_) => -1,

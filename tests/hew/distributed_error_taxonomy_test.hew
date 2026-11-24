@@ -13,6 +13,7 @@ fn send_error_id(err: SendError) -> i64 {
         SendError.VersionMismatch => 8,
         SendError.Backpressure => 10,
         SendError.Dead => 11,
+        SendError.Restarting => 17,
         SendError.WriteTimedOut(_) => 12,
         SendError.Unauthorized => 13,
         SendError.InvalidMessage => 14,
@@ -41,6 +42,7 @@ fn ask_error_id(err: ActorError) -> i64 {
         ActorError.Failed(_) => 2,
         ActorError.Trapped(_) => 3,
         ActorError.Dead => 4,
+        ActorError.Restarting => 13,
         ActorError.TimedOut => 5,
         ActorError.NodeNotRunning => 6,
         ActorError.RoutingFailed => 7,
@@ -73,6 +75,7 @@ fn test_send_error_taxonomy_variants() {
     assert(send_error_id(SendError.VersionMismatch) == 8);
     assert(send_error_id(SendError.Backpressure) == 10);
     assert(send_error_id(SendError.Dead) == 11);
+    assert(send_error_id(SendError.Restarting) == 17);
     assert(send_error_id(SendError.WriteTimedOut(5)) == 12);
     assert(send_error_id(SendError.Unauthorized) == 13);
     assert(send_error_id(SendError.InvalidMessage) == 14);
@@ -98,6 +101,7 @@ fn test_ask_error_taxonomy_variants() {
         kind: .Fault, trap: .None, message: "", site: .None, trace: .None,
     })) == 3);
     assert(ask_error_id(ActorError.Dead) == 4);
+    assert(ask_error_id(ActorError.Restarting) == 13);
     assert(ask_error_id(ActorError.TimedOut) == 5);
     assert(ask_error_id(ActorError.NodeNotRunning) == 6);
     assert(ask_error_id(ActorError.RoutingFailed) == 7);

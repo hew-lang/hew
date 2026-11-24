@@ -147,17 +147,19 @@ A completion call chooses its own admission through the other view:
 call on the handle does, with `Result<R, ActorError<E, Req>>`. `.Wait` is
 the bare-handle behaviour and parks the caller while the destination mailbox is
 full; `.Reject` refuses instead, and the call reports
-`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`, or
+`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`,
+`SendError.Restarting` while a supervised role is restarting (§5.6), or
 `SendError.LocalShutdown` once runtime shutdown refuses root calls (§5.9).
 The owned request remains in `failure.message`; `.retry()` consumes it and
 resubmits to the original actor, while `.to(other)` consumes it and resubmits
 to a compatible handler. Both return the handler completion result. The
 checker requires the same handler name, parameter types and reply contract.
 Dropping the request releases its payload. Rejection is the only outcome
-that returns an unaccepted request for safe resubmission. Other variants do not
-return the request or establish whether its handler ran; repeating a call may
-duplicate work. One view type per kind — `policy`
-completes, `mailbox` submits — and both are immutable.
+that returns an unaccepted request for direct resubmission; `ActorError.Restarting`
+also guarantees nothing was accepted, so a caller may await `restarted(role)`
+and repeat the call. Other variants do not return the request or establish
+whether its handler ran; repeating a call may duplicate work. One view type per
+kind — `policy` completes, `mailbox` submits — and both are immutable.
 
 **Rejected requests.** A rejected completion or
 submission returns `ActorError.Rejected(SendFailure<Req>)`, which retains the unaccepted request
@@ -6800,12 +6802,25 @@ fn main() {
 - `terminate(sup)` — requests cancellation of every child in that order.
 - `stopped(sup)` — waits for the whole tree's terminal cleanup.
 
-**Terminal destinations (normative).**
+**Transient restarts and terminal destinations (normative).**
 
 A supervised actor reference names a stable role and resolves its current incarnation for
-each call or submission. Once the role is permanently unavailable, such as
-when its restart budget is spent, a completion call reports `ActorError.Dead`.
-A mailbox submission reports a `SendFailure` with a lifecycle reason. Neither
+each call or submission. While the role is restarting — including during a backoff
+delay or circuit-breaker cooldown — calls and submissions fail fast instead of
+silently parking the caller:
+
+- A bare completion call (or `policy(role, on_full: .Wait)`) reports `ActorError.Restarting`.
+  Nothing was accepted; the caller may await `restarted(role)` and repeat the call.
+- A `policy(role, on_full: .Reject)` completion call reports
+  `ActorError.Rejected(SendFailure { reason: SendError.Restarting, message })`,
+  retaining the sealed request so the caller may await `restarted(role)` and call
+  `failure.message.retry()`.
+- A `mailbox(role, ...)` one-way submission reports
+  `ActorError.Rejected(SendFailure { reason: SendError.Restarting, message })`.
+
+Once the role is permanently unavailable, such as when its restart budget is spent
+or its supervisor has stopped, a completion call reports `ActorError.Dead`.
+A mailbox submission reports a `SendFailure` with `SendError.Dead`. Neither
 can report successful acceptance of work that cannot be delivered.
 
 Completion and submission retain their distinct envelopes (§2.1.1). Ordinary

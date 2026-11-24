@@ -323,6 +323,10 @@ pub enum AskError {
     /// The complete encoded request or reply exceeds the selected route capacity.
     /// A request is refused before writes; a reply may follow handler execution.
     MessageTooLarge = 24,
+    /// The supervised destination role is restarting (including backoff delay
+    /// or circuit-breaker cooldown). Nothing was admitted; callers may await
+    /// `restarted(role)` and retry.
+    ActorRestarting = 25,
 }
 
 /// The public `ActorError` variant a runtime ask failure folds to.
@@ -336,6 +340,7 @@ pub enum ActorErrorRole {
     Refused,
     Trapped,
     Dead,
+    Restarting,
     TimedOut,
     NodeNotRunning,
     RoutingFailed,
@@ -347,7 +352,7 @@ pub enum ActorErrorRole {
 
 impl AskError {
     /// Every runtime ask status, indexed by its discriminant.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::None,
         Self::NodeNotRunning,
         Self::RoutingFailed,
@@ -373,6 +378,7 @@ impl AskError {
         Self::HandlerTrapped,
         Self::Refused,
         Self::MessageTooLarge,
+        Self::ActorRestarting,
     ];
 
     /// The public role this status reports; `None` is the success sentinel.
@@ -380,13 +386,15 @@ impl AskError {
     /// The runtime's statuses are finer-grained than the public envelope, so
     /// each folds to the variant with the same consequence for the caller.
     /// Every fold that is not an exact rename lands on a non-retryable variant:
-    /// only `Rejected`, which no status produces, is safe to resubmit.
+    /// only `Rejected` (built at the call site) and `Restarting` guarantee
+    /// nothing was accepted.
     #[must_use]
     pub const fn public_role(self) -> Option<ActorErrorRole> {
         Some(match self {
             Self::None => return None,
             Self::HandlerTrapped => ActorErrorRole::Trapped,
             Self::Refused => ActorErrorRole::Refused,
+            Self::ActorRestarting => ActorErrorRole::Restarting,
             // The target is gone, or its fate is settled against ever running
             // this request: the caller must not resubmit.
             Self::SendFailed

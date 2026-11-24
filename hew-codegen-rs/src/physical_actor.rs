@@ -3301,6 +3301,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 AskError::ActorStopped | AskError::OrphanedAsk | AskError::StaleRef => {
                     Role::SendErrorDead
                 }
+                AskError::ActorRestarting => Role::SendErrorRestarting,
                 AskError::NodeNotRunning | AskError::LocalShutdown => Role::SendErrorLocalShutdown,
                 AskError::RoutingFailed | AskError::Partition => Role::SendErrorPartition,
                 AskError::Unauthorized => Role::SendErrorUnauthorized,

@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-restarting-error"
+intent = "Calling a supervised child while restarting fails fast with ActorError.Restarting (and SendError.Restarting for Reject views and mailboxes, allowing .retry() after restarted(role)), while stopped and budget-exhausted roles return Dead."
+source = "cases/supervisor-restarting-error.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "bare:restarting\nwait:restarting\npolicy:rejected:restarting\nmailbox:rejected:restarting\nretried:ok\nstopped:dead\nbudget:dead\nbudget:policy:dead\nbudget:mailbox:dead\n"
+exit = 1

@@ -51,7 +51,7 @@
     }
   },
   "fixture_id": "enum-match",
-  "hew_version": "0.6.1",
+  "hew_version": "0.11.3",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

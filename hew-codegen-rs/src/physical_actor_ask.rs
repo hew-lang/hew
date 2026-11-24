@@ -1124,6 +1124,7 @@ pub(super) const fn actor_error_variant_role(
         Role::Trapped => Variant::ActorErrorTrapped,
         Role::Refused => Variant::ActorErrorRefused,
         Role::Dead => Variant::ActorErrorDead,
+        Role::Restarting => Variant::ActorErrorRestarting,
         Role::TimedOut => Variant::ActorErrorTimedOut,
         Role::NodeNotRunning => Variant::ActorErrorNodeNotRunning,
         Role::RoutingFailed => Variant::ActorErrorRoutingFailed,

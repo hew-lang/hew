@@ -465,16 +465,6 @@ pub(crate) fn record_ask_error(err: AskError) {
     LAST_ACTOR_ASK_ERROR.with(|c| c.set(err as i32));
 }
 
-/// Refuse an ask closed with `AskError::ActorStopped` and return null —
-/// the blocking stable-role ask's classified-refusal surface
-/// (`hew_supervisor_role_ask` records the slot-state diagnostic separately
-/// via the error slot; this binds the user-visible `Err(AskError::*)`).
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-pub(crate) fn actor_ask_null_actor_stopped() -> *mut c_void {
-    actor_ask_null(AskError::ActorStopped)
-}
-
 /// Clear the local-ask error slot (called on successful ask return).
 #[inline]
 #[cfg(not(target_arch = "wasm32"))]

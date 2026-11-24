@@ -423,7 +423,13 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
         let error = match outcome {
             crate::mailbox::SendOutcome::Enqueued => return AskError::None as i32,
             crate::mailbox::SendOutcome::Failed => AskError::MailboxFull,
-            crate::mailbox::SendOutcome::Closed => AskError::ActorStopped,
+            crate::mailbox::SendOutcome::Closed => {
+                if crate::supervisor::actor_role_is_restarting(token) {
+                    AskError::ActorRestarting
+                } else {
+                    AskError::ActorStopped
+                }
+            }
             crate::mailbox::SendOutcome::ShuttingDown => AskError::LocalShutdown,
             crate::mailbox::SendOutcome::Oom => AskError::SendFailed,
             _ => unreachable!("native admission does not apply implicit overflow policies"),

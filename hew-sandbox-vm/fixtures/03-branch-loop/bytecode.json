@@ -1,9 +1,23 @@
 {
   "actors": [],
-  "aggregates": [],
+  "aggregates": [
+    {
+      "fields": [
+        "start",
+        "end",
+        "first",
+        "last",
+        "stride",
+        "descending",
+        "nonempty"
+      ],
+      "id": 0,
+      "name": "Range<i64>"
+    }
+  ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.3",
+  "compiler_version": "hew-wasm-0.11.3",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -45,6 +59,13 @@
           "id": 1,
           "ops": [
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 0
+                }
+              ],
               "dst": 0,
               "op": "const.int",
               "own": "none",
@@ -69,6 +90,13 @@
               "value": 0
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 1
+                }
+              ],
               "dst": 1,
               "op": "const.int",
               "own": "none",
@@ -80,6 +108,13 @@
               "value": "0"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 2
+                }
+              ],
               "dst": 2,
               "op": "const.int",
               "own": "none",
@@ -91,41 +126,251 @@
               "value": "4"
             },
             {
+              "binary_op": "Less",
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 3
+                }
+              ],
               "dst": 3,
-              "op": "const.int",
+              "lhs": 1,
+              "op": "binary",
               "own": "none",
-              "span": {
-                "end": 44,
-                "start": 44
-              },
-              "ty": "i64",
-              "value": "1"
+              "rhs": 2,
+              "span": null,
+              "ty": "i64"
             },
             {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 4
+                }
+              ],
               "dst": 4,
               "op": "const.int",
               "own": "none",
               "span": null,
               "ty": "i64",
-              "value": "0"
+              "value": "1"
             },
             {
-              "binary_op": "Greater",
+              "binary_op": "WrappingSub",
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 5
+                }
+              ],
               "dst": 5,
-              "lhs": 3,
+              "lhs": 2,
               "op": "binary",
               "own": "none",
               "rhs": 4,
               "span": null,
               "ty": "i64"
+            },
+            {
+              "definitions": [
+                {
+                  "managed_type": 1,
+                  "own": "none",
+                  "value": 6
+                }
+              ],
+              "dst": 6,
+              "op": "const.int",
+              "own": "none",
+              "span": null,
+              "ty": "u64",
+              "value": "1"
+            },
+            {
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 7
+                }
+              ],
+              "dst": 7,
+              "op": "const.bool",
+              "own": "none",
+              "span": null,
+              "value": false
+            },
+            {
+              "definitions": [
+                {
+                  "managed_type": 4,
+                  "own": "none",
+                  "value": 8
+                }
+              ],
+              "dst": 8,
+              "fields": [
+                1,
+                2,
+                1,
+                5,
+                6,
+                7,
+                3
+              ],
+              "op": "aggregate.make",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 9
+                }
+              ],
+              "dst": 9,
+              "field": 0,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 10
+                }
+              ],
+              "dst": 10,
+              "field": 1,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 11
+                }
+              ],
+              "dst": 11,
+              "field": 2,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 12
+                }
+              ],
+              "dst": 12,
+              "field": 3,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 1,
+                  "own": "none",
+                  "value": 13
+                }
+              ],
+              "dst": 13,
+              "field": 4,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 14
+                }
+              ],
+              "dst": 14,
+              "field": 5,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
+            },
+            {
+              "aggregate": 8,
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 15
+                }
+              ],
+              "dst": 15,
+              "field": 6,
+              "op": "aggregate.project_copy",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 44,
+                "start": 44
+              }
             }
           ],
           "params": [],
           "term": {
-            "condition": 5,
+            "condition": 15,
             "else": {
-              "args": [],
-              "to": 7
+              "args": [
+                11
+              ],
+              "to": 8
             },
             "op": "branch",
             "span": {
@@ -134,7 +379,7 @@
             },
             "then": {
               "args": [],
-              "to": 6
+              "to": 9
             }
           }
         },
@@ -188,165 +433,18 @@
         },
         {
           "id": 6,
-          "ops": [
-            {
-              "binary_op": "Less",
-              "dst": 10,
-              "lhs": 1,
-              "op": "binary",
-              "own": "none",
-              "rhs": 2,
-              "span": null,
-              "ty": "i64"
-            }
-          ],
-          "params": [],
-          "term": {
-            "condition": 10,
-            "else": {
-              "args": [
-                1
-              ],
-              "to": 15
-            },
-            "op": "branch",
-            "span": {
-              "end": 44,
-              "start": 44
-            },
-            "then": {
-              "args": [],
-              "to": 16
-            }
-          }
-        },
-        {
-          "id": 7,
-          "ops": [
-            {
-              "dst": 6,
-              "op": "const.str",
-              "own": "owned",
-              "span": {
-                "end": 44,
-                "start": 44
-              },
-              "str": 0
-            }
-          ],
-          "params": [],
-          "term": {
-            "assertion": null,
-            "cleanup": {
-              "args": [],
-              "to": 8
-            },
-            "message": {
-              "decision": "borrow",
-              "value": 6
-            },
-            "op": "panic",
-            "span": {
-              "end": 44,
-              "start": 44
-            }
-          }
-        },
-        {
-          "id": 8,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 11
-            },
-            "op": "goto",
-            "span": {
-              "end": 44,
-              "start": 44
-            }
-          }
-        },
-        {
-          "id": 9,
-          "ops": [
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 0,
-              "span": null
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 3
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 10,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 6
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 9
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 11,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 12
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 12,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 10
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 13,
           "ops": [],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
-              "value": 7
+              "value": 16
             }
           ],
           "term": {
             "cancel": {
               "args": [],
-              "to": 18
+              "to": 11
             },
             "detail": {
               "budget": 4000
@@ -361,7 +459,7 @@
             "resumes": [
               {
                 "args": [],
-                "to": 17
+                "to": 10
               }
             ],
             "span": {
@@ -372,42 +470,55 @@
           }
         },
         {
-          "id": 14,
+          "id": 7,
           "ops": [
             {
               "binary_op": "WrappingAdd",
-              "dst": 17,
-              "lhs": 8,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 28
+                }
+              ],
+              "dst": 28,
+              "lhs": 17,
               "op": "binary",
               "own": "none",
-              "rhs": 3,
+              "rhs": 19,
               "span": null,
               "ty": "i64"
             },
             {
-              "binary_op": "Greater",
-              "dst": 18,
+              "binary_op": "WrappingSub",
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 29
+                }
+              ],
+              "dst": 29,
               "lhs": 17,
               "op": "binary",
               "own": "none",
-              "rhs": 8,
+              "rhs": 19,
               "span": null,
               "ty": "i64"
             }
           ],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
-              "value": 8
+              "value": 17
             }
           ],
           "term": {
-            "condition": 18,
+            "condition": 14,
             "else": {
-              "args": [
-                8
-              ],
-              "to": 15
+              "args": [],
+              "to": 25
             },
             "op": "branch",
             "span": {
@@ -415,16 +526,25 @@
               "start": 44
             },
             "then": {
-              "args": [],
-              "to": 28
+              "args": [
+                29
+              ],
+              "to": 24
             }
           }
         },
         {
-          "id": 15,
+          "id": 8,
           "ops": [
             {
-              "dst": 19,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 34
+                }
+              ],
+              "dst": 34,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -436,15 +556,16 @@
           ],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
-              "value": 9
+              "value": 18
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "copy",
-                "value": 19
+                "value": 34
               }
             ],
             "callbacks": [],
@@ -467,15 +588,199 @@
           }
         },
         {
+          "id": 9,
+          "ops": [
+            {
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 19
+                }
+              ],
+              "dst": 19,
+              "from": "u64",
+              "op": "cast",
+              "own": "none",
+              "span": null,
+              "to": "i64",
+              "value": 13
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                11
+              ],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [
+            {
+              "binary_op": "LessEqual",
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 20
+                }
+              ],
+              "dst": 20,
+              "lhs": 16,
+              "op": "binary",
+              "own": "none",
+              "rhs": 12,
+              "span": null,
+              "ty": "i64"
+            },
+            {
+              "binary_op": "GreaterEqual",
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 21
+                }
+              ],
+              "dst": 21,
+              "lhs": 16,
+              "op": "binary",
+              "own": "none",
+              "rhs": 12,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 14,
+            "else": {
+              "args": [],
+              "to": 16
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [
+                21
+              ],
+              "to": 15
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 14
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 15,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "none",
+              "value": 22
+            }
+          ],
+          "term": {
+            "condition": 22,
+            "else": {
+              "args": [
+                16
+              ],
+              "to": 8
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [],
+              "to": 17
+            }
+          }
+        },
+        {
           "id": 16,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [
-                1
+                20
               ],
-              "to": 13
+              "to": 15
             },
             "op": "goto",
             "span": {
@@ -488,83 +793,14 @@
           "id": 17,
           "ops": [
             {
-              "binary_op": "Less",
-              "dst": 11,
-              "lhs": 7,
-              "op": "binary",
-              "own": "none",
-              "rhs": 2,
-              "span": null,
-              "ty": "i64"
-            }
-          ],
-          "params": [],
-          "term": {
-            "condition": 11,
-            "else": {
-              "args": [
-                7
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 23
+                }
               ],
-              "to": 15
-            },
-            "op": "branch",
-            "span": {
-              "end": 44,
-              "start": 44
-            },
-            "then": {
-              "args": [],
-              "to": 21
-            }
-          }
-        },
-        {
-          "id": 18,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 19
-            },
-            "op": "goto",
-            "span": {
-              "end": 44,
-              "start": 44
-            }
-          }
-        },
-        {
-          "id": 19,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 20
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 20,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 9
-            },
-            "op": "goto",
-            "span": null
-          }
-        },
-        {
-          "id": 21,
-          "ops": [
-            {
-              "dst": 12,
+              "dst": 23,
               "op": "const.int",
               "own": "none",
               "span": {
@@ -576,11 +812,18 @@
             },
             {
               "binary_op": "Greater",
-              "dst": 13,
-              "lhs": 7,
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 24
+                }
+              ],
+              "dst": 24,
+              "lhs": 16,
               "op": "binary",
               "own": "none",
-              "rhs": 12,
+              "rhs": 23,
               "span": {
                 "end": 64,
                 "start": 64
@@ -590,10 +833,10 @@
           ],
           "params": [],
           "term": {
-            "condition": 13,
+            "condition": 24,
             "else": {
               "args": [],
-              "to": 23
+              "to": 19
             },
             "op": "branch",
             "span": {
@@ -602,15 +845,22 @@
             },
             "then": {
               "args": [],
-              "to": 22
+              "to": 18
             }
           }
         },
         {
-          "id": 22,
+          "id": 18,
           "ops": [
             {
-              "dst": 14,
+              "definitions": [
+                {
+                  "managed_type": 0,
+                  "own": "none",
+                  "value": 25
+                }
+              ],
+              "dst": 25,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -627,24 +877,25 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 25
+                  "to": 21
                 },
                 "trap": "integer_overflow"
               }
             ],
-            "lhs": 14,
+            "lhs": 25,
             "normal": {
               "args": [
-                15
+                26
               ],
-              "to": 24
+              "to": 20
             },
             "op": "checked.binary",
             "result": {
+              "managed_type": 0,
               "own": "none",
-              "value": 15
+              "value": 26
             },
-            "rhs": 7,
+            "rhs": 16,
             "span": {
               "end": 100,
               "start": 100
@@ -653,13 +904,13 @@
           }
         },
         {
-          "id": 23,
+          "id": 19,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 27
+              "to": 23
             },
             "op": "goto",
             "span": {
@@ -669,7 +920,7 @@
           }
         },
         {
-          "id": 24,
+          "id": 20,
           "ops": [
             {
               "dst": null,
@@ -679,19 +930,20 @@
                 "end": 92,
                 "start": 92
               },
-              "value": 16
+              "value": 27
             }
           ],
           "params": [
             {
+              "managed_type": 0,
               "own": "none",
-              "value": 16
+              "value": 27
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 27
+              "to": 23
             },
             "op": "goto",
             "span": {
@@ -701,13 +953,13 @@
           }
         },
         {
-          "id": 25,
+          "id": 21,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 26
+              "to": 22
             },
             "op": "checked_raise",
             "span": {
@@ -718,18 +970,147 @@
           }
         },
         {
-          "id": 26,
+          "id": 22,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 19
+              "to": 13
             },
             "op": "goto",
             "span": {
               "end": 100,
               "start": 100
+            }
+          }
+        },
+        {
+          "id": 23,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                16
+              ],
+              "to": 7
+            },
+            "op": "goto",
+            "span": {
+              "end": 92,
+              "start": 92
+            }
+          }
+        },
+        {
+          "id": 24,
+          "ops": [
+            {
+              "binary_op": "Greater",
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 31
+                }
+              ],
+              "dst": 31,
+              "lhs": 30,
+              "op": "binary",
+              "own": "none",
+              "rhs": 17,
+              "span": null,
+              "ty": "i64"
+            },
+            {
+              "binary_op": "Less",
+              "definitions": [
+                {
+                  "managed_type": 2,
+                  "own": "none",
+                  "value": 32
+                }
+              ],
+              "dst": 32,
+              "lhs": 30,
+              "op": "binary",
+              "own": "none",
+              "rhs": 17,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [
+            {
+              "managed_type": 0,
+              "own": "none",
+              "value": 30
+            }
+          ],
+          "term": {
+            "condition": 14,
+            "else": {
+              "args": [],
+              "to": 27
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [
+                32
+              ],
+              "to": 26
+            }
+          }
+        },
+        {
+          "id": 25,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                28
+              ],
+              "to": 24
+            },
+            "op": "goto",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 26,
+          "ops": [],
+          "params": [
+            {
+              "managed_type": 2,
+              "own": "none",
+              "value": 33
+            }
+          ],
+          "term": {
+            "condition": 33,
+            "else": {
+              "args": [
+                17
+              ],
+              "to": 8
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [],
+              "to": 28
             }
           }
         },
@@ -740,14 +1121,14 @@
           "term": {
             "edge": {
               "args": [
-                7
+                31
               ],
-              "to": 14
+              "to": 26
             },
             "op": "goto",
             "span": {
-              "end": 92,
-              "start": 92
+              "end": 44,
+              "start": 44
             }
           }
         },
@@ -758,9 +1139,9 @@
           "term": {
             "edge": {
               "args": [
-                17
+                30
               ],
-              "to": 13
+              "to": 6
             },
             "op": "goto",
             "span": {
@@ -813,12 +1194,50 @@
       "places": [
         {
           "id": 0,
+          "managed_type": 0,
           "origin": "local"
         }
       ]
     }
   ],
-  "hew_version": "0.6.3",
+  "hew_version": "0.11.3",
+  "managed_types": [
+    {
+      "id": 0,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 1,
+      "kind": "scalar",
+      "slot_bytes": "8"
+    },
+    {
+      "id": 2,
+      "kind": "scalar",
+      "slot_bytes": "1"
+    },
+    {
+      "id": 3,
+      "kind": "scalar",
+      "slot_bytes": "0"
+    },
+    {
+      "fields": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        2
+      ],
+      "id": 4,
+      "kind": "aggregate",
+      "shape": 0,
+      "slot_bytes": "42"
+    }
+  ],
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],
@@ -833,9 +1252,7 @@
     }
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
-  "strings": [
-    "step_by requires a positive step"
-  ],
+  "strings": [],
   "structural_render": [],
   "supervisors": [],
   "suspend_kinds": [

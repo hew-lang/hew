@@ -705,15 +705,20 @@ fn unix_get_response_limited(
         .map_err(ClientError::Write)?;
 
     // Read the HTTP response: status line, headers, blank line, body.
-    // Every byte read below comes through this budget, so neither an endless
-    // header line nor an unterminated body can grow without bound.
-    let mut reader = std::io::BufReader::new(stream.take(limit));
+    // Every byte read below comes through this `limit + 1` budget so an
+    // exact-`limit` response succeeds while anything past `limit` trips the
+    // sentinel byte and fails with `InvalidData` without growing unboundedly.
+    let mut reader = std::io::BufReader::new(stream.take(limit.saturating_add(1)));
 
     // Status line: "HTTP/1.1 200 OK\r\n"
     let mut status_line = String::new();
-    reader
+    let status_bytes = reader
         .read_line(&mut status_line)
         .map_err(ClientError::Read)?;
+    let mut total_read = u64::try_from(status_bytes).map_err(|_| response_too_large(limit))?;
+    if total_read > limit {
+        return Err(response_too_large(limit));
+    }
     let status_code = status_line
         .split_ascii_whitespace()
         .nth(1)
@@ -722,10 +727,17 @@ fn unix_get_response_limited(
     let status = status_line.trim_end().to_owned();
 
     // Headers — look for Content-Length, skip until blank line.
-    let mut content_length: Option<usize> = None;
+    let mut content_length: Option<u64> = None;
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(ClientError::Read)?;
+        let line_bytes = reader.read_line(&mut line).map_err(ClientError::Read)?;
+        let line_bytes = u64::try_from(line_bytes).map_err(|_| response_too_large(limit))?;
+        total_read = total_read
+            .checked_add(line_bytes)
+            .ok_or_else(|| response_too_large(limit))?;
+        if total_read > limit {
+            return Err(response_too_large(limit));
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             break; // End of headers.
@@ -739,8 +751,10 @@ fn unix_get_response_limited(
 
     // Read body. Content-Length is untrusted: never preallocate from it.
     let body = if let Some(len) = content_length {
-        let len = u64::try_from(len).map_err(|_| response_too_large(limit))?;
-        if len > limit {
+        if total_read
+            .checked_add(len)
+            .is_none_or(|total| total > limit)
+        {
             return Err(response_too_large(limit));
         }
         let mut body = Vec::new();
@@ -759,7 +773,11 @@ fn unix_get_response_limited(
         // No Content-Length — read until EOF (Connection: close).
         let mut body = Vec::new();
         reader.read_to_end(&mut body).map_err(ClientError::Read)?;
-        if reader.get_ref().limit() == 0 {
+        let body_len = u64::try_from(body.len()).map_err(|_| response_too_large(limit))?;
+        if total_read
+            .checked_add(body_len)
+            .is_none_or(|total| total > limit)
+        {
             return Err(response_too_large(limit));
         }
         body
@@ -1614,16 +1632,99 @@ mod tests {
     }
 
     #[test]
+    fn unix_response_exact_limit_succeeds_and_limit_plus_one_fails_with_invalid_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("exact_limit.sock");
+
+        let no_cl_headers = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+        let no_cl_body_exact = "0123456789"; // 10 bytes
+        let no_cl_exact = format!("{no_cl_headers}{no_cl_body_exact}");
+        let no_cl_limit = u64::try_from(no_cl_exact.len()).unwrap();
+        let no_cl_over = format!("{no_cl_exact}x");
+
+        let cl_body_exact = "0123456789"; // 10 bytes
+        let cl_exact = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cl_body_exact}",
+            cl_body_exact.len()
+        );
+        let cl_limit = u64::try_from(cl_exact.len()).unwrap();
+        let cl_body_over = "0123456789x"; // 11 bytes -> total = cl_limit + 1
+        let cl_over = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cl_body_over}",
+            cl_body_over.len()
+        );
+        // Content-Length == limit itself (headers + body > limit) must fail
+        // with InvalidData ("response exceeds ..."), not UnexpectedEof.
+        let cl_eq_limit = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {cl_limit}\r\nConnection: close\r\n\r\n{}",
+            "a".repeat(usize::try_from(cl_limit).unwrap())
+        );
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        serve_responses(
+            &sock,
+            vec![no_cl_exact, no_cl_over, cl_exact, cl_over, cl_eq_limit],
+            requests,
+        );
+
+        let ok_no_cl = unix_get_response_limited(&sock, "/api/metrics", no_cl_limit)
+            .expect("exact-limit response without Content-Length must succeed");
+        assert_eq!(ok_no_cl.status_code, 200);
+        assert_eq!(ok_no_cl.body, no_cl_body_exact.as_bytes());
+
+        let err_no_cl = unix_get_response_limited(&sock, "/api/metrics", no_cl_limit)
+            .expect_err("limit + 1 response without Content-Length must fail");
+        assert!(
+            matches!(
+                err_no_cl,
+                ClientError::Read(ref e)
+                    if e.kind() == io::ErrorKind::InvalidData
+                        && e.to_string().contains("response exceeds")
+            ),
+            "expected InvalidData('response exceeds ...'), got {err_no_cl:?}"
+        );
+
+        let ok_cl = unix_get_response_limited(&sock, "/api/metrics", cl_limit)
+            .expect("exact-limit response with Content-Length must succeed");
+        assert_eq!(ok_cl.status_code, 200);
+        assert_eq!(ok_cl.body, cl_body_exact.as_bytes());
+
+        for label in [
+            "headers + Content-Length == limit + 1",
+            "Content-Length == limit",
+        ] {
+            let err_cl = unix_get_response_limited(&sock, "/api/metrics", cl_limit)
+                .expect_err(&format!("{label} must fail"));
+            assert!(
+                matches!(
+                    err_cl,
+                    ClientError::Read(ref e)
+                        if e.kind() == io::ErrorKind::InvalidData
+                            && e.to_string().contains("response exceeds")
+                ),
+                "expected InvalidData('response exceeds ...') for {label}, got {err_cl:?}"
+            );
+        }
+    }
+
+    #[test]
     fn tcp_responses_share_the_response_byte_budget() {
         let (listener, addr) = bind_ephemeral_profiler_listener();
+        let exact_body = "x".repeat(48);
+        let over_body = "x".repeat(49);
         std::thread::spawn(move || {
             for response in [
                 // A declared length past the budget fails before any body.
-                "HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n".to_owned(),
                 // So does an undeclared body that keeps going.
                 "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
-                 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz",
-                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz"
+                    .to_owned(),
+                // Exact-limit body succeeds.
+                format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{exact_body}"),
+                // Limit + 1 undeclared body fails with InvalidData.
+                format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{over_body}"),
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_owned(),
             ] {
                 let (mut conn, _) = listener.accept().expect("accept test request");
                 let mut buf = [0u8; 1024];
@@ -1642,6 +1743,23 @@ mod tests {
                 "expected ClientError::Read(InvalidData), got {error:?}"
             );
         }
+        let exact = tcp_get_response_limited(&http, &url, 48)
+            .expect("an exact-limit TCP response must succeed");
+        assert_eq!(exact.status_code, 200);
+        assert_eq!(exact.body.len(), 48);
+
+        let over = tcp_get_response_limited(&http, &url, 48)
+            .expect_err("a limit + 1 TCP response must fail");
+        assert!(
+            matches!(
+                over,
+                ClientError::Read(ref e)
+                    if e.kind() == io::ErrorKind::InvalidData
+                        && e.to_string().contains("response exceeds")
+            ),
+            "expected ClientError::Read(InvalidData), got {over:?}"
+        );
+
         let response =
             tcp_get_response_limited(&http, &url, 48).expect("a response within budget succeeds");
         assert_eq!(response.status_code, 200);

@@ -1605,17 +1605,14 @@ fn compile_temp_wasi_module(
             std::process::exit(1);
         });
 
-    let tmp_dir = run_temp::create("run").unwrap_or_else(|e| {
-        eprintln!("Error: cannot create temp dir: {e}");
-        std::process::exit(1);
-    });
+    let (tmp_dir, interrupts) = create_watched_run_temp("run");
     let stem = run_temp::program_stem(Path::new(input));
     let wasm_path = target.executable_path(tmp_dir.path(), &stem);
 
     let mut artifact = CompiledTempExecutable {
         path: wasm_path.clone(),
         prerequisites: Vec::new(),
-        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
+        interrupts,
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     };
 
@@ -1732,20 +1729,38 @@ fn compile_temp_artifact(
     }
 }
 
+fn create_watched_run_temp(purpose: &str) -> (run_temp::RunTempDir, process::BuildInterrupts) {
+    // Arm interrupt handlers before creating the directory so a signal
+    // arriving during creation cannot exit via the default disposition and
+    // leave an orphaned temporary build directory behind.
+    let interrupts = process::BuildInterrupts::arm();
+    if let Some(end) = process::take_pending_interrupt() {
+        drop(interrupts);
+        process::exit_as_program(end);
+    }
+    let tmp_dir = match run_temp::create(purpose) {
+        Ok(tmp_dir) => tmp_dir,
+        Err(e) => {
+            drop(interrupts);
+            eprintln!("Error: cannot create temp dir: {e}");
+            std::process::exit(1);
+        }
+    };
+    let interrupts = interrupts.watch(tmp_dir.path());
+    (tmp_dir, interrupts)
+}
+
 fn create_debug_temp_artifact(
     input: &str,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    let tmp_dir = run_temp::create("debug").unwrap_or_else(|e| {
-        eprintln!("Error: cannot create temp dir: {e}");
-        std::process::exit(1);
-    });
+    let (tmp_dir, interrupts) = create_watched_run_temp("debug");
     let path = target.executable_path(tmp_dir.path(), &run_temp::program_stem(Path::new(input)));
 
     CompiledTempExecutable {
         path,
         prerequisites: Vec::new(),
-        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
+        interrupts,
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }
@@ -1754,16 +1769,13 @@ fn create_run_temp_artifact(
     input: &str,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    let tmp_dir = run_temp::create("run").unwrap_or_else(|e| {
-        eprintln!("Error: cannot create temp dir: {e}");
-        std::process::exit(1);
-    });
+    let (tmp_dir, interrupts) = create_watched_run_temp("run");
     let path = target.executable_path(tmp_dir.path(), &run_temp::program_stem(Path::new(input)));
 
     CompiledTempExecutable {
         path,
         prerequisites: Vec::new(),
-        interrupts: process::BuildInterrupts::install(tmp_dir.path()),
+        interrupts,
         _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
     }
 }

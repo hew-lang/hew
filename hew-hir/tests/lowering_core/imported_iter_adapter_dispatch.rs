@@ -8,7 +8,7 @@ use hew_parser::{
     ast::{Item, Program},
     module::{Module, ModuleGraph, ModulePath},
 };
-use hew_types::NominalInstance;
+use hew_types::{ReceiverInstance, TypeHead};
 
 const ADAPTERS: &[&str] = &["Map", "Filter", "Take", "Skip"];
 
@@ -84,15 +84,16 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
         .expect("declared");
 
     for adapter in ADAPTERS {
+        let nominal = output
+            .module
+            .defs
+            .lookup_nominal(&format!("std.iter.{adapter}"))
+            .expect("declared");
         let entry = lookup_trait_impl_entry_by_id(
             &index,
             &iterator,
-            &NominalInstance {
-                nominal: output
-                    .module
-                    .defs
-                    .lookup_nominal(&format!("std.iter.{adapter}"))
-                    .expect("declared"),
+            &ReceiverInstance {
+                head: TypeHead::of_declaration(&output.module.defs, nominal),
                 args: Vec::new(),
             },
             &[],
@@ -132,10 +133,9 @@ fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
         .keys()
         .filter(|key| key.declaring_trait == iterator && key.method == next)
         .map(|key| {
-            output
-                .module
-                .defs
-                .path(key.self_type.nominal.declaration())
+            key.self_type
+                .head
+                .receiver_path(&output.module.defs)
                 .to_string()
         })
         .collect();
@@ -183,15 +183,16 @@ fn main() -> i64 {
         .defs
         .lookup_path("std.builtins.Iterator::next")
         .expect("declared");
+    let std_cursor = output
+        .module
+        .defs
+        .lookup_nominal("std.builtins.HashMapIter")
+        .expect("declared");
     let builtin = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
-        &NominalInstance {
-            nominal: output
-                .module
-                .defs
-                .lookup_nominal("std.builtins.HashMapIter")
-                .expect("declared"),
+        &ReceiverInstance {
+            head: TypeHead::of_declaration(&output.module.defs, std_cursor),
             args: Vec::new(),
         },
         &[],
@@ -203,15 +204,16 @@ fn main() -> i64 {
             index.keys().collect::<Vec<_>>()
         )
     });
+    let user_cursor = output
+        .module
+        .defs
+        .lookup_nominal("HashMapIter")
+        .expect("declared");
     let user = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
-        &NominalInstance {
-            nominal: output
-                .module
-                .defs
-                .lookup_nominal("HashMapIter")
-                .expect("declared"),
+        &ReceiverInstance {
+            head: TypeHead::of_declaration(&output.module.defs, user_cursor),
             args: Vec::new(),
         },
         &[],
@@ -254,26 +256,28 @@ fn main() -> i64 {
         .defs
         .lookup_path("std.builtins.Iterator::next")
         .expect("declared");
+    let std_map = output
+        .module
+        .defs
+        .lookup_nominal("std.iter.Map")
+        .expect("declared");
     let std_entry = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
-        &NominalInstance {
-            nominal: output
-                .module
-                .defs
-                .lookup_nominal("std.iter.Map")
-                .expect("declared"),
+        &ReceiverInstance {
+            head: TypeHead::of_declaration(&output.module.defs, std_map),
             args: Vec::new(),
         },
         &[],
         &next,
     )
     .expect("std.iter.Map remains registered despite a local Map");
+    let local_map = output.module.defs.lookup_nominal("Map").expect("declared");
     let local_entry = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
-        &NominalInstance {
-            nominal: output.module.defs.lookup_nominal("Map").expect("declared"),
+        &ReceiverInstance {
+            head: TypeHead::of_declaration(&output.module.defs, local_map),
             args: Vec::new(),
         },
         &[],

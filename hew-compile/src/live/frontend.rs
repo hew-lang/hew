@@ -545,7 +545,11 @@ fn retained_declaration_modules(
             declarations.push(declaration.declaration());
         }
         match &ty {
-            ResolvedTy::TypeParam { name } => declarations.push(name.id.owner),
+            ResolvedTy::TypeParam { name } => {
+                if let Some(owner) = name.id.declaration_owner() {
+                    declarations.push(owner);
+                }
+            }
             ResolvedTy::TraitObject { traits } => {
                 for bound in traits {
                     if let Some(declaration) = bound.trait_id {
@@ -559,7 +563,9 @@ fn retained_declaration_modules(
             } => {
                 pending.push((**callable).clone());
                 for parameter in parameters {
-                    declarations.push(parameter.parameter.id.owner);
+                    if let Some(owner) = parameter.parameter.id.declaration_owner() {
+                        declarations.push(owner);
+                    }
                     for bound in &parameter.bounds {
                         if let Some(declaration) = bound.trait_id {
                             declarations.push(declaration);

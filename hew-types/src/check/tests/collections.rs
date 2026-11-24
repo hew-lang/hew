@@ -2813,9 +2813,7 @@ fn main() -> i64 {
         "nested constructors for a source-defined Option<T> must typecheck: {:#?}",
         output.errors
     );
-    let option_types: Vec<&Ty> = output
-        .expr_types
-        .values()
+    let option_types: Vec<&Ty> = root_values(&output.expr_types)
         .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
@@ -2823,9 +2821,7 @@ fn main() -> i64 {
             && option_types.iter().all(|ty| matches!(
                 ty,
                 Ty::Named {
-                    head: crate::TypeHead::Nominal(_)
-                        | crate::TypeHead::Param(_)
-                        | crate::TypeHead::Unresolved(_),
+                    head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
                     ..
                 }
             )),
@@ -2856,9 +2852,7 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
         "true builtin Option<T> constructors must remain valid: {:#?}",
         output.errors
     );
-    let option_types: Vec<&Ty> = output
-        .expr_types
-        .values()
+    let option_types: Vec<&Ty> = root_values(&output.expr_types)
         .filter(|ty| matches!(ty, Ty::Named { head: name_head, .. } if name_head.spelling() == "Option"))
         .collect();
     assert!(
@@ -4108,4 +4102,55 @@ fn vec_unknown_iter_method_suggests_std_iter() {
             "prose hint must not produce code fixes"
         );
     }
+}
+
+#[test]
+fn standalone_regex_literal_resolves_pattern_without_exposing_regex_module() {
+    let literal_src = r#"fn check_regex() -> bool {
+        let re = re"a+";
+        re.is_match("aaa")
+    }"#;
+    let output = check_source(literal_src);
+    assert!(
+        output.errors.is_empty(),
+        "standalone regex literal should typecheck without explicit import: {:#?}",
+        output.errors
+    );
+    let re_start = literal_src.find("re\"a+\"").expect("regex literal offset");
+    let re_span = re_start..re_start + "re\"a+\"".len();
+    let re_ty = output
+        .expr_types
+        .get(&SpanKey::in_module(&re_span, 0))
+        .expect("regex literal should have a recorded type");
+    assert!(
+        !re_ty.contains_error(),
+        "regex literal must not produce Ty::Error: {re_ty:?}"
+    );
+    assert_eq!(re_ty.user_facing().to_string(), "std.text.regex.Pattern");
+    let canonical_path = match re_ty {
+        Ty::Named { head, .. } => head.nominal().map(|id| output.defs.path(id.declaration())),
+        _ => None,
+    };
+    assert_eq!(canonical_path, Some("std.text.regex.Pattern"));
+
+    let bare_call = check_source(
+        r#"fn main() {
+        let _re = regex.new("a+");
+    }"#,
+    );
+    assert!(
+        !bare_call.errors.is_empty(),
+        "bare regex.new without `import std.text.regex;` must still fail"
+    );
+
+    let sibling_bare_call = check_source(
+        r#"fn main() {
+        let _lit = re"a+";
+        let _re = regex.new("a+");
+    }"#,
+    );
+    assert!(
+        !sibling_bare_call.errors.is_empty(),
+        "implicit embedded regex registration for `re\"...\"` must not expose bare `regex.new(...)`"
+    );
 }

@@ -257,7 +257,7 @@ fn main() {
     let reply = crate::Ty::I64;
     let checked_reply = crate::Ty::result(crate::Ty::I64, crate::Ty::String);
     let actor_error = |ty: &crate::Ty| -> bool {
-        matches!(ty, crate::Ty::Named { args, head: name_head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_)) }
+        matches!(ty, crate::Ty::Named { args, head: name_head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)) }
             if name_head.spelling() == crate::KnownDecl::ActorError.path()
                 && args.first() == Some(&crate::Ty::never_type()))
     };

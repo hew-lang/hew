@@ -177,20 +177,7 @@ impl Checker {
     }
 
     /// Report a bound path that names no trait, once per occurrence.
-    ///
-    /// TRANSITION(A1c4): WHY stdlib registration resolves signatures before
-    /// every importer scope exists, so a std bound can be unresolvable there
-    /// and is dropped silently. WHEN registration resolves after every import
-    /// is bound, the stdlib reports like any other source. WHAT: one
-    /// resolution pass over bound scopes.
     fn report_unknown_bound(&mut self, subject: Symbol, bound: &TraitBound, span: &Span) {
-        let std_source = self
-            .current_module
-            .as_deref()
-            .is_some_and(|module| self.checking_canonical_stdlib_source(module));
-        if self.in_stdlib_registration || std_source {
-            return;
-        }
         if !self
             .reported_unknown_bounds
             .insert(SpanKey::in_module(span, self.current_module_idx))
@@ -198,12 +185,13 @@ impl Checker {
             return;
         }
         let written = bound.path.to_string();
-        let candidates: Vec<&str> = self
+        let candidates: Vec<_> = self
             .trait_defs
             .keys()
             .map(|id| self.defs.display(*id))
             .collect();
-        let similar = crate::error::find_similar(&written, candidates);
+        let similar =
+            crate::error::find_similar(&written, candidates.iter().map(std::borrow::Cow::as_ref));
         self.report_error_with_suggestions(
             TypeErrorKind::UndefinedType,
             span,
@@ -271,7 +259,10 @@ impl Checker {
         let mut found: Vec<TraitRef> = Vec::new();
         let frames = self.current_type_param_bounds.iter();
         let signature = self.checking_signature().map(|sig| &sig.bounds);
-        let declaration = self.fn_sigs.get(&param.owner).map(|sig| &sig.bounds);
+        let declaration = param
+            .declaration_owner()
+            .and_then(|owner| self.fn_sigs.get(&owner))
+            .map(|sig| &sig.bounds);
         for bounds in frames.chain(signature).chain(declaration) {
             for bound in bounds.of(param) {
                 if !found.contains(bound) {
@@ -288,11 +279,14 @@ impl Checker {
                 }
             }
         }
-        let self_ty = self
-            .scopes
-            .declaration_parameters(param.owner)
-            .into_iter()
-            .find(|head| head.id == param)
+        let self_ty = param
+            .declaration_owner()
+            .and_then(|owner| {
+                self.scopes
+                    .declaration_parameters(owner)
+                    .into_iter()
+                    .find(|head| head.id == param)
+            })
             .map(Ty::param)
             .or_else(|| {
                 self.associated_schema_parameters

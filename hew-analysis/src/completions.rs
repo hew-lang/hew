@@ -505,7 +505,7 @@ fn type_member_completions(
         }
         methods.extend(
             tc.dispatch
-                .methods_of(id)
+                .methods_of(hew_types::TypeHead::of_declaration(&tc.defs, id))
                 .filter_map(|(name, _, declaration)| {
                     tc.sigs()
                         .of(declaration)

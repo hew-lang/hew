@@ -259,6 +259,9 @@ impl Checker {
             return *parameter;
         }
         let (base, _, associated) = projection;
+        let Some(declaration) = base.id.declaration_owner() else {
+            return base;
+        };
         let index = self
             .associated_schema_parameters
             .parameters
@@ -266,7 +269,7 @@ impl Checker {
             .filter(|parameter| parameter.id.owner == base.id.owner)
             .map(|parameter| usize::from(parameter.id.index) + 1)
             .max()
-            .unwrap_or_else(|| self.scopes.declaration_parameters(base.id.owner).len());
+            .unwrap_or_else(|| self.scopes.declaration_parameters(declaration).len());
         let parameter = crate::ParamHead::new(
             crate::TypeParamId::new(base.id.owner, index),
             Symbol::intern(&format!("{}.{}", base.spelling, associated)),

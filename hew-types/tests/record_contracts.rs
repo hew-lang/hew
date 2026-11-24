@@ -29,6 +29,10 @@ fn same_spelling_user_record_does_not_select_the_builtin_cursor() {
             ("head".into(), ResolvedTy::I64)
         ]
     );
+    let range = ResolvedTy::named_builtin(BuiltinType::Range, vec![ResolvedTy::I64]);
+    let (range_instance, range_fields) = service.record_fields(&range).unwrap();
+    assert_eq!(range_instance, None);
+    assert_eq!(range_fields.len(), 7);
 }
 
 #[test]
@@ -40,9 +44,11 @@ fn record_contract_requires_a_declaration_and_exact_arity() {
     );
     assert!(empty.record_fields(&cursor).is_err());
     let service = facts("enum Item {\n    Empty;\n}\n\n#[opaque]\ntype Handle {\n}\n\nfn main() -> i64 {\n    0\n}\n");
+    let mut missing_defs = service.defs().clone();
+    missing_defs.mint_for_test("Missing");
     for ty in [
         ResolvedTy::named_builtin(BuiltinType::VecIter, vec![]),
-        ResolvedTy::named_path(service.defs(), "Missing", vec![]),
+        ResolvedTy::named_path(&missing_defs, "Missing", vec![]),
         ResolvedTy::named_path(service.defs(), "Item", vec![]),
         ResolvedTy::named_opaque(
             hew_types::NominalHead::new(service.defs().lookup_nominal("Handle").unwrap(), "Handle"),
@@ -74,8 +80,10 @@ fn record_marker_belongs_to_the_container_declaration() {
     assert!(service
         .declaration_marker(&ResolvedTy::named_path(service.defs(), "Wrapper", vec![]))
         .is_err());
+    let mut missing_defs = service.defs().clone();
+    missing_defs.mint_for_test("Missing");
     assert!(service
-        .declaration_marker(&ResolvedTy::named_path(service.defs(), "Missing", vec![]))
+        .declaration_marker(&ResolvedTy::named_path(&missing_defs, "Missing", vec![]))
         .is_err());
 }
 
@@ -266,6 +274,8 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
     let choice = ResolvedTy::named_path(service.defs(), "Choice", vec![]);
     assert_eq!(service.capability_plan(&choice, Hash).unwrap(), None);
     assert!(!service.require(&choice).unwrap().hash);
+    let mut foreign_defs = service.defs().clone();
+    foreign_defs.mint_for_test("elsewhere.Vec");
     for capability in [Hash, Eq] {
         assert!(service
             .capability_plan(
@@ -277,7 +287,7 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
             .is_err());
         assert!(service
             .capability_plan(
-                &ResolvedTy::named_path(service.defs(), "elsewhere.Vec", vec![]),
+                &ResolvedTy::named_path(&foreign_defs, "elsewhere.Vec", vec![]),
                 capability
             )
             .is_err());

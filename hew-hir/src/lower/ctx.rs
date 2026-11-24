@@ -368,10 +368,7 @@ impl<'checked> LowerCtx<'checked> {
     pub(super) fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         let ty = self.checked_ty(span)?;
         let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
+            head: head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)),
             ..
         } = ty.as_ref()
         else {

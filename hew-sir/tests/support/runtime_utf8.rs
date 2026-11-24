@@ -205,9 +205,11 @@ pub(super) fn decode_module() -> SemModule {
             id: AggregateShapeId(0),
             aggregate_ty: error_ty.clone(),
             marker: hew_types::DeclarationMarker::None,
-            instance: error_ty
-                .nominal_instance(&hew_types::DefTable::fixture())
-                .expect("canonical source error must carry nominal identity"),
+            instance: Some(
+                error_ty
+                    .nominal_instance(&hew_types::DefTable::fixture())
+                    .expect("canonical source error must carry nominal identity"),
+            ),
             fields: vec![
                 SemAggregateField {
                     name: "valid_up_to".to_string(),

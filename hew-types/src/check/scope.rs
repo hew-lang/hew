@@ -283,7 +283,8 @@ impl Scopes {
         }
         for info in crate::builtin_type::builtin_types() {
             let builtin = info.kind;
-            if builtin.is_encoding_value()
+            if builtin.is_primitive()
+                || builtin.is_encoding_value()
                 || builtin.requires_source_import()
                 || info.canonical_name.contains('.')
             {
@@ -357,6 +358,19 @@ impl Scopes {
                 .map(|(name, binding)| (name.name, *binding))
                 .collect()
         })
+    }
+
+    /// Resolve a dotted type path (`["Type"]`, `["mod", "Type"]`, ...)
+    /// from `file` without recording span resolutions or marking import uses.
+    #[must_use]
+    pub(super) fn lookup_type_path(&self, file: ModuleId, segments: &[&str]) -> Option<Resolution> {
+        let (&head, rest) = segments.split_first()?;
+        let (binding, _) = self.item_head(file, file, hew_parser::ast::Ident::new(head))?;
+        let mut current = binding.resolution();
+        for &segment in rest {
+            current = self.resolve_member(current, Symbol::intern(segment))?;
+        }
+        Some(current)
     }
 
     /// The bare name of a type visible in this file. Whole-module imports

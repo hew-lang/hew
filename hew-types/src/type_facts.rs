@@ -673,16 +673,13 @@ impl TypeFactContext {
                 method_arguments.len()
             ));
         }
-        let structurally_selected =
-            receiver
-                .impl_receiver_instance(&self.defs)
-                .is_some_and(|receiver| {
-                    structural_witnesses.iter().any(|witness| {
-                        witness.self_type == receiver.nominal
-                            && (witness.declaring_trait, witness.method) == trait_method
-                            && witness.inherent == method
-                    })
-                });
+        let structurally_selected = receiver.impl_receiver_instance().is_some_and(|receiver| {
+            structural_witnesses.iter().any(|witness| {
+                witness.self_type == receiver.head
+                    && (witness.declaring_trait, witness.method) == trait_method
+                    && witness.inherent == method
+            })
+        });
         let mut arguments = if structurally_selected {
             binders
                 .receiver_arguments(&self.defs, method, receiver)
@@ -964,21 +961,25 @@ impl TypeFactService {
     ///
     /// Refuses non-record types, absent declarations, opaque carriers and
     /// incomplete or incorrectly instantiated field definitions.
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns optional nominal instance alongside ordered resolved field pairs"
+    )]
     pub fn record_fields(
         &self,
         ty: &ResolvedTy,
-    ) -> Result<(crate::NominalInstance, Vec<(String, ResolvedTy)>), String> {
+    ) -> Result<(Option<crate::NominalInstance>, Vec<(String, ResolvedTy)>), String> {
+        if let Some(fields) = crate::range_value::fields(ty) {
+            return Ok((None, fields));
+        }
         let instance = ty.nominal_instance(&self.context.defs).ok_or_else(|| {
             format!(
                 "`{}` is not a checker-resolved named record",
                 ty.user_facing()
             )
         })?;
-        if let Some(fields) = crate::range_value::fields(ty) {
-            return Ok((instance, fields));
-        }
         if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.context.defs, ty) {
-            return Ok((instance, fields));
+            return Ok((Some(instance), fields));
         }
         let definition = self
             .context
@@ -1032,7 +1033,7 @@ impl TypeFactService {
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((instance, fields))
+        Ok((Some(instance), fields))
     }
 
     /// Read a nominal type's own declaration marker. A plain record may
@@ -2757,9 +2758,26 @@ fn main() {}"#,
                 | BuiltinType::NodeError
                 | BuiltinType::LookupError
                 | BuiltinType::LinkError
+                | BuiltinType::I8
+                | BuiltinType::I16
+                | BuiltinType::I32
+                | BuiltinType::I64
+                | BuiltinType::U8
+                | BuiltinType::U16
+                | BuiltinType::U32
+                | BuiltinType::U64
+                | BuiltinType::Isize
+                | BuiltinType::Usize
+                | BuiltinType::F32
+                | BuiltinType::F64
+                | BuiltinType::Bool
+                | BuiltinType::Char
                 // A lambda actor's handle is a pid under another spelling.
                 | BuiltinType::ActorFn
                 | BuiltinType::HewActor => Some((ValueClass::BitCopy, CloneKind::Bits)),
+                BuiltinType::String | BuiltinType::Bytes => {
+                    Some((ValueClass::CowValue, CloneKind::Retain))
+                }
                 // `Option<i64>` / `Result<i64, string>` join their payloads.
                 BuiltinType::Option => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 BuiltinType::Result => Some((ValueClass::CowValue, CloneKind::FieldWise)),

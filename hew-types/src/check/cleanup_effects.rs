@@ -474,11 +474,11 @@ impl CleanupModel for OutputCleanup<'_> {
     }
     fn close(&self, ty: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
         let receiver = crate::ResolvedTy::from_ty(ty).ok()?;
-        let instance = receiver.impl_receiver_instance(&self.defs)?;
+        let instance = receiver.impl_receiver_instance()?;
         let close = self
             .dispatch
             .candidates(
-                instance.nominal,
+                instance.head,
                 Some(&instance),
                 hew_parser::ast::Symbol::intern("close"),
             )

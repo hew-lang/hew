@@ -1285,7 +1285,7 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
     let literal_span = &(literal_start..literal_start + 2);
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&result.program);
     assert!(
         output.errors.is_empty(),

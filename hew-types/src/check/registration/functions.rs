@@ -163,11 +163,6 @@ impl Checker {
         }
     }
 
-    /// Pass 2: Collect function signatures
-    pub(in crate::check) fn collect_functions(&mut self, program: &Program) {
-        self.collect_function_signatures(program, None);
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "signature collection maintains one ordered registration walk"
@@ -625,11 +620,10 @@ impl Checker {
                                     )
                                 };
                                 // The materialized default belongs to the impl's
-                                // receiver identity: a declaration, a builtin or
-                                // a primitive's anchor row.
+                                // receiver identity.
                                 let receiver = ResolvedTy::from_ty(&target)
                                     .ok()
-                                    .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+                                    .and_then(|ty| ty.impl_receiver_instance());
                                 let default_body =
                                     if let (Some(receiver), Some((declaring_trait, _))) = (
                                         receiver,
@@ -1770,13 +1764,13 @@ impl Checker {
         };
         let Some(instance) = ResolvedTy::from_ty(&receiver)
             .ok()
-            .and_then(|ty| ty.impl_receiver_instance(&self.defs))
+            .and_then(|ty| ty.impl_receiver_instance())
         else {
             return;
         };
         if impl_is_generic || instance.args.is_empty() {
             self.dispatch
-                .insert_generic(instance.nominal, owner, name, method);
+                .insert_generic(instance.head, owner, name, method);
         } else {
             self.dispatch
                 .insert_specialized(instance, owner, name, method);
@@ -1828,7 +1822,6 @@ impl Checker {
                 }
                 crate::TypeHead::Builtin(builtin) => builtin.canonical_name().to_string(),
                 crate::TypeHead::Param(param) => param.spelling.to_string(),
-                crate::TypeHead::Unresolved(sym) => sym.as_str().to_string(),
             },
             Ty::Generator { .. } => crate::BuiltinType::Generator.canonical_name().to_string(),
             _ => self_ty.user_facing().to_string(),

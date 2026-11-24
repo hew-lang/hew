@@ -343,7 +343,9 @@ fn plain_field_recipes(
         ) {
             return Err("aggregate projection cannot traverse an opaque ancestor".into());
         }
-        if ty.nominal_instance(defs).as_ref() != Some(&descriptor.instance) {
+        if ty.nominal_instance(defs) != descriptor.instance
+            || (descriptor.instance.is_none() && ty != &descriptor.aggregate_ty)
+        {
             return Err("aggregate ancestor descriptor has a different nominal identity".into());
         }
         if descriptor.marker != hew_types::DeclarationMarker::None {

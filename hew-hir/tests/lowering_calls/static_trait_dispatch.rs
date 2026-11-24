@@ -307,7 +307,7 @@ impl<T> Render for Box<T> {
         .iter()
         .find(|(key, _)| {
             output.module.defs.path(key.declaring_trait) == "left.render.Render"
-                && output.module.defs.path(key.self_type.nominal.declaration()) == "left.render.Box"
+                && key.self_type.head.receiver_path(&output.module.defs) == "left.render.Box"
                 && key.self_type.args == vec![hew_types::ResolvedTy::I64]
         })
         .expect("left.render's i64 concrete impl must be indexed structurally");
@@ -315,7 +315,7 @@ impl<T> Render for Box<T> {
         .iter()
         .find(|(key, _)| {
             output.module.defs.path(key.declaring_trait) == "right.paint.Render"
-                && output.module.defs.path(key.self_type.nominal.declaration()) == "right.paint.Box"
+                && key.self_type.head.receiver_path(&output.module.defs) == "right.paint.Box"
                 && key.self_type.args.is_empty()
         })
         .expect("right.paint's generic impl must be indexed structurally");
@@ -328,15 +328,15 @@ impl<T> Render for Box<T> {
         "same leaf method names from different modules must not collide"
     );
     assert_ne!(
-        left_concrete.0.self_type.nominal, right_generic.0.self_type.nominal,
+        left_concrete.0.self_type.head, right_generic.0.self_type.head,
         "same leaf nominal names from different modules must not collide"
     );
 
     let left_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
         &index,
         &left_concrete.0.declaring_trait,
-        &hew_types::NominalInstance {
-            nominal: left_concrete.0.self_type.nominal,
+        &hew_types::ReceiverInstance {
+            head: left_concrete.0.self_type.head,
             args: vec![hew_types::ResolvedTy::I64],
         },
         &[],
@@ -369,8 +369,8 @@ impl<T> Render for Box<T> {
     let right_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
         &index,
         &right_generic.0.declaring_trait,
-        &hew_types::NominalInstance {
-            nominal: right_generic.0.self_type.nominal,
+        &hew_types::ReceiverInstance {
+            head: right_generic.0.self_type.head,
             args: vec![hew_types::ResolvedTy::Bool],
         },
         &[],

@@ -68,7 +68,23 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Trap
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue
-            | BuiltinType::TomlValue,
+            | BuiltinType::TomlValue
+            | BuiltinType::I8
+            | BuiltinType::I16
+            | BuiltinType::I32
+            | BuiltinType::I64
+            | BuiltinType::U8
+            | BuiltinType::U16
+            | BuiltinType::U32
+            | BuiltinType::U64
+            | BuiltinType::Isize
+            | BuiltinType::Usize
+            | BuiltinType::F32
+            | BuiltinType::F64
+            | BuiltinType::Bool
+            | BuiltinType::Char
+            | BuiltinType::String
+            | BuiltinType::Bytes,
         )
         | None => None,
     }
@@ -196,13 +212,6 @@ pub enum TypeHead {
     Builtin(BuiltinType),
     /// A generic binder.
     Param(ParamHead),
-    /// A spelling no declaration was found for in the scope that wrote it:
-    /// the module registry's signature mirror and the checker's interim key
-    /// resolution produce it, and HIR's own type resolution qualifies it.
-    ///
-    /// TRANSITION(A1 commit 3, A2): deleted when every type is resolved
-    /// through `Scope` and the registry reads the checker's signatures.
-    Unresolved(hew_parser::ast::Symbol),
 }
 
 /// A nominal identity with the spelling it renders as.
@@ -294,7 +303,6 @@ enum HeadIdentity {
     Actor(crate::NominalId),
     Builtin(BuiltinType),
     Param(crate::TypeParamId),
-    Unresolved(hew_parser::ast::Symbol),
 }
 
 impl TypeHead {
@@ -304,7 +312,6 @@ impl TypeHead {
             Self::Actor(head) => HeadIdentity::Actor(head.id),
             Self::Builtin(builtin) => HeadIdentity::Builtin(builtin),
             Self::Param(head) => HeadIdentity::Param(head.id),
-            Self::Unresolved(spelling) => HeadIdentity::Unresolved(spelling),
         }
     }
 
@@ -330,7 +337,7 @@ impl TypeHead {
         match self {
             Self::Nominal(head) | Self::Actor(head) => Some(head.id),
             Self::Builtin(builtin) => defs.builtin_declaration(builtin),
-            Self::Param(_) | Self::Unresolved(_) => None,
+            Self::Param(_) => None,
         }
     }
 
@@ -338,6 +345,16 @@ impl TypeHead {
     #[must_use]
     pub fn param(parameter: ParamHead) -> Self {
         Self::Param(parameter)
+    }
+
+    /// The declaration path or builtin spelling used when keying or emitting
+    /// an impl receiver of this head.
+    #[must_use]
+    pub fn receiver_path<'a>(&self, defs: &'a crate::DefTable) -> &'a str {
+        self.declaration(defs).map_or_else(
+            || self.spelling(),
+            |nominal| defs.path(nominal.declaration()),
+        )
     }
 
     /// The name a string-keyed registry filed this head's declaration under.
@@ -379,7 +396,6 @@ impl TypeHead {
             Self::Nominal(head) | Self::Actor(head) => head.spelling.as_str(),
             Self::Builtin(builtin) => builtin.canonical_name(),
             Self::Param(head) => head.spelling.as_str(),
-            Self::Unresolved(spelling) => spelling.as_str(),
         }
     }
 
@@ -431,18 +447,15 @@ impl Ord for TypeHead {
                 HeadIdentity::Nominal(id) => (0, id.declaration().index_u32(), 0),
                 HeadIdentity::Actor(id) => (1, id.declaration().index_u32(), 0),
                 HeadIdentity::Builtin(builtin) => (2, builtin as u32, 0),
-                HeadIdentity::Param(id) => (3, id.owner.index_u32(), u32::from(id.index)),
-                HeadIdentity::Unresolved(_) => (4, 0, 0),
+                HeadIdentity::Param(id) => match id.owner {
+                    crate::ParamOwner::Declaration(def) => {
+                        (3, def.index_u32(), u32::from(id.index))
+                    }
+                    crate::ParamOwner::Builtin(builtin) => (4, builtin as u32, u32::from(id.index)),
+                },
             }
         }
-        rank(self.identity())
-            .cmp(&rank(other.identity()))
-            .then_with(|| match (self.identity(), other.identity()) {
-                (HeadIdentity::Unresolved(left), HeadIdentity::Unresolved(right)) => {
-                    left.cmp(&right)
-                }
-                _ => std::cmp::Ordering::Equal,
-            })
+        rank(self.identity()).cmp(&rank(other.identity()))
     }
 }
 
@@ -731,18 +744,6 @@ impl Ty {
     pub fn user_for_test(path: &str, args: Vec<Ty>) -> Ty {
         Ty::Named {
             head: TypeHead::Nominal(NominalHead::new(crate::NominalId::for_test(path), path)),
-            args,
-        }
-    }
-
-    /// A spelling the registry mirror extracted and has not resolved.
-    ///
-    /// TRANSITION(A1 commit 3): deleted with [`TypeHead::Unresolved`].
-    #[doc(hidden)]
-    #[must_use]
-    pub fn unresolved_for_test(spelling: &str, args: Vec<Ty>) -> Ty {
-        Ty::Named {
-            head: TypeHead::Unresolved(hew_parser::ast::Symbol::intern(spelling)),
             args,
         }
     }
@@ -1783,20 +1784,6 @@ impl Ty {
             return Ty::CancellationToken;
         }
         Ty::Named { head, args }
-    }
-
-    /// A named type the module registry spelled but did not resolve.
-    ///
-    /// TRANSITION(A2): see [`TypeHead::Unresolved`].
-    #[must_use]
-    pub fn registry_named(spelling: &str, args: Vec<Ty>) -> Ty {
-        match lookup_builtin_type(spelling) {
-            Some(builtin) => Ty::named_head(TypeHead::Builtin(builtin), args),
-            None => Ty::Named {
-                head: TypeHead::Unresolved(hew_parser::ast::Symbol::intern(spelling)),
-                args,
-            },
-        }
     }
 
     /// The head of a named type.

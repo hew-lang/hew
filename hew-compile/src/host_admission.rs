@@ -429,7 +429,7 @@ fn resolve_candidate_at(
                     for value in receiver {
                         let Some(instance) = actual_type(output, &value)
                             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                            .and_then(|ty| ty.impl_receiver_instance())
                         else {
                             continue;
                         };
@@ -776,10 +776,10 @@ fn iteration_calls(output: &TypeCheckOutput, iterable: &Ty) -> Option<IterationC
     let select = |ty: &Ty, name: &str| {
         let instance = ResolvedTy::from_ty(ty)
             .map_err(|_| ())?
-            .impl_receiver_instance(&output.defs)
+            .impl_receiver_instance()
             .ok_or(())?;
         match output.dispatch.select(
-            instance.nominal,
+            instance.head,
             Some(&instance),
             hew_parser::ast::Symbol::intern(name),
         ) {
@@ -827,17 +827,17 @@ fn nominal_actuals(
     output: &TypeCheckOutput,
     candidates: &IndirectCallCandidates,
     env: &CandidateEnv,
-) -> Vec<(NominalId, Vec<Ty>)> {
+) -> Vec<(hew_types::TypeHead, Vec<Ty>)> {
     let values = resolve_candidates_at(output, candidates, env, &[], true, 0, &mut Vec::new());
     let mut instances = Vec::new();
     for value in values {
         if let Some(ty) = actual_type(output, &value) {
             if let Some(instance) = Some(ty)
                 .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                .and_then(|ty| ty.impl_receiver_instance())
             {
                 let instance = (
-                    instance.nominal,
+                    instance.head,
                     instance.args.iter().map(ResolvedTy::to_ty).collect(),
                 );
                 if !instances.contains(&instance) {
@@ -892,7 +892,7 @@ fn trait_method_arguments(
 
 fn service_methods(
     output: &TypeCheckOutput,
-    instance: &hew_types::NominalInstance,
+    instance: &hew_types::ReceiverInstance,
     (declaring_trait, method): (DefId, DefId),
     trait_args: &[Ty],
     method_args: &[Ty],
@@ -902,18 +902,14 @@ fn service_methods(
     let methods: Vec<_> = if confined {
         output
             .dispatch
-            .candidates(instance.nominal, Some(instance), name)
+            .candidates(instance.head, Some(instance), name)
             .into_iter()
             .map(|(owner, method)| (name, owner, method))
             .collect()
     } else {
-        output.dispatch.methods_of(instance.nominal).collect()
+        output.dispatch.methods_of(instance.head).collect()
     };
-    let receiver = ResolvedTy::Named {
-        head: hew_types::TypeHead::of_declaration(&output.defs, instance.nominal),
-        args: instance.args.clone(),
-        is_opaque: false,
-    };
+    let receiver = instance.to_resolved_ty();
     methods
         .into_iter()
         .filter(|(candidate_name, owner, candidate)| {
@@ -921,7 +917,7 @@ fn service_methods(
                 && service_method_owner(
                     output,
                     *owner,
-                    instance.nominal,
+                    instance.head,
                     *candidate,
                     declaring_trait,
                     method,
@@ -961,7 +957,7 @@ fn method_instance_arguments(
 fn service_method_owner(
     output: &TypeCheckOutput,
     owner: hew_types::check::dispatch_table::MethodOwner,
-    nominal: NominalId,
+    receiver_head: hew_types::TypeHead,
     candidate: DefId,
     declaring_trait: DefId,
     method: DefId,
@@ -972,7 +968,7 @@ fn service_method_owner(
         MethodOwner::Inherent => output.structural_witnesses.iter().any(|witness| {
             witness.declaring_trait == declaring_trait
                 && witness.method == method
-                && witness.self_type == nominal
+                && witness.self_type == receiver_head
                 && witness.inherent == candidate
         }),
     }
@@ -1236,7 +1232,14 @@ fn call_graph(
             let Some(owner) = owner_for(span) else {
                 continue;
             };
-            for (_, method_owner, method) in output.dispatch.methods_of(instance.nominal) {
+            for (_, method_owner, method) in
+                output
+                    .dispatch
+                    .methods_of(hew_types::TypeHead::of_declaration(
+                        &output.defs,
+                        instance.nominal,
+                    ))
+            {
                 if matches!(
                     method_owner,
                     hew_types::check::dispatch_table::MethodOwner::Trait(_)
@@ -1382,35 +1385,32 @@ fn call_graph(
     }
     // Materialized defaults have distinct IDs but execute the declaring
     // trait's checked body. Join those IDs through the dispatch owner.
-    for nominal in output.type_defs.keys() {
-        for (name, owner, method) in output.dispatch.methods_of(*nominal) {
-            if output.defs.kind(method) != DeclarationKind::DefaultImplMethod {
-                continue;
-            }
-            let hew_types::check::dispatch_table::MethodOwner::Trait(trait_id) = owner else {
-                continue;
-            };
-            let Some(source) =
-                output
-                    .defs
-                    .member_of_kind(trait_id, name, DeclarationKind::TraitMethod)
-            else {
-                continue;
-            };
-            let Some(site) = output.defs.site(source) else {
-                continue;
-            };
-            let Some(module_idx) = module_index(output, source) else {
-                continue;
-            };
-            edges
-                .entry(CallableNode::Declaration(method))
-                .or_default()
-                .push(CallEdge {
-                    span: SpanKey::in_module(&site.span(), module_idx),
-                    target: CallTarget::User(source),
-                });
+    for (name, owner, method) in output.dispatch.all_methods() {
+        if output.defs.kind(method) != DeclarationKind::DefaultImplMethod {
+            continue;
         }
+        let hew_types::check::dispatch_table::MethodOwner::Trait(trait_id) = owner else {
+            continue;
+        };
+        let Some(source) = output
+            .defs
+            .member_of_kind(trait_id, name, DeclarationKind::TraitMethod)
+        else {
+            continue;
+        };
+        let Some(site) = output.defs.site(source) else {
+            continue;
+        };
+        let Some(module_idx) = module_index(output, source) else {
+            continue;
+        };
+        edges
+            .entry(CallableNode::Declaration(method))
+            .or_default()
+            .push(CallEdge {
+                span: SpanKey::in_module(&site.span(), module_idx),
+                target: CallTarget::User(source),
+            });
     }
     for calls in edges.values_mut() {
         calls.sort_by_key(|call| (call.span.module_idx, call.span.start, call.span.end));
@@ -2720,10 +2720,10 @@ fn check_profile(
                         receiver_param
                             .and_then(|parameter| substitutions.get(parameter))
                             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                            .and_then(|ty| ty.impl_receiver_instance())
                             .map(|instance| {
                                 (
-                                    instance.nominal,
+                                    instance.head,
                                     instance.args.iter().map(ResolvedTy::to_ty).collect(),
                                 )
                             })
@@ -2744,10 +2744,10 @@ fn check_profile(
                             })
                             .and_then(|index| type_args.get(index))
                             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                            .and_then(|ty| ty.impl_receiver_instance(&output.defs))
+                            .and_then(|ty| ty.impl_receiver_instance())
                             .map(|instance| {
                                 (
-                                    instance.nominal,
+                                    instance.head,
                                     instance.args.iter().map(ResolvedTy::to_ty).collect(),
                                 )
                             })
@@ -2764,15 +2764,20 @@ fn check_profile(
                             output
                                 .type_defs
                                 .keys()
-                                .map(|id| (*id, Vec::new()))
+                                .map(|id| {
+                                    (
+                                        hew_types::TypeHead::of_declaration(&output.defs, *id),
+                                        Vec::new(),
+                                    )
+                                })
                                 .collect()
                         },
                         |concrete| vec![concrete],
                     );
                     let mut matched = false;
-                    for (nominal, next_args) in nominals {
-                        let instance = hew_types::NominalInstance {
-                            nominal,
+                    for (head, next_args) in nominals {
+                        let instance = hew_types::ReceiverInstance {
+                            head,
                             args: next_args
                                 .iter()
                                 .map(ResolvedTy::from_ty)
@@ -2836,17 +2841,17 @@ fn check_profile(
                                     .collect();
                                 let receiver =
                                     ResolvedTy::from_ty(&actual_type(output, &value)?).ok()?;
-                                let instance = receiver.impl_receiver_instance(&output.defs)?;
+                                let instance = receiver.impl_receiver_instance()?;
                                 let mut calls = Vec::new();
                                 for (owner, candidate) in output.dispatch.candidates(
-                                    instance.nominal,
+                                    instance.head,
                                     Some(&instance),
                                     output.defs.name(*method),
                                 ) {
                                     if !service_method_owner(
                                         output,
                                         owner,
-                                        instance.nominal,
+                                        instance.head,
                                         candidate,
                                         slot.declaring_trait,
                                         *method,
@@ -2909,11 +2914,11 @@ fn check_profile(
                                 .find(|slot| slot.method == *method)?;
                             let instance = ResolvedTy::from_ty(&coercion.concrete_type)
                                 .ok()?
-                                .impl_receiver_instance(&output.defs)?;
-                            Some((slot.declaring_trait, instance.nominal))
+                                .impl_receiver_instance()?;
+                            Some((slot.declaring_trait, instance.head))
                         })
-                        .flat_map(|(declaring_trait, nominal)| {
-                            output.dispatch.methods_of(nominal).filter_map(
+                        .flat_map(|(declaring_trait, head)| {
+                            output.dispatch.methods_of(head).filter_map(
                                 move |(name, owner, candidate)| {
                                     (name == method_name
                                         && (owner

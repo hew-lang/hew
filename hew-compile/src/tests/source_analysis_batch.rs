@@ -181,7 +181,11 @@ fn checked_resolutions(output: &hew_types::TypeCheckOutput) -> Vec<String> {
                     format!("nominal:{}", identity(output, id.declaration()))
                 }
                 Resolution::Param(id) => {
-                    format!("param:{}:{}", identity(output, id.owner), id.index)
+                    let owner = id.declaration_owner().map_or_else(
+                        || format!("{:?}", id.owner),
+                        |owner| identity(output, owner),
+                    );
+                    format!("param:{owner}:{}", id.index)
                 }
                 Resolution::Field(id, index) => {
                     format!("field:{}:{index}", identity(output, id.declaration()))
@@ -233,13 +237,14 @@ fn checked_type(output: &hew_types::TypeCheckOutput, ty: &hew_types::Ty) -> Stri
                 TypeHead::Actor(head) => {
                     format!("actor:{}", identity(output, head.id.declaration()))
                 }
-                TypeHead::Param(head) => format!(
-                    "param:{}:{}",
-                    identity(output, head.id.owner),
-                    head.id.index
-                ),
+                TypeHead::Param(head) => {
+                    let owner = head.id.declaration_owner().map_or_else(
+                        || format!("{:?}", head.id.owner),
+                        |owner| identity(output, owner),
+                    );
+                    format!("param:{owner}:{}", head.id.index)
+                }
                 TypeHead::Builtin(kind) => format!("builtin:{kind:?}"),
-                TypeHead::Unresolved(name) => format!("unresolved:{name}"),
             };
             format!(
                 "{head}<{:?}>",

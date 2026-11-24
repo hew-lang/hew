@@ -105,178 +105,280 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "type registration handles all root item variants in one place"
+        reason = "ordered multi-pass declaration registration per module and root"
     )]
-    /// Pass 1: Collect type definitions
-    pub(in crate::check) fn collect_types(&mut self, program: &Program) {
-        // Pre-register TypeDecls from non-root module_graph modules into
-        // `type_defs` so non-root module body checking can access struct
-        // fields and enum variants of types defined within those modules.
-        //
-        // Uses `pre_register_type_decl` which populates `type_defs` with
-        // correct field/variant data but skips `type_def_spans` (so the
-        // import path's `register_type_namespace_name` succeeds) and skips
-        // trait-registry / wire-method side effects (those are handled by
-        // the import path's full `register_type_decl` for pub types, and
-        // are not needed for internal non-pub types).
+    /// Register all declarations, imports, type aliases, type bodies, traits,
+    /// functions, and impls in declaration-dependency order (`Scope`-resolved).
+    pub(in crate::check) fn collect_declarations(&mut self, program: &Program) {
         if let Some(ref mg) = program.module_graph {
             let span_indices = std::sync::Arc::clone(&self.file_span_indices);
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
                 }
-                if let Some(module) = mg.modules.get(mod_id) {
-                    let module_name = mod_id.dotted();
-                    self.current_module = Some(module_name.clone());
-                    self.seed_resolved_lifecycle_import_bindings(module, Some(&module_name), mg);
-                    // Temporarily scope local_type_defs so that resolve_type_expr
-                    // inside field type resolution does not inject fresh type vars
-                    // on handle types from this module.
-                    let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
-                    let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
-                    for (item, _) in &module.items {
-                        match item {
-                            Item::TypeDecl(td) => {
-                                self.local_type_defs.insert(td.name.to_string());
-                                self.source_type_defs.insert(td.name.to_string());
-                            }
-                            Item::Machine(md) => {
-                                // Pre-seed the machine name so that resolve_type_expr
-                                // inside state/event field resolution sees the machine
-                                // as locally-non-generic instead of injecting a fresh var.
-                                // Also seed the machine-owned `Name.Event` companion so
-                                // imported machines surface their event union as a
-                                // locally-defined type for the non-root module body.
-                                self.local_type_defs.insert(md.name.to_string());
-                                self.source_type_defs.insert(md.name.to_string());
-                                let event_type_name = format!("{}.Event", md.name);
-                                self.local_type_defs.insert(event_type_name.clone());
-                                self.source_type_defs.insert(event_type_name);
-                            }
-                            _ => {}
+                let Some(module) = mg.modules.get(mod_id) else {
+                    continue;
+                };
+                let module_name = mod_id.dotted();
+                self.record_canonical_std_module_source(&module_name, &module.source_paths);
+                self.current_module = Some(module_name.clone());
+                self.seed_resolved_lifecycle_import_bindings(module, Some(&module_name), mg);
+                self.current_module_direct_imports = module
+                    .imports
+                    .iter()
+                    .map(|import| import.target.dotted())
+                    .collect();
+                self.current_module_direct_import_bindings = module
+                    .imports
+                    .iter()
+                    .map(|import| (import.target.dotted(), import.spec.clone()))
+                    .collect();
+                let saved_local_type_defs = std::mem::take(&mut self.local_type_defs);
+                let saved_source_type_defs = std::mem::take(&mut self.source_type_defs);
+                for (item, _) in &module.items {
+                    match item {
+                        Item::TypeDecl(td) => {
+                            self.local_type_defs.insert(td.name.to_string());
+                            self.source_type_defs.insert(td.name.to_string());
                         }
-                    }
-                    let err_before = self.errors.len();
-                    let warn_before = self.warnings.len();
-                    // Per-file lexical type authority (rc1-F1 stage C):
-                    // record which FILE declares each type name, so
-                    // extern-signature nominal identity can resolve a bare
-                    // name to its declaring file's minted identity.
-                    let item_sources = self.module_item_sources.get(&module_name).cloned();
-                    for (item_idx, (item, _)) in module.items.iter().enumerate() {
-                        let declared = match item {
-                            Item::TypeDecl(td) => Some(td.name),
-                            _ => None,
-                        };
-                        if let (Some(name), Some(source)) = (
-                            declared,
-                            item_sources
-                                .as_ref()
-                                .and_then(|sources| sources.get(item_idx)),
-                        ) {
-                            self.file_type_decls
-                                .entry(source.clone())
-                                .or_default()
-                                .insert(name.to_string());
+                        Item::Actor(ad) => {
+                            self.local_type_defs.insert(ad.name.to_string());
+                            self.source_type_defs.insert(ad.name.to_string());
                         }
+                        Item::TypeAlias(ta) => {
+                            self.local_type_defs.insert(ta.name.to_string());
+                            self.source_type_defs.insert(ta.name.to_string());
+                        }
+                        Item::Record(rd) => {
+                            self.local_type_defs.insert(rd.name.to_string());
+                            self.source_type_defs.insert(rd.name.to_string());
+                        }
+                        Item::Supervisor(sd) => {
+                            self.local_type_defs.insert(sd.name.to_string());
+                            self.source_type_defs.insert(sd.name.to_string());
+                        }
+                        Item::Machine(md) => {
+                            self.local_type_defs.insert(md.name.to_string());
+                            self.source_type_defs.insert(md.name.to_string());
+                            let event_type_name = format!("{}.Event", md.name);
+                            self.local_type_defs.insert(event_type_name.clone());
+                            self.source_type_defs.insert(event_type_name);
+                        }
+                        _ => {}
                     }
-                    for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
-                        self.current_item_source = item_sources
+                }
+                let err_before = self.errors.len();
+                let warn_before = self.warnings.len();
+                let item_sources = self.module_item_sources.get(&module_name).cloned();
+                for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                    let declared = match item {
+                        Item::TypeDecl(td) => Some(td.name),
+                        _ => None,
+                    };
+                    if let (Some(name), Some(source)) = (
+                        declared,
+                        item_sources
                             .as_ref()
-                            .and_then(|sources| sources.get(item_idx))
-                            .or_else(|| module.source_paths.first())
-                            .cloned();
-                        self.current_module_idx = span_indices
-                            .item_index(mod_id, item_idx)
-                            .unwrap_or_default();
-                        match item {
-                            Item::TypeDecl(td) => {
-                                self.pre_register_type_decl(td);
+                            .and_then(|sources| sources.get(item_idx)),
+                    ) {
+                        self.file_type_decls
+                            .entry(source.clone())
+                            .or_default()
+                            .insert(name.to_string());
+                    }
+                }
+                let set_ctx = |checker: &mut Self, item_idx: usize| {
+                    checker.current_item_source = item_sources
+                        .as_ref()
+                        .and_then(|sources| sources.get(item_idx))
+                        .or_else(|| module.source_paths.first())
+                        .cloned();
+                    checker.current_item_ordinal = item_idx;
+                    checker.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
+                };
+                // 1. Bind & register imports first so every imported type/trait is in Scope.
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    if matches!(item, Item::Import(_)) {
+                        set_ctx(self, item_idx);
+                        self.collect_function_item(item, span);
+                    }
+                }
+                // 2. Insert trait shells so bounds can reference sibling traits cleanly.
+                for (item_idx, (item, _span)) in module.items.iter().enumerate() {
+                    if let Item::Trait(td) = item {
+                        set_ctx(self, item_idx);
+                        let qualified = format!("{module_name}.{}", td.name);
+                        let registered = self
+                            .lookup_declaration(&qualified)
+                            .is_some_and(|id| self.trait_defs.contains_key(&id));
+                        if !registered {
+                            let info = self.trait_shell_from_decl(
+                                td,
+                                Some(module_name.clone()),
+                                self.current_module_idx,
+                            );
+                            self.insert_trait_def(&qualified, info);
+                        }
+                    }
+                }
+                // 3. Resolve type aliases before member fields and signatures use them.
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    if let Item::TypeAlias(decl) = item {
+                        set_ctx(self, item_idx);
+                        self.register_type_alias_decl(decl, span);
+                    }
+                }
+                // 4. Complete traits (supertraits + methods), type bodies, actors, and supervisors.
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    match item {
+                        Item::Trait(td) => {
+                            set_ctx(self, item_idx);
+                            let qualified = format!("{module_name}.{}", td.name);
+                            if let Some(trait_id) = self.lookup_declaration(&qualified) {
+                                self.register_trait_supers(trait_id, td);
                             }
-                            Item::TypeAlias(decl) => {
-                                self.register_type_alias_decl(decl, item_span);
-                            }
-                            // Function-signature registration runs over
-                            // module-graph bodies before the root import
-                            // declarations are processed. Seed each source
-                            // trait under its exact module owner here so a
-                            // same-leaf declaration (`alpha.Render` /
-                            // `beta.Render`) has a canonical identity when
-                            // `register_trait_method_sig` mints its DefIds.
-                            // Import processing later owns visibility and
-                            // binding publication; this is declaration
-                            // identity only.
-                            Item::Trait(td) => {
-                                let qualified = format!("{module_name}.{}", td.name);
-                                let registered = self
-                                    .lookup_declaration(&qualified)
-                                    .is_some_and(|id| self.trait_defs.contains_key(&id));
-                                if !registered {
-                                    let info = self.trait_info_from_decl(
-                                        td,
-                                        Some(module_name.clone()),
-                                        self.current_module_idx,
-                                    );
-                                    if let Some(trait_id) = self.insert_trait_def(&qualified, info)
-                                    {
-                                        self.register_trait_supers(trait_id, td);
-                                    }
-                                }
-                            }
-                            // Register machine state/event binding tables for the
-                            // non-root module path, mirroring the root-loop arm at
-                            // line ~1029. Deliberately skips
-                            // `register_machine_type_namespace_names` (which claims
-                            // `type_def_spans`) because the import-surface path
-                            // handles namespace dedup for exported names; claiming
-                            // spans here would cause false duplicate-definition
-                            // errors when the import path later registers the same
-                            // machine. Idempotency guard matches `pre_register_type_decl`.
-                            //
-                            // A private supervisor is never published to an
-                            // importer, but the module's own bodies still spawn
-                            // it and read its children.
-                            Item::Supervisor(sd) if !sd.visibility.is_pub() => {
+                            self.collect_function_item(item, span);
+                        }
+                        Item::TypeDecl(td) => {
+                            set_ctx(self, item_idx);
+                            self.pre_register_type_decl(td);
+                        }
+                        Item::Actor(_) => {
+                            set_ctx(self, item_idx);
+                            self.collect_function_item(item, span);
+                        }
+                        Item::Supervisor(sd) => {
+                            set_ctx(self, item_idx);
+                            if !sd.visibility.is_pub() {
                                 let identity = self.declaration_identity(sd.name);
                                 self.register_supervisor_decl_as(sd, &identity);
                             }
-                            _ => {}
+                            self.collect_function_item(item, span);
                         }
+                        _ => {}
                     }
-                    self.current_item_source = None;
-                    for e in &mut self.errors[err_before..] {
-                        if e.source_module.is_none() {
-                            e.source_module = Some(module_name.clone());
-                        }
-                    }
-                    for w in &mut self.warnings[warn_before..] {
-                        if w.source_module.is_none() {
-                            w.source_module = Some(module_name.clone());
-                        }
-                    }
-                    self.local_type_defs = saved_local_type_defs;
-                    self.source_type_defs = saved_source_type_defs;
                 }
+                // 5. Register functions, extern blocks, constants, then impl blocks.
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    if matches!(
+                        item,
+                        Item::Function(_) | Item::ExternBlock(_) | Item::Const(_)
+                    ) {
+                        set_ctx(self, item_idx);
+                        self.collect_function_item(item, span);
+                    }
+                }
+                for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                    if matches!(item, Item::Impl(_)) {
+                        set_ctx(self, item_idx);
+                        self.collect_function_item(item, span);
+                    }
+                }
+                self.current_item_source = None;
+                self.current_item_ordinal = 0;
+                for e in &mut self.errors[err_before..] {
+                    if e.source_module.is_none() {
+                        e.source_module = Some(module_name.clone());
+                    }
+                }
+                for w in &mut self.warnings[warn_before..] {
+                    if w.source_module.is_none() {
+                        w.source_module = Some(module_name.clone());
+                    }
+                }
+                self.local_type_defs = saved_local_type_defs;
+                self.source_type_defs = saved_source_type_defs;
             }
         }
         self.current_module = None;
         self.current_module_idx = 0;
 
-        // The root module follows the same source-order-independent rule as
-        // imported modules: direct, canonical lifecycle import edges and every
-        // root-owned nominal name must be visible before the first record/enum
-        // member annotation is resolved. This is deliberately a narrow seed:
-        // only graph-proven shipped lifecycle sources acquire ABI authority.
         if let Some(ref mg) = program.module_graph {
             if let Some(root) = mg.modules.get(&mg.root) {
                 self.seed_resolved_lifecycle_import_bindings(root, None, mg);
             }
         }
         self.seed_type_registration_scope(&program.items);
+        self.current_module_direct_imports = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| import.target.dotted())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.current_module_direct_import_bindings = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| (import.target.dotted(), import.spec.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        // Process root module items (full registration with namespace dedup).
-        for (item, span) in &program.items {
+        // Root 1: Imports first.
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if matches!(item, Item::Import(_)) {
+                self.current_item_ordinal = item_ordinal;
+                self.collect_function_item(item, span);
+            }
+        }
+        // Root 2: Trait shells.
+        let mut valid_traits = std::collections::HashSet::new();
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if let Item::Trait(td) = item {
+                self.current_item_ordinal = item_ordinal;
+                if !self.register_type_namespace_name(None, td.name, span) {
+                    continue;
+                }
+                let mut trait_errors = Vec::new();
+                let info = self.trait_shell_from_decl_with_diagnostics(
+                    td,
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    &mut trait_errors,
+                );
+                self.errors.extend(trait_errors);
+                let declaration = self.declaration_identity(td.name);
+                if self.insert_trait_def(&declaration, info).is_some() {
+                    valid_traits.insert(item_ordinal);
+                }
+                self.register_trait_lang_items(td, span.clone());
+            }
+        }
+        // Root 3: Type aliases.
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if let Item::TypeAlias(ta) = item {
+                self.current_item_ordinal = item_ordinal;
+                if !self.register_type_namespace_name(None, ta.name, span) {
+                    continue;
+                }
+                self.register_type_alias_decl(ta, span);
+                self.local_type_defs.insert(ta.name.to_string());
+                self.source_type_defs.insert(ta.name.to_string());
+            }
+        }
+        // Root 4: Complete traits (supertraits + methods), types, actors, supervisors, records.
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            self.current_item_ordinal = item_ordinal;
             match item {
+                Item::Trait(td) => {
+                    if valid_traits.contains(&item_ordinal) {
+                        let declaration = self.declaration_identity(td.name);
+                        if let Some(trait_id) = self.require_declaration_path(&declaration, span) {
+                            self.register_trait_supers(trait_id, td);
+                        }
+                    }
+                    self.collect_function_item(item, span);
+                }
                 Item::TypeDecl(td) => {
                     if !self.register_type_namespace_name(None, td.name, span) {
                         continue;
@@ -286,56 +388,21 @@ impl Checker {
                     self.source_type_defs.insert(td.name.to_string());
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(None, ad.name, span) {
-                        continue;
+                    if self.register_type_namespace_name(None, ad.name, span) {
+                        self.register_actor_decl(ad);
+                        self.local_type_defs.insert(ad.name.to_string());
+                        self.source_type_defs.insert(ad.name.to_string());
                     }
-                    self.register_actor_decl(ad);
-                    self.local_type_defs.insert(ad.name.to_string());
-                    self.source_type_defs.insert(ad.name.to_string());
-                }
-                Item::TypeAlias(ta) => {
-                    if !self.register_type_namespace_name(None, ta.name, span) {
-                        continue;
-                    }
-                    self.register_type_alias_decl(ta, span);
-                    self.local_type_defs.insert(ta.name.to_string());
-                    self.source_type_defs.insert(ta.name.to_string());
-                }
-                Item::Trait(td) => {
-                    if !self.register_type_namespace_name(None, td.name, span) {
-                        continue;
-                    }
-                    let mut trait_errors = Vec::new();
-                    let info = self.trait_info_from_decl_with_diagnostics(
-                        td,
-                        self.current_module.clone(),
-                        self.current_module_idx,
-                        &mut trait_errors,
-                    );
-                    self.errors.extend(trait_errors);
-                    let declaration = self.declaration_identity(td.name);
-                    if let Some(trait_id) = self.insert_trait_def(&declaration, info) {
-                        self.register_trait_supers(trait_id, td);
-                    }
-                    // Harvest `#[lang_item("…")]` attributes into the
-                    // lang-item registry so downstream passes (HIR f-string
-                    // lowering) can discover the trait/method names by role
-                    // rather than by hard-coded surface symbols. Trait-level
-                    // tags register with `method_name: None`; method-level
-                    // tags carry the enclosing trait's name so HIR can build
-                    // the `<SelfType>::<method>` impl symbol.
-                    self.register_trait_lang_items(td, span.clone());
+                    self.collect_function_item(item, span);
                 }
                 Item::Supervisor(sd) => {
-                    if !self.register_type_namespace_name(None, sd.name, span) {
-                        continue;
+                    if self.register_type_namespace_name(None, sd.name, span) {
+                        let identity = self.declaration_identity(sd.name);
+                        self.register_supervisor_decl_as(sd, &identity);
+                        self.local_type_defs.insert(identity.clone());
+                        self.source_type_defs.insert(identity);
                     }
-                    // Root items: `current_module` is cleared above, so the
-                    // declaration identity is the bare name.
-                    let identity = self.declaration_identity(sd.name);
-                    self.register_supervisor_decl_as(sd, &identity);
-                    self.local_type_defs.insert(identity.clone());
-                    self.source_type_defs.insert(identity);
+                    self.collect_function_item(item, span);
                 }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(None, rd.name, span) {
@@ -345,18 +412,38 @@ impl Checker {
                     self.local_type_defs.insert(rd.name.to_string());
                     self.source_type_defs.insert(rd.name.to_string());
                 }
-                // Machines are normalized into ordinary declarations before
-                // registration runs.
-                Item::Macro(_)
-                | Item::MacroCall(_)
-                | Item::Import(_)
-                | Item::Const(_)
-                | Item::Impl(_)
-                | Item::Machine(_)
-                | Item::Function(_)
-                | Item::ExternBlock(_) => {}
+                _ => {}
             }
         }
+        // Root 5: Functions, extern blocks, constants, then impl blocks.
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if matches!(
+                item,
+                Item::Function(_) | Item::ExternBlock(_) | Item::Const(_)
+            ) {
+                self.current_item_ordinal = item_ordinal;
+                self.collect_function_item(item, span);
+            }
+        }
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            if matches!(item, Item::Impl(_)) {
+                self.current_item_ordinal = item_ordinal;
+                self.collect_function_item(item, span);
+            }
+        }
+        self.current_item_ordinal = 0;
+        self.current_module_direct_imports.clear();
+        self.current_module_direct_import_bindings.clear();
+
+        if self.lookup_declaration("std.text.regex.Pattern").is_none()
+            && super::super::lints::program_contains_regex_literal(program)
+        {
+            self.register_embedded_regex_module();
+        }
+
+        self.report_recursive_alias_declarations();
+        self.collect_declared_type_param_names(program);
+        self.impls_registered = true;
     }
 
     /// Register the target under the declaration's canonical identity. Imports
@@ -458,11 +545,10 @@ impl Checker {
     /// Admit `optional` wire fields only when their final semantic type is
     /// `Option<T>`.
     ///
-    /// This deliberately runs after [`Self::reresolve_member_types_after_imports`].
     /// The parser cannot make this decision from syntax without rejecting a
-    /// valid alias, and the first registration pass predates import aliases.
-    /// Keeping this as the one checker-side gate means every later consumer
-    /// sees either an admitted `Option<T>` field or a hard type error.
+    /// valid alias. Keeping this as the one checker-side gate means every
+    /// later consumer sees either an admitted `Option<T>` field or a hard type
+    /// error.
     pub(in crate::check) fn validate_wire_optional_field_admission(&mut self, program: &Program) {
         if let Some(module_graph) = &program.module_graph {
             for module_id in &module_graph.topo_order {
@@ -541,102 +627,6 @@ impl Checker {
         self.validate_wire_type_encoding(identity.as_str(), members);
     }
 
-    /// Seed `local_type_defs`/`source_type_defs` with the current scope's own
-    /// type names so member re-resolution (a) treats them as locally-defined
-    /// (no fresh-var injection) and (b) shadows any same-named import alias —
-    /// the local-shadow rule. Mirrors the seeding `collect_types` performs.
-    pub(super) fn seed_member_reresolution_scope(&mut self, items: &[Spanned<Item>]) {
-        for (item, _) in items {
-            match item {
-                Item::TypeDecl(td) => {
-                    self.local_type_defs.insert(td.name.to_string());
-                    self.source_type_defs.insert(td.name.to_string());
-                }
-                Item::Record(rd) => {
-                    self.local_type_defs.insert(rd.name.to_string());
-                    self.source_type_defs.insert(rd.name.to_string());
-                }
-                Item::Actor(ad) => {
-                    self.source_type_defs.insert(ad.name.to_string());
-                }
-                Item::TypeAlias(ta) => {
-                    self.local_type_defs.insert(ta.name.to_string());
-                    self.source_type_defs.insert(ta.name.to_string());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    pub(super) fn reresolve_item_member_types(&mut self, item: &Item) {
-        match item {
-            Item::TypeDecl(td) => self.reresolve_type_decl_members(td),
-            Item::Record(rd) => self.reresolve_record_members(rd),
-            Item::Machine(md) => self.reresolve_machine_members(md),
-            Item::Actor(ad) => self.reresolve_actor_members(ad),
-            _ => {}
-        }
-    }
-
-    /// Re-resolve an actor's state fields and init parameters.
-    ///
-    /// An actor is the type of its handle (D489), and the handle carrier is
-    /// stamped by [`Self::canonicalize_actor_handles`] from the declarations
-    /// registered so far. `actor Alpha { let beta: Beta }` with `Beta`
-    /// declared below it, or in a module `collect_functions` registers later,
-    /// therefore froze `beta` as a bare nominal while `Beta`'s own back
-    /// reference carried the discriminator. Declaration order is not a
-    /// semantic fact, so this pass re-reads the same authority once every
-    /// actor, supervisor and module is registered.
-    pub(super) fn reresolve_actor_members(&mut self, ad: &ActorDecl) {
-        let has_type_params = !ad.type_params.is_empty();
-        if has_type_params {
-            let bounds =
-                self.collect_type_param_bounds(Some(&ad.type_params), None, &mut Vec::new());
-            self.current_type_param_bounds.push(bounds);
-        }
-        let mut hole_vars = Vec::new();
-        let mut fields: HashMap<String, Ty> = HashMap::new();
-        for field in &ad.fields {
-            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
-            fields.insert(field.name.to_string(), field_ty);
-        }
-        let init_params: Vec<crate::CallableParameter<Ty>> =
-            ad.init.as_ref().map_or_else(Vec::new, |init| {
-                init.params
-                    .iter()
-                    .map(|p| crate::CallableParameter {
-                        ty: self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars),
-                        ownership: crate::ParameterOwnership::from_consume(p.is_consume),
-                    })
-                    .collect()
-            });
-        if has_type_params {
-            self.current_type_param_bounds.pop();
-        }
-
-        let identity = self.authoritative_type_def_key(ad.name.name.as_str());
-        let mut changed = false;
-        if let Some(stored) = self.type_def_at_mut(&identity) {
-            if stored.kind == TypeDefKind::Actor && stored.fields != fields {
-                stored.fields = fields;
-                changed = true;
-            }
-        }
-        if let Some(stored) = self
-            .lookup_declaration(&identity)
-            .and_then(|declaration| self.constructor_signatures.get_mut(&declaration))
-        {
-            if stored.params != init_params {
-                stored.params = init_params;
-                changed = true;
-            }
-        }
-        if changed {
-            self.handle_bearing_dirty = true;
-        }
-    }
-
     /// The collision-free key under which this scope's `TypeDef` is stored: the
     /// module-qualified `{module_short}.{name}` for a non-root module (when it
     /// exists), else the bare `name` for the root program.
@@ -660,353 +650,6 @@ impl Checker {
             self.insert_type_def(name, type_def);
         }
         self.handle_bearing_dirty = true;
-    }
-
-    /// Re-resolve a `type`/`enum` declaration's member types under the now-live
-    /// import-alias maps; on a member upgrade, patch `type_defs` and re-run every
-    /// member-derived fact. Mirrors `register_type_decl`'s member resolution and
-    /// derivation tail. No-op when no member changed.
-    pub(super) fn reresolve_type_decl_members(&mut self, td: &TypeDecl) {
-        let scope =
-            self.enter_primary_sig_scope(&[(td.type_params.as_ref(), td.where_clause.as_ref())]);
-        self.reresolve_type_decl_members_in_scope(td);
-        self.exit_primary_sig_scope(scope);
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "member resolution and dependent registry updates form one transaction"
-    )]
-    pub(super) fn reresolve_type_decl_members_in_scope(&mut self, td: &TypeDecl) {
-        let kind = match td.kind {
-            TypeDeclKind::Struct => TypeDefKind::Struct,
-            TypeDeclKind::Enum => TypeDefKind::Enum,
-        };
-        let type_param_names = if td.type_params.as_ref().is_none_or(Vec::is_empty) {
-            Vec::new()
-        } else {
-            self.declaration_parameter_heads(td.name)
-        };
-
-        let mut fields = HashMap::new();
-        let mut field_order: Vec<String> = Vec::new();
-        let mut variants = HashMap::new();
-        let mut hole_vars = Vec::new();
-        for item in &td.body {
-            match item {
-                TypeBodyItem::Field { name, ty, .. } => {
-                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
-                    field_order.push(name.to_string());
-                    fields.insert(name.to_string(), field_ty);
-                }
-                TypeBodyItem::Variant(variant) => match &variant.kind {
-                    VariantKind::Unit => {
-                        variants.insert(variant.name.to_string(), VariantDef::Unit);
-                    }
-                    VariantKind::Tuple(tuple_fields) => {
-                        let variant_tys: Vec<Ty> = tuple_fields
-                            .iter()
-                            .map(|f| self.resolve_registered_annotation_ty(f, &mut hole_vars))
-                            .collect();
-                        variants.insert(variant.name.to_string(), VariantDef::Tuple(variant_tys));
-                    }
-                    VariantKind::Struct(struct_fields) => {
-                        let variant_fields: Vec<(String, Ty)> = struct_fields
-                            .iter()
-                            .map(|(n, f)| {
-                                (
-                                    n.to_string(),
-                                    self.resolve_registered_annotation_ty(f, &mut hole_vars),
-                                )
-                            })
-                            .collect();
-                        variants
-                            .insert(variant.name.to_string(), VariantDef::Struct(variant_fields));
-                    }
-                },
-            }
-        }
-
-        let canonical_name = self
-            .type_declaration_identity(td)
-            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
-        let stored_key = self.authoritative_type_def_key(&canonical_name);
-        let Some(stored) = self.type_def_at(&stored_key) else {
-            return;
-        };
-        let implicit_variant_fields = Self::implicit_variant_fields(td);
-        if stored.fields == fields
-            && stored.variants == variants
-            && stored.implicit_variant_fields == implicit_variant_fields
-        {
-            return;
-        }
-
-        let type_def = TypeDef {
-            kind,
-            name: td.name.to_string(),
-            type_params: type_param_names.clone(),
-            bounds: stored.bounds.clone(),
-            fields,
-            field_order,
-            variants,
-            implicit_variant_fields,
-            methods: stored.methods.clone(),
-            doc_comment: td.doc_comment.clone(),
-            is_indirect: td.is_indirect,
-        };
-
-        // Re-key tuple variant constructors over the canonical payload types.
-        // Unit/struct variants carry no member-dependent constructor signature.
-        for (variant_name, variant_def) in &type_def.variants {
-            let VariantDef::Tuple(variant_tys) = variant_def else {
-                continue;
-            };
-            if let Some(sig) = self.fn_sig_mut(variant_name) {
-                sig.params = variant_tys
-                    .iter()
-                    .map(|ty| crate::CallableParameter::borrowed(ty.clone()))
-                    .collect();
-            }
-        }
-
-        // Re-derive member-dependent facts (all replace-semantics).
-        let field_types: Vec<Ty> = if kind == TypeDefKind::Enum {
-            Self::structural_member_types_for_type(&type_def)
-        } else {
-            type_def.fields.values().cloned().collect()
-        };
-        let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
-        self.commit_reresolved_type_def(td.name.name.as_str(), type_def);
-
-        self.register_serial_layout(td);
-        if td.wire.is_some() {
-            self.register_wire_methods(td);
-        }
-    }
-
-    /// Re-resolve a `record` declaration's member types. Mirrors
-    /// `register_record_decl`'s named/tuple split and derivation tail. No-op when
-    /// no member changed. Positional constructors use the same canonical declaration key.
-    pub(super) fn reresolve_record_members(&mut self, rd: &RecordDecl) {
-        let scope =
-            self.enter_primary_sig_scope(&[(rd.type_params.as_ref(), rd.where_clause.as_ref())]);
-        self.reresolve_record_members_in_scope(rd);
-        self.exit_primary_sig_scope(scope);
-    }
-
-    pub(super) fn reresolve_record_members_in_scope(&mut self, rd: &RecordDecl) {
-        let type_param_names = if rd.type_params.as_ref().is_none_or(Vec::is_empty) {
-            Vec::new()
-        } else {
-            self.declaration_parameter_heads(rd.name)
-        };
-        let mut hole_vars = Vec::new();
-
-        match &rd.kind {
-            RecordKind::Named(record_fields) => {
-                let mut fields: HashMap<String, Ty> = HashMap::new();
-                let mut field_order: Vec<String> = Vec::new();
-                for rf in record_fields {
-                    let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
-                    field_order.push(rf.name.to_string());
-                    fields.insert(rf.name.to_string(), field_ty);
-                }
-
-                let stored_key = self.authoritative_type_def_key(rd.name.name.as_str());
-                let Some(stored) = self.type_def_at(&stored_key) else {
-                    return;
-                };
-                if stored.fields == fields {
-                    return;
-                }
-
-                let type_def = TypeDef {
-                    kind: TypeDefKind::Record,
-                    name: rd.name.to_string(),
-                    type_params: type_param_names,
-                    bounds: stored.bounds.clone(),
-                    fields,
-                    field_order,
-                    variants: HashMap::new(),
-                    implicit_variant_fields: HashMap::default(),
-                    methods: stored.methods.clone(),
-                    doc_comment: rd.doc_comment.clone(),
-                    is_indirect: false,
-                };
-                let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
-                let field_types = self.expand_for_marker_registration(&field_types);
-                self.registry.register_type(
-                    self.head_of_declaration(
-                        self.nominal_head_for_key(&stored_key.clone())
-                            .expect("registered type has a declaration")
-                            .id,
-                    ),
-                    field_types,
-                );
-                self.commit_reresolved_type_def(rd.name.name.as_str(), type_def);
-            }
-            RecordKind::Tuple(positional_types) => {
-                let param_tys: Vec<Ty> = positional_types
-                    .iter()
-                    .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
-                    .collect();
-                // Tuple records store no fields (`.0`/`.1` access is forbidden);
-                // the positional types live only in the constructor `fn_sig`.
-                let canonical = self.authoritative_type_def_key(rd.name.name.as_str());
-                let mut changed = false;
-                if let Some(sig) = self.fn_sig_mut(&canonical) {
-                    let parameters: Vec<_> = param_tys
-                        .iter()
-                        .cloned()
-                        .map(crate::CallableParameter::borrowed)
-                        .collect();
-                    if sig.params != parameters {
-                        sig.params = parameters;
-                        changed = true;
-                    }
-                }
-                if !changed {
-                    return;
-                }
-                let expanded_param_tys = self.expand_for_marker_registration(&param_tys);
-                self.registry.register_type(
-                    self.head_of_declaration(
-                        self.nominal_head_for_key(&canonical.clone())
-                            .expect("registered type has a declaration")
-                            .id,
-                    ),
-                    expanded_param_tys,
-                );
-                self.handle_bearing_dirty = true;
-            }
-        }
-    }
-
-    /// Re-resolve a `machine` declaration's state and event field types. Mirrors
-    /// `register_machine_decl`'s state-variant / event-companion resolution and
-    /// marker derivation. State and event companions are patched independently.
-    pub(super) fn reresolve_machine_members(&mut self, md: &MachineDecl) {
-        let scope =
-            self.enter_primary_sig_scope(&[(Some(&md.type_params), md.where_clause.as_ref())]);
-        self.reresolve_machine_members_in_scope(md);
-        self.exit_primary_sig_scope(scope);
-    }
-
-    pub(super) fn reresolve_machine_members_in_scope(&mut self, md: &MachineDecl) {
-        // --- State fields → machine `type_def` variants ---
-        let mut variants = HashMap::new();
-        let mut machine_hole_vars = Vec::new();
-        for state in &md.states {
-            if state.fields.is_empty() {
-                variants.insert(state.name.to_string(), VariantDef::Unit);
-            } else {
-                let variant_fields: Vec<(String, Ty)> = state
-                    .fields
-                    .iter()
-                    .map(|(name, spanned_te)| {
-                        (
-                            name.to_string(),
-                            self.resolve_registered_annotation_ty(
-                                spanned_te,
-                                &mut machine_hole_vars,
-                            ),
-                        )
-                    })
-                    .collect();
-                variants.insert(state.name.to_string(), VariantDef::Struct(variant_fields));
-            }
-        }
-
-        let machine_key = self.authoritative_type_def_key(md.name.name.as_str());
-        if let Some(stored) = self.type_def_at(&machine_key) {
-            if stored.variants != variants {
-                let type_def = TypeDef {
-                    kind: TypeDefKind::Machine,
-                    name: md.name.to_string(),
-                    type_params: stored.type_params.clone(),
-                    bounds: stored.bounds.clone(),
-                    fields: HashMap::new(),
-                    field_order: vec![],
-                    variants,
-                    implicit_variant_fields: HashMap::default(),
-                    methods: stored.methods.clone(),
-                    doc_comment: stored.doc_comment.clone(),
-                    is_indirect: stored.is_indirect,
-                };
-                let members = Self::structural_member_types_for_type(&type_def);
-                let members = self.expand_for_marker_registration(&members);
-                let id = self
-                    .type_def_key(&machine_key)
-                    .expect("selected machine has a declaration");
-                self.registry
-                    .register_type(self.head_of_declaration(id), members);
-                self.commit_reresolved_type_def(md.name.name.as_str(), type_def);
-            }
-        }
-
-        // --- Event fields → `Name.Event` companion enum ---
-        let event_type_name = format!("{}.Event", md.name);
-        let mut event_variants = HashMap::new();
-        let mut event_hole_vars = Vec::new();
-        for event in &md.events {
-            if event.fields.is_empty() {
-                event_variants.insert(event.name.to_string(), VariantDef::Unit);
-            } else {
-                let variant_fields: Vec<(String, Ty)> = event
-                    .fields
-                    .iter()
-                    .map(|(name, spanned_te)| {
-                        (
-                            name.to_string(),
-                            self.resolve_registered_annotation_ty(spanned_te, &mut event_hole_vars),
-                        )
-                    })
-                    .collect();
-                event_variants.insert(event.name.to_string(), VariantDef::Struct(variant_fields));
-            }
-        }
-        let event_key = self.authoritative_type_def_key(&event_type_name);
-        if let Some(stored) = self.type_def_at(&event_key) {
-            if stored.variants != event_variants {
-                let event_type_def = TypeDef {
-                    kind: TypeDefKind::Enum,
-                    name: event_type_name.clone(),
-                    type_params: stored.type_params.clone(),
-                    bounds: stored.bounds.clone(),
-                    fields: HashMap::new(),
-                    field_order: vec![],
-                    variants: event_variants,
-                    implicit_variant_fields: HashMap::default(),
-                    methods: stored.methods.clone(),
-                    doc_comment: stored.doc_comment.clone(),
-                    is_indirect: stored.is_indirect,
-                };
-                // Mirror `register_machine_decl`'s marker registration: the
-                // re-resolved companion enum's field types must be
-                // re-registered too, or a re-resolution that changes a
-                // payload's Send-ability (e.g. an import alias resolving to
-                // a resource type) is invisible to `TraitRegistry`.
-                let event_field_types = Self::structural_member_types_for_type(&event_type_def);
-                let event_field_types = self.expand_for_marker_registration(&event_field_types);
-                let id = self
-                    .type_def_key(&event_key)
-                    .expect("selected machine event has a declaration");
-                let head = self.head_of_declaration(id);
-                self.registry.register_type(head, event_field_types);
-                self.registry
-                    .register_type_params(head, event_type_def.type_params.clone());
-                self.commit_reresolved_type_def(&event_type_name, event_type_def);
-            }
-        }
     }
 
     /// Populate `type_defs` with a full `TypeDef` for a non-root module's

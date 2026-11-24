@@ -1463,7 +1463,7 @@ impl Checker {
                 source_module: self.current_module.clone(),
                 type_param_bounds,
             });
-        if !self.type_decls_registered
+        if !self.impls_registered
             || resolved_key.has_inference_var()
             || resolved_val.has_inference_var()
         {
@@ -1535,7 +1535,7 @@ impl Checker {
             return true; // optimistically admit; finalization will fail closed
         }
 
-        if matches!(&resolved, Ty::Named { .. }) || !self.type_decls_registered {
+        if matches!(&resolved, Ty::Named { .. }) || !self.impls_registered {
             self.deferred_hashset_admission
                 .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashSetAdmission {
@@ -1917,10 +1917,7 @@ impl Checker {
                     }
                 },
                 Ty::Named {
-                    head:
-                        head @ (crate::TypeHead::Nominal(_)
-                        | crate::TypeHead::Param(_)
-                        | crate::TypeHead::Unresolved(_)),
+                    head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
                     args,
                 } => {
                     if self.registry.is_owned_handle(*head)

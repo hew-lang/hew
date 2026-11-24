@@ -306,7 +306,6 @@ impl Checker {
             }
             Ty::Named { head, args } => {
                 if head.builtin() == Some(BuiltinType::Timestamp)
-                    && !self.checking_embedded_builtins
                     && !self.checking_canonical_stdlib_source("std.builtins")
                 {
                     self.report_error(
@@ -1569,7 +1568,6 @@ impl Checker {
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
         if self.named_ty_for_key(name, vec![]).is_timestamp()
-            && !self.checking_embedded_builtins
             && !self.checking_canonical_stdlib_source("std.builtins")
         {
             self.report_error(

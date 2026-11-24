@@ -91,11 +91,7 @@ impl Checker {
                     Ty::named_head(self.head_of_declaration(actor), type_args)
                 }
             } else {
-                let child_type = crate::Symbol::intern(&c.actor_type.to_string());
-                Ty::Named {
-                    head: crate::TypeHead::Unresolved(child_type),
-                    args: type_args,
-                }
+                Ty::Error
             };
             let entry = (c.name.to_string(), Ty::actor_handle_of(&actor_ty));
             if c.is_pool {
@@ -256,6 +252,25 @@ impl Checker {
         self.trait_info_from_decl_with_diagnostics(tr, source_module, file_index, &mut Vec::new())
     }
 
+    pub(in crate::check) fn trait_shell_from_decl(
+        &mut self,
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+    ) -> TraitInfo {
+        self.trait_info_from_decl_inner(tr, source_module, file_index, false, &mut Vec::new())
+    }
+
+    pub(in crate::check) fn trait_shell_from_decl_with_diagnostics(
+        &mut self,
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
+        self.trait_info_from_decl_inner(tr, source_module, file_index, false, errors)
+    }
+
     /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
     /// `std/builtins.hew` trait declaration WITHOUT claiming `lang_item_spans`.
     ///
@@ -383,6 +398,17 @@ impl Checker {
         file_index: u32,
         errors: &mut Vec<TypeError>,
     ) -> TraitInfo {
+        self.trait_info_from_decl_inner(tr, source_module, file_index, true, errors)
+    }
+
+    pub(super) fn trait_info_from_decl_inner(
+        &mut self,
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+        resolve_bounds: bool,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
         let mut methods = Vec::new();
         let mut associated_types: Vec<TraitAssociatedTypeInfo> = Vec::new();
         let mut seen_assoc: HashMap<String, Span> = HashMap::new();
@@ -403,10 +429,14 @@ impl Checker {
                         ));
                         continue;
                     }
-                    let bounds = bounds
-                        .iter()
-                        .filter_map(|bound| self.resolve_written_bound(name.name, bound))
-                        .collect();
+                    let bounds = if resolve_bounds {
+                        bounds
+                            .iter()
+                            .filter_map(|bound| self.resolve_written_bound(name.name, bound))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     associated_types.push(TraitAssociatedTypeInfo {
                         name: name.to_string(),
                         bounds,
@@ -459,6 +489,12 @@ impl Checker {
             .as_ref()
             .and_then(|tb| self.resolve_trait_path(&tb.path));
         let target = self.current_impl_target();
+        self.impl_alias_scopes.push(ImplAliasScope {
+            span: span.clone(),
+            entries,
+            missing_reported: HashSet::new(),
+            report_missing: enforce,
+        });
         // Populate AssociatedTypeSchemas on every enter (not gated on
         // `enforce`) so projection collapse can find bindings during
         // call-site monomorphisation even when this scope was entered by
@@ -479,50 +515,47 @@ impl Checker {
                 .unwrap_or_default();
             for assoc_name in assoc_names {
                 let binding_key = (key.clone(), trait_id, assoc_name);
-                if let Some(entry) = entries.get(assoc_name.as_str()) {
-                    let expr = entry.expr.clone();
-                    let resolved = self.resolve_type_expr(&expr);
-                    if !matches!(resolved, Ty::Error) {
-                        let parameters = self.source_parameter_heads(
-                            id.type_params.as_deref().unwrap_or_default(),
-                            &id.target_type.1,
-                        );
-                        let receiver = self.resolve_type_expr(&id.target_type);
-                        let bindings = self
-                            .associated_schema_parameters
-                            .implementations
-                            .entry(binding_key)
-                            .or_default();
-                        if !bindings.iter().any(|binding| binding.receiver == receiver) {
-                            bindings.push(super::super::types::ImplAssociatedType {
-                                ty: resolved,
-                                receiver,
-                                parameters,
-                            });
+                let has_entry = self
+                    .impl_alias_scopes
+                    .last()
+                    .is_some_and(|scope| scope.entries.contains_key(assoc_name.as_str()));
+                if has_entry {
+                    if let Some(resolved) = self.resolve_impl_associated_type(assoc_name.as_str()) {
+                        if !matches!(resolved, Ty::Error) {
+                            let parameters = self.source_parameter_heads(
+                                id.type_params.as_deref().unwrap_or_default(),
+                                &id.target_type.1,
+                            );
+                            let receiver = self.resolve_type_expr(&id.target_type);
+                            let bindings = self
+                                .associated_schema_parameters
+                                .implementations
+                                .entry(binding_key)
+                                .or_default();
+                            if !bindings.iter().any(|binding| binding.receiver == receiver) {
+                                bindings.push(super::super::types::ImplAssociatedType {
+                                    ty: resolved,
+                                    receiver,
+                                    parameters,
+                                });
+                            }
                         }
                     }
                 }
             }
         }
         if let (true, Some(trait_id)) = (enforce, implemented_trait) {
-            self.check_impl_associated_types(id, &entries, trait_id, target_name, span);
+            self.check_impl_associated_types(id, trait_id, target_name, span);
         }
         if pushed_impl_bounds {
             self.current_type_param_bounds.pop();
         }
-        self.impl_alias_scopes.push(ImplAliasScope {
-            span: span.clone(),
-            entries,
-            missing_reported: HashSet::new(),
-            report_missing: enforce,
-        });
         true
     }
 
     fn check_impl_associated_types(
         &mut self,
         id: &ImplDecl,
-        entries: &HashMap<String, ImplAliasEntry>,
         trait_id: crate::DefId,
         target_name: &str,
         span: &Span,
@@ -534,10 +567,16 @@ impl Checker {
             return;
         };
         let trait_display = self.defs.display(trait_id).to_string();
-        for assoc in associated_types
+        let missing: Vec<_> = associated_types
             .iter()
-            .filter(|assoc| !entries.contains_key(&assoc.name))
-        {
+            .filter(|assoc| {
+                !self
+                    .impl_alias_scopes
+                    .last()
+                    .is_some_and(|scope| scope.entries.contains_key(&assoc.name))
+            })
+            .collect();
+        for assoc in missing {
             self.report_error_with_note(
                 TypeErrorKind::UndefinedType,
                 span,
@@ -556,13 +595,7 @@ impl Checker {
             .flat_map(|bound| bound.type_args.iter().flatten())
             .map(|arg| self.resolve_type_expr(arg))
             .collect();
-        self.check_assoc_type_bounds(
-            &associated_types,
-            entries,
-            trait_id,
-            target_name,
-            &trait_args,
-        );
+        self.check_assoc_type_bounds(&associated_types, trait_id, target_name, &trait_args);
     }
 
     pub(in crate::check) fn exit_impl_scope(&mut self) {
@@ -628,7 +661,6 @@ impl Checker {
     pub(super) fn check_assoc_type_bounds(
         &mut self,
         associated_types: &[TraitAssociatedTypeInfo],
-        entries: &HashMap<String, ImplAliasEntry>,
         trait_id: crate::DefId,
         target_name: &str,
         trait_args: &[Ty],
@@ -647,12 +679,17 @@ impl Checker {
             if assoc.bounds.is_empty() {
                 continue;
             }
-            let Some(entry) = entries.get(&assoc.name) else {
+            let Some(entry_span) = self
+                .impl_alias_scopes
+                .last()
+                .and_then(|scope| scope.entries.get(&assoc.name))
+                .map(|entry| entry.expr.1.clone())
+            else {
                 continue;
             };
-            let expr = entry.expr.clone();
-            let entry_span = expr.1.clone();
-            let resolved = self.resolve_type_expr(&expr);
+            let Some(resolved) = self.resolve_impl_associated_type(&assoc.name) else {
+                continue;
+            };
             // Skip bounds checking when the RHS itself failed to resolve.
             // `resolve_type_expr` already emitted the primary diagnostic.
             if matches!(resolved, Ty::Error) {
@@ -753,6 +790,13 @@ impl Checker {
         trait_id: crate::DefId,
         td: &TraitDecl,
     ) {
+        // Resolve super-trait bindings and associated bounds after the trait's
+        // members have identities, so `Self.Item` in super-trait arguments
+        // (`trait Sub: Super<Item = Self.Item>`) and associated bounds refers
+        // to this declaration rather than an enclosing impl.
+        let scope = self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
+        let previous = self.current_trait_for_self_projection.replace(trait_id);
+        let previous_self_type = self.current_self_type.take();
         let supers: Vec<TraitRef> = td
             .super_traits
             .iter()
@@ -768,11 +812,6 @@ impl Checker {
             })
             .collect();
         self.trait_super.insert(trait_id, supers);
-        // Resolve associated equalities after the trait's members have identities,
-        // so Self.Item refers to this declaration rather than an enclosing impl.
-        let scope = self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
-        let previous = self.current_trait_for_self_projection.replace(trait_id);
-        let previous_self_type = self.current_self_type.take();
         let mut resolved = Vec::new();
         for item in &td.items {
             let TraitItem::AssociatedType { name, bounds, .. } = item else {

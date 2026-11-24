@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::NominalInstance;
+use crate::ReceiverInstance;
 use hew_parser::ast::{Ident, Symbol, SyntaxContext};
 
 /// Closed classification of source declarations and source-owned child bodies.
@@ -55,8 +55,6 @@ pub enum DeclarationKind {
     MachineTransition,
     /// An enum variant, a member of its enum.
     Variant,
-    /// A sourceless builtin receiver anchor (`i64`, `Vec`).
-    BuiltinType,
     /// A trait default body materialized for one concrete receiver.
     DefaultImplMethod,
     /// The request record the checker synthesizes for a handler with no
@@ -296,9 +294,41 @@ impl NominalId {
 /// A binder is never looked up by its spelling: `fn g<T>(x: T)` and a nominal
 /// `type T` in the same module are distinct identities, so a parameter cannot
 /// resolve to a nominal of the same name.
+/// What owns a generic type parameter binder: a source declaration row or a
+/// compiler builtin type catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ParamOwner {
+    Declaration(DefId),
+    Builtin(crate::BuiltinType),
+}
+
+impl ParamOwner {
+    /// The source declaration owning this binder, when a source declaration binds it.
+    #[must_use]
+    pub const fn declaration(self) -> Option<DefId> {
+        match self {
+            Self::Declaration(id) => Some(id),
+            Self::Builtin(_) => None,
+        }
+    }
+}
+
+impl From<DefId> for ParamOwner {
+    fn from(owner: DefId) -> Self {
+        Self::Declaration(owner)
+    }
+}
+
+/// The identity of a generic type parameter binder: the declaration (or builtin
+/// type catalogue) that introduces it and its 0-based position in that item's
+/// parameter list.
+///
+/// A binder is never looked up by its spelling: `fn g<T>(x: T)` and a nominal
+/// `type T` in the same module are distinct identities, so a parameter cannot
+/// resolve to a nominal of the same name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeParamId {
-    pub owner: DefId,
+    pub owner: ParamOwner,
     pub index: u16,
 }
 
@@ -309,11 +339,17 @@ impl TypeParamId {
     ///
     /// Panics if a declaration binds more than `u16::MAX` parameters.
     #[must_use]
-    pub fn new(owner: DefId, index: usize) -> Self {
+    pub fn new(owner: impl Into<ParamOwner>, index: usize) -> Self {
         Self {
-            owner,
+            owner: owner.into(),
             index: u16::try_from(index).expect("more than u16::MAX type parameters on one item"),
         }
+    }
+
+    /// The source declaration binding this parameter, when a source item binds it.
+    #[must_use]
+    pub const fn declaration_owner(self) -> Option<DefId> {
+        self.owner.declaration()
     }
 }
 
@@ -536,18 +572,6 @@ impl KnownDecl {
         }
     }
 
-    /// The known declaration spelled `leaf` in `std.builtins`.
-    ///
-    /// TRANSITION(P2): read only by the second checker run over the embedded
-    /// builtin source, which re-declares the cursors at its own root; deleted
-    /// with that run (B1).
-    #[must_use]
-    pub fn from_leaf(leaf: Symbol) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|known| Symbol::intern(known.leaf()) == leaf)
-    }
-
     /// The known declaration a builtin cursor is declared as.
     #[must_use]
     pub fn of_builtin(builtin: crate::BuiltinType) -> Option<Self> {
@@ -564,120 +588,6 @@ impl KnownDecl {
         Self::ALL
             .into_iter()
             .find(|known| known.nominal() == nominal)
-    }
-}
-
-/// The builtin receivers a trait impl can anchor on without a source
-/// declaration: primitives and the compiler-owned collection and handle
-/// types. Each has one sourceless row minted when the table is created, so an
-/// `impl Show for i64` and a call on an `i64` receiver key one identity.
-///
-/// TRANSITION(P2): deleted by A1 commit 2, when `TypeHead::Builtin` carries
-/// the builtin itself and no receiver needs a declaration row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BuiltinAnchor {
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    Isize,
-    Usize,
-    F32,
-    F64,
-    Bool,
-    Char,
-    String,
-    Bytes,
-    Generator,
-    Vec,
-    HashMap,
-
-    Stream,
-    Sink,
-    Option,
-    Result,
-    HashSet,
-    HashMapIter,
-    VecIter,
-    NodeId,
-    Location,
-    Duration,
-    Range,
-}
-
-impl BuiltinAnchor {
-    const ALL: [Self; 30] = [
-        Self::I8,
-        Self::I16,
-        Self::I32,
-        Self::I64,
-        Self::U8,
-        Self::U16,
-        Self::U32,
-        Self::U64,
-        Self::Isize,
-        Self::Usize,
-        Self::F32,
-        Self::F64,
-        Self::Bool,
-        Self::Char,
-        Self::String,
-        Self::Bytes,
-        Self::Generator,
-        Self::Vec,
-        Self::HashMap,
-        Self::Stream,
-        Self::Sink,
-        Self::Option,
-        Self::Result,
-        Self::HashSet,
-        Self::HashMapIter,
-        Self::VecIter,
-        Self::NodeId,
-        Self::Location,
-        Self::Duration,
-        Self::Range,
-    ];
-
-    /// The render this anchor's row carries: the keyword or builtin spelling
-    /// an `impl` names it by.
-    const fn spelling(self) -> &'static str {
-        match self {
-            Self::I8 => "i8",
-            Self::I16 => "i16",
-            Self::I32 => "i32",
-            Self::I64 => "i64",
-            Self::U8 => "u8",
-            Self::U16 => "u16",
-            Self::U32 => "u32",
-            Self::U64 => "u64",
-            Self::Isize => "isize",
-            Self::Usize => "usize",
-            Self::F32 => "f32",
-            Self::F64 => "f64",
-            Self::Bool => "bool",
-            Self::Char => "char",
-            Self::String => "string",
-            Self::Bytes => "bytes",
-            Self::Generator => "Generator",
-            Self::Vec => "Vec",
-            Self::HashMap => "HashMap",
-            Self::Stream => "Stream",
-            Self::Sink => "Sink",
-            Self::Option => "Option",
-            Self::Result => "Result",
-            Self::HashSet => "HashSet",
-            Self::HashMapIter => "HashMapIter",
-            Self::VecIter => "VecIter",
-            Self::NodeId => "NodeId",
-            Self::Location => "Location",
-            Self::Duration => "duration",
-            Self::Range => "Range",
-        }
     }
 }
 
@@ -715,13 +625,11 @@ const SYNTHETIC_ROOT_PATH: &str = "#synthetic-root";
 /// One declaration row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DefRow {
-    /// Unmarked source render; members inherit their owner's contextual linker render.
-    display_path: Option<String>,
     /// Display leaf: the declared spelling.
     name: Ident,
     kind: DeclarationKind,
     /// The source module the declaration occurs in; `None` for sourceless
-    /// rows (builtin anchors, materialized trait defaults).
+    /// rows (builtin predicates, materialized trait defaults).
     module: Option<ModuleId>,
     /// The declaration this one is a member of: a method's type, trait or
     /// actor, a machine's states and events, a state's entry and exit hooks.
@@ -736,7 +644,7 @@ struct DefRow {
 
 /// Key of a trait default materialized for one concrete receiver: the
 /// declaring trait, the receiver instance and the method spelling.
-type DefaultBodyKey = (DefId, NominalInstance, Symbol);
+type DefaultBodyKey = (DefId, ReceiverInstance, Symbol);
 
 /// The per-compilation declaration table: the single minting authority for
 /// module and declaration identity. The checker owns it mutably while it
@@ -794,7 +702,7 @@ struct PrivateRecordFields {
 }
 
 impl DefTable {
-    /// An empty table holding only the builtin receiver anchors.
+    /// An empty table holding the compiler predicates and known `std.builtins` rows.
     #[must_use]
     pub fn new() -> Self {
         let mut table = Self {
@@ -812,20 +720,8 @@ impl DefTable {
             builtin_declarations: HashMap::new(),
             members: HashMap::new(),
         };
-        for anchor in BuiltinAnchor::ALL {
-            table.push_row(DefRow {
-                display_path: None,
-                name: Ident::new(anchor.spelling()),
-                kind: DeclarationKind::BuiltinType,
-                module: None,
-                owner: None,
-                site: None,
-                path: anchor.spelling().to_string(),
-            });
-        }
         for predicate in Predicate::ALL {
             table.push_row(DefRow {
-                display_path: None,
                 name: Ident::new(predicate.spelling()),
                 kind: DeclarationKind::Trait,
                 module: None,
@@ -836,7 +732,6 @@ impl DefTable {
         }
         for known in KnownDecl::ALL {
             let id = table.push_row(DefRow {
-                display_path: None,
                 name: Ident::new(known.leaf()),
                 kind: DeclarationKind::Type,
                 module: None,
@@ -860,21 +755,24 @@ impl DefTable {
         spelling: &str,
     ) -> crate::ParamHead {
         use crate::BuiltinType;
-        let anchor = match builtin {
-            BuiltinType::Vec => BuiltinAnchor::Vec,
-            BuiltinType::HashMap => BuiltinAnchor::HashMap,
-            BuiltinType::HashSet => BuiltinAnchor::HashSet,
-            BuiltinType::HashMapIter => BuiltinAnchor::HashMapIter,
-            BuiltinType::VecIter => BuiltinAnchor::VecIter,
-            BuiltinType::Option => BuiltinAnchor::Option,
-            BuiltinType::Result => BuiltinAnchor::Result,
-            BuiltinType::Generator => BuiltinAnchor::Generator,
-            BuiltinType::Stream => BuiltinAnchor::Stream,
-            BuiltinType::Sink => BuiltinAnchor::Sink,
-            _ => panic!("builtin has no generic catalogue binder owner"),
-        };
+        assert!(
+            matches!(
+                builtin,
+                BuiltinType::Vec
+                    | BuiltinType::HashMap
+                    | BuiltinType::HashSet
+                    | BuiltinType::HashMapIter
+                    | BuiltinType::VecIter
+                    | BuiltinType::Option
+                    | BuiltinType::Result
+                    | BuiltinType::Generator
+                    | BuiltinType::Stream
+                    | BuiltinType::Sink
+            ),
+            "builtin has no generic catalogue binder owner"
+        );
         crate::ParamHead::new(
-            TypeParamId::new(Self::anchor(anchor), index),
+            TypeParamId::new(ParamOwner::Builtin(builtin), index),
             Symbol::intern(spelling),
         )
     }
@@ -886,7 +784,6 @@ impl DefTable {
             return *id;
         }
         let id = self.push_row(DefRow {
-            display_path: None,
             name: Ident::new(name),
             kind: DeclarationKind::Function,
             module: None,
@@ -906,37 +803,24 @@ impl DefTable {
     /// Never: the fixed rows number far below `u32::MAX`.
     #[must_use]
     pub fn known(known: KnownDecl) -> DefId {
-        DefId(
-            u32::try_from(BuiltinAnchor::ALL.len() + Predicate::ALL.len())
-                .expect("fixed row count fits u32")
-                + known as u32,
-        )
+        DefId(u32::try_from(Predicate::ALL.len()).expect("fixed row count fits u32") + known as u32)
     }
 
-    /// The row of a compiler predicate: predicates follow the builtin
-    /// anchors, in [`Predicate::ALL`] order.
+    /// The row of a compiler predicate: the predicates are the leading rows
+    /// of every table, in [`Predicate::ALL`] order.
     ///
     /// # Panics
     ///
     /// Never: the fixed rows number far below `u32::MAX`.
     #[must_use]
     pub fn predicate(predicate: Predicate) -> DefId {
-        DefId(
-            u32::try_from(BuiltinAnchor::ALL.len()).expect("anchor count fits u32")
-                + predicate as u32,
-        )
+        DefId(predicate as u32)
     }
 
     /// The predicate a definition is, when it is one.
-    ///
-    /// # Panics
-    ///
-    /// Never: the fixed rows number far below `u32::MAX`.
     #[must_use]
     pub fn as_predicate(id: DefId) -> Option<Predicate> {
-        let first = u32::try_from(BuiltinAnchor::ALL.len()).expect("anchor count fits u32");
-        id.0.checked_sub(first)
-            .and_then(|index| Predicate::ALL.get(index as usize).copied())
+        Predicate::ALL.get(id.0 as usize).copied()
     }
 
     fn push_row(&mut self, row: DefRow) -> DefId {
@@ -974,7 +858,6 @@ impl DefTable {
         }
         let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
         let id = self.push_row(DefRow {
-            display_path: None,
             name: Ident::from_symbol(name),
             kind,
             module: None,
@@ -1154,15 +1037,28 @@ impl DefTable {
         }
     }
 
-    /// The diagnostic render of a definition: its path without the module
-    /// qualification (`T::m`, `Shape`).
-    ///
-    /// TRANSITION(P2): rendered from the stored path until A1 renders it from
-    /// the owner chain.
+    /// The diagnostic render of a definition: rendered from its owner chain
+    /// without module qualification (`T::m`, `Shape`).
     #[must_use]
-    pub fn display(&self, id: DefId) -> &str {
+    pub fn display(&self, id: DefId) -> std::borrow::Cow<'_, str> {
         let row = self.row(id);
-        crate::short_name(row.display_path.as_deref().unwrap_or(&row.path))
+        match row.owner {
+            None => std::borrow::Cow::Borrowed(crate::short_name(row.name.name.as_str())),
+            Some(owner) => {
+                let separator = if matches!(
+                    row.kind,
+                    DeclarationKind::MachineEventType
+                        | DeclarationKind::ActorRequestType
+                        | DeclarationKind::ActorResponseType
+                        | DeclarationKind::ActorStreamType
+                ) {
+                    "."
+                } else {
+                    "::"
+                };
+                std::borrow::Cow::Owned(format!("{}{separator}{}", self.display(owner), row.name))
+            }
+        }
     }
 
     #[must_use]
@@ -1194,10 +1090,10 @@ impl DefTable {
         self.defs.len()
     }
 
-    /// Whether the table holds only the builtin anchors.
+    /// Whether the table holds only the fixed predicate and known rows.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.defs.len() == BuiltinAnchor::ALL.len() + Predicate::ALL.len() + KnownDecl::ALL.len()
+        self.defs.len() == Predicate::ALL.len() + KnownDecl::ALL.len()
     }
 
     /// Whether `self` holds every row of `base` and only appended rows. A
@@ -1217,25 +1113,6 @@ impl DefTable {
         })
     }
 
-    /// The table a second checker run over the embedded builtin source mints
-    /// into: every row of `self` keeps its id, so the std.builtins
-    /// declarations the run re-declares resolve to the same identities. Its
-    /// root is the builtin source module; caller-root names are hidden.
-    ///
-    /// Standalone checks of trusted declarations can reuse this prefix without
-    /// publishing any of the temporary root's bindings back to the compilation.
-    #[must_use]
-    pub(crate) fn fork_for_embedded_builtins(&self) -> DefTable {
-        let mut fork = self.clone();
-        if let Some(root) = fork.root.take() {
-            let defs = &fork.defs;
-            fork.by_path
-                .retain(|_, id| defs[id.index()].module != Some(root));
-        }
-        fork.root = Some(fork.mint_module("std.builtins", &[]));
-        fork
-    }
-
     /// Every definition in mint order.
     ///
     /// # Panics
@@ -1244,13 +1121,6 @@ impl DefTable {
     pub fn ids(&self) -> impl Iterator<Item = DefId> + '_ {
         (0..self.defs.len())
             .map(|index| DefId(u32::try_from(index).expect("row count fits the minted id range")))
-    }
-
-    /// The row of a builtin receiver anchor: the anchors are the first rows
-    /// of every table, in [`BuiltinAnchor::ALL`] order.
-    #[must_use]
-    pub(crate) fn anchor(anchor: BuiltinAnchor) -> DefId {
-        DefId(anchor as u32)
     }
 
     /// Canonicalize a source path for interning. Falls back to the path as
@@ -1534,24 +1404,23 @@ impl DefTable {
         path: impl Into<String>,
     ) -> Result<DefId, DeclarationIdentityError> {
         let source_path = path.into();
-        let (path, display_path) = if let Some(owner) = owner {
+        let path = if let Some(owner) = owner {
             let parent = self.row(owner);
-            let display = parent.display_path.as_deref().unwrap_or(&parent.path);
-            if let Some(suffix) = source_path.strip_prefix(&parent.path) {
-                (source_path.clone(), format!("{display}{suffix}"))
-            } else if let Some(suffix) = source_path.strip_prefix(display) {
-                (format!("{}{suffix}", parent.path), source_path.clone())
+            let context_suffix = (parent.name.ctx != SyntaxContext::ROOT)
+                .then(|| format!("#{}", parent.name.ctx.row()));
+            let parent_unmarked = context_suffix
+                .as_deref()
+                .and_then(|suffix| parent.path.strip_suffix(suffix))
+                .unwrap_or(&parent.path);
+            if source_path.strip_prefix(&parent.path).is_some() {
+                source_path
+            } else if let Some(suffix) = source_path.strip_prefix(parent_unmarked) {
+                format!("{}{suffix}", parent.path)
             } else {
-                (
-                    Self::contextual_path(source_path.clone(), name.ctx),
-                    source_path.clone(),
-                )
+                Self::contextual_path(source_path, name.ctx)
             }
         } else {
-            (
-                Self::contextual_path(source_path.clone(), name.ctx),
-                source_path,
-            )
+            Self::contextual_path(source_path, name.ctx)
         };
         if let Some(&established) = self.by_occurrence.get(&occurrence) {
             if self.path(established) == path {
@@ -1589,7 +1458,6 @@ impl DefTable {
             });
         }
         let id = self.push_row(DefRow {
-            display_path: Some(display_path),
             name,
             kind: occurrence.kind(),
             module: occurrence.module(),
@@ -1665,19 +1533,28 @@ impl DefTable {
     pub(crate) fn mint_default_impl_body(
         &mut self,
         declaring_trait: DefId,
-        receiver: &NominalInstance,
+        receiver: &ReceiverInstance,
         method: Symbol,
     ) -> DefId {
         let key = (declaring_trait, receiver.clone(), method);
         if let Some(&established) = self.default_bodies.get(&key) {
             return established;
         }
-        let nominal = self.path(receiver.nominal.declaration());
+        let receiver_path = receiver.head.receiver_path(self).to_string();
+        let owner = receiver.head.declaration(self).map(NominalId::declaration);
+        let name = if owner.is_some() {
+            Ident::from_symbol(method)
+        } else {
+            Ident::from_symbol(Symbol::intern(&format!(
+                "{}::{method}",
+                receiver.head.spelling()
+            )))
+        };
         let rendered_receiver = if receiver.args.is_empty() {
-            nominal.to_string()
+            receiver_path.clone()
         } else {
             format!(
-                "{nominal}<{}>",
+                "{receiver_path}<{}>",
                 receiver
                     .args
                     .iter()
@@ -1687,15 +1564,14 @@ impl DefTable {
             )
         };
         let path = format!(
-            "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
+            "{receiver_path}::<default impl {} for {rendered_receiver}>::{method}",
             self.path(declaring_trait),
         );
         let id = self.push_row(DefRow {
-            display_path: None,
-            name: Ident::from_symbol(method),
+            name,
             kind: DeclarationKind::DefaultImplMethod,
             module: None,
-            owner: Some(receiver.nominal.declaration()),
+            owner,
             site: None,
             path,
         });
@@ -1710,7 +1586,6 @@ impl DefTable {
         }
         let path = crate::actor_protocol::LAMBDA_ACTOR_PROTOCOL_PATH;
         let id = self.push_row(DefRow {
-            display_path: None,
             name: Ident::new(path),
             kind: DeclarationKind::RequestProtocol,
             module: None,
@@ -1728,7 +1603,7 @@ impl DefTable {
     pub fn default_impl_body(
         &self,
         declaring_trait: DefId,
-        receiver: &NominalInstance,
+        receiver: &ReceiverInstance,
         method: Symbol,
     ) -> Option<DefId> {
         self.default_bodies
@@ -1849,8 +1724,7 @@ impl DefTable {
         FIXTURE_DEFS.with(|defs| std::sync::Arc::new(defs.borrow().clone()))
     }
 
-    /// Mint (or return) a sourceless row rendered as `path`; the path is also
-    /// its display name.
+    /// Mint (or return) a sourceless row rendered as `path`.
     #[doc(hidden)]
     pub fn mint_for_test(&mut self, path: impl AsRef<str>) -> DefId {
         let path = path.as_ref();
@@ -1858,7 +1732,6 @@ impl DefTable {
             return established;
         }
         let id = self.push_row(DefRow {
-            display_path: None,
             name: Ident::new(path),
             kind: DeclarationKind::Function,
             module: None,
@@ -1881,65 +1754,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_anchors_are_the_leading_rows() {
-        let table = DefTable::new();
-        for anchor in BuiltinAnchor::ALL {
-            let id = DefTable::anchor(anchor);
-            assert_eq!(table.path(id), anchor.spelling());
-            assert_eq!(table.kind(id), DeclarationKind::BuiltinType);
-            assert_eq!(
-                table.lookup_path(anchor.spelling()),
-                None,
-                "anchors claim no path"
-            );
-        }
-    }
-
-    /// The embedded builtin check mints into a fork: rows the compilation
-    /// established keep their ids, the fork only appends, and the
-    /// compilation's root namespace is not visible to the fork's own root.
-    #[test]
-    fn embedded_fork_keeps_ids_and_frees_the_root_namespace() {
+    fn display_renders_from_owner_chain_without_stored_display_path() {
         let mut table = DefTable::new();
-        let builtins = table.mint_module("std.builtins", &[]);
-        let root = table
-            .mint_root_module(&[PathBuf::from("/nonexistent/app.hew")])
-            .expect("source-backed root");
-        let shared = table
+        let module = table.mint_module("pkg.mod", &[PathBuf::from("/nonexistent/pkg/mod.hew")]);
+        let trait_occ =
+            DeclarationOccurrence::new(Some(module), &(0..10), DeclarationKind::Trait, 0);
+        let trait_id = table
+            .declare(trait_occ, Ident::new("Order"), None, "pkg.mod.Order")
+            .unwrap();
+        let event_occ = DeclarationOccurrence::new(
+            Some(module),
+            &(12..20),
+            DeclarationKind::MachineEventType,
+            0,
+        );
+        let event = table
             .declare(
-                DeclarationOccurrence::new(Some(builtins), &(0..8), DeclarationKind::Type, 0),
-                Ident::from_symbol(Symbol::intern("Cursor")),
-                None,
-                "std.builtins.Cursor",
+                event_occ,
+                Ident::new("Event"),
+                Some(trait_id),
+                "pkg.mod.Order.Event",
             )
             .unwrap();
-        let source_cursor = table
+        let method_occ =
+            DeclarationOccurrence::new(Some(module), &(22..30), DeclarationKind::TraitMethod, 0);
+        let method = table
             .declare(
-                DeclarationOccurrence::new(Some(root), &(0..8), DeclarationKind::Type, 0),
-                Ident::from_symbol(Symbol::intern("Cursor")),
-                None,
-                "Cursor",
+                method_occ,
+                Ident::new("run"),
+                Some(trait_id),
+                "pkg.mod.Order::run",
             )
             .unwrap();
-        let mut fork = table.fork_for_embedded_builtins();
-        assert_eq!(fork.lookup_path("std.builtins.Cursor"), Some(shared));
-        assert_eq!(fork.lookup_path("Cursor"), None);
-        let fork_root = fork.mint_synthetic_root();
-        assert_eq!(fork_root, builtins);
-        let embedded_cursor = fork
-            .declare(
-                DeclarationOccurrence::new(Some(fork_root), &(0..8), DeclarationKind::Type, 0),
-                Ident::from_symbol(Symbol::intern("Cursor")),
-                None,
-                "std.builtins.Cursor",
-            )
-            .expect("the same builtin source occurrence reuses its declaration");
-        assert_eq!(embedded_cursor, shared);
-        assert!(fork.extends(&table));
-        assert_eq!(table.root_module(), Some(root));
-        assert_eq!(table.lookup_path("Cursor"), Some(source_cursor));
-        assert_eq!(table.module(embedded_cursor), Some(fork_root));
-        assert_eq!(table.name(embedded_cursor), Symbol::intern("Cursor"));
+        let builtin_default = table.mint_default_impl_body(
+            trait_id,
+            &crate::ReceiverInstance {
+                head: crate::TypeHead::Builtin(crate::BuiltinType::I64),
+                args: Vec::new(),
+            },
+            Symbol::intern("fmt"),
+        );
+
+        assert_eq!(table.display(trait_id), "Order");
+        assert_eq!(table.display(event), "Order.Event");
+        assert_eq!(table.display(method), "Order::run");
+        assert_eq!(table.display(builtin_default), "i64::fmt");
     }
 
     #[test]

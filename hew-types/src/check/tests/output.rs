@@ -1725,11 +1725,13 @@ fn source_type_parameters_publish_distinct_declaration_owned_ids() {
             );
         };
         assert_eq!(
-            parameter.owner,
-            output
-                .defs
-                .lookup_path(function.name.name.as_str())
-                .unwrap()
+            parameter.declaration_owner(),
+            Some(
+                output
+                    .defs
+                    .lookup_path(function.name.name.as_str())
+                    .unwrap()
+            )
         );
         assert_eq!(parameter.index, 0);
         parameters.push(*parameter);

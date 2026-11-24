@@ -118,13 +118,15 @@ fn name_of(
     let receiver = module
         .debug
         .item_receiver(callable.function)
-        .and_then(|receiver| receiver.impl_receiver_instance(defs));
+        .and_then(hew_types::ResolvedTy::impl_receiver_instance);
     let declared = || match &receiver {
-        Some(receiver) => format!(
-            "{}.{}",
-            defs.dotted_declaration_path(receiver.nominal.declaration()),
-            defs.name(callable.declaration)
-        ),
+        Some(receiver) => {
+            let receiver_path = receiver.head.declaration(defs).map_or_else(
+                || receiver.head.spelling().to_string(),
+                |nominal| defs.dotted_declaration_path(nominal.declaration()),
+            );
+            format!("{receiver_path}.{}", defs.name(callable.declaration))
+        }
         None => defs.dotted_declaration_path(callable.declaration),
     };
     let source = |text: String| DisplayName {

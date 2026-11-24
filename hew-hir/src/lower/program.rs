@@ -104,14 +104,17 @@ pub fn lower_program(
     }
     ctx.seed_stdlib_fn_registry();
     let builtin_program = type_check_output.selected_builtin_program.as_deref();
+    let embedded_builtin_index = span_indices
+        .module_base(&hew_parser::module::ModulePath::new(["std", "builtins"]))
+        .unwrap_or(u32::MAX);
     let builtin_item_index = |ordinal| {
         selected_builtin_graph_module
             .and_then(|module| span_indices.item_index(module, ordinal))
-            .unwrap_or(u32::MAX)
+            .unwrap_or(embedded_builtin_index)
     };
     if let Some(module) = ctx.defs.module_for_path("std.builtins") {
         ctx.declaration_module_by_file_index
-            .insert(u32::MAX, module);
+            .insert(embedded_builtin_index, module);
     }
 
     ctx.root_visible_source_type_short_names

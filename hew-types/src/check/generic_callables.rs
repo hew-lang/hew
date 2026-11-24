@@ -86,7 +86,10 @@ impl Checker {
                 .insert(*variable, &Ty::param(*parameter))
                 .expect("a fresh closure binder cannot form an inference cycle");
         }
-        let owner = parameters[0].id.owner;
+        let owner = parameters[0]
+            .id
+            .declaration_owner()
+            .expect("closure literal binder has a declaration owner");
         let bounds = self.inferred_callable_bounds(owner);
         for check in &mut self.deferred_bound_checks {
             let resolved = self.subst.resolve(&check.type_arg);
@@ -121,8 +124,8 @@ impl Checker {
         // an overload choice. Preserve it on the inferred callable signature.
         for check in &self.deferred_bound_checks {
             let argument = self.subst.resolve(&check.type_arg);
-            let Some(parameter) =
-                Self::bare_param(&argument).filter(|parameter| parameter.id.owner == owner)
+            let Some(parameter) = Self::bare_param(&argument)
+                .filter(|parameter| parameter.id.declaration_owner() == Some(owner))
             else {
                 continue;
             };
@@ -150,8 +153,8 @@ impl Checker {
                 _ => continue,
             };
             let resolved = self.subst.resolve(&requirement.ty);
-            if let Some(parameter) =
-                Self::bare_param(&resolved).filter(|parameter| parameter.id.owner == owner)
+            if let Some(parameter) = Self::bare_param(&resolved)
+                .filter(|parameter| parameter.id.declaration_owner() == Some(owner))
             {
                 bounds.push(
                     parameter.id,
@@ -440,7 +443,7 @@ impl Checker {
         let Ty::GenericCallable { parameters, .. } = ty else {
             return None;
         };
-        let owner = parameters.first()?.parameter.id.owner;
+        let owner = parameters.first()?.parameter.id.declaration_owner()?;
         self.fn_sigs
             .contains_key(&owner)
             .then(|| self.defs.path(owner).to_string())

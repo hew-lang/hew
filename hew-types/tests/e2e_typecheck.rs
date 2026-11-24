@@ -4460,3 +4460,25 @@ fn invalid_module_const_integer_arithmetic_has_specific_checker_diagnostics() {
         );
     }
 }
+
+#[test]
+fn misspelled_field_and_variant_types_report_undefined_type() {
+    for (source, name) in [
+        ("type Foo {\n    x: Misspelled;\n}\nfn main() {}\n", "Foo"),
+        ("enum E {\n    A(Misspelled);\n}\nfn main() {}\n", "E"),
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output.errors.iter().any(|error| {
+                matches!(error.kind, hew_types::error::TypeErrorKind::UndefinedType)
+                    && error.message.contains("Misspelled")
+            }),
+            "expected UndefinedType for `{name}` with misspelled member type, got {:#?}",
+            output.errors
+        );
+        assert!(
+            output.type_def_at_path(name).is_none(),
+            "declaration `{name}` with error-typed member must be pruned from output type_defs"
+        );
+    }
+}

@@ -606,11 +606,11 @@ fn main() {}
         .callables
         .iter()
         .all(|callable| callable.declaration != declaration_of(&hir, "uncalled")));
-    assert!(lowered.module.aggregate_shapes.iter().all(|shape| lowered
-        .module
-        .defs
-        .display(shape.instance.nominal.declaration())
-        != "Unused"));
+    assert!(lowered.module.aggregate_shapes.iter().all(|shape| {
+        shape.instance.as_ref().is_none_or(|instance| {
+            lowered.module.defs.display(instance.nominal.declaration()) != "Unused"
+        })
+    }));
     assert!(
         verify_module(&lowered.module).is_empty(),
         "{:#?}",

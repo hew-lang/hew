@@ -123,7 +123,7 @@ fn extern_signature_description(
 fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
     match ty {
         Ty::Named {
-            head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Unresolved(_)),
+            head: head @ crate::TypeHead::Nominal(_),
             args,
         } => {
             let name = head.registry_key();
@@ -845,46 +845,6 @@ fn collision_preferred_package_module_ids(
         }
     }
     preferred
-}
-
-/// Whether an aggregate directory module is replaying a member-bearing item
-/// owned by a distinct child source module.
-///
-/// Item equality alone is insufficient because two modules can author the
-/// same declaration shape independently. Match the source span as well, and
-/// let a same-leaf preferred module retain ownership of the directory's root
-/// file before considering distinct children.
-fn member_item_is_absorbed_from_distinct_child(
-    program: &Program,
-    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
-    current_module: &hew_parser::module::ModulePath,
-    item: &Item,
-    item_span: &Span,
-) -> bool {
-    if preferred_modules.contains(current_module) {
-        return false;
-    }
-    let Some(module_graph) = program.module_graph.as_ref() else {
-        return false;
-    };
-    let current_leaf = current_module.segments.last();
-    let appears_in = |module_id: &hew_parser::module::ModulePath| {
-        module_graph.modules.get(module_id).is_some_and(|module| {
-            module
-                .items
-                .iter()
-                .any(|(candidate, candidate_span)| candidate == item && candidate_span == item_span)
-        })
-    };
-    if preferred_modules
-        .iter()
-        .any(|module_id| module_id.segments.last() == current_leaf && appears_in(module_id))
-    {
-        return false;
-    }
-    preferred_modules
-        .iter()
-        .any(|module_id| module_id.segments.last() != current_leaf && appears_in(module_id))
 }
 
 /// Whether `type_name` is declared by 2+ distinct non-root modules (package or,

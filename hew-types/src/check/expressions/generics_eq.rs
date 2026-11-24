@@ -156,10 +156,7 @@ impl Checker {
             // Preserve the exact top-level user-method dispatch route. Nested
             // user methods are selected recursively by TypeFactService.
             if let Ty::Named {
-                head:
-                    crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_),
+                head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
                 ..
             } = left_resolved
             {
@@ -185,8 +182,7 @@ impl Checker {
             _ => return,
         };
         if let Ty::Named {
-            head:
-                crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_),
+            head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
             ..
         } = left_resolved
         {
@@ -285,7 +281,7 @@ impl Checker {
                     .iter()
                     .any(|ty| Self::ty_mentions_type_params(ty, &[**parameter]))
             })
-            .map(|parameter| parameter.id.owner)
+            .filter_map(|parameter| parameter.id.declaration_owner())
             .collect::<Vec<_>>();
         owners.sort_unstable();
         owners.dedup();

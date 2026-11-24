@@ -3105,10 +3105,7 @@ impl Checker {
             // `policy(handle, ..)` carry the same `(msg)` call surface the
             // handle has, and decide only how the submission is admitted.
             Ty::Named {
-                head:
-                    crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_),
+                head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_),
                 ..
             } if crate::actor_delivery::sender_parts(&resolved)
                 .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))

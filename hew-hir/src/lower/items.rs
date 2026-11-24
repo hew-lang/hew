@@ -390,16 +390,14 @@ impl LowerCtx<'_> {
                         .map_or_else(|| name.to_string(), |local| format!("{module}.{local}"))
                 },
             ),
-            _ => resolved_impl_self_ty
-                .impl_receiver_instance(&self.defs)
-                .map_or_else(
-                    || base_symbol_self_name.to_string(),
-                    |instance| self.defs.path(instance.nominal.declaration()).to_string(),
-                ),
+            _ => resolved_impl_self_ty.impl_receiver_instance().map_or_else(
+                || base_symbol_self_name.to_string(),
+                |instance| instance.head.receiver_path(&self.defs).to_string(),
+            ),
         };
         let impl_self_nominal = resolved_impl_self_ty
-            .impl_receiver_instance(&self.defs)
-            .map(|instance| instance.nominal);
+            .impl_receiver_instance()
+            .map(|instance| instance.head);
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
         for method in &decl.methods {
@@ -1213,7 +1211,6 @@ impl LowerCtx<'_> {
                                 .contains(self.defs.path(nominal.id.declaration()))
                     }
                     TypeHead::Builtin(_) | TypeHead::Param(_) => true,
-                    TypeHead::Unresolved(_) => false,
                 };
                 known
                     && args
@@ -1260,7 +1257,7 @@ impl LowerCtx<'_> {
         self_ty: Option<&ResolvedTy>,
         method: hew_types::Symbol,
     ) -> Option<hew_types::DefId> {
-        let instance = self_ty?.impl_receiver_instance(&self.defs)?;
+        let instance = self_ty?.impl_receiver_instance()?;
         self.defs
             .default_impl_body(declaring_trait, &instance, method)
     }

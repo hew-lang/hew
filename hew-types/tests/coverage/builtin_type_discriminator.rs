@@ -25,7 +25,7 @@ pub type Holder {
         .expect("Holder type exists");
     assert!(matches!(
         holder.fields.get("value"),
-        Some(Ty::Named { args, head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)) }) if name_head.spelling() == "OptionBox" && args.is_empty()
+        Some(Ty::Named { args, head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_)) }) if name_head.spelling() == "OptionBox" && args.is_empty()
     ));
 }
 

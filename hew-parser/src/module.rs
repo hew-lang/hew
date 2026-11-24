@@ -295,6 +295,34 @@ impl FileSpanIndices {
     pub fn module_name(&self, index: u32) -> Option<&str> {
         self.module_name.get(&index).map(String::as_str)
     }
+
+    /// Return the file index allocated for `dotted_module`, assigning a
+    /// distinct non-root index when the source is compiler-embedded and has no
+    /// entry in the parsed module graph.
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than `u32::MAX` module file indices are allocated in one
+    /// compilation.
+    pub fn allocate_embedded_module_index(&mut self, dotted_module: &str) -> u32 {
+        let module_id = ModulePath::new(dotted_module.split('.'));
+        if let Some(existing) = self.module_base.get(&module_id).copied() {
+            return existing;
+        }
+        let max_used = self
+            .module_base
+            .values()
+            .copied()
+            .chain(self.by_path.values().copied())
+            .chain(self.module_name.keys().copied())
+            .chain(self.paths.keys().copied())
+            .max()
+            .unwrap_or(0);
+        let index = max_used.checked_add(1).expect("file span index overflow");
+        self.module_base.insert(module_id, index);
+        self.module_name.insert(index, dotted_module.to_string());
+        index
+    }
 }
 
 impl ModuleGraph {

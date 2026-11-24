@@ -3262,7 +3262,7 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     );
 
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let _output = checker.check_program(&parsed.program);
 
     let display = checker
@@ -3309,7 +3309,7 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     );
 
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let _output = checker.check_program(&parsed.program);
 
     let display = checker
@@ -3351,7 +3351,7 @@ impl Display for MyType {
     );
 
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let _output = checker.check_program(&parsed.program);
 
     // The side table is non-empty after `register_builtins` because the ten
@@ -3477,7 +3477,7 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3565,7 +3565,7 @@ fn main() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output.errors.is_empty(),
@@ -3690,7 +3690,7 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&parsed.program);
     let arity_errors: Vec<_> = output
         .errors
@@ -3728,7 +3728,7 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output
@@ -3961,7 +3961,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
         parsed.errors
     );
     let mut checker = Checker::new(test_registry());
-    checker.checking_embedded_builtins = true;
+    checker.allow_prelude_redeclaration = true;
     let output = checker.check_program(&parsed.program);
     assert!(
         output

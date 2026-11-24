@@ -2855,9 +2855,8 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
             name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    path: hew_parser::ast::Path::single(
-                        hew_parser::ast::Ident::new(field_type),
-                        0..0,
+                    path: hew_parser::ast::Path::from_spellings(
+                        &field_type.split('.').collect::<Vec<_>>(),
                     ),
                     type_args: None,
                 },
@@ -3088,7 +3087,7 @@ fn local_type_shadows_import_alias_in_member_position() {
 #[test]
 fn aliased_member_matches_qualified_member_type() {
     // The aliased member (`item: Tag`) and the qualified member
-    // (`item: myapp.mod_a.Payload`) must resolve to the SAME stored field type, so
+    // (`item: mod_a.Payload`) must resolve to the SAME stored field type, so
     // every member-derived fact (Send/Copy/Frozen markers) is
     // identical regardless of which spelling the user wrote (Risk #1).
     let payload = make_pub_struct("Payload", "code");
@@ -3101,7 +3100,7 @@ fn aliased_member_matches_qualified_member_type() {
         vec![(Item::TypeDecl(payload), 0..0)],
     );
     let aliased = make_struct_with_field_ty("AliasedBox", "item", "Tag");
-    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "myapp.mod_a.Payload");
+    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "mod_a.Payload");
     let output = check_items(vec![
         (Item::Import(import), 0..0),
         (Item::TypeDecl(aliased), 0..0),
@@ -3121,7 +3120,7 @@ fn aliased_member_matches_qualified_member_type() {
     );
     assert_eq!(
         aliased_field, qualified_field,
-        "aliased member `Tag` and qualified member `myapp.mod_a.Payload` must resolve to \
+        "aliased member `Tag` and qualified member `mod_a.Payload` must resolve to \
          the identical stored field type"
     );
 }
@@ -4025,4 +4024,129 @@ fn struct_variant_rejects_record_update_and_duplicate_fields_on_named_and_contex
         "expected true variant ordinal `1` on `.Second`; resolutions: {:#?}",
         ctx_ok_out.resolutions
     );
+}
+
+#[test]
+fn user_import_registers_type_alias_and_publishes_bindings() {
+    let module_items = parsed_import_items(
+        "pub type PairAlias = LocalPair;\npub type IdAlias = i64;\npub type LocalPair {\n    x: i64;\n}\n",
+    );
+    let import = make_user_import(
+        &["mylib", "aliases"],
+        Some(ImportSpec::Names(vec![
+            ImportName {
+                name: Ident::new("IdAlias"),
+                alias: Some(Ident::new("UserId")),
+            },
+            ImportName {
+                name: Ident::new("PairAlias"),
+                alias: None,
+            },
+            ImportName {
+                name: Ident::new("LocalPair"),
+                alias: None,
+            },
+        ])),
+        module_items,
+    );
+    let mut items = vec![(Item::Import(import), 0..0)];
+    items.extend(parsed_import_items(
+        "fn use_aliases(id: UserId, p: PairAlias) -> i64 {\n    id + p.x\n}\n",
+    ));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        module_graph: None,
+        items,
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "imported user type aliases must register and expand cleanly: {:#?}",
+        output.errors
+    );
+    let exports = checker
+        .module_type_exports
+        .get("mylib.aliases")
+        .expect("mylib.aliases exports recorded");
+    assert!(exports.contains("IdAlias"), "exports: {exports:?}");
+    assert!(exports.contains("PairAlias"), "exports: {exports:?}");
+    assert_eq!(
+        output
+            .import_type_name_aliases
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&"mylib.aliases.IdAlias".to_string())
+    );
+    assert_eq!(
+        checker
+            .published_bare_type_owners
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&std::collections::BTreeSet::from([
+            "mylib.aliases.IdAlias".to_string()
+        ]))
+    );
+    assert_eq!(
+        checker
+            .published_bare_type_owners
+            .get(&(None, 0, "PairAlias".to_string())),
+        Some(&std::collections::BTreeSet::from([
+            "mylib.aliases.PairAlias".to_string()
+        ]))
+    );
+    let sigs = output.sigs();
+    let sig = sigs.get("use_aliases").expect("use_aliases sig");
+    assert_eq!(sig.params.first().map(|p| &p.ty), Some(&Ty::I64));
+    assert!(
+        matches!(
+            sig.params.get(1).map(|p| &p.ty),
+            Some(Ty::Named { head, .. }) if head.receiver_path(&output.defs) == "mylib.aliases.LocalPair"
+        ),
+        "PairAlias parameter must expand to mylib.aliases.LocalPair, got {:?}",
+        sig.params
+    );
+    assert_eq!(
+        checker
+            .unqualified_to_module
+            .get(&(None, 0, "UserId".to_string())),
+        Some(&"mylib.aliases".to_string())
+    );
+    assert_eq!(
+        checker
+            .unqualified_to_module
+            .get(&(None, 0, "PairAlias".to_string())),
+        Some(&"mylib.aliases".to_string())
+    );
+}
+
+#[test]
+fn user_whole_module_import_records_type_alias_exports() {
+    let import = make_user_import(
+        &["pkg", "whole_aliases"],
+        None,
+        parsed_import_items("pub type WholeId = i64;\n"),
+    );
+    let mut items = vec![(Item::Import(import), 0..0)];
+    items.extend(parsed_import_items(
+        "fn take_id(id: whole_aliases.WholeId) -> i64 {\n    id\n}\n",
+    ));
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        module_graph: None,
+        items,
+        module_doc: None,
+    });
+    assert!(
+        output.errors.is_empty(),
+        "qualified imported user type alias must resolve cleanly: {:#?}",
+        output.errors
+    );
+    assert!(checker
+        .module_type_exports
+        .get("pkg.whole_aliases")
+        .is_some_and(|exports| exports.contains("WholeId")));
+    assert!(checker
+        .module_type_exports
+        .get("whole_aliases")
+        .is_some_and(|exports| exports.contains("WholeId")));
 }

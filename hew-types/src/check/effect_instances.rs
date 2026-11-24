@@ -186,16 +186,16 @@ impl Checker {
             )?;
             return instantiate(declaration);
         }
-        let instance = receiver.impl_receiver_instance(&self.defs)?;
+        let instance = receiver.impl_receiver_instance()?;
         let mut candidates = self
             .dispatch
-            .candidates(instance.nominal, Some(&instance), self.defs.name(method))
+            .candidates(instance.head, Some(&instance), self.defs.name(method))
             .into_iter()
             .filter_map(|(owner, declaration)| {
                 let admitted = owner == MethodOwner::Trait(declaring_trait)
                     || (owner == MethodOwner::Inherent
                         && self.structural_witnesses.iter().any(|witness| {
-                            witness.self_type == instance.nominal
+                            witness.self_type == instance.head
                                 && witness.declaring_trait == declaring_trait
                                 && witness.method == method
                                 && witness.inherent == declaration

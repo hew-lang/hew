@@ -1103,28 +1103,22 @@ impl ModuleRegistry {
     #[must_use]
     pub fn canonicalize_registry_signature_ty(
         &self,
-        ty: &crate::ty::Ty,
+        ty: &crate::stdlib_loader::RegistryTy,
         canonical_owner: &str,
-    ) -> crate::ty::Ty {
-        let mapped = ty.map_children_pub(&|child| {
+    ) -> crate::stdlib_loader::RegistryTy {
+        use crate::stdlib_loader::RegistryTy;
+        let mapped = ty.map_children(&mut |child| {
             self.canonicalize_registry_signature_ty(child, canonical_owner)
         });
-        let crate::ty::Ty::Named {
-            head: crate::TypeHead::Unresolved(spelling),
-            args,
-        } = mapped
-        else {
+        let RegistryTy::Named { path, args } = mapped else {
             return mapped;
         };
         let name = self
-            .canonical_registry_signature_type_identity(spelling.as_str(), canonical_owner)
-            .unwrap_or_else(|| spelling.to_string());
+            .canonical_registry_signature_type_identity(&path, canonical_owner)
+            .unwrap_or(path);
         match self.encoding_value_builtin(&name) {
-            Some(builtin) => crate::ty::Ty::named_head(crate::TypeHead::Builtin(builtin), args),
-            None => crate::ty::Ty::Named {
-                head: crate::TypeHead::Unresolved(crate::Symbol::intern(&name)),
-                args,
-            },
+            Some(builtin) => RegistryTy::builtin(builtin, args),
+            None => RegistryTy::named(name, args),
         }
     }
 
@@ -1238,8 +1232,8 @@ impl ModuleRegistry {
         method: &str,
     ) -> Option<(
         String,
-        Vec<crate::CallableParameter<crate::ty::Ty>>,
-        crate::ty::Ty,
+        Vec<crate::CallableParameter<crate::stdlib_loader::RegistryTy>>,
+        crate::stdlib_loader::RegistryTy,
         String,
     )> {
         let (module_id, info, spelling) = self.registry_receiver_declaration(handle_type, true)?;
@@ -1494,7 +1488,7 @@ mod tests {
     /// toolchain's own std grants nothing to a registry not given it.
     #[test]
     fn std_authority_is_the_given_roots_and_nothing_else() {
-        use crate::{BuiltinType, Ty};
+        use crate::BuiltinType;
         let copy = TestDir::new("module-registry-std-authority");
         let json = copy.root.join("std/encoding/json/json.hew");
         fs::create_dir_all(json.parent().expect("json has a parent")).expect("create std");
@@ -1503,11 +1497,8 @@ mod tests {
             &json,
         )
         .expect("copy std source");
-        let value = Ty::unresolved_for_test("json.Value", vec![]);
-        let builtin = Ty::Named {
-            args: vec![],
-            head: crate::TypeHead::Builtin(BuiltinType::JsonValue),
-        };
+        let value = crate::stdlib_loader::RegistryTy::named("json.Value", vec![]);
+        let builtin = crate::stdlib_loader::RegistryTy::builtin(BuiltinType::JsonValue, vec![]);
 
         let mut given = ModuleRegistry::new(vec![copy.root.clone()]);
         given.load("std.encoding.json").expect("load the given std");
@@ -2293,18 +2284,18 @@ mod tests {
                     method_name: "clone_for_test".to_string(),
                     c_symbol: c_symbol.to_string(),
                     params: vec![
-                        crate::CallableParameter::borrowed(crate::ty::Ty::option(
-                            crate::ty::Ty::unresolved_for_test("regex.Pattern", vec![]),
-                        )),
-                        crate::CallableParameter::borrowed(crate::ty::Ty::unresolved_for_test(
-                            "regex.Foreign",
-                            vec![],
-                        )),
+                        crate::CallableParameter::borrowed(
+                            crate::stdlib_loader::RegistryTy::option(
+                                crate::stdlib_loader::RegistryTy::named("regex.Pattern", vec![]),
+                            ),
+                        ),
+                        crate::CallableParameter::borrowed(
+                            crate::stdlib_loader::RegistryTy::named("regex.Foreign", vec![]),
+                        ),
                     ],
-                    return_type: crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
-                        "regex.Pattern",
-                        vec![],
-                    )),
+                    return_type: crate::stdlib_loader::RegistryTy::option(
+                        crate::stdlib_loader::RegistryTy::named("regex.Pattern", vec![]),
+                    ),
                     dispatch_through_impl,
                 }],
                 drop_types: vec!["regex.Pattern".to_string()],
@@ -2331,7 +2322,7 @@ mod tests {
         assert_eq!(a.3, "vendor_a.text.regex");
         assert_eq!(
             a.1[0].ty,
-            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+            crate::stdlib_loader::RegistryTy::option(crate::stdlib_loader::RegistryTy::named(
                 "vendor_a.text.regex.Pattern",
                 vec![]
             )),
@@ -2339,12 +2330,12 @@ mod tests {
         );
         assert_eq!(
             a.1[1].ty,
-            crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
+            crate::stdlib_loader::RegistryTy::named("regex.Foreign", vec![]),
             "an undeclared foreign regex.X type must not inherit the owner"
         );
         assert_eq!(
             a.2,
-            crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
+            crate::stdlib_loader::RegistryTy::option(crate::stdlib_loader::RegistryTy::named(
                 "vendor_a.text.regex.Pattern",
                 vec![]
             ))
@@ -2398,9 +2389,9 @@ mod tests {
         assert_eq!(listener_close.0, "hew_tcp_listener_close");
         assert_eq!(
             listener_close.1,
-            Vec::<crate::CallableParameter<crate::ty::Ty>>::new()
+            Vec::<crate::CallableParameter<crate::stdlib_loader::RegistryTy>>::new()
         );
-        assert_eq!(listener_close.2, crate::ty::Ty::Unit);
+        assert_eq!(listener_close.2, crate::stdlib_loader::RegistryTy::UNIT);
 
         let request_close = reg
             .resolve_handle_method_sig("server.Request", "close")
@@ -2408,9 +2399,9 @@ mod tests {
         assert_eq!(request_close.0, "hew_http_request_free");
         assert_eq!(
             request_close.1,
-            Vec::<crate::CallableParameter<crate::ty::Ty>>::new()
+            Vec::<crate::CallableParameter<crate::stdlib_loader::RegistryTy>>::new()
         );
-        assert_eq!(request_close.2, crate::ty::Ty::Unit);
+        assert_eq!(request_close.2, crate::stdlib_loader::RegistryTy::UNIT);
 
         assert_eq!(
             reg.canonical_registry_signature_type_identity("net.NetError", "std.net.http.server"),
@@ -2631,7 +2622,8 @@ mod tests {
 
     #[test]
     fn encoding_registry_signatures_acquire_only_loaded_shipped_identity() {
-        use crate::{BuiltinType, Ty};
+        use crate::stdlib_loader::RegistryTy;
+        use crate::BuiltinType;
         let mut registry = registry();
         for (format, kind) in [
             ("json", BuiltinType::JsonValue),
@@ -2639,26 +2631,23 @@ mod tests {
             ("toml", BuiltinType::TomlValue),
         ] {
             let owner = format!("std.encoding.{format}");
-            let input = Ty::option(Ty::unresolved_for_test(&format!("{format}.Value"), vec![]));
+            let input = RegistryTy::option(RegistryTy::named(format!("{format}.Value"), vec![]));
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 input
             );
             registry.load(&owner).unwrap();
-            let expected = Ty::option(Ty::Named {
-                args: vec![],
-                head: crate::TypeHead::Builtin(kind),
-            });
+            let expected = RegistryTy::option(RegistryTy::builtin(kind, vec![]));
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&input, &owner),
                 expected
             );
-            let bare = Ty::unresolved_for_test("Value", vec![]);
+            let bare = RegistryTy::named("Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&bare, &owner),
                 bare
             );
-            let foreign = Ty::unresolved_for_test("user.Value", vec![]);
+            let foreign = RegistryTy::named("user.Value", vec![]);
             assert_eq!(
                 registry.canonicalize_registry_signature_ty(&foreign, &owner),
                 foreign

@@ -1303,12 +1303,14 @@ impl LowerCtx<'_> {
                             && self.checked_ty(&object.1).is_none() =>
                     {
                         let owner = match self.resolutions.get(&self.mk_key(&object.1)) {
-                            Some(Resolution::Builtin(builtin)) => builtin.canonical_name(),
+                            Some(Resolution::Builtin(builtin)) => {
+                                std::borrow::Cow::Borrowed(builtin.canonical_name())
+                            }
                             Some(Resolution::Nominal(id)) => self.defs.display(id.declaration()),
-                            _ => match &object.0 {
+                            _ => std::borrow::Cow::Borrowed(match &object.0 {
                                 Expr::Ident(ident) => ident.name.as_str(),
                                 _ => unreachable!("guarded by Expr::Ident match"),
-                            },
+                            }),
                         };
                         Some(std::borrow::Cow::Owned(format!("{owner}::{}", field.0)))
                     }

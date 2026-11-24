@@ -1619,9 +1619,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         matches!(
             stored_user_vec_ty,
             Some(ResolvedTy::Named {
-                head: hew_types::TypeHead::Nominal(_)
-                    | hew_types::TypeHead::Param(_)
-                    | hew_types::TypeHead::Unresolved(_),
+                head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_),
                 ..
             })
         ),

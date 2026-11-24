@@ -896,7 +896,11 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     let shape = semantic
         .aggregate_shapes
         .iter()
-        .find(|shape| semantic.defs.display(shape.instance.nominal.declaration()) == "Packet")
+        .find(|shape| {
+            shape.instance.as_ref().is_some_and(|instance| {
+                semantic.defs.display(instance.nominal.declaration()) == "Packet"
+            })
+        })
         .expect("source must demand one exact record shape");
     assert!(matches!(
         target.layout(&shape.aggregate_ty),

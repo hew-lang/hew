@@ -93,7 +93,7 @@ pub use check::{
 pub use check::{walk_block, walk_expr, NodeVisitor};
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, KnownDecl,
-    ModuleId, NominalId, Predicate, TypeParamId,
+    ModuleId, NominalId, ParamOwner, Predicate, TypeParamId,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -109,7 +109,8 @@ pub use lowering_facts::{
 };
 pub use mangle::mangle_resolved_ty;
 pub use resolved_ty::{
-    substitute_type_params, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
+    substitute_type_params, BoundaryError, NominalInstance, ReceiverInstance, ResolvedTraitBound,
+    ResolvedTy,
 };
 pub use runtime_call::{
     vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,

@@ -45,7 +45,7 @@ mod wasm_rejects {
         );
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.enable_wasm_target();
-        checker.checking_embedded_builtins = allow_prelude_redeclaration;
+        checker.allow_prelude_redeclaration = allow_prelude_redeclaration;
         checker.check_program(&result.program)
     }
 

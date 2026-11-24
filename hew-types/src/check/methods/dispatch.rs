@@ -2266,10 +2266,7 @@ impl Checker {
                             );
                         }
                     }
-                    return self.qualify_method_return_to_receiver_owner(
-                        &canonical_receiver_name,
-                        &applied_sig.return_type,
-                    );
+                    return applied_sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in
@@ -2311,14 +2308,11 @@ impl Checker {
                 }
                 // `clone` on a user-defined named type: intercept before
                 // `UndefinedMethod` for admissible records.
-                // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_) | crate::TypeHead::Unresolved(_), .. }, "clone")
+                // This arm handles the (Ty::Named { head: crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_), .. }, "clone")
                 // case where `try_resolve_source_method` found no `clone` in fn_sigs.
                 if method == "clone" && args.is_empty() {
                     if let Ty::Named {
-                        head:
-                            head @ (crate::TypeHead::Nominal(_)
-                            | crate::TypeHead::Param(_)
-                            | crate::TypeHead::Unresolved(_)),
+                        head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
                         args: type_args,
                         ..
                     } = &resolved
@@ -2512,9 +2506,6 @@ impl Checker {
                             layout_slot.trait_spelling
                         );
                     };
-                    let pid_send_dispatch = self.defs.path(layout_slot.trait_id)
-                        == "std.builtins.Pid"
-                        && method == "send";
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::TraitObject {
@@ -2569,12 +2560,6 @@ impl Checker {
                         // impl is selected at run time, so there is nothing to discharge here.
                         None,
                     );
-                    if pid_send_dispatch {
-                        self.enforce_actor_method_send_args(args);
-                        if !self.enforce_remote_actor_method_serializable_args(args) {
-                            return Ty::Error;
-                        }
-                    }
                     applied_sig.return_type
                 } else {
                     for arg in args {
@@ -2813,9 +2798,9 @@ impl Checker {
             }
         }
         if hits.len() > 1 {
-            let mut declaring: Vec<&str> = hits
+            let mut declaring: Vec<_> = hits
                 .iter()
-                .map(|(id, _, _)| self.defs.display(*id))
+                .map(|(id, _, _)| self.defs.display(*id).into_owned())
                 .collect();
             declaring.sort_unstable();
             return Err(Box::new((
@@ -2917,7 +2902,6 @@ impl Checker {
     pub(in crate::check) fn check_concrete_from_call(
         &mut self,
         receiver: &Ty,
-        canonical_receiver: &str,
         method: &str,
         candidates: &[(crate::DefId, crate::DefId)],
         args: &[CallArg],
@@ -2984,10 +2968,7 @@ impl Checker {
                 c_symbol: self.defs.path(row.method).to_string(),
             },
         );
-        Some(self.qualify_method_return_to_receiver_owner(
-            canonical_receiver,
-            &self.subst.resolve(&applied.return_type),
-        ))
+        Some(self.subst.resolve(&applied.return_type))
     }
 
     /// Instantiate the declaring trait's receiver and arguments before either

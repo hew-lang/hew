@@ -247,7 +247,23 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Trap
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue
-            | BuiltinType::TomlValue,
+            | BuiltinType::TomlValue
+            | BuiltinType::I8
+            | BuiltinType::I16
+            | BuiltinType::I32
+            | BuiltinType::I64
+            | BuiltinType::U8
+            | BuiltinType::U16
+            | BuiltinType::U32
+            | BuiltinType::U64
+            | BuiltinType::Isize
+            | BuiltinType::Usize
+            | BuiltinType::F32
+            | BuiltinType::F64
+            | BuiltinType::Bool
+            | BuiltinType::Char
+            | BuiltinType::String
+            | BuiltinType::Bytes,
         )
         | None => None,
     }
@@ -262,15 +278,11 @@ pub fn builtin_method_info(
 }
 
 fn type_parameter(kind: BuiltinNamedType) -> crate::ParamHead {
-    use crate::def_table::BuiltinAnchor;
-    let anchor = match kind {
-        BuiltinNamedType::Stream => BuiltinAnchor::Stream,
-        BuiltinNamedType::Sink => BuiltinAnchor::Sink,
+    let builtin = match kind {
+        BuiltinNamedType::Stream => BuiltinType::Stream,
+        BuiltinNamedType::Sink => BuiltinType::Sink,
     };
-    crate::ParamHead::new(
-        crate::TypeParamId::new(crate::DefTable::anchor(anchor), 0),
-        hew_parser::ast::Symbol::intern("T"),
-    )
+    crate::DefTable::builtin_parameter(builtin, 0, "T")
 }
 
 fn self_container_ty(kind: BuiltinNamedType, inner: Ty) -> Ty {

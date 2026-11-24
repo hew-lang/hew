@@ -58,18 +58,33 @@ impl Checker {
             Item::Impl(id) => self.check_impl(id, span),
             Item::Trait(td) => {
                 if !crate::ty::is_reserved_type_name(td.name.name.as_str()) {
+                    let trait_id = self.lookup_declaration(&self.declaration_identity(td.name));
+                    let trait_scope =
+                        self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
+                    let prev_trait_self = trait_id.and_then(|trait_id| {
+                        self.current_trait_for_self_projection.replace(trait_id)
+                    });
                     for item in &td.items {
                         if let TraitItem::Method(method) = item {
                             if method.body.is_none() {
+                                let method_scope = self.enter_primary_sig_scope(&[(
+                                    method.type_params.as_ref(),
+                                    method.where_clause.as_ref(),
+                                )]);
                                 self.check_boundary_resource_params(
                                     method.name.name.as_str(),
                                     &method.params,
                                     "trait method signature",
                                     &method.span,
                                 );
+                                self.exit_primary_sig_scope(method_scope);
                             }
                         }
                     }
+                    if trait_id.is_some() {
+                        self.current_trait_for_self_projection = prev_trait_self;
+                    }
+                    self.exit_primary_sig_scope(trait_scope);
                     self.check_trait_defaults(td);
                 }
             }
@@ -120,10 +135,7 @@ impl Checker {
                 continue;
             }
             let Ty::Named {
-                head:
-                    head @ (crate::TypeHead::Nominal(_)
-                    | crate::TypeHead::Param(_)
-                    | crate::TypeHead::Unresolved(_)),
+                head: head @ (crate::TypeHead::Nominal(_) | crate::TypeHead::Param(_)),
                 ..
             } = self.resolve_type_expr(&param.ty)
             else {

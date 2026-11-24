@@ -162,9 +162,6 @@ pub(super) enum NominalNamespace {
     /// An ordinary graph module: its nominals are owner-qualified and no
     /// other spelling reaches them.
     Owned,
-    /// The embedded builtins program: its nominals keep their
-    /// owner-qualified identity and also answer bare.
-    QualifiedAndBare,
 }
 
 #[must_use]
@@ -1214,11 +1211,7 @@ impl Checker {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    if self.checking_embedded_builtins {
-                        NominalNamespace::QualifiedAndBare
-                    } else {
-                        NominalNamespace::RootBare
-                    },
+                    NominalNamespace::RootBare,
                     item_index,
                     item,
                     span,
@@ -1231,11 +1224,7 @@ impl Checker {
                 self.mint_item_declaration_identities(
                     root,
                     root,
-                    if self.checking_embedded_builtins {
-                        NominalNamespace::QualifiedAndBare
-                    } else {
-                        NominalNamespace::RootBare
-                    },
+                    NominalNamespace::RootBare,
                     item_index,
                     item,
                     span,
@@ -2078,20 +2067,18 @@ impl Checker {
         // layout tables) renders from.
         let owner_path = |leaf: &str| match namespace {
             NominalNamespace::RootBare => leaf.to_string(),
-            NominalNamespace::Owned | NominalNamespace::QualifiedAndBare => fn_path(leaf),
+            NominalNamespace::Owned => fn_path(leaf),
         };
         // The OTHER name the same declaration answers to. A root nominal is
         // bare but its module still owns it, and the checker's own registries
         // (`trait_defs`, `type_def_spans`, the visibility index) key it
-        // `{module}.{leaf}`; an embedded builtin is qualified by its module
-        // but also answers bare. The identity table keeps the one canonical render;
+        // `{module}.{leaf}`. The identity table keeps the one canonical render;
         // the other name is only claimed in the namespace, so a second
         // declaration answering to it is a duplicate definition.
         let nominal_alias = |leaf: &str| match namespace {
             NominalNamespace::RootBare => module_path
                 .as_ref()
                 .map(|module| format!("{module}.{leaf}")),
-            NominalNamespace::QualifiedAndBare => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
         if let (Item::Import(decl), Some(file)) = (item, module) {
@@ -2896,7 +2883,7 @@ impl Checker {
     /// the builtin spelling table, or a shipped encoding value. A root or user
     /// module declaration with the same spelling stays its own nominal.
     fn declaration_builtin(&self, id: crate::DefId) -> Option<crate::BuiltinType> {
-        if !self.checking_embedded_builtins && self.defs.module(id) == self.defs.root_module() {
+        if self.defs.module(id) == self.defs.root_module() {
             return None;
         }
         let path = self.defs.path(id);
@@ -2918,24 +2905,6 @@ impl Checker {
                 })
                 .then_some(builtin)
         })
-    }
-
-    /// Check the selected builtin source under its declaration authority,
-    /// minting into a fork of `base` so the declarations it shares
-    /// with the compilation keep their identities. User programs must enter
-    /// through [`Self::check_program`].
-    pub fn check_embedded_builtins(
-        &mut self,
-        program: &Program,
-        base: &crate::DefTable,
-        selected_builtin_program: std::sync::Arc<Program>,
-    ) -> TypeCheckOutput {
-        self.selected_builtin_program = Some(selected_builtin_program);
-        self.seed_defs = Some(base.fork_for_embedded_builtins());
-        self.checking_embedded_builtins = true;
-        let output = self.check_program(program);
-        self.checking_embedded_builtins = false;
-        output
     }
 
     /// Install compiler-owned identities and retained parameter types for the
@@ -3020,21 +2989,20 @@ impl Checker {
     }
 
     fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
-        !(self.checking_embedded_builtins
-            || program.module_graph.as_ref().is_some_and(|graph| {
-                graph
-                    .modules
-                    .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))
-                    .is_some_and(|module| {
-                        module.source_paths.iter().any(|source| {
-                            crate::module_registry::is_canonical_stdlib_module_source(
-                                source,
-                                "std.builtins",
-                                self.module_registry.std_roots(),
-                            )
-                        })
+        !program.module_graph.as_ref().is_some_and(|graph| {
+            graph
+                .modules
+                .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))
+                .is_some_and(|module| {
+                    module.source_paths.iter().any(|source| {
+                        crate::module_registry::is_canonical_stdlib_module_source(
+                            source,
+                            "std.builtins",
+                            self.module_registry.std_roots(),
+                        )
                     })
-            }))
+                })
+        })
     }
 
     /// Check embedded executable bodies only when the ordinary module walk
@@ -3046,7 +3014,8 @@ impl Checker {
         }
         let builtin_program = self.builtin_program();
         let saved_module = self.current_module.replace("std.builtins".to_string());
-        let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let embedded_index = self.allocate_embedded_file_index("std.builtins");
+        let saved_index = std::mem::replace(&mut self.current_module_idx, embedded_index);
         let saved_ordinal = self.current_item_ordinal;
         let saved_source = self.current_item_source.take();
         let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
@@ -3318,8 +3287,7 @@ impl Checker {
             reported_undefined_named_types: self.reported_undefined_named_types.clone(),
             reported_borrow_types_outside_extern: self.reported_borrow_types_outside_extern.clone(),
             reported_gen_return_spellings: self.reported_gen_return_spellings.clone(),
-            type_decls_registered: self.type_decls_registered.clone(),
-            suppress_undefined_type_report: self.suppress_undefined_type_report.clone(),
+            impls_registered: self.impls_registered.clone(),
             declared_type_param_names: self.declared_type_param_names.clone(),
             scope_local_type_params_only: self.scope_local_type_params_only.clone(),
             declared_nominal_type_names: self.declared_nominal_type_names.clone(),
@@ -3340,7 +3308,6 @@ impl Checker {
             current_module: self.current_module.clone(),
             defs: self.defs.clone(),
             scopes: self.scopes.clone(),
-            registering_embedded_source: self.registering_embedded_source.clone(),
             seed_defs: self.seed_defs.clone(),
             session_type_seed: self.session_type_seed.clone(),
             extern_table: self.extern_table.clone(),
@@ -3369,7 +3336,8 @@ impl Checker {
             repl_fragment: self.repl_fragment.clone(),
             is_stdlib_source: self.is_stdlib_source.clone(),
             in_stdlib_registration: self.in_stdlib_registration.clone(),
-            checking_embedded_builtins: self.checking_embedded_builtins.clone(),
+            #[cfg(any(test, feature = "test"))]
+            allow_prelude_redeclaration: self.allow_prelude_redeclaration,
             selected_builtin_program: self.selected_builtin_program.clone(),
             has_checked_program: self.has_checked_program.clone(),
             finalization_memo: self.finalization_memo.fork(),
@@ -3510,40 +3478,10 @@ impl Checker {
         // a colliding receive-fn return record to its declaring module (#2208).
         self.cross_module_colliding_record_names =
             Self::compute_cross_module_colliding_record_names(program);
-        self.collect_types(program);
-        // Record every declared type-parameter name (across all modules) before
-        // arming the guard, so it never false-positives on a generic parameter
-        // the resolver leaves opaque and re-resolves without its scope active.
-        self.collect_declared_type_param_names(program);
-        // Every type declaration is now registered, so a named type that still
-        // fails to resolve is genuinely undefined. Arm the undefined-named-type
-        // guard in `resolve_type_expr_tracking_holes`; it stays disarmed during
-        // `collect_types` because member resolution there can legally reference a
-        // forward-declared sibling type that is not yet registered.
-        self.type_decls_registered = true;
-        self.collect_functions(program);
-        self.resolve_alias_declarations(program);
-
-        // Pass 1.5 (#2202): re-resolve type-declaration MEMBER types now that
-        // import-alias maps are live. `collect_types` resolves record/struct
-        // fields, enum payloads, and machine state/event fields BEFORE
-        // `collect_functions` processes imports, so a bare import alias in member
-        // position froze unresolved while its construction (Pass 3) resolved to
-        // the canonical qualified identity. This upgrade-only pass re-resolves
-        // members under each owning module's context and re-runs the member-
-        // derived marker/codec facts. It must run after `collect_functions` (so
-        // alias maps exist) and before body checking + descriptor building (so
-        // every member-derived consumer sees the corrected types).
-        //
-        // It closes declaration order for actor handles the same way (D489):
-        // an actor state field or init parameter naming an actor declared
-        // below it, or in a module registered by `collect_functions`, resolves
-        // here with the whole declaration table in view and receives the
-        // handle carrier its backward-referencing sibling already had.
-        self.reresolve_member_types_after_imports(program);
+        self.collect_declarations(program);
         // `optional` is a wire-schema admission marker, not an implicit
-        // default. Check it only after member re-resolution so aliases and
-        // imports have reached their semantic `Ty` identity.
+        // default. Check it after declarations and aliases have reached their
+        // semantic `Ty` identity.
         self.validate_wire_optional_field_admission(program);
         // Offload signatures need every member type's class facts.
         self.validate_offload_declarations();
@@ -4596,12 +4534,6 @@ impl Checker {
         let wasm_target = self.wasm_target;
         let repl_fragment = self.repl_fragment;
         let is_stdlib_source = self.is_stdlib_source;
-        let checking_embedded_builtins = self.checking_embedded_builtins;
-        let selected_builtin_program = if checking_embedded_builtins {
-            self.selected_builtin_program.clone()
-        } else {
-            None
-        };
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
@@ -4612,8 +4544,6 @@ impl Checker {
         self.wasm_target = wasm_target;
         self.repl_fragment = repl_fragment;
         self.is_stdlib_source = is_stdlib_source;
-        self.checking_embedded_builtins = checking_embedded_builtins;
-        self.selected_builtin_program = selected_builtin_program;
         self.has_checked_program = true;
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;

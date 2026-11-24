@@ -22,9 +22,6 @@ impl Checker {
     /// text. Whitespace changes must not create a second set of declaration
     /// occurrences under the same builtin owner.
     pub(in crate::check) fn select_builtin_program(&mut self, program: &Program) {
-        if self.checking_embedded_builtins && self.selected_builtin_program.is_some() {
-            return;
-        }
         self.selected_builtin_program = program.module_graph.as_ref().and_then(|graph| {
             let module = graph
                 .modules
@@ -72,7 +69,8 @@ impl Checker {
         }
         let builtin_program = self.builtin_program();
         let saved_module = self.current_module.replace("std.builtins".to_string());
-        let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let embedded_index = self.allocate_embedded_file_index("std.builtins");
+        let saved_index = std::mem::replace(&mut self.current_module_idx, embedded_index);
         let saved_ordinal = self.current_item_ordinal;
         let saved_source = self.current_item_source.take();
         let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
@@ -94,6 +92,9 @@ impl Checker {
         reason = "all builtins registered in one place"
     )]
     pub(in crate::check) fn register_builtins(&mut self) {
+        let embedded_builtins_idx = self.allocate_embedded_file_index("std.builtins");
+        let saved_module_idx =
+            std::mem::replace(&mut self.current_module_idx, embedded_builtins_idx);
         // Print functions
         self.register_builtin_fn("println_int", vec![Ty::I64], Ty::Unit);
         self.register_builtin_fn("println_str", vec![Ty::String], Ty::Unit);
@@ -265,8 +266,12 @@ impl Checker {
         // be visible without an explicit stdlib import: Display blanket impls
         // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
         // methods from `std/string.hew` and `std/io.hew`.
-        // ActorError carries the std.failure diagnostic, so its source owner
-        // must be registered before the builtins enum is resolved.
+        // `std.builtins` and `std.failure` cross-reference each other's types
+        // (`std.failure.CrashInfo` uses `SourceLocation`; `std.builtins.ActorError`
+        // imports `CrashInfo`). Mint `std.builtins` declarations and seed the
+        // prelude BEFORE `std.failure` resolves its field types so both resolve
+        // cleanly through `Scope`.
+        self.mint_builtins_hew_declarations();
         self.register_builtin_failure_surface();
         self.register_builtins_hew_impls();
         // Generic print/println/to_string require the prelude's Display,
@@ -322,6 +327,7 @@ impl Checker {
         if !self.module_registry.has_search_paths() {
             self.register_builtin_monitor_ref_surface();
         }
+        self.current_module_idx = saved_module_idx;
     }
 
     /// Parse compiled-in stdlib receiver impl sources and feed only the
@@ -348,21 +354,21 @@ impl Checker {
     /// `Ty::from_name` → `canonical_lowering_name`, so each one lands as a
     /// `(canonical_key, "Display") → { "fmt" → FnSig }` entry in
     /// `primitive_trait_impls`.
-    pub(super) fn register_builtins_hew_impls(&mut self) {
+    pub(super) fn mint_builtins_hew_declarations(&mut self) -> (crate::ModuleId, u32) {
         let builtin_program = self.builtin_program();
         let builtins_module = self.defs.mint_module("std.builtins", &[]);
         let builtin_index = self
             .defs
             .module_source(builtins_module)
             .and_then(|source| self.file_span_indices.path_index(source))
-            .unwrap_or(u32::MAX);
-        let saved_index = std::mem::replace(&mut self.current_module_idx, builtin_index);
+            .unwrap_or_else(|| self.allocate_embedded_file_index("std.builtins"));
         if self.defs.module_source(builtins_module).is_none() {
             self.defs.set_module_package(
                 builtins_module,
                 crate::def_table::PackageOrigin::StandardLibrary,
             );
         }
+        let saved_index = std::mem::replace(&mut self.current_module_idx, builtin_index);
         for (item_ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),
@@ -373,36 +379,42 @@ impl Checker {
                 span,
             );
         }
-        // The builtins' own declarations name each other (`trait Error:
-        // Display`), and the compiled-in std sources registered below name
-        // them through the prelude.
         self.declare_minted_items_in_scope(&[builtins_module], builtins_module);
         self.bind_builtins_prelude_in_scope();
-        // Pre-register the public trait/type definitions from builtins.hew
-        // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
-        // for them.  The
-        // checker output-boundary validator (admissibility.rs:491-505)
-        // retains `MethodCallReceiverKind::PrimitiveTraitImpl` entries only
-        // when their `trait_name` is present in `trait_defs`; without this
-        // pre-registration, the dispatch metadata for `x.fmt()` would be
-        // pruned at the boundary even though `primitive_trait_impls` was
-        // populated correctly.  Skipping `register_type_namespace_name`
-        // preserves the user-redeclare path: a user `pub trait Display`
-        // declared in their own source file still registers cleanly (no
-        // duplicate-definition error) and overwrites the trait_defs entry
-        // with the user's version.  The primitive_trait_impls side table
-        // remains keyed independently by canonical receiver kind so the
-        // `x.fmt()` dispatch continues to find the builtins-registered
-        // impl regardless of which `trait_defs[Display]` shape is current.
+        self.current_module_idx = saved_index;
+        (builtins_module, builtin_index)
+    }
+
+    pub(super) fn register_builtins_hew_impls(&mut self) {
+        let builtin_program = self.builtin_program();
+        let (builtins_module, builtin_index) = self.mint_builtins_hew_declarations();
+        let saved_index = std::mem::replace(&mut self.current_module_idx, builtin_index);
+        for (item, span) in &builtin_program.items {
+            if let Item::Import(decl) = item {
+                self.bind_import_in_scope(builtins_module, decl, span);
+            }
+        }
+        // The builtins' own declarations name each other (`trait Error:
+        // Display`), and the compiled-in std sources registered below name
+        // them through the prelude. Seed trait shells before supertraits,
+        // signatures, and type bodies resolve.
+        self.declare_minted_items_in_scope(&[builtins_module], builtins_module);
+        self.bind_builtins_prelude_in_scope();
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        for (item, span) in &builtin_program.items {
+            if let Item::Trait(tr) = item {
+                if tr.visibility.is_pub() {
+                    self.pre_register_builtin_trait_shell(tr, span);
+                }
+            }
+        }
         for (item, span) in &builtin_program.items {
             match item {
                 Item::Trait(tr) if tr.visibility.is_pub() => {
-                    self.pre_register_builtin_trait(tr, span);
+                    self.complete_builtin_trait(tr, span);
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
-                    let saved_module = self.current_module.replace("std.builtins".to_string());
                     self.pre_register_type_decl(td);
-                    self.current_module = saved_module;
                     let canonical = format!("std.builtins.{}", td.name);
                     if let Some(source_def) = self.type_def_at(&canonical).cloned() {
                         self.register_canonical_type_def(
@@ -427,6 +439,7 @@ impl Checker {
                 _ => {}
             }
         }
+        self.current_module = saved_module;
         // Now feed only the `Item::Impl` blocks through the existing
         // stdlib registration path.  Pass 1 of `register_stdlib_hew_items`
         // is a no-op on this filtered list (no traits/types/functions to
@@ -464,21 +477,25 @@ impl Checker {
             "string",
             include_str!("../../../../std/string.hew"),
             &["string"],
+            &["NumberError"],
         );
         self.register_compiled_stdlib_receiver_impls(
             "io",
             include_str!("../../../../std/io.hew"),
             &["bytes"],
+            &[],
         );
         self.register_compiled_stdlib_receiver_impls(
             "option",
             include_str!("../../../../std/option.hew"),
             &["Option"],
+            &[],
         );
         self.register_compiled_stdlib_receiver_impls(
             "result",
             include_str!("../../../../std/result.hew"),
             &["Result"],
+            &[],
         );
     }
 
@@ -524,49 +541,37 @@ impl Checker {
     /// that declares its own `Display` (or builtins.hew itself, when it is the
     /// file under check) must re-register cleanly rather than collide with the
     /// seed.
-    pub(super) fn pre_register_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
-        // The declaration's bounds and signatures resolve in its own module,
-        // as stdlib registration.
-        let saved_module = self.current_module.replace("std.builtins".to_string());
-        let saved_registration = std::mem::replace(&mut self.in_stdlib_registration, true);
-        let info = self.trait_info_from_decl(
+    pub(super) fn pre_register_builtin_trait_shell(&mut self, tr: &TraitDecl, span: &Span) {
+        let info = self.trait_shell_from_decl(
             tr,
             Some("std.builtins".to_string()),
             self.current_module_idx,
         );
         let canonical = format!("std.builtins.{}", tr.name);
-        let registered = self
+        if !self
             .lookup_declaration(&canonical)
-            .filter(|id| self.trait_defs.contains_key(id));
-        let trait_id = registered.or_else(|| self.insert_trait_def(&canonical, info));
-        // A builtin trait's supertraits are part of its obligation
-        // (`trait Error: Display`).
-        if let Some(trait_id) = trait_id.filter(|_| registered.is_none()) {
-            self.register_trait_supers(trait_id, tr);
+            .is_some_and(|id| self.trait_defs.contains_key(&id))
+        {
+            self.insert_trait_def(&canonical, info);
         }
-        // Builtin traits are parsed outside the ordinary program collection
-        // pass, so mint their exact declaration IDs here as well as their
-        // TraitInfo. Dynamic dispatch (for example `dyn Index::at`) consumes
-        // these IDs and must not reconstruct them from the bare trait
-        // spelling.
-        if let Some(trait_id) = trait_id {
-            let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
-            for trait_item in &tr.items {
-                if let TraitItem::Method(method) = trait_item {
-                    self.register_trait_method_sig(trait_id, method, span);
-                }
-            }
-            self.exit_primary_sig_scope(trait_scope);
-        }
-        self.in_stdlib_registration = saved_registration;
-        self.current_module = saved_module;
-        // Harvest #[lang_item("...")] from the stdlib-shipped trait
-        // declaration so HIR f-string lowering can discover the canonical
-        // Display::fmt name through `LangItemRegistry` even when the user's
-        // program never declares the trait itself. Without this, every `f"…"`
-        // lowering in user code would fail closed with "no lang-item
-        // registered for key `display_fmt`".
         self.seed_trait_lang_items(tr, span);
+    }
+
+    pub(super) fn complete_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
+        let canonical = format!("std.builtins.{}", tr.name);
+        let Some(trait_id) = self.lookup_declaration(&canonical) else {
+            return;
+        };
+        let saved_registration = std::mem::replace(&mut self.in_stdlib_registration, true);
+        self.register_trait_supers(trait_id, tr);
+        let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
+        for trait_item in &tr.items {
+            if let TraitItem::Method(method) = trait_item {
+                self.register_trait_method_sig(trait_id, method, span);
+            }
+        }
+        self.exit_primary_sig_scope(trait_scope);
+        self.in_stdlib_registration = saved_registration;
     }
 
     /// Register the built-in `MonitorRef` surface so `monitor()` can return a
@@ -988,7 +993,7 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
-        let compiling_canonical_stdlib = self.checking_embedded_builtins
+        let compiling_canonical_stdlib = self.allows_prelude_redeclaration()
             || self.in_stdlib_registration
             || self
                 .canonical_std_module_sources

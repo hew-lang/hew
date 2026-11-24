@@ -184,6 +184,10 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "verifies record field declaration order and copy/borrow place plan together"
+)]
 fn owned_record_shape_and_field_order_are_exact() {
     let lowered = lower_source(
         r#"type Packet {
@@ -216,7 +220,11 @@ fn main() {
     let packets: Vec<_> = module
         .aggregate_shapes
         .iter()
-        .filter(|shape| module.defs.path(shape.instance.nominal.declaration()) == "Packet")
+        .filter(|shape| {
+            shape.instance.as_ref().is_some_and(|instance| {
+                module.defs.path(instance.nominal.declaration()) == "Packet"
+            })
+        })
         .collect();
     let [shape] = packets.as_slice() else {
         panic!("one demanded record type must publish exactly one shape")

@@ -363,26 +363,62 @@ async fn main() -> Result<()> {
                 )
                 .await?
             };
-            let (send, mut receive) = tokio::sync::mpsc::channel(8);
-            std::thread::spawn(move || {
-                for line in std::io::stdin().lock().lines() {
-                    if send.blocking_send(line).is_err() {
-                        break;
-                    }
-                }
-            });
-            while let Some(line) = receive.recv().await {
-                let parsed: Request = serde_json::from_str(&line?)?;
-                let result = request(&client, parsed.operation, &tools).await;
-                let reply = match result {
-                    Ok(result) => json!({"id":parsed.id,"ok":true,"result":result}),
-                    Err(error) => json!({"id":parsed.id,"ok":false,"error":error.to_string()}),
-                };
-                println!("{reply}");
-                std::io::stdout().flush()?;
-            }
-            client.close().await?;
+            attach(client, &tools).await?;
         }
     }
     Ok(())
+}
+
+/// Serve local editor JSON lines until standard input closes.
+async fn attach(client: network::Client, tools: &BuildTools) -> Result<()> {
+    let (send, mut receive) = tokio::sync::mpsc::channel(8);
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            if send.blocking_send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut input_failure = None;
+    while let Some(line) = receive.recv().await {
+        let reply = match line {
+            Ok(line) => respond(&client, &line, tools).await,
+            // The rejected line has been consumed; later requests remain
+            // correctly framed.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                failure(&Value::Null, &format!("invalid request: {error}"))
+            }
+            Err(error) => {
+                input_failure = Some(error);
+                break;
+            }
+        };
+        println!("{reply}");
+        std::io::stdout().flush()?;
+    }
+    client.close().await?;
+    input_failure.map_or(Ok(()), |error| Err(error.into()))
+}
+
+fn failure(id: &Value, error: &str) -> Value {
+    json!({"id":id,"ok":false,"error":error})
+}
+
+/// Answer one editor line. A malformed or unknown request is a protocol
+/// failure for that request only, never the end of the attached session.
+async fn respond(client: &network::Client, line: &str, tools: &BuildTools) -> Value {
+    let value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(error) => return failure(&Value::Null, &format!("invalid request: {error}")),
+    };
+    // Correlate the failure whenever the editor supplied an identity.
+    let id = value.get("id").cloned().unwrap_or(Value::Null);
+    let parsed: Request = match serde_json::from_value(value) {
+        Ok(parsed) => parsed,
+        Err(error) => return failure(&id, &format!("invalid request: {error}")),
+    };
+    match request(client, parsed.operation, tools).await {
+        Ok(result) => json!({"id":parsed.id,"ok":true,"result":result}),
+        Err(error) => failure(&parsed.id, &error.to_string()),
+    }
 }

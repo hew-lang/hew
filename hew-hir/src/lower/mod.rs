@@ -1051,17 +1051,6 @@ struct LowerCtx<'checked> {
     /// Actor declarations synthesized from lambda actors during body
     /// lowering, appended to the module's items once lowering finishes.
     pending_lambda_actors: Vec<HirActorDecl>,
-    /// Names of every `TypeDefKind::Actor` declaration in the program, lifted
-    /// from `TypeCheckOutput.type_defs`. Consumed by `lower_actor` to recognise
-    /// an actor-state field whose annotated type is a bare actor name (e.g.
-    /// `let out: W;` where `W` is an actor): such a field holds an actor
-    /// handle, never the actor's state by value, so its lowered type is
-    /// canonicalised to `W`'s own actor-handle type. That canonical form is
-    /// the one the MIR state-clone classifier and codegen already lower
-    /// (bit-copyable pid), matching `spawn W`'s handle result. Without it
-    /// the bare `W` field reaches MIR as an unresolvable nested user record
-    /// and fails closed.
-    actor_type_names: HashSet<String>,
     /// Per-call-site recorded concrete type arguments. Populated by
     /// `record_call_site_type_args` whenever a `HirExprKind::Call` is
     /// produced for a generic top-level user-fn callee. Drained into
@@ -1088,11 +1077,6 @@ struct LowerCtx<'checked> {
     /// is provably FFI-backed as a `BitCopy` handle stand-in while a bare
     /// `type Empty {}` stays fail-closed uninferred.
     extern_backed_record_names: HashSet<String>,
-    /// Bare record/type-decl names declared by more than one module, the root
-    /// included. ONLY these genuinely-colliding names are owner-qualified
-    /// inside their declaring module: a name unique to one module (e.g.
-    /// stdlib `xml.Node`) keeps its bare identity (#2208).
-    cross_module_colliding_record_names: HashSet<String>,
     enum_type_params: HashMap<String, Vec<hew_types::ParamHead>>,
     /// Checker-authoritative mapping from qualified function name to the
     /// intrinsic catalog key declared via `#[intrinsic("key")]`. Functions
@@ -1207,9 +1191,7 @@ struct LowerCtx<'checked> {
     /// W3.042 Stage 2 — when lowering bodies of methods that live inside an
     /// `impl ... for <SelfType> { ... }` (or inherent `impl <SelfType>`) block,
     /// `Self` in any annotated `TypeExpr` position must resolve to the
-    /// concrete self type rather than escaping to MIR as a literal
-    /// `ResolvedTy::named_path(&self.defs, &"Self", _)` (which has no entry in the
-    /// record-field-order table and fail-closes at MIR boundary).
+    /// concrete receiver of the checked impl.
     ///
     /// Set by `lower_impl_block` before lowering each method, cleared after.
     /// `None` outside an impl-method context — top-level free functions, trait

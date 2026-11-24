@@ -453,10 +453,11 @@ pub enum KnownDecl {
     ActorTimerMailbox,
     Timer,
     SemaphoreHandle,
+    NodeTransport,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -485,6 +486,7 @@ impl KnownDecl {
         Self::ActorTimerMailbox,
         Self::Timer,
         Self::SemaphoreHandle,
+        Self::NodeTransport,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -512,6 +514,7 @@ impl KnownDecl {
             Self::VecIter => "std.builtins.VecIter",
             Self::HashMapIter => "std.builtins.HashMapIter",
             Self::NodeConfig => "std.builtins.NodeConfig",
+            Self::NodeTransport => "std.builtins.NodeTransport",
             Self::PartitionPolicy => "std.link_monitor.PartitionPolicy",
             Self::ActorId => "std.builtins.ActorId",
             Self::Caller => "std.builtins.Caller",
@@ -545,6 +548,7 @@ impl KnownDecl {
             Self::VecIter => "VecIter",
             Self::HashMapIter => "HashMapIter",
             Self::NodeConfig => "NodeConfig",
+            Self::NodeTransport => "NodeTransport",
             Self::PartitionPolicy => "PartitionPolicy",
             Self::ActorId => "ActorId",
             Self::Caller => "Caller",

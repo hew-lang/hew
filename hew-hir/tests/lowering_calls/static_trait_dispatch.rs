@@ -965,9 +965,11 @@ fn example() -> string {
 }
 "#;
     let output = lower(src);
-    let expected_args = vec![hew_types::ResolvedTy::named_path(
-        &output.module.defs,
-        "Wrapper",
+    let expected_args = vec![hew_types::ResolvedTy::named_head(
+        hew_types::TypeHead::of_declaration(
+            &output.module.defs,
+            output.module.defs.lookup_nominal("Wrapper").unwrap(),
+        ),
         vec![hew_types::ResolvedTy::I64],
     )];
     assert!(output

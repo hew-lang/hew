@@ -360,80 +360,11 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// Lower a parser `TraitBound` (used in a machine's type-param
-    /// bound list or where-clause predicate) into the cross-layer
-    /// `ResolvedTraitBound` carrier. Trait `args` and
-    /// `assoc_type_bindings` are recursively lowered via the existing
-    /// `lower_type` seam — there is no separate HIR-side trait-arg
-    /// resolver. Returning `ResolvedTraitBound` directly (rather than
-    /// a forked HIR-local shape) reuses the carrier `dyn Trait`
-    /// coercions and trait-object lowering already commit to.
-    /// Canonicalise an actor-state field's lowered type: a field annotated with
-    /// a bare actor name (e.g. `let out: W;` where `W` is a `TypeDefKind::Actor`)
-    /// holds an actor *handle*, never the actor by value — actors are reference
-    /// types and cannot be embedded inline. Canonicalise such a field to `W`'s
-    /// own actor-handle type, the same canonical handle representation
-    /// `spawn W` produces, so the MIR state-clone classifier and codegen
-    /// lower it as a bit-copyable pid instead of failing closed on an
-    /// unresolvable nested user record. Non-actor field
-    /// types (records, enums, primitives, containers, real handle wrappers) are
-    /// returned unchanged. Bare actor names nested inside containers/records are
-    /// intentionally NOT rewritten here — that exotic shape stays fail-closed at
-    /// the MIR classifier rather than being silently reinterpreted.
-    ///
-    /// `decl_module` is the defining module (short form, matching
-    /// `HirActorDecl::defining_module`/`qualified_name()`) of the actor decl
-    /// whose fields are being lowered — `None` for a root actor, `Some(module)`
-    /// for an actor lowered via `lower_imported_actor`. A bare field name is
-    /// canonicalised only when it EITHER exact-matches an entry in
-    /// `actor_type_names` already (a root actor referencing another root actor,
-    /// or a field annotation the checker already qualified) OR
-    /// `{decl_module}.{name}` matches (a package actor referencing a sibling
-    /// actor declared in the SAME module). Both checks resolve against what
-    /// the checker actually registered — never a global short-name scan across
-    /// every module in the program. A bare name that collides with a LOCAL
-    /// non-actor type (a record/enum shadowing an imported actor's short name)
-    /// already carries the checker-resolved local type before this pass, and
-    /// neither lookup here can accidentally re-target a different module's
-    /// actor, because `{decl_module}.{name}` is scoped to the module actually
-    /// being lowered (LESSONS: `per-module-type-identity`).
-    pub(super) fn canonicalize_actor_ref_field_ty(
-        &self,
-        ty: ResolvedTy,
-        decl_module: Option<&str>,
-    ) -> ResolvedTy {
-        if let ResolvedTy::Named { head, args, .. } = &ty {
-            let name = head.registry_key();
-            let builtin = head.builtin();
-            if builtin.is_none() && !head.is_actor() && !head.is_param() {
-                let actor_name = if self.actor_type_names.contains(name) {
-                    Some(name.to_string())
-                } else if !name.contains('.') {
-                    decl_module.and_then(|module| {
-                        let qualified = format!("{module}.{name}");
-                        self.actor_type_names
-                            .contains(&qualified)
-                            .then_some(qualified)
-                    })
-                } else {
-                    None
-                };
-
-                if let Some(actor_name) = actor_name {
-                    return ResolvedTy::named_actor_path(&self.defs, &actor_name, args.clone());
-                }
-            }
-        }
-        ty
-    }
-
     /// Lower an `actor` declaration into `HirActorDecl`, including executable
     /// bodies for init blocks, receive handlers, methods, and lifecycle hooks.
     ///
     /// `decl_module` is `None` for a root actor and `Some(module_short)` for
-    /// an actor lowered via [`lower_imported_actor`](Self::lower_imported_actor);
-    /// it scopes `canonicalize_actor_ref_field_ty`'s bare-name resolution to
-    /// the module the actor is actually declared in.
+    /// an imported actor.
     #[expect(
         clippy::too_many_lines,
         reason = "the actor declaration owns one generic scope across all of its members"
@@ -498,7 +429,7 @@ impl LowerCtx<'_> {
                 let lowered_ty = self.lower_type(&f.ty);
                 HirField {
                     name: f.name.to_string(),
-                    ty: self.canonicalize_actor_ref_field_ty(lowered_ty, decl_module),
+                    ty: lowered_ty,
                     default: f
                         .default
                         .as_ref()

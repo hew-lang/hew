@@ -12,7 +12,13 @@ const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
 const NAMED_WORKER_MODULE: &str = "services.workers";
 
 fn child_handle(defs: &hew_types::DefTable, name: &str) -> hew_types::ResolvedTy {
-    hew_types::ResolvedTy::named_actor_path(defs, name, Vec::new())
+    hew_types::ResolvedTy::named_head(
+        hew_types::TypeHead::Actor(hew_types::NominalHead::new(
+            defs.lookup_nominal(name).unwrap(),
+            name,
+        )),
+        Vec::new(),
+    )
 }
 
 fn file_import_program(imported_src: &str, root_src: &str) -> Program {

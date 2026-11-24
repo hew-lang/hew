@@ -1,7 +1,6 @@
 //! Import and module-identity helpers for file and package items.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 /// Compute the source-set relationships used to choose one origin for
 /// duplicate imported items. Module spelling alone cannot establish that
@@ -123,56 +122,4 @@ pub(super) fn item_is_duplicated_in_distinct_leaf_module(
     preferred_modules
         .iter()
         .any(|module_id| module_id.segments.last() != current_leaf && appears_in(module_id))
-}
-
-pub(super) fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
-    match item {
-        Item::TypeDecl(decl) => decl.name == Ident::new(type_name),
-        Item::Record(decl) => decl.name == Ident::new(type_name),
-        _ => false,
-    }
-}
-
-pub(super) fn imported_type_name_collides(
-    program: &Program,
-    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
-    type_name: &str,
-) -> bool {
-    let Some(module_graph) = &program.module_graph else {
-        return false;
-    };
-    module_graph
-        .modules
-        .iter()
-        .filter(|(module_id, module)| {
-            // The root module is a declarant too: MIR's `collided_type_names`
-            // counts distinct qualified identities across EVERY HirItem,
-            // including root, so a root `Result` + one imported `pkg.Result`
-            // is a genuine collision MIR keys `pkg.Result`. Excluding root here
-            // left the checker/HIR value flow bare against that qualified
-            // layout (#2208). Re-export subsumption still dedups a package
-            // re-exporting a file module's item.
-            module.items.iter().any(|(item, _)| {
-                if !item_declares_type_name(item, type_name) {
-                    return false;
-                }
-                if preferred_modules.contains(*module_id) {
-                    return true;
-                }
-                !preferred_modules.iter().any(|preferred_id| {
-                    module_graph
-                        .modules
-                        .get(preferred_id)
-                        .is_some_and(|preferred| {
-                            preferred
-                                .items
-                                .iter()
-                                .any(|(candidate, _)| candidate == item)
-                        })
-                })
-            })
-        })
-        .take(2)
-        .count()
-        > 1
 }

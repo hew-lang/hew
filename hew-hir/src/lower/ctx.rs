@@ -148,24 +148,9 @@ impl<'checked> LowerCtx<'checked> {
             actor_protocol_descriptors: HashMap::new(),
             lambda_actor_declarations: tc_output.lambda_actor_declarations.clone(),
             pending_lambda_actors: Vec::new(),
-            // A supervisor is addressed by its own type exactly as an actor is,
-            // so both declaration kinds name an actor handle.
-            actor_type_names: tc_output
-                .type_defs
-                .iter()
-                .filter(|(_, td)| {
-                    matches!(
-                        td.kind,
-                        hew_types::check::TypeDefKind::Actor
-                            | hew_types::check::TypeDefKind::Supervisor
-                    )
-                })
-                .map(|(id, _)| tc_output.defs.path(id.declaration()).to_string())
-                .collect(),
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
             extern_backed_record_names: HashSet::new(),
-            cross_module_colliding_record_names: HashSet::new(),
             enum_type_params: HashMap::new(),
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
             supervisor_child_slots_checker: tc_output.supervisor_child_slots.clone(),

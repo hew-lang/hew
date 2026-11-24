@@ -27,11 +27,7 @@ impl LowerCtx<'_> {
         Some(message.clone())
     }
 
-    pub(super) fn checked_actor_ask_result_ty(
-        &mut self,
-        span: &Span,
-        handler: hew_types::DefId,
-    ) -> Option<ResolvedTy> {
+    pub(super) fn checked_actor_ask_result_ty(&mut self, span: &Span) -> Option<ResolvedTy> {
         let result = self
             .checked_expr_type(&self.mk_key(span))
             .ok_or_else(|| "missing checker expression type".to_string())
@@ -66,11 +62,6 @@ impl LowerCtx<'_> {
                 return None;
             }
         };
-        let result_ty = self.actor_handler_module(handler).map_or_else(
-            || result_ty.clone(),
-            |module| self.qualify_colliding_module_record_ty(&result_ty, module),
-        );
-
         Some(result_ty)
     }
 

@@ -1156,8 +1156,20 @@ fn generic_instances_publish_exact_nested_and_indirect_shapes() {
     ));
     assert_main_lowered(&lowered);
     for argument in [ResolvedTy::I64, ResolvedTy::String] {
-        let packet = ResolvedTy::named_path(&lowered.module.defs, "Packet", vec![argument.clone()]);
-        let cell = ResolvedTy::named_path(&lowered.module.defs, "Cell", vec![argument.clone()]);
+        let packet = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &lowered.module.defs,
+                lowered.module.defs.lookup_nominal("Packet").unwrap(),
+            ),
+            vec![argument.clone()],
+        );
+        let cell = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &lowered.module.defs,
+                lowered.module.defs.lookup_nominal("Cell").unwrap(),
+            ),
+            vec![argument.clone()],
+        );
         let shape = lowered
             .module
             .variant_shape_for_type(&packet)
@@ -1172,7 +1184,13 @@ fn generic_instances_publish_exact_nested_and_indirect_shapes() {
             .expect("nested generic record");
         assert_eq!(record.fields[0].ty, argument);
     }
-    let chain = ResolvedTy::named_path(&lowered.module.defs, "Chain", vec![ResolvedTy::String]);
+    let chain = ResolvedTy::named_head(
+        hew_types::TypeHead::of_declaration(
+            &lowered.module.defs,
+            lowered.module.defs.lookup_nominal("Chain").unwrap(),
+        ),
+        vec![ResolvedTy::String],
+    );
     let shape = lowered
         .module
         .variant_shape_for_type(&chain)

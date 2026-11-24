@@ -666,95 +666,9 @@ impl LowerCtx<'_> {
         self.lower_fn_with_name_and_impl_params(func, name, span, &[], None)
     }
 
-    /// Lower an imported actor under its checker's current module and file scope.
-    pub(super) fn lower_imported_actor(
-        &mut self,
-        decl: &ActorDecl,
-        span: Span,
-        module_full_path: &str,
-    ) -> Option<HirActorDecl> {
-        let lowered = self.lower_actor(decl, span, Some(module_full_path));
-        let mut lowered = lowered?;
-        // Owner-qualify each receive handler's return type to the declaring
-        // module (`testffi.Result`) ONLY when the returned record's bare name
-        // genuinely collides across modules — the same collision the MIR
-        // record-layout keying (`type_layout_key` / `collided_type_names`) uses
-        // to key the layout under the qualified identity. Both the ask-reply
-        // type and this handler-layout return type must then agree on that
-        // qualified identity, or `lower_actor_ask` fails closed and codegen
-        // sees a bare value against a qualified layout struct (#2208). A
-        // non-colliding record (stdlib `xml.Node`, `http.Response`) keeps its
-        // bare identity — its layout stays bare too, so qualifying here would
-        // instead CREATE a mismatch.
-        for handler in &mut lowered.receive_handlers {
-            handler.return_ty = self.restore_type_declaration_facts(handler.return_ty.clone());
-            handler.return_ty =
-                self.qualify_colliding_module_record_ty(&handler.return_ty, module_full_path);
-        }
-        Some(lowered)
-    }
-
-    /// The declaring module of an imported actor handler. Root handlers and
-    /// the sourceless lambda protocol carry no module qualification.
-    pub(super) fn actor_handler_module(&self, handler: hew_types::DefId) -> Option<&str> {
-        let module = self.defs.module(handler)?;
-        (Some(module) != self.defs.root_module()).then(|| self.defs.module_path(module))
-    }
-
     /// Whether a dispatched handler is a lambda actor's `call` protocol.
     pub(super) fn is_lambda_actor_method(&self, method: hew_types::DefId) -> bool {
         self.defs.kind(method) == hew_types::DeclarationKind::RequestProtocol
-    }
-
-    /// Qualify a bare user-record type reference to `{module_short}.{name}` when
-    /// that record's bare name genuinely collides across modules AND the named
-    /// module declares it, recursing through generic arguments. Builtins,
-    /// `#[opaque]` handles, already-qualified names, and non-colliding records
-    /// are returned unchanged. The collision gate keeps this aligned with the
-    /// MIR record-layout keying: only a colliding record is keyed by its
-    /// qualified identity, so only its value-flow (actor handler return / ask
-    /// reply) must carry the same identity (#2208).
-    pub(super) fn qualify_colliding_module_record_ty(
-        &self,
-        ty: &ResolvedTy,
-        module_full_path: &str,
-    ) -> ResolvedTy {
-        let ResolvedTy::Named {
-            head,
-            args,
-            is_opaque,
-            ..
-        } = ty
-        else {
-            return ty.clone();
-        };
-        let name = head.registry_key();
-        let builtin = head.builtin();
-        let args = args
-            .iter()
-            .map(|arg| self.qualify_colliding_module_record_ty(arg, module_full_path))
-            .collect();
-        if head.is_actor()
-            || builtin.is_some()
-            || *is_opaque
-            || name.contains('.')
-            || !self.cross_module_colliding_record_names.contains(name)
-        {
-            return ResolvedTy::Named {
-                head: *head,
-                args,
-                is_opaque: *is_opaque,
-            };
-        }
-        let qualified = format!("{module_full_path}.{name}");
-        if self.record_registry.contains_key(&qualified) {
-            return ResolvedTy::named_path(&self.defs, &qualified, args);
-        }
-        ResolvedTy::Named {
-            head: *head,
-            args,
-            is_opaque: *is_opaque,
-        }
     }
 
     /// Lower ordinary imported bodies and validate intrinsic declaration stubs.

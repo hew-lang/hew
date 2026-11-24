@@ -1827,7 +1827,7 @@ impl FunctionLowerer<'_> {
             let config_ty = &self.storage[self.value(config.operand.value)?.0 as usize].ty;
             let expected_fields = vec![
                 ResolvedTy::String,
-                ResolvedTy::named_path(&self.module.defs, "std.builtins.NodeTransport", vec![]),
+                ResolvedTy::named_head(hew_types::KnownDecl::NodeTransport.head(), Vec::new()),
                 ResolvedTy::String,
                 ResolvedTy::String,
                 ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::String]),

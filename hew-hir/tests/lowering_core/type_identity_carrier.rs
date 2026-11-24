@@ -328,7 +328,13 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         assert_eq!(ret.as_ref(), &expected);
         assert_eq!(
             published[3],
-            ResolvedTy::named_path(&checked.defs, "Value", vec![])
+            ResolvedTy::named_head(
+                hew_types::TypeHead::of_declaration(
+                    &checked.defs,
+                    checked.defs.lookup_nominal("Value").unwrap()
+                ),
+                vec![]
+            )
         );
 
         let payload = find_type(&hir, "Payload");

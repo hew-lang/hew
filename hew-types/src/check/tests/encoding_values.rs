@@ -204,9 +204,14 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
             value.clone(),
             ResolvedTy::named_builtin(BuiltinType::Option, vec![value]),
         ] {
-            let receiver = ResolvedTy::named_path(
-                service.defs(),
-                &format!("std.encoding.{format}.Holder"),
+            let receiver = ResolvedTy::named_head(
+                crate::TypeHead::of_declaration(
+                    service.defs(),
+                    service
+                        .defs()
+                        .lookup_nominal(&format!("std.encoding.{format}.Holder"))
+                        .unwrap(),
+                ),
                 vec![argument.clone()],
             );
             let selection = service

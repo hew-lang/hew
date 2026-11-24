@@ -871,9 +871,11 @@ fn same(a: Sample, b: Sample) -> bool {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_path(
-            &output.defs,
-            "Sample",
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_head(
+            crate::TypeHead::of_declaration(
+                &output.defs,
+                output.defs.lookup_nominal("Sample").unwrap(),
+            ),
             vec![],
         )))
         .unwrap();

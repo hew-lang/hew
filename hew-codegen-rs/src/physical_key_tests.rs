@@ -293,7 +293,13 @@ fn aggregate_hash_ignores_padding_and_composes_exact_user_field_methods() {
         fn main() { let values: HashMap<Outer, i64> = HashMap.new(); }
     ",
         );
-        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
+        let outer = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &physical.defs,
+                physical.defs.lookup_nominal("Outer").unwrap(),
+            ),
+            vec![],
+        );
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
@@ -485,7 +491,13 @@ fn main() {
         }
         emitter.llvm.verify().unwrap();
         let engine = engine(&emitter.llvm, optimized);
-        let outer = ResolvedTy::named_path(&physical.defs, "Outer", vec![]);
+        let outer = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &physical.defs,
+                physical.defs.lookup_nominal("Outer").unwrap(),
+            ),
+            vec![],
+        );
         let (hash_fn, eq_fn) = callbacks(&engine, &physical, &outer);
         let input = 1i64;
         let mut hash_out = 0xfeed_face_cafe_beefu64;
@@ -559,7 +571,13 @@ fn main() {
         let (hash_fn, eq_fn) = callbacks(
             &engine,
             &physical,
-            &ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+            &ResolvedTy::named_head(
+                hew_types::TypeHead::of_declaration(
+                    &physical.defs,
+                    physical.defs.lookup_nominal("Key").unwrap(),
+                ),
+                vec![],
+            ),
         );
         // SAFETY: Key has exactly one managed-string pointer field; both strings
         // outlive the borrowed key callbacks and are released once afterwards.
@@ -755,7 +773,13 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         .contains("has no callback"));
     // Malformed physical recipes must refuse even if a table entry exists.
     let key = (
-        ResolvedTy::named_path(&physical.defs, "Key", vec![]),
+        ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &physical.defs,
+                physical.defs.lookup_nominal("Key").unwrap(),
+            ),
+            vec![],
+        ),
         ValueCapability::Eq,
     );
     for method in [

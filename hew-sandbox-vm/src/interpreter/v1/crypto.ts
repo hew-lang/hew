@@ -6,6 +6,8 @@ type CryptoResult =
   | { ok: true; bytes?: unknown; equal?: unknown }
   | { ok: false; error?: unknown };
 
+const UTF8_DECODER = new TextDecoder("utf-8");
+
 function byteArrayArg(args: VmValue[], index: number): number[] {
   const value = args[index];
   if (!value || value.kind !== "vector")
@@ -20,18 +22,31 @@ function byteArrayArg(args: VmValue[], index: number): number[] {
   });
 }
 
-function invokeCrypto(
+/**
+ * Encode bytes as fixed-width two-character lowercase hex without
+ * value-dependent output length, branches, or lookup tables.
+ */
+export function encodeFixedWidthHex(bytes: readonly number[]): string {
+  const ascii = new Uint8Array(bytes.length * 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    const byte = bytes[i];
+    const hi = (byte >>> 4) & 0x0f;
+    const lo = byte & 0x0f;
+    ascii[i * 2] = hi + 48 + (((9 - hi) >> 31) & 39);
+    ascii[i * 2 + 1] = lo + 48 + (((9 - lo) >> 31) & 39);
+  }
+  return UTF8_DECODER.decode(ascii);
+}
+
+function invokeCryptoRaw(
   bridge: CryptoBridge | undefined,
-  operation: string,
-  encodedArgs: number[][],
+  request: string,
 ): Extract<CryptoResult, { ok: true }> {
   if (!bridge)
     throw new Error(
       "crypto operations require the hew-wasm executeCrypto bridge",
     );
-  const parsed = JSON.parse(
-    bridge(JSON.stringify({ operation, args: encodedArgs })),
-  ) as CryptoResult;
+  const parsed = JSON.parse(bridge(request)) as CryptoResult;
   if (!parsed || typeof parsed !== "object" || parsed.ok !== true) {
     const message =
       parsed && typeof parsed === "object" && typeof parsed.error === "string"
@@ -40,6 +55,17 @@ function invokeCrypto(
     throw new Error(message);
   }
   return parsed;
+}
+
+function invokeCrypto(
+  bridge: CryptoBridge | undefined,
+  operation: string,
+  encodedArgs: number[][],
+): Extract<CryptoResult, { ok: true }> {
+  return invokeCryptoRaw(
+    bridge,
+    JSON.stringify({ operation, args: encodedArgs }),
+  );
 }
 
 function digestResult(
@@ -86,10 +112,12 @@ export function executeConstantTimeEq(
   bridge: CryptoBridge | undefined,
   args: VmValue[],
 ): VmValue {
-  const result = invokeCrypto(bridge, "constant_time_eq", [
-    byteArrayArg(args, 0),
-    byteArrayArg(args, 1),
-  ]);
+  const hexA = encodeFixedWidthHex(byteArrayArg(args, 0));
+  const hexB = encodeFixedWidthHex(byteArrayArg(args, 1));
+  const result = invokeCryptoRaw(
+    bridge,
+    `{"operation":"constant_time_eq","args_hex":["${hexA}","${hexB}"]}`,
+  );
   if (typeof result.equal !== "boolean")
     throw new Error("crypto bridge returned a non-boolean comparison result");
   return { kind: "i64", value: result.equal ? 1n : 0n };

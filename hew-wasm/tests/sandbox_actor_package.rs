@@ -429,7 +429,7 @@ fn main() {
 
 #[test]
 fn os_args_tail_drops_program_name_in_sandbox() {
-    let source = r#"import std.os;
+    let source = r"import std.os;
 
 fn main() {
     let tail = os.args_tail();
@@ -438,7 +438,7 @@ fn main() {
         println(arg);
     }
 }
-"#;
+";
     let empty = execute_options(
         source,
         "ok",

@@ -3286,24 +3286,29 @@ mod tests {
             let supervisor_token = (*sup).local_pid_id;
             store_child_slot(&raw mut *sup, 0, ptr::null_mut());
 
-            // 1. Restarting -> AskError::ActorRestarting (channel + blocking).
             let _ = crate::actor::hew_actor_ask_take_last_error();
             let ch = crate::reply_channel::hew_reply_channel_new();
-            let status = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
+            let probe_channel = |key: u32| -> (i32, i32) {
+                let status = hew_supervisor_role_ask_with_channel(
+                    supervisor_token,
+                    key,
+                    7,
+                    ptr::null_mut(),
+                    0,
+                    ch.cast(),
+                );
+                (status, crate::actor::hew_actor_ask_take_last_error())
+            };
+
+            // 1. Restarting -> AskError::ActorRestarting (channel + blocking).
+            let (status, err) = probe_channel(0);
             assert_eq!(
                 status,
                 crate::internal::types::HewError::ErrActorStopped as i32,
                 "a mid-restart slot must refuse closed"
             );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                err,
                 crate::internal::types::AskError::ActorRestarting as i32,
                 "a restarting slot must record AskError::ActorRestarting"
             );
@@ -3316,21 +3321,11 @@ mod tests {
             );
 
             // 2. BackoffDelay -> AskError::ActorRestarting.
-            {
-                let mut guard = (*sup).roster.lock_or_recover();
-                guard.child_specs[0].backoff.next_restart_time_ns =
-                    monotonic_time_ns().saturating_add(60_000_000_000);
-            }
-            let _ = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
+            (*sup).roster.lock_or_recover().child_specs[0]
+                .backoff
+                .next_restart_time_ns = monotonic_time_ns().saturating_add(60_000_000_000);
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                probe_channel(0).1,
                 crate::internal::types::AskError::ActorRestarting as i32,
                 "BackoffDelay must record AskError::ActorRestarting"
             );
@@ -3341,16 +3336,8 @@ mod tests {
                 guard.child_specs[0].backoff.next_restart_time_ns = 0;
                 guard.child_specs[0].circuit_breaker.state = 1;
             }
-            let _ = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                probe_channel(0).1,
                 crate::internal::types::AskError::ActorRestarting as i32,
                 "CircuitOpen must record AskError::ActorRestarting"
             );
@@ -3361,52 +3348,25 @@ mod tests {
                 guard.child_specs[0].circuit_breaker.state = 0;
                 guard.child_specs[0].spent = true;
             }
-            let _ = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                probe_channel(0).1,
                 crate::internal::types::AskError::ActorStopped as i32,
                 "BudgetExhausted must record AskError::ActorStopped"
             );
 
             // 5. UnknownSlot -> AskError::ActorStopped.
-            let _ = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                99,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                probe_channel(99).1,
                 crate::internal::types::AskError::ActorStopped as i32,
                 "UnknownSlot must record AskError::ActorStopped"
             );
 
             // 6. Restore slot, stop supervisor -> SupervisorShutdown -> AskError::ActorStopped.
-            {
-                let mut guard = (*sup).roster.lock_or_recover();
-                guard.child_specs[0].spent = false;
-            }
+            (*sup).roster.lock_or_recover().child_specs[0].spent = false;
             store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
-            let _ = hew_supervisor_role_ask_with_channel(
-                supervisor_token,
-                0,
-                7,
-                ptr::null_mut(),
-                0,
-                ch.cast(),
-            );
             assert_eq!(
-                crate::actor::hew_actor_ask_take_last_error(),
+                probe_channel(0).1,
                 crate::internal::types::AskError::ActorStopped as i32,
                 "SupervisorShutdown must record AskError::ActorStopped"
             );

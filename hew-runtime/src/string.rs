@@ -411,7 +411,7 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const HewString) -> i64 {
 /// Maximum decimal places accepted by [`hew_float_to_fixed`].
 /// Larger values are clamped to bound allocation size while still representing
 /// every exact normal `f64` decimal expansion.
-const MAX_FIXED_DECIMALS: usize = 325;
+const MAX_FIXED_DECIMALS: u16 = 325;
 
 /// Convert an `f64` to fixed-point decimal notation with `decimals` fractional
 /// digits (`decimals` clamped to `0..=325`). Caller must free the result with
@@ -435,12 +435,7 @@ pub unsafe extern "C" fn hew_float_to_fixed(value: f64, decimals: i64) -> *mut H
             "inf"
         });
     }
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "clamped into 0..=MAX_FIXED_DECIMALS before converting to usize"
-    )]
-    let prec = decimals.clamp(0, MAX_FIXED_DECIMALS as i64) as usize;
+    let prec = usize::try_from(decimals.clamp(0, i64::from(MAX_FIXED_DECIMALS))).unwrap_or(0);
     let formatted = format!("{value:.prec$}");
     string_from_str(&formatted)
 }
@@ -2738,7 +2733,7 @@ mod tests {
         assert_eq!(fixed(f64::NEG_INFINITY, 2), "-inf");
         assert_eq!(fixed(1e25, 2), "10000000000000000905969664.00");
         let capped = fixed(1.5, 1000);
-        assert_eq!(capped.len(), 2 + MAX_FIXED_DECIMALS);
+        assert_eq!(capped.len(), 2 + usize::from(MAX_FIXED_DECIMALS));
         assert!(capped.starts_with("1.5000000000"));
         let min_subnormal = fixed(f64::from_bits(1), 325);
         assert!(min_subnormal.ends_with("00049"));

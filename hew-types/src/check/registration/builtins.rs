@@ -276,15 +276,12 @@ impl Checker {
             ("print", Ty::Unit),
             ("to_string", Ty::String),
         ] {
+            let ret = ret.clone();
             self.register_builtin_fn_with_bounds(
                 name,
                 vec!["T".to_string()],
                 Some(crate::LangItem::Display),
-                vec![Ty::Named {
-                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                    args: vec![],
-                }],
-                &ret,
+                |type_params| (vec![Ty::param(type_params[0])], ret),
             );
         }
         // Source declarations document these compiler-owned callables. Bind
@@ -778,8 +775,7 @@ impl Checker {
         name: &str,
         type_params: Vec<String>,
         bounded_by: Option<crate::LangItem>,
-        params: Vec<Ty>,
-        return_type: &Ty,
+        build_sig: impl FnOnce(&[crate::ParamHead]) -> (Vec<Ty>, Ty),
     ) {
         let owner = self.defs.builtin_callable(name);
         let type_params: Vec<_> = type_params
@@ -789,17 +785,11 @@ impl Checker {
                 crate::ParamHead::new(crate::TypeParamId::new(owner, index), Symbol::intern(&name))
             })
             .collect();
+        let (params, return_type) = build_sig(&type_params);
         let params = params
             .into_iter()
-            .map(|ty| {
-                crate::CallableParameter::borrowed(self.canonicalize_registry_signature(
-                    &ty,
-                    "",
-                    &type_params,
-                ))
-            })
+            .map(crate::CallableParameter::borrowed)
             .collect();
-        let return_type = self.canonicalize_registry_signature(return_type, "", &type_params);
         let mut bounds = ParamBounds::default();
         if let Some(trait_id) = bounded_by.and_then(|item| self.lang_trait(item)) {
             for param in &type_params {

@@ -2726,12 +2726,8 @@ impl Checker {
                 path: named_path,
                 type_args,
             } => {
-                // TRANSITION(A1c4): WHY `Self` and associated-type projections
-                // are still matched on the joined spelling. WHEN generic binders
-                // and projections resolve through `Scope`, this render goes.
-                // WHAT: `Self` and `T.Item` as `Scope` resolutions.
-                let name = &named_path.to_string();
-                if name == "CancellationToken" {
+                let single = named_path.as_single().map(|id| id.name.as_str());
+                if single == Some("CancellationToken") {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &te.1,
@@ -2740,7 +2736,7 @@ impl Checker {
                     return Ty::Error;
                 }
                 // Handle `Self` type
-                if name == "Self" {
+                if single == Some("Self") {
                     if let Some((_, self_ty)) = &self.current_self_type {
                         return self_ty.clone();
                     }
@@ -2764,10 +2760,29 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                if let Some(alias_name) = name
-                    .strip_prefix("Self.")
-                    .or_else(|| name.strip_prefix("Self::"))
-                {
+                let self_assoc_name: Option<std::borrow::Cow<'_, str>> =
+                    match named_path.segments.as_slice() {
+                        [(base, _), (assoc, _)] if base.name == hew_parser::ast::sym::SELF_TYPE => {
+                            Some(std::borrow::Cow::Borrowed(assoc.name.as_str()))
+                        }
+                        [(base, _), rest @ ..]
+                            if base.name == hew_parser::ast::sym::SELF_TYPE && !rest.is_empty() =>
+                        {
+                            Some(std::borrow::Cow::Owned(
+                                rest.iter()
+                                    .map(|(segment, _)| segment.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("."),
+                            ))
+                        }
+                        [(segment, _)] => segment
+                            .name
+                            .as_str()
+                            .strip_prefix("Self::")
+                            .map(std::borrow::Cow::Borrowed),
+                        _ => None,
+                    };
+                if let Some(alias_name) = self_assoc_name.as_deref() {
                     // Generated ordinary providers explicitly bind Self as a
                     // function type parameter. Resolve that lexical binder
                     // before the enclosing trait's implicit receiver.
@@ -2866,7 +2881,11 @@ impl Checker {
                 // bounds), missing-assoc (no bound declares `Bar`), and
                 // ambiguous (more than one bound declares `Bar`) are all
                 // typed errors here. No silent pass-through.
-                if !name.starts_with("Self::") && !name.starts_with("Self.") {
+                let is_self_headed =
+                    named_path.segments.first().is_some_and(|(segment, _)| {
+                        segment.name == hew_parser::ast::sym::SELF_TYPE
+                    }) || single.is_some_and(|name| name.starts_with("Self::"));
+                if !is_self_headed {
                     // Dotted paths are also the module-qualified nominal
                     // surface. Treat a direct `T.Item` as an associated-type
                     // projection only when `T` is a type parameter in scope;
@@ -2880,7 +2899,7 @@ impl Checker {
                             return ty;
                         }
                     }
-                    if let Some((base_name, assoc_name)) = name.split_once("::") {
+                    if let Some((base_name, assoc_name)) = single.and_then(|s| s.split_once("::")) {
                         // Reject multi-segment projections (`T::Iter::Bar`)
                         // explicitly — deferred per the precursor plan.
                         if assoc_name.contains("::") {
@@ -2888,7 +2907,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 &te.1,
                                 format!(
-                                    "multi-segment associated-type projections like `{name}` are not supported; \
+                                    "multi-segment associated-type projections like `{base_name}::{assoc_name}` are not supported; \
                                      introduce an intermediate type parameter"
                                 ),
                             );
@@ -2909,8 +2928,8 @@ impl Checker {
                         self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedType,
                             &te.1,
-                            format!("unknown type `{name}`; `::` is not the module separator in type position"),
-                            vec![format!("use `{base_name}.{assoc_name}` instead of `{name}`")],
+                            format!("unknown type `{base_name}::{assoc_name}`; `::` is not the module separator in type position"),
+                            vec![format!("use `{base_name}.{assoc_name}` instead of `{base_name}::{assoc_name}`")],
                         );
                         return Ty::Error;
                     }
@@ -2933,24 +2952,25 @@ impl Checker {
                 // name shadows the reservation.
                 // A user declaration shadows a reserved spelling.
                 let declared = matches!(
-                    name.as_str(),
-                    "LocalPid" | "Pid" | "LambdaPid" | "Task" | "Unit"
+                    single,
+                    Some("LocalPid" | "Pid" | "LambdaPid" | "Task" | "Unit")
                 ) && matches!(
                     self.resolve_type_path(named_path),
                     Some(super::scope::Resolution::Nominal(_) | super::scope::Resolution::Def(_))
                 );
-                if !declared && matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid") {
+                if !declared && matches!(single, Some("LocalPid" | "Pid" | "LambdaPid")) {
+                    let reserved = single.expect("matched reserved actor handle spelling");
                     let written_args: Vec<String> = type_args
                         .iter()
                         .flatten()
                         .map(|argument| self.resolve_type_expr(argument).user_facing().to_string())
                         .collect();
                     let written = if written_args.is_empty() {
-                        name.clone()
+                        reserved.to_string()
                     } else {
-                        format!("{name}<{}>", written_args.join(", "))
+                        format!("{reserved}<{}>", written_args.join(", "))
                     };
-                    let hint = if name == "LambdaPid" {
+                    let hint = if reserved == "LambdaPid" {
                         "write the anonymous actor's type `actor(M) -> R`".to_string()
                     } else if written_args.len() == 1 {
                         format!("write the actor's own type `{}`", written_args[0])
@@ -2974,7 +2994,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                if !declared && name == "Task" {
+                if !declared && single == Some("Task") {
                     self.report_error(
                         TypeErrorKind::TaskNotNameable,
                         &te.1,
@@ -2987,21 +3007,20 @@ impl Checker {
                 }
                 // Removed aliases: suggest the replacement before the
                 // general unknown-type path swallows the name.
-                match name.as_str() {
-                    "int" => {
+                match single {
+                    Some("int") => {
                         // Lowercase `int` was never a valid v0.3/v0.4 user-facing
                         // spelling; treat it as an unknown type.
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
-                            format!(
-                                "unknown type `{name}`; use `i64` for fixed 64-bit integers \
-                                 or `isize` for pointer-sized integers"
-                            ),
+                            "unknown type `int`; use `i64` for fixed 64-bit integers \
+                             or `isize` for pointer-sized integers"
+                                .to_string(),
                         );
                         return Ty::Error;
                     }
-                    "Int" => {
+                    Some("Int") => {
                         // `Int` was the v0.3/v0.4 spelling for i64; it is no
                         // longer accepted.  Hard error pointing to the canonical
                         // name so migrated source uses `i64` directly.
@@ -3014,7 +3033,7 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    "uint" => {
+                    Some("uint") => {
                         self.report_error(
                             TypeErrorKind::UndefinedType,
                             &te.1,
@@ -3024,7 +3043,7 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    "Unit" if !declared => {
+                    Some("Unit") if !declared => {
                         // `Unit` is Kotlin / Swift muscle memory; Hew's unit type
                         // is the empty tuple `()`. `BuiltinType::Unit` is an
                         // internal carrier with no user-writable spelling, so a
@@ -3055,7 +3074,7 @@ impl Checker {
                     _ => {}
                 }
                 // Check for primitive types first
-                if let Some(prim) = Ty::from_name(name) {
+                if let Some(prim) = single.and_then(Ty::from_name) {
                     return prim;
                 }
                 // Non-primitive: resolve generics, aliases, special types
@@ -3070,9 +3089,11 @@ impl Checker {
                 });
                 // Declaration binders shadow nominal and alias spellings before
                 // module qualification changes their source name.
-                for scope in self.generic_ctx.iter().rev() {
-                    if let Some(ty) = scope.get(name) {
-                        return ty.clone();
+                if let Some(param_name) = single {
+                    for scope in self.generic_ctx.iter().rev() {
+                        if let Some(ty) = scope.get(param_name) {
+                            return ty.clone();
+                        }
                     }
                 }
                 let resolution = self.resolve_type_path(named_path);

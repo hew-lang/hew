@@ -165,16 +165,14 @@ impl Checker {
                 .map(|param| (*param).to_string())
                 .collect(),
             None,
-            vec![],
-            &Ty::Named {
-                head: crate::TypeHead::Builtin(builtin),
-                args: type_params
-                    .iter()
-                    .map(|param| Ty::Named {
-                        head: crate::TypeHead::Unresolved(Symbol::intern(param)),
-                        args: vec![],
-                    })
-                    .collect(),
+            |type_params| {
+                (
+                    vec![],
+                    Ty::Named {
+                        head: crate::TypeHead::Builtin(builtin),
+                        args: type_params.iter().copied().map(Ty::param).collect(),
+                    },
+                )
             },
         );
         self.builtin_call_targets

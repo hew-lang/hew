@@ -1366,6 +1366,11 @@ unsafe fn admit_bound_native_request(
             (*envelope).transfer.take();
             // Refusal is the recipient's supervised fault. Its established
             // completion has no returned request and never faults the sender.
+            crate::tracing::record_substrate_event(
+                a.id,
+                crate::tracing::SPAN_MAX_HEAP_EXCEEDED,
+                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+            );
             hew_actor_trap(actor, crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
             if !reply.is_null() {
                 crate::reply_channel::publish_crash_fallback_with_failure(

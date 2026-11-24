@@ -122,6 +122,29 @@ pub const SPAN_DELIVERY_REFUSED: i32 = 22;
 pub const SPAN_RC_SWEEP: i32 = 23;
 /// Host-authored component code, activation and invocation attribution.
 pub const SPAN_LIVE_EXECUTION: i32 = 24;
+/// Cancellation token transitioned `Active` → `CancelRequested`.
+/// `msg_type` carries the winning cancellation reason code.
+pub const SPAN_CANCELLATION_FIRED: i32 = 25;
+/// Structured task scope requested cooperative cancellation.
+/// `msg_type` carries the effective cancellation reason code.
+pub const SPAN_CANCELLATION_SCOPE_CANCELLED: i32 = 26;
+/// Cooperative cancellation check polled a token (`msg_type` = 0 active, 1 requested).
+pub const SPAN_CANCELLATION_COOPERATE_CHECKED: i32 = 27;
+/// Bidirectional actor link established between two actors.
+pub const SPAN_LINK_CREATED: i32 = 28;
+/// Exit signal propagated to a linked actor (`msg_type` = exit reason).
+pub const SPAN_LINK_EXIT: i32 = 29;
+/// Actor monitor registered (`actor_id` = monitored target).
+pub const SPAN_MONITOR_CREATED: i32 = 30;
+/// `DOWN` notification delivered to a monitoring actor (`actor_id` = watcher,
+/// `msg_type` = `HewDownMessage::reason_kind`).
+pub const SPAN_MONITOR_DOWN: i32 = 31;
+/// Actor exceeded its configured arena or managed heap limit
+/// (`msg_type` = `HEW_TRAP_HEAP_EXCEEDED`).
+pub const SPAN_MAX_HEAP_EXCEEDED: i32 = 32;
+/// Cluster membership confirmed a peer node unreachable (`MEMBER_DEAD`)
+/// and initiated partition fan-out (`msg_type` = peer `node_id`).
+pub const SPAN_PARTITION_DETECTED: i32 = 33;
 
 /// Whether the event's message type identifies a handler.
 #[cfg(feature = "profiler")]
@@ -132,21 +155,15 @@ pub(crate) const fn event_carries_handler(event_type: i32) -> bool {
     )
 }
 
-/// Closed taxonomy of v0.5 concurrency trace event names emitted by this
-/// runtime. The entries pair each `SPAN_*` constant with the canonical
-/// `event_type` string that appears in the JSON drained by
-/// [`drain_events_json`].
+/// Closed taxonomy of trace event names emitted by this runtime.
+///
+/// The entries pair each `SPAN_*` constant with the canonical `event_type`
+/// string exported on `/api/traces` and [`drain_events_json`].
 ///
 /// This array is the **producer-side source of truth** for the names the
-/// `hew-observe` consumer must recognise. Adding a new `SPAN_*` constant
-/// without extending this list will be caught by the
-/// `event_type_name_mapping_is_total` unit test in this module.
-///
-/// Per R58 Q138 Option B the QUIC, cancellation, and lock event families
-/// are intentionally absent from this list — the runtime does not yet emit
-/// trace spans for them. The `hew-observe` taxonomy carries deferred
-/// metadata rows for those names as non-actionable shims pending the
-/// native-M3 producer-emission lane.
+/// `hew-observe` consumer recognises. Adding a new `SPAN_*` constant without
+/// extending this list is caught by `event_type_name_mapping_is_total`, and
+/// `hew-observe` asserts 1:1 coverage of every entry here.
 pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_BEGIN, "begin"),
     (SPAN_END, "end"),
@@ -174,6 +191,21 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_DELIVERY_REFUSED, "actor.delivery_refused"),
     (SPAN_RC_SWEEP, "actor.rc_sweep"),
     (SPAN_LIVE_EXECUTION, "live.execution"),
+    (SPAN_CANCELLATION_FIRED, "cancellation_fired"),
+    (
+        SPAN_CANCELLATION_SCOPE_CANCELLED,
+        "cancellation_scope_cancelled",
+    ),
+    (
+        SPAN_CANCELLATION_COOPERATE_CHECKED,
+        "cancellation_cooperate_checked",
+    ),
+    (SPAN_LINK_CREATED, "link_created"),
+    (SPAN_LINK_EXIT, "link_exit"),
+    (SPAN_MONITOR_CREATED, "monitor_created"),
+    (SPAN_MONITOR_DOWN, "monitor_down"),
+    (SPAN_MAX_HEAP_EXCEEDED, "max_heap_exceeded"),
+    (SPAN_PARTITION_DETECTED, "partition_detected"),
 ];
 
 /// Resolve a span code to its canonical taxonomy name. Returns `None` for
@@ -608,6 +640,32 @@ fn trace_context() -> Option<HewTraceContext> {
     Some(unsafe { (*ctx).trace })
 }
 
+/// Read the active trace context without recording `EXECUTION_CONTEXT_NOT_INSTALLED`
+/// when called outside an actor dispatch (timers, main, cluster ticks).
+fn trace_context_silent() -> Option<HewTraceContext> {
+    let ctx = crate::execution_context::current_context();
+    if ctx.is_null() {
+        return None;
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    Some(unsafe { (*ctx).trace })
+}
+
+/// Return the currently dispatched actor ID, or `0` outside an actor context,
+/// without touching `LAST_ERROR`.
+pub(crate) fn current_actor_id_or_zero() -> u64 {
+    let id = crate::actor::hew_actor_current_id_silent();
+    if id > 0 {
+        #[expect(clippy::cast_sign_loss, reason = "checked: id > 0")]
+        {
+            id as u64
+        }
+    } else {
+        0
+    }
+}
+
 fn write_trace_context(new_ctx: HewTraceContext) -> bool {
     let ctx = crate::execution_context::require_current_context();
     if ctx.is_null() {
@@ -931,7 +989,7 @@ fn record_event_with_attribution(
 
 fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
     let subject_kind = match event.event_type {
-        SPAN_IO_ACCEPT | SPAN_IO_RECV | SPAN_SEND => None,
+        SPAN_IO_ACCEPT | SPAN_IO_RECV | SPAN_SEND | SPAN_PARTITION_DETECTED => None,
         SPAN_DUPLEX_CREATED
         | SPAN_DUPLEX_HALF_SPLIT
         | SPAN_DUPLEX_CLOSED
@@ -1487,6 +1545,39 @@ pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
     );
 }
 
+/// Record a runtime substrate event (cancellation, link, monitor, max-heap).
+///
+/// Fast path: single atomic load when tracing is disabled. Inherits the active
+/// dispatch trace context when available without touching `LAST_ERROR` when
+/// invoked outside an actor context (timers, main, or cleanup threads).
+pub(crate) fn record_substrate_event(actor_id: u64, event_type: i32, discriminator: i32) {
+    let Some(generation) = recording_generation() else {
+        return;
+    };
+    let ctx = trace_context_silent().unwrap_or_default();
+    record_event_for_generation(
+        generation,
+        HewTraceEvent {
+            trace_id_hi: ctx.trace_id_hi,
+            trace_id_lo: ctx.trace_id_lo,
+            span_id: ctx.span_id,
+            parent_span_id: ctx.parent_span_id,
+            actor_id,
+            event_type,
+            msg_type: discriminator,
+            timestamp_ns: monotonic_ns(),
+        },
+    );
+}
+
+/// Record a cluster-level substrate event (such as `SPAN_PARTITION_DETECTED`)
+/// carrying the affected peer `node_id` in `msg_type` without attributing it to
+/// an actor ID.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn record_cluster_event(event_type: i32, node_id: u16) {
+    record_substrate_event(0, event_type, i32::from(node_id));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{
@@ -1758,11 +1849,7 @@ pub extern "C" fn hew_trace_reset() {
 ///   "actor_id": N,
 ///   "actor_type_id": N,
 ///   "actor_type": "TypeName"|null,
-///   "event_type": "begin"|"end"|"spawn"|"crash"|"stop"|"send"|
-///                 "io_accept"|"io_recv"|
-///                 "duplex_created"|"duplex_half_split"|"duplex_closed"|
-///                 "sink_closed"|"stream_closed"|
-///                 "lambda_spawned"|"lambda_released"|"unknown",
+///   "event_type": "<canonical name from EVENT_TYPE_NAMES>",
 ///   "msg_type": N,
 ///   "timestamp_ns": N,
 ///   "handler_name": "ActorType.handler_name"|null
@@ -2057,6 +2144,15 @@ mod tests {
             SPAN_DELIVERY_REFUSED,
             SPAN_RC_SWEEP,
             SPAN_LIVE_EXECUTION,
+            SPAN_CANCELLATION_FIRED,
+            SPAN_CANCELLATION_SCOPE_CANCELLED,
+            SPAN_CANCELLATION_COOPERATE_CHECKED,
+            SPAN_LINK_CREATED,
+            SPAN_LINK_EXIT,
+            SPAN_MONITOR_CREATED,
+            SPAN_MONITOR_DOWN,
+            SPAN_MAX_HEAP_EXCEEDED,
+            SPAN_PARTITION_DETECTED,
         ];
         for code in all_spans {
             assert!(
@@ -2078,7 +2174,7 @@ mod tests {
         assert!(event_type_name(i32::MAX).is_none());
         assert!(event_type_name(-1).is_none());
         // Any code beyond the last assigned SPAN_* must not resolve.
-        assert!(event_type_name(SPAN_LIVE_EXECUTION + 1).is_none());
+        assert!(event_type_name(SPAN_PARTITION_DETECTED + 1).is_none());
     }
 
     /// S1 fail-closed: the producer drain must NEVER serialise an `event_type`
@@ -3107,5 +3203,197 @@ mod tests {
         assert_eq!(TraceStreamId::parse_hex(&encoded), Some(id));
         assert_eq!(TraceStreamId::parse_hex(&encoded.to_uppercase()), None);
         assert_eq!(TraceStreamId::parse_hex("1234"), None);
+    }
+
+    /// Real cancellation substrate operations emit canonical spans without
+    /// clobbering `hew_last_error` when invoked outside an actor context.
+    #[test]
+    fn substrate_cancellation_spans_emit_without_clobbering_last_error() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+        hew_trace_enable(1);
+        crate::set_last_error("prior error");
+
+        // SAFETY: fresh root token created and released here.
+        unsafe {
+            let token = crate::cancel_token::hew_cancel_token_new_child(std::ptr::null_mut());
+            assert_eq!(crate::cancel_token::hew_cancel_token_is_requested(token), 0);
+            crate::cancel_token::hew_cancel_token_cancel(token, 7);
+            assert_eq!(crate::cancel_token::hew_cancel_token_is_requested(token), 1);
+            crate::cancel_token::hew_cancel_token_release(token);
+        }
+
+        // Silent context lookup in token tracing must preserve the caller's existing last error.
+        let err_ptr = crate::hew_last_error();
+        assert!(!err_ptr.is_null());
+        // SAFETY: hew_last_error returns a valid NUL-terminated C string.
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap() },
+            "prior error"
+        );
+
+        // SAFETY: fresh checked scope created, cancelled, and closed here.
+        unsafe {
+            let scope = crate::task_scope::checked::hew_checked_scope_new(std::ptr::null_mut());
+            crate::set_last_error("prior scope error");
+            crate::task_scope::checked::hew_checked_scope_cancel(scope);
+            let err_ptr = crate::hew_last_error();
+            assert!(!err_ptr.is_null());
+            assert_eq!(
+                std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap(),
+                "prior scope error"
+            );
+            crate::task_scope::checked::hew_checked_scope_close(scope);
+        }
+        crate::hew_clear_error();
+
+        let snapshot = trace_snapshot(None, None, 32).expect("cancellation snapshot");
+        let types: Vec<i32> = snapshot
+            .events
+            .iter()
+            .map(|record| record.event.event_type)
+            .collect();
+        assert!(
+            types.contains(&SPAN_CANCELLATION_COOPERATE_CHECKED),
+            "expected SPAN_CANCELLATION_COOPERATE_CHECKED in {types:?}"
+        );
+        assert!(
+            types.contains(&SPAN_CANCELLATION_FIRED),
+            "expected SPAN_CANCELLATION_FIRED in {types:?}"
+        );
+        assert!(
+            types.contains(&SPAN_CANCELLATION_SCOPE_CANCELLED),
+            "expected SPAN_CANCELLATION_SCOPE_CANCELLED in {types:?}"
+        );
+        hew_trace_reset();
+    }
+
+    /// Real link and monitor substrate operations emit canonical spans.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn substrate_link_and_monitor_spans_emit_from_real_ops() {
+        let _sched_lock = crate::scheduler::SchedTestLock::acquire();
+        let _guard = setup();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0);
+
+        // SAFETY: spawn two minimal actors in the active scheduler.
+        unsafe {
+            let a = crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, None);
+            let b = crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, None);
+            assert!(!a.is_null() && !b.is_null());
+            let b_id = (*b).id;
+
+            crate::link::hew_actor_link(a, b);
+            let mut monitor_id = 0_u64;
+            assert_eq!(
+                crate::monitor::hew_actor_monitor(a, b, &raw mut monitor_id),
+                0
+            );
+            assert_ne!(monitor_id, 0);
+
+            crate::link::propagate_exit_to_links(b_id, 42);
+            crate::monitor::notify_monitors_on_death(
+                b_id,
+                crate::internal::types::HewActorState::Crashed as i32,
+                1,
+            );
+
+            crate::actor::hew_actor_stop(a);
+            crate::actor::hew_actor_stop(b);
+            assert_eq!(crate::actor::hew_actor_free(a), 0);
+            assert_eq!(crate::actor::hew_actor_free(b), 0);
+        }
+
+        let snapshot = trace_snapshot(None, None, 64).expect("link/monitor snapshot");
+        let types: Vec<i32> = snapshot
+            .events
+            .iter()
+            .map(|record| record.event.event_type)
+            .collect();
+        assert!(
+            types.contains(&SPAN_LINK_CREATED),
+            "missing SPAN_LINK_CREATED in {types:?}"
+        );
+        assert!(
+            types.contains(&SPAN_LINK_EXIT),
+            "missing SPAN_LINK_EXIT in {types:?}"
+        );
+        assert!(
+            types.contains(&SPAN_MONITOR_CREATED),
+            "missing SPAN_MONITOR_CREATED in {types:?}"
+        );
+        assert!(
+            types.contains(&SPAN_MONITOR_DOWN),
+            "missing SPAN_MONITOR_DOWN in {types:?}"
+        );
+
+        hew_trace_reset();
+        crate::scheduler::hew_sched_shutdown();
+        crate::scheduler::hew_runtime_cleanup();
+    }
+
+    /// Arena max_heap enforcement emits `SPAN_MAX_HEAP_EXCEEDED`.
+    #[test]
+    fn substrate_max_heap_span_emits_on_arena_cap_exceeded() {
+        let _guard = setup();
+
+        let arena = crate::arena::hew_arena_new_with_cap(64);
+        assert!(!arena.is_null());
+        // SAFETY: `arena` is live until freed below.
+        unsafe {
+            crate::arena::hew_arena_set_current(arena);
+            let ok = crate::arena::hew_arena_malloc(64);
+            assert!(!ok.is_null());
+            // Without an unwind boundary installed, hew_arena_malloc returns
+            // null after emitting the max-heap trace span.
+            let over = crate::arena::hew_arena_malloc(1);
+            assert!(over.is_null());
+            crate::arena::hew_arena_set_current(std::ptr::null_mut());
+            crate::arena::hew_arena_free_all(arena);
+        }
+
+        let snapshot = trace_snapshot(None, None, 16).expect("max_heap snapshot");
+        let max_heap = snapshot
+            .events
+            .iter()
+            .find(|record| record.event.event_type == SPAN_MAX_HEAP_EXCEEDED)
+            .expect("expected SPAN_MAX_HEAP_EXCEEDED event");
+        assert_eq!(
+            max_heap.event.msg_type,
+            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+        );
+        hew_trace_reset();
+    }
+
+    /// Cluster `MEMBER_DEAD` transitions emit `SPAN_PARTITION_DETECTED` with
+    /// no fabricated actor subject.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn substrate_partition_span_emits_on_cluster_member_dead() {
+        let _guard = setup();
+
+        let config = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..Default::default()
+        };
+        // SAFETY: valid config pointer.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const config) };
+        assert!(!cluster.is_null());
+        // SAFETY: cluster is valid until freed below.
+        unsafe {
+            (*cluster).upsert_member_for_test(7, crate::cluster::MEMBER_DEAD, 1);
+            crate::cluster::hew_cluster_free(cluster);
+        }
+
+        let snapshot = trace_snapshot(None, None, 16).expect("partition snapshot");
+        let part = snapshot
+            .events
+            .iter()
+            .find(|record| record.event.event_type == SPAN_PARTITION_DETECTED)
+            .expect("expected SPAN_PARTITION_DETECTED event");
+        assert_eq!(part.event.actor_id, 0);
+        assert_eq!(part.event.msg_type, 7);
+        assert_eq!(part.subject_kind, None);
+        hew_trace_reset();
     }
 }

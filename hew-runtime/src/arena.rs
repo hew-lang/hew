@@ -386,6 +386,11 @@ pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
         // merely defer it into an unrelated pointer fault.
         if ptr.is_null() && arena.cap > 0 {
             let code = crate::internal::types::HEW_TRAP_HEAP_EXCEEDED;
+            crate::tracing::record_substrate_event(
+                crate::tracing::current_actor_id_or_zero(),
+                crate::tracing::SPAN_MAX_HEAP_EXCEEDED,
+                code,
+            );
             let _ = crate::trap_code::stamp_current_actor_error_code(code);
             if crate::execution_context::current_context_can_unwind() {
                 std::panic::panic_any(crate::actor::HewPanic { code });

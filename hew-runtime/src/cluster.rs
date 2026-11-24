@@ -1580,6 +1580,10 @@ impl HewCluster {
     /// `deliver_member_transition` so each stays a single, readable concern.
     fn apply_member_transition_side_effects(transition: &MemberTransition) {
         if transition.state == MEMBER_DEAD {
+            crate::tracing::record_cluster_event(
+                crate::tracing::SPAN_PARTITION_DETECTED,
+                transition.node_id,
+            );
             // Settle only cross-node monitor/link state owned by the captured
             // route publication. A prior definitive DOWN wins exactly once.
             crate::hew_node::fan_out_monitor_lost_for_member_owner(
@@ -1611,6 +1615,11 @@ impl HewCluster {
                 transition.incarnation,
             );
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn upsert_member_for_test(&self, node_id: u16, state: i32, incarnation: u64) {
+        self.upsert_member(node_id, state, incarnation, &[]);
     }
 
     fn upsert_member(&self, node_id: u16, state: i32, incarnation: u64, addr: &[u8]) {

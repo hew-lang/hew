@@ -51,6 +51,12 @@ pub unsafe extern "C" fn hew_actor_prepare_managed_state(
                     }]) {
                         Some(guard)
                     } else {
+                        drop(pending);
+                        crate::tracing::record_substrate_event(
+                            id,
+                            crate::tracing::SPAN_MAX_HEAP_EXCEEDED,
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                        );
                         *fault = crate::fault::hew_fault_new(
                             crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
                         );
@@ -99,6 +105,12 @@ pub unsafe extern "C" fn hew_actor_prepare_managed_state(
                 }
                 Err(_) => {
                     pending.take();
+                    drop(pending);
+                    crate::tracing::record_substrate_event(
+                        id,
+                        crate::tracing::SPAN_MAX_HEAP_EXCEEDED,
+                        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                    );
                     *fault =
                         crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
                     2

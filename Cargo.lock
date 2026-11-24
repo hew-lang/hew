@@ -2275,7 +2275,6 @@ dependencies = [
  "hew-calendar",
  "hew-codec",
  "hew-runtime",
- "ipnet",
  "jsonwebtoken",
  "lettre",
  "libc",

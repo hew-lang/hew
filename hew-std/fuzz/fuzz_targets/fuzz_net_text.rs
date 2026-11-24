@@ -1,22 +1,14 @@
-//! `std.net.url`, `std.net.ipnet` and `std.misc.uuid` text parsers.
+//! `std.net.url` text parser and reference joiner.
 //!
 //! Input: `first NUL second`. Properties: no parser or accessor panics; a
 //! parsed URL prints to text that parses to the same URL, and joining any
-//! reference never panics; the IP, CIDR and UUID answers agree with the
-//! `std`, `ipnet` and `uuid` crates read directly.
+//! reference never panics.
 #![no_main]
 
-use std::net::IpAddr;
-
-use hew_std::ipnet::{
-    hew_cidr_broadcast, hew_cidr_contains, hew_cidr_hosts, hew_cidr_network, hew_ip_is_loopback,
-    hew_ip_is_private, hew_ip_is_v4, hew_ip_is_v6, hew_ip_parse,
-};
 use hew_std::url::{
     hew_url_fragment, hew_url_free, hew_url_host, hew_url_join, hew_url_parse, hew_url_path,
     hew_url_port, hew_url_query, hew_url_scheme, hew_url_to_string, HewUrl,
 };
-use hew_std::uuid::hew_uuid_parse;
 use libfuzzer_sys::fuzz_target;
 
 mod support;
@@ -76,72 +68,6 @@ fn url(first: &Managed, second: &Managed) {
     }
 }
 
-fn ip(text: &str, input: &Managed) {
-    let reference = text.parse::<IpAddr>().ok();
-    // SAFETY: `input` is live for each call.
-    unsafe {
-        assert_eq!(hew_ip_parse(input.ptr()) == 1, reference.is_some());
-        assert_eq!(
-            hew_ip_is_v4(input.ptr()) == 1,
-            reference.is_some_and(|a| a.is_ipv4())
-        );
-        assert_eq!(
-            hew_ip_is_v6(input.ptr()) == 1,
-            reference.is_some_and(|a| a.is_ipv6())
-        );
-        assert_eq!(
-            hew_ip_is_loopback(input.ptr()) == 1,
-            reference.is_some_and(|a| a.is_loopback())
-        );
-        let private = matches!(reference, Some(IpAddr::V4(v4)) if v4.is_private());
-        assert_eq!(hew_ip_is_private(input.ptr()) == 1, private);
-    }
-}
-
-fn cidr(text: &str, input: &Managed, address: &Managed) {
-    let reference = text.parse::<ipnet::IpNet>().ok();
-    // SAFETY: inputs are live; string results are released.
-    unsafe {
-        let hosts = hew_cidr_hosts(input.ptr());
-        let network = take(hew_cidr_network(input.ptr()));
-        let broadcast = take(hew_cidr_broadcast(input.ptr()));
-        let contains = hew_cidr_contains(input.ptr(), address.ptr());
-        let Some(net) = reference else {
-            assert_eq!(hosts, -1, "hosts for an invalid CIDR");
-            assert!(network.is_empty() && broadcast.is_empty());
-            assert_eq!(contains, -1);
-            return;
-        };
-        assert_eq!(network, net.network().to_string());
-        let expected_hosts = match net {
-            ipnet::IpNet::V4(v4) => {
-                assert_eq!(broadcast, v4.broadcast().to_string());
-                let all = 1_i64 << (32 - v4.prefix_len());
-                if v4.prefix_len() < 31 {
-                    all - 2
-                } else {
-                    all
-                }
-            }
-            ipnet::IpNet::V6(v6) => {
-                assert!(broadcast.is_empty());
-                let bits = 128 - u32::from(v6.prefix_len());
-                if bits >= 63 {
-                    -2
-                } else {
-                    1_i64 << bits
-                }
-            }
-        };
-        assert_eq!(hosts, expected_hosts, "host count for {net}");
-        if let Ok(addr) = address.text().parse::<IpAddr>() {
-            assert_eq!(contains, i32::from(net.contains(&addr)));
-        } else {
-            assert_eq!(contains, -1);
-        }
-    }
-}
-
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
@@ -150,9 +76,4 @@ fuzz_target!(|data: &[u8]| {
     let first = Managed::new(first_text);
     let second = Managed::new(second_text);
     url(&first, &second);
-    ip(first_text, &first);
-    cidr(first_text, &first, &second);
-    // SAFETY: `first` is live for the call.
-    let valid = unsafe { hew_uuid_parse(first.ptr()) } == 1;
-    assert_eq!(valid, uuid::Uuid::parse_str(first_text).is_ok());
 });

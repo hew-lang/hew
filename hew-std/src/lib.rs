@@ -43,7 +43,20 @@ pub mod math;
 pub mod mem;
 pub mod mime;
 pub mod random;
-pub mod semver;
+
+// Pure-Rust codecs (wasm + native)
+pub mod compress;
+pub mod markdown;
+pub mod msgpack;
+pub mod protobuf;
+pub mod xml;
+
+// Host + WASI modules (wasm32-wasip1 has WASI clock/entropy; excluded on bare wasm32)
+#[cfg(any(not(target_family = "wasm"), target_os = "wasi"))]
+pub mod uuid;
+
+// net (pure-Rust URL parser available on native + wasm)
+pub mod url;
 
 // ── Native-only modules ───────────────────────────────────────────────────
 
@@ -59,29 +72,12 @@ pub mod password;
 #[cfg(not(target_family = "wasm"))]
 pub mod sign;
 
-// encoding — native-only codecs
-#[cfg(not(target_family = "wasm"))]
-pub mod compress;
-#[cfg(not(target_family = "wasm"))]
-pub mod markdown;
-#[cfg(not(target_family = "wasm"))]
-pub mod msgpack;
-#[cfg(not(target_family = "wasm"))]
-pub mod protobuf;
-#[cfg(not(target_family = "wasm"))]
-pub mod xml;
-
 // misc
-#[cfg(not(target_family = "wasm"))]
-pub mod uuid;
-
 // net
 #[cfg(not(target_family = "wasm"))]
 pub mod dns;
 #[cfg(not(target_family = "wasm"))]
 pub mod http;
-#[cfg(not(target_family = "wasm"))]
-pub mod ipnet;
 
 #[cfg(not(target_family = "wasm"))]
 mod bind_addr;
@@ -113,8 +109,6 @@ pub mod smtp;
 mod string_result_retention;
 #[cfg(not(target_family = "wasm"))]
 pub mod tls;
-#[cfg(not(target_family = "wasm"))]
-pub mod url;
 #[cfg(not(target_family = "wasm"))]
 pub mod websocket;
 // Producer-specific R1/R2/R3 proofs for WebSocket message/error string

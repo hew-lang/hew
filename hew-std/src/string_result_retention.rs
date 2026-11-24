@@ -64,23 +64,6 @@ fn uuid_results_are_transferred() {
 }
 
 #[test]
-fn cidr_results_are_transferred() {
-    let cidr = ManagedString::new("192.0.2.129/25");
-    assert_managed_transferred(
-        "hew_cidr_network",
-        // SAFETY: `cidr` owns a live managed string for the whole measurement.
-        || unsafe { crate::ipnet::hew_cidr_network(cidr.as_ptr()) },
-        |text| assert_eq!(text, "192.0.2.128"),
-    );
-    assert_managed_transferred(
-        "hew_cidr_broadcast",
-        // SAFETY: `cidr` owns a live managed string for the whole measurement.
-        || unsafe { crate::ipnet::hew_cidr_broadcast(cidr.as_ptr()) },
-        |text| assert_eq!(text, "192.0.2.255"),
-    );
-}
-
-#[test]
 fn url_results_are_transferred() {
     let input = ManagedString::new("https://example.test/a/b?q=hew#frag");
     // SAFETY: `input` owns a live managed URL string.

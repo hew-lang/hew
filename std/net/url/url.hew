@@ -342,9 +342,12 @@ pub fn encode_query(params: string) -> string {
 
 fn encode_query_impl(params: string) -> string {
     var encoded: Vec<string> = Vec.new();
-    let lines = (params).lines();
+    let lines = (params).split("\n");
     for i in 0..lines.len() {
-        let line = lines[i];
+        var line = lines[i];
+        if line.ends_with("\r") {
+            line = line[0 .. line.len() - 1];
+        }
         match line.find("=") {
             .Some(eq) => {
                 let key = line[0..eq];

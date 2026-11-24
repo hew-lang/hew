@@ -1006,12 +1006,6 @@ blocker = "A wasm32-compatible async deadline primitive in place of native worke
 tracking_label = "WASM-TODO(blocking-pool):"
 
 [[backlog]]
-id = "compression"
-gap = "Compression runtime verification on wasm32-wasip1"
-blocker = "Compiled-and-run gzip and deflate parity coverage for the WASI target"
-tracking_label = "WASM-TODO(compression):"
-
-[[backlog]]
 id = "cooperative-yield"
 gap = "Stack-safe cooperative actor yielding"
 blocker = "A non-recursive WASM scheduler driver that cannot suppress progress at the nesting cap"

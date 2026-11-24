@@ -899,10 +899,6 @@ stable = [
 # linker knows which stdlib archives to pull in. User `extern "rt"` blocks
 # may name these directly; the checker treats them identically to `stable`.
 stable-stdlib = [
-  "hew_cidr_broadcast",
-  "hew_cidr_contains",
-  "hew_cidr_hosts",
-  "hew_cidr_network",
   "hew_constant_time_eq_hew",
   "hew_calendar_components",
   "hew_calendar_format",
@@ -964,11 +960,6 @@ stable-stdlib = [
   "hew_http_server_recv",
   "hew_http_server_set_request_timeout_ms",
   "hew_http_set_timeout",
-  "hew_ip_is_loopback",
-  "hew_ip_is_private",
-  "hew_ip_is_v4",
-  "hew_ip_is_v6",
-  "hew_ip_parse",
   "hew_json_array_get",
   "hew_json_array_len",
   "hew_json_array_new",
@@ -1143,7 +1134,6 @@ stable-stdlib = [
   "hew_url_query",
   "hew_url_scheme",
   "hew_url_to_string",
-  "hew_uuid_parse",
   "hew_uuid_v4",
   "hew_uuid_v7",
   "hew_ws_close",
@@ -4455,73 +4445,6 @@ resource-param-types = ["std.net.Connection"]
 release-symbol = ""
 discharge-depth = "none"
 
-# IP / CIDR — hew-std/src/ipnet.rs. Read-only string predicates; network and
-# broadcast return owned managed strings.
-[[ownership.contracts]]
-symbol = "hew_cidr_broadcast"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_cidr_contains"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cidr_hosts"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cidr_network"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_ip_is_loopback"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ip_is_private"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ip_is_v4"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ip_is_v6"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_ip_parse"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
 # DNS — hew-std/src/dns.rs. lookup_host(_timed) return owned managed strings;
 # resolve(_timed) return a fresh Vec<string> built with hew_vec_new_str /
 # hew_vec_push_str (hew_vec_free discharges element strings: deep). The numeric
@@ -4917,15 +4840,7 @@ params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# UUID — hew-std/src/uuid.rs. v4/v7 return fresh formatted strings; parse is
-# a read-only validity probe.
-[[ownership.contracts]]
-symbol = "hew_uuid_parse"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
+# UUID — hew-std/src/uuid.rs. v4/v7 return fresh formatted strings.
 [[ownership.contracts]]
 symbol = "hew_uuid_v4"
 result = "fresh"

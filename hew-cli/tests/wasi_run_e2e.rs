@@ -1522,3 +1522,179 @@ fn stack_overflow_is_a_supervisable_failure_under_wasi() {
     );
     assert!(String::from_utf8_lossy(&root.stderr).contains("hew: failure: StackOverflow (215)"));
 }
+
+/// Pure-Hew `std.net.ipnet`, `std.uuid`, and WASI-enabled `std.net.url` produce
+/// identical behaviour across native compilation and `wasmtime` (`wasm32-wasi`).
+#[test]
+fn ipnet_uuid_and_url_run_on_native_and_wasi() {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("ipnet_uuid_url_parity.hew");
+    fs::write(
+        &source,
+        r#"import std.net.ipnet;
+import std.net.url;
+import std.uuid;
+
+fn main() {
+    // std.net.ipnet (pure Hew)
+    println(ipnet.is_valid("192.168.1.1"));
+    println(ipnet.is_valid("192.168.01.1"));
+    println(ipnet.is_valid("fe80::1%eth0"));
+    println(ipnet.is_v4("127.0.0.1"));
+    println(ipnet.is_v6("2001:db8::1"));
+    println(ipnet.is_loopback("::1"));
+    println(ipnet.is_private("172.16.5.4"));
+    println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3").expect("v4 contains"));
+    println(ipnet.cidr_contains("2001:db8:8000::/33", "2001:db8:ffff::1").expect("v6 contains"));
+    println(ipnet.cidr_network("2001:db8:abcd:0012:ffff::1/64").expect("v6 network"));
+    println(ipnet.cidr_network("::ffff:192.0.2.128/120").expect("v6 mapped network"));
+    println(ipnet.cidr_broadcast("192.0.2.129/25").expect("v4 ok").expect("v4 bcast"));
+    println(ipnet.cidr_hosts("192.168.0.0/31").expect("v4 /31 hosts"));
+
+    // std.uuid (is_valid pure Hew + v4/v7 WASI/native FFI)
+    println(uuid.is_valid("550e8400-e29b-41d4-a716-446655440000"));
+    println(uuid.is_valid("550e8400e29b41d4a716446655440000"));
+    println(uuid.is_valid("{550e8400-e29b-41d4-a716-446655440000}"));
+    println(uuid.is_valid("urn:uuid:550e8400-e29b-41d4-a716-446655440000"));
+    println(uuid.is_valid("{550e8400e29b41d4a716446655440000}"));
+
+    let v4_a = uuid.v4();
+    let v4_b = uuid.v4();
+    println(uuid.is_valid(v4_a) && v4_a.len() == 36 && v4_a != v4_b && v4_a[14] == '4');
+    let v7 = uuid.v7();
+    println(uuid.is_valid(v7) && v7.len() == 36 && v7[14] == '7');
+
+    // std.net.url (url = "2" FFI + pure-Hew percent-coding)
+    let parsed = url.parse("https://example.test:8443/a/b?x=1#frag").expect("valid URL");
+    let joined = parsed.resolve("../c?d=2").expect("resolved URL");
+    println(
+        parsed.scheme() + "|" + parsed.host() + "|" + parsed.path()
+            + "|" + parsed.query() + "|" + parsed.fragment(),
+    );
+    println(parsed.port().expect("explicit port"));
+    println(joined.to_string());
+    joined.close();
+    parsed.close();
+    println(url.encode("a=1 b"));
+    println(url.decode("a%3D1%20b").expect("decoded"));
+}
+"#,
+    )
+    .expect("write ipnet/uuid/url parity probe");
+
+    let native = support::run_bounded_hew_run(&source, dir.path());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let native_stderr = String::from_utf8_lossy(&native.stderr);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert!(
+        native.status.success(),
+        "native failed\nstdout:\n{native_stdout}\nstderr:\n{native_stderr}"
+    );
+    assert!(
+        wasi.status.success(),
+        "wasi failed\nstdout:\n{wasi_stdout}\nstderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        native_stdout,
+        "true\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n2001:db8:abcd:12::\n::ffff:192.0.2.0\n192.0.2.255\n2\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\ntrue\nhttps|example.test|/a/b|x=1|frag\n8443\nhttps://example.test:8443/c?d=2\na%3D1%20b\na=1 b\n"
+    );
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "WASI stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}
+
+/// Pure-Rust `hew-std` codecs (`compress`, `markdown`, `msgpack`, `protobuf`,
+/// `xml`) produce identical results on native and `wasmtime` (`wasm32-wasi`).
+#[test]
+fn pure_rust_codecs_run_on_native_and_wasi() {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("codecs_parity.hew");
+    fs::write(
+        &source,
+        r##"import std.encoding.compress;
+import std.encoding.markdown;
+import std.encoding.msgpack;
+import std.encoding.protobuf;
+import std.encoding.xml;
+
+type Packet {
+    label: string;
+    count: i64;
+}
+
+fn main() {
+    // std.encoding.compress (gzip, deflate, zlib + cap check)
+    let raw = "Hew pure-Rust codecs on WASI".to_bytes();
+    let gz = compress.gzip_compress(raw).expect("gzip compress");
+    let gz_out = compress.gzip_decompress(gz, 1024).expect("gzip decompress");
+    let def = compress.deflate_compress(raw).expect("deflate compress");
+    let def_out = compress.deflate_decompress(def, 1024).expect("deflate decompress");
+    let zl = compress.zlib_compress(raw).expect("zlib compress");
+    let zl_out = compress.zlib_decompress(zl, 1024).expect("zlib decompress");
+    println(gz_out.len() == raw.len() && def_out.len() == raw.len() && zl_out.len() == raw.len());
+    println(compress.gzip_decompress(gz, 4).is_err());
+
+    // std.encoding.markdown (raw + sanitized XSS stripping)
+    println(markdown.to_html("# Hi **WASI**").trim());
+    println(markdown.to_html_safe("[ok](https://example.test) [bad](javascript:alert(1))").trim());
+
+    // std.encoding.msgpack (JSON bridge + typed wire encode/decode)
+    let packed = msgpack.from_json("{\"n\":7}").expect("msgpack from_json");
+    println(msgpack.to_json(packed).expect("msgpack to_json"));
+    let typed_bytes = msgpack.encode(Packet { label: "wasi", count: 9 });
+    let decoded = msgpack.decode<Packet>(typed_bytes).expect("msgpack decode");
+    println(f"{decoded.label}:{decoded.count}");
+
+    // std.encoding.protobuf (dynamic fields)
+    let msg = protobuf.new();
+    msg.set_varint(1, 42);
+    msg.set_string(2, "hew");
+    println(f"{msg.has_field(1)}:{msg.get_varint(1, 0)}:{msg.get_string(2)}");
+    msg.close();
+
+    // std.encoding.xml (parse, inspect, serialize, well-formedness)
+    let doc = xml.parse("<root id=\"7\"><item>ok</item></root>").expect("xml parse");
+    println(xml.get_attribute(doc, "id") + "|" + xml.to_string(doc));
+    println(xml.is_wellformed("<unclosed"));
+    doc.close();
+}
+"##,
+    )
+    .expect("write codecs parity probe");
+
+    let native = support::run_bounded_hew_run(&source, dir.path());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let native_stderr = String::from_utf8_lossy(&native.stderr);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert!(
+        native.status.success(),
+        "native failed\nstdout:\n{native_stdout}\nstderr:\n{native_stderr}"
+    );
+    assert!(
+        wasi.status.success(),
+        "wasi failed\nstdout:\n{wasi_stdout}\nstderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        native_stdout,
+        "true\ntrue\n<h1>Hi <strong>WASI</strong></h1>\n<p><a href=\"https://example.test\">ok</a> <a href=\"about:blank#refused\">bad</a></p>\n{\"n\":7}\nwasi:9\ntrue:42:hew\n7|<root id=\"7\"><item>ok</item></root>\nfalse\n"
+    );
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "WASI stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}

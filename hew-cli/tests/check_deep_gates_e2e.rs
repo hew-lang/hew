@@ -783,3 +783,45 @@ fn check_former_sir_unsupported_triggers_now_compile() {
         "none of these constructs should trigger the SIR consume-wall limitation; got:\n{stderr}"
     );
 }
+
+#[test]
+fn check_misspelled_field_and_variant_types_emit_undefined_type_without_sir_ice() {
+    for source in [
+        "type Foo {\n    x: Misspelled;\n}\nfn main() {}\n",
+        "enum E {\n    A(Misspelled);\n}\nfn main() {}\n",
+    ] {
+        let (dir, path) = write_fixture(source);
+        let output = Command::new(hew_binary())
+            .args(["check", "--format", "json", path.to_str().unwrap()])
+            .output()
+            .expect("hew binary must run");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            describe_output(&output)
+        );
+        assert_only_source_artifact(dir.path());
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            !stderr.contains("E_SIR_ICE"),
+            "misspelled member type must fail in typecheck, never E_SIR_ICE; stderr:\n{stderr}"
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let diagnostics: Vec<Value> = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+            panic!("stdout must be a parseable JSON array; parse error: {error}\nstdout:\n{stdout}")
+        });
+        assert!(
+            diagnostics.iter().any(|d| d["code"] == "UndefinedType"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|msg| msg.contains("Misspelled"))),
+            "expected UndefinedType mentioning `Misspelled`; got:\n{stdout}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d["code"] == "E_SIR_ICE"),
+            "misspelled member type must never reach E_SIR_ICE; got:\n{stdout}"
+        );
+    }
+}

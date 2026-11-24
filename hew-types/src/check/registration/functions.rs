@@ -1856,7 +1856,21 @@ impl Checker {
         method_name: &str,
         impl_type_params: Option<&[TypeParam]>,
     ) -> ImplMethodDeclarationKeys {
-        let shared = format!("{type_name}::{method_name}");
+        let canonical_shared = format!("{type_name}::{method_name}");
+        // Within a type's own declaring module, legacy callers still query
+        // the unqualified `Type::method` shared key alongside the
+        // owner-qualified canonical entry. External impls on imported types
+        // keep only the canonical owner-qualified key.
+        let shared = self
+            .current_module
+            .as_deref()
+            .and_then(|owner| type_name.strip_prefix(owner))
+            .and_then(|rest| rest.strip_prefix('.'))
+            .filter(|local| !local.contains('.'))
+            .map_or_else(
+                || canonical_shared.clone(),
+                |local| format!("{local}::{method_name}"),
+            );
         // `scoped_module_item_name` deliberately rejects presentation names
         // containing `::`; an impl method key necessarily has that separator.
         // Build the module-owned form directly.
@@ -1869,7 +1883,7 @@ impl Checker {
                     .map_or_else(|| key.to_string(), |module| format!("{module}.{key}"))
             }
         };
-        let canonical = module_owned(&shared, type_name);
+        let canonical = module_owned(&canonical_shared, type_name);
         // No impl-level type params means this impl block is concrete; it is a
         // specialisation only when its self type also carries concrete args.
         let is_concrete_specialised_impl = impl_type_params.is_none_or(<[TypeParam]>::is_empty);

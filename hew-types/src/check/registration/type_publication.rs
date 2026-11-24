@@ -239,6 +239,41 @@ impl Checker {
         }
     }
 
+    pub(super) fn register_embedded_regex_module(&mut self) {
+        let parsed = hew_parser::parse(include_str!("../../../../std/text/regex/regex.hew"));
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/text/regex/regex.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if !parsed.errors.is_empty() {
+            return;
+        }
+        let identity_module = self.defs.mint_module("std.text.regex", &[]);
+        if self.defs.module_source(identity_module).is_none() {
+            self.defs.set_module_package(
+                identity_module,
+                crate::def_table::PackageOrigin::StandardLibrary,
+            );
+        }
+        let saved_module = self.current_module.take();
+        let saved_idx = self.current_module_idx;
+        let saved_item_source = self.current_item_source.take();
+        let saved_ordinal = self.current_item_ordinal;
+        let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
+        self.register_stdlib_hew_items(
+            "regex",
+            "std.text.regex",
+            &parsed.program.items,
+            StdlibBarePublication::Import(&None),
+        );
+        self.is_stdlib_source = saved_stdlib;
+        self.current_item_ordinal = saved_ordinal;
+        self.current_item_source = saved_item_source;
+        self.current_module_idx = saved_idx;
+        self.current_module = saved_module;
+    }
+
     /// Register a builtin collection constructor: a nullary generic function
     /// returning the canonical collection over its own type parameters, with
     /// the constructor's runtime family as its executable call target.

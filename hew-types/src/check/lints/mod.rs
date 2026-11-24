@@ -873,6 +873,121 @@ fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     }
 }
 
+struct RegexLiteralFinder {
+    found: bool,
+}
+
+impl NodeVisitor for RegexLiteralFinder {
+    fn visit_expr(&mut self, expr: &Expr, _span: &Span) {
+        if matches!(expr, Expr::RegexLiteral(_)) {
+            self.found = true;
+        }
+    }
+}
+
+fn scan_item_for_regex_literal(item: &hew_parser::ast::Item, finder: &mut RegexLiteralFinder) {
+    use hew_parser::ast::{Item, TraitItem};
+    if finder.found {
+        return;
+    }
+    match item {
+        Item::Const(cd) => walk_expr(&cd.value.0, &cd.value.1, finder),
+        Item::Function(fd) => walk_block(&fd.body, finder),
+        Item::Impl(id) => {
+            for method in &id.methods {
+                walk_block(&method.body, finder);
+                if finder.found {
+                    return;
+                }
+            }
+        }
+        Item::Trait(td) => {
+            for trait_item in &td.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(body) = &method.body {
+                        walk_block(body, finder);
+                        if finder.found {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        Item::Actor(ad) => {
+            if let Some(init) = &ad.init {
+                walk_block(&init.body, finder);
+            }
+            for field in &ad.fields {
+                if let Some((default, span)) = &field.default {
+                    walk_expr(default, span, finder);
+                }
+            }
+            for receive_fn in &ad.receive_fns {
+                walk_block(&receive_fn.body, finder);
+            }
+            for method in &ad.methods {
+                walk_block(&method.body, finder);
+            }
+        }
+        Item::Supervisor(sd) => {
+            if let Some((backoff, span)) = &sd.backoff {
+                walk_expr(backoff, span, finder);
+            }
+            for child in &sd.children {
+                for (_, (arg, span)) in &child.args {
+                    walk_expr(arg, span, finder);
+                }
+            }
+            for method in &sd.methods {
+                walk_block(&method.body, finder);
+            }
+        }
+        Item::Machine(md) => {
+            for transition in md.authored_transitions() {
+                if let Some((guard, span)) = &transition.guard {
+                    walk_expr(guard, span, finder);
+                }
+                walk_expr(&transition.body.0, &transition.body.1, finder);
+            }
+        }
+        Item::Macro(_)
+        | Item::MacroCall(_)
+        | Item::Import(_)
+        | Item::TypeDecl(_)
+        | Item::TypeAlias(_)
+        | Item::ExternBlock(_)
+        | Item::Record(_) => {}
+    }
+}
+
+/// Returns `true` when any expression anywhere in `program` uses a regex literal.
+#[must_use]
+pub(in crate::check) fn program_contains_regex_literal(program: &hew_parser::ast::Program) -> bool {
+    let mut finder = RegexLiteralFinder { found: false };
+    for (item, _) in &program.items {
+        scan_item_for_regex_literal(item, &mut finder);
+        if finder.found {
+            return true;
+        }
+    }
+    if let Some(graph) = &program.module_graph {
+        for mod_id in &graph.topo_order {
+            if *mod_id == graph.root {
+                continue;
+            }
+            if let Some(module) = graph.modules.get(mod_id) {
+                for (item, _) in &module.items {
+                    scan_item_for_regex_literal(item, &mut finder);
+                    if finder.found {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::{directive_suppresses, LintId};

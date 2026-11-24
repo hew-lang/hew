@@ -435,6 +435,12 @@ impl Checker {
         self.current_module_direct_imports.clear();
         self.current_module_direct_import_bindings.clear();
 
+        if self.lookup_declaration("std.text.regex.Pattern").is_none()
+            && super::super::lints::program_contains_regex_literal(program)
+        {
+            self.register_embedded_regex_module();
+        }
+
         self.report_recursive_alias_declarations();
         self.collect_declared_type_param_names(program);
         self.impls_registered = true;

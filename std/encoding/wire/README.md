@@ -70,5 +70,6 @@ because null cannot preserve all of its states. TOML has no null, so
 Every format bounds container nesting at 127 levels. JSON and TOML
 numbers beyond the `f64` range, such as `1e400`, are refused with a parse
 error rather than read as infinity; underflow (`1e-400`) rounds to zero.
-Infinity and NaN encode as the strings `"Infinity"`, `"-Infinity"` and
-`"NaN"` and decode back where a float is expected.
+JSON encodes infinity and NaN as the strings `"Infinity"`, `"-Infinity"` and
+`"NaN"` and decodes them back where a float is expected; TOML uses native
+`inf`, `-inf` and `nan`, and YAML uses `.inf`, `-.inf` and `.nan`.

@@ -121,14 +121,29 @@ impl Checker {
     }
 
     /// Why TOML cannot carry `ty`: a document is a table, so the root must be
-    /// a named record or a string-keyed map, and TOML has no null, so a
-    /// `#[wire]` record cannot hold a required `Option` field.
+    /// a named record or a string-keyed map, and TOML has no null, so neither
+    /// `()` nor a non-optional `Option` value can appear anywhere in the
+    /// reachable schema.
     fn toml_unrepresentable(&self, ty: &ResolvedTy) -> Option<String> {
-        let ResolvedTy::Named { head, .. } = ty else {
+        let ResolvedTy::Named { head, args, .. } = ty else {
             return Some("a TOML document is a table".to_string());
         };
+        let facts = crate::TypeFactService::new(
+            self.type_fact_context(),
+            std::collections::BTreeMap::new(),
+        );
+        let mut visiting = std::collections::HashSet::new();
         if ty.is_builtin(BuiltinType::HashMap) {
-            return None;
+            let [key, value] = args.as_slice() else {
+                return Some("a TOML document is a table".to_string());
+            };
+            if !matches!(key, ResolvedTy::String) {
+                return Some(
+                    "a TOML document is a table, so a root `HashMap` must use `string` keys"
+                        .to_string(),
+                );
+            }
+            return self.toml_value_unrepresentable(&facts, value, &mut visiting);
         }
         let def = self.type_def_view().of(*head)?;
         let layout = ty
@@ -137,25 +152,101 @@ impl Checker {
         if def.kind != TypeDefKind::Struct || layout.is_none_or(|layout| layout.positional) {
             return Some("a TOML document is a table".to_string());
         }
-        let layout = layout?;
-        if !layout.tagged {
-            return None;
+        self.toml_value_unrepresentable(&facts, ty, &mut visiting)
+    }
+
+    fn toml_value_unrepresentable(
+        &self,
+        facts: &crate::TypeFactService,
+        ty: &ResolvedTy,
+        visiting: &mut std::collections::HashSet<ResolvedTy>,
+    ) -> Option<String> {
+        match ty {
+            ResolvedTy::Unit => Some("TOML has no null to represent `()`".to_string()),
+            ResolvedTy::Tuple(elements) => elements
+                .iter()
+                .find_map(|elem| self.toml_value_unrepresentable(facts, elem, visiting)),
+            ResolvedTy::Array(element, _) => {
+                self.toml_value_unrepresentable(facts, element, visiting)
+            }
+            ResolvedTy::Named {
+                head: crate::TypeHead::Builtin(builtin),
+                args,
+                ..
+            } => match (builtin, args.as_slice()) {
+                (BuiltinType::Option, _) => Some(
+                    "TOML has no null; `Option` is only supported as a record field".to_string(),
+                ),
+                (BuiltinType::Vec | BuiltinType::HashSet, [elem]) => {
+                    self.toml_value_unrepresentable(facts, elem, visiting)
+                }
+                (BuiltinType::HashMap, [key, value]) => self
+                    .toml_value_unrepresentable(facts, key, visiting)
+                    .or_else(|| self.toml_value_unrepresentable(facts, value, visiting)),
+                (BuiltinType::Result, [ok, err]) => self
+                    .toml_value_unrepresentable(facts, ok, visiting)
+                    .or_else(|| self.toml_value_unrepresentable(facts, err, visiting)),
+                _ => None,
+            },
+            ResolvedTy::Named { head, .. } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                let def = self.type_def_view().of(*head)?;
+                let layout = ty
+                    .nominal_instance(&self.defs)
+                    .and_then(|instance| self.serial_layouts.get(&instance.nominal));
+                if def.kind == TypeDefKind::Struct {
+                    let Ok((_, fields)) = facts.record_fields(ty) else {
+                        return None;
+                    };
+                    let layout = layout?;
+                    if layout.positional {
+                        return fields.iter().find_map(|(_, field_ty)| {
+                            self.toml_value_unrepresentable(facts, field_ty, visiting)
+                        });
+                    }
+                    for ((name, field_ty), member) in fields.iter().zip(&layout.members) {
+                        if member.flags & hew_codec::Member::SKIP != 0 {
+                            continue;
+                        }
+                        if let ResolvedTy::Named {
+                            head: crate::TypeHead::Builtin(BuiltinType::Option),
+                            args,
+                            ..
+                        } = field_ty
+                        {
+                            if layout.tagged && member.flags & hew_codec::Member::OMIT_NULL == 0 {
+                                return Some(format!(
+                                    "field `{name}` is a required `Option` and TOML has no null; \
+                                     mark it `optional`"
+                                ));
+                            }
+                            if let Some(inner) = args.first() {
+                                if let Some(reason) =
+                                    self.toml_value_unrepresentable(facts, inner, visiting)
+                                {
+                                    return Some(reason);
+                                }
+                            }
+                        } else if let Some(reason) =
+                            self.toml_value_unrepresentable(facts, field_ty, visiting)
+                        {
+                            return Some(reason);
+                        }
+                    }
+                    None
+                } else {
+                    let Ok(members) = facts.declared_capability_members(ty) else {
+                        return None;
+                    };
+                    members.iter().find_map(|payload| {
+                        self.toml_value_unrepresentable(facts, payload, visiting)
+                    })
+                }
+            }
+            _ => None,
         }
-        def.field_order
-            .iter()
-            .zip(&layout.members)
-            .find(|(name, member)| {
-                def.fields
-                    .get(*name)
-                    .is_some_and(|ty| ty.as_option().is_some())
-                    && member.flags & hew_codec::Member::OMIT_NULL == 0
-            })
-            .map(|(name, _)| {
-                format!(
-                    "field `{name}` is a required `Option` and TOML has no null; mark it \
-                     `optional`"
-                )
-            })
     }
 
     /// Record each deferred facade call now that its value type has settled.

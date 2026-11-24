@@ -465,6 +465,14 @@ fn main() {
 }
 
 #[test]
+fn toml_wire_decode_roundtrips_tables_before_scalars_in_sandbox() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/toml-wire-decode.hew"
+    ));
+    assert_eq!(stdout(&trace), "toml-wire-ok\n");
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {

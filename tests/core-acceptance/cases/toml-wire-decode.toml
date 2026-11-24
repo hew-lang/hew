@@ -1,0 +1,10 @@
+[[case]]
+id = "toml-wire-decode"
+intent = "Typed #[wire] TOML encode and decode handle table-before-scalar field ordering, optional/skipped fields, camelCase keys, and structured DecodeError variants across native, WASI, and sandbox-VM."
+source = "cases/toml-wire-decode.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "toml-wire-ok\n"
+exit = 0

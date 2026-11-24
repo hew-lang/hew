@@ -1,6 +1,7 @@
 //! Behavioural tests for std.encoding.toml.
 
 import std.encoding.toml;
+import std.math;
 
 fn field(value: toml.Value, key: string) -> toml.Value {
     value.get_field(key).expect("get_field succeeds").expect("field is present")
@@ -354,4 +355,148 @@ fn test_readme_service_example() {
     server.set("name", toml.from_string("api")).expect("table");
     doc.set("server", server).expect("table");
     assert(doc.stringify().expect("table root") == "[server]\nname = \"api\"\n");
+}
+
+// ── typed #[wire] codec parity ────────────────────────────────────────
+#[wire]
+type WireEndpoint {
+    host: string @1;
+    port: i64 @2;
+}
+
+#[wire]
+enum WireMode {
+    Disabled @1;
+    RateLimit(i64) @2;
+}
+
+#[wire]
+#[serial(case = "camelCase")]
+type WireServiceConfig {
+    // Declare table-like fields BEFORE scalar fields to verify TOML orders
+    // key-value pairs ahead of [table] and [[array_of_tables]] headers.
+    primary: WireEndpoint @1;
+    replicas: Vec<WireEndpoint> @2;
+    mode: WireMode @3;
+    service_name: string @4;
+    #[serial(key = "max_conn")]
+    max_connections: i64 @5;
+    note: Option<string> @6 optional;
+    #[serial(skip)]
+    ephemeral: Option<string> @7;
+}
+
+#[wire]
+type WireMetricDoc {
+    limits: HashMap<string, i64> @1;
+    payload: bytes @2;
+    high: f64 @3;
+    low: f64 @4;
+    missing_sample: f64 @5;
+}
+
+#[test]
+fn test_wire_toml_encode_decode_tables_before_scalars_and_optional_skip() {
+    let original = WireServiceConfig {
+        primary: WireEndpoint { host: "127.0.0.1", port: 8080 },
+        replicas: [
+            WireEndpoint { host: "10.0.0.2", port: 8081 },
+            WireEndpoint { host: "10.0.0.3", port: 8082 },
+        ],
+        mode: WireMode.RateLimit(500),
+        service_name: "gateway",
+        max_connections: 128,
+        note: .Some("primary region"),
+        ephemeral: .Some("never-serialized"),
+    };
+    let text = toml.encode(original);
+    assert(text.contains("serviceName = \"gateway\""));
+    assert(text.contains("max_conn = 128"));
+    assert(!text.contains("ephemeral"));
+
+    let decoded = toml.decode<WireServiceConfig>(text).expect("round-trip decode");
+    assert(decoded.primary.host == "127.0.0.1");
+    assert(decoded.primary.port == 8080);
+    assert(decoded.replicas.len() == 2);
+    assert(decoded.replicas[1].host == "10.0.0.3");
+    assert(decoded.replicas[1].port == 8082);
+    match decoded.mode {
+        WireMode.RateLimit(limit) => assert(limit == 500),
+        WireMode.Disabled => panic("expected RateLimit variant"),
+    }
+    assert(decoded.service_name == "gateway");
+    assert(decoded.max_connections == 128);
+    assert(decoded.note == .Some("primary region"));
+    assert(decoded.ephemeral.is_none());
+
+    // Optional field omitted + unit enum variant + empty array of tables.
+    let minimal_toml = "serviceName = \"edge\"\nmax_conn = 16\nmode = \"Disabled\"\nreplicas = []\n\n[primary]\nhost = \"localhost\"\nport = 9000\n";
+    let minimal = toml.decode<WireServiceConfig>(minimal_toml).expect("decode minimal");
+    assert(minimal.note.is_none());
+    assert(minimal.replicas.is_empty());
+    match minimal.mode {
+        WireMode.Disabled => {}
+        WireMode.RateLimit(_) => panic("expected Disabled variant"),
+    }
+}
+
+#[test]
+fn test_wire_toml_maps_bytes_and_non_finite_floats() {
+    var limits: HashMap<string, i64> = HashMap.new();
+    limits.insert("burst", 20);
+    limits.insert("steady", 5);
+    let raw: bytes = bytes [0x68, 0x65, 0x77];
+    let doc = WireMetricDoc {
+        limits: limits,
+        payload: raw,
+        high: 1.0 / 0.0,
+        low: -1.0 / 0.0,
+        missing_sample: 0.0 / 0.0,
+    };
+    let text = toml.encode(doc);
+    assert(text.contains("high = inf"));
+    assert(text.contains("low = -inf"));
+    assert(text.contains("missing_sample = nan"));
+    let decoded = toml.decode<WireMetricDoc>(text).expect("decode metric doc");
+    assert(decoded.limits.get("burst") == .Some(20));
+    assert(decoded.limits.get("steady") == .Some(5));
+    assert(decoded.payload.len() == 3);
+    assert(decoded.payload[0] == 0x68);
+    assert(decoded.payload[2] == 0x77);
+    assert(math.is_infinite(decoded.high) && decoded.high > 0.0);
+    assert(math.is_infinite(decoded.low) && decoded.low < 0.0);
+    assert(math.is_nan(decoded.missing_sample));
+}
+
+#[test]
+fn test_wire_toml_decode_errors_carry_structured_variants() {
+    match toml.decode<WireEndpoint>("host = \"a\"\nport = ") {
+        .Err(err) => match err {
+            .Syntax { .. } => {}
+            _ => panic("expected Syntax error"),
+        }
+        .Ok(_) => panic("expected Syntax error"),
+    }
+    match toml.decode<WireEndpoint>("host = \"a\"\nport = \"eighty\"\n") {
+        .Err(err) => match err {
+            .Type { path, .. } => assert(path == ".port"),
+            _ => panic("expected Type error at .port"),
+        }
+        .Ok(_) => panic("expected Type error at .port"),
+    }
+    match toml.decode<WireEndpoint>("host = \"a\"\n") {
+        .Err(err) => match err {
+            .Missing { path } => assert(path == ".port"),
+            _ => panic("expected Missing for .port"),
+        }
+        .Ok(_) => panic("expected Missing for .port"),
+    }
+    let bad_variant = "serviceName = \"edge\"\nmax_conn = 1\nmode = \"Bogus\"\nreplicas = []\n\n[primary]\nhost = \"h\"\nport = 1\n";
+    match toml.decode<WireServiceConfig>(bad_variant) {
+        .Err(err) => match err {
+            .UnknownVariant { name, .. } => assert(name == "Bogus"),
+            _ => panic("expected UnknownVariant for Bogus"),
+        }
+        .Ok(_) => panic("expected UnknownVariant for Bogus"),
+    }
 }

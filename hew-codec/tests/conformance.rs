@@ -840,6 +840,51 @@ fn text_formats_spell_the_same_document() {
     );
 }
 
+static TABLE_BEFORE_SCALAR: Table<'static> = Table::new(
+    &[
+        m("nested", 1, 0),
+        m("items", 2, 0),
+        m("title", 3, 0),
+        m("empty", 4, 0),
+        m("count", 5, 0),
+    ],
+    true,
+);
+
+#[test]
+fn toml_reorders_tables_and_arrays_of_tables_after_scalars() {
+    static INNER: Shape = Shape::Rec(&PAIR, &[Shape::I64, Shape::Str]);
+    static FIELDS: [Shape; 5] = [
+        INNER,
+        Shape::Vec(&INNER),
+        Shape::Str,
+        Shape::Vec(&INNER),
+        Shape::I64,
+    ];
+    let shape = Shape::Rec(&TABLE_BEFORE_SCALAR, &FIELDS);
+    let value = D::Rec(vec![
+        D::Rec(vec![D::I(1), D::S("a".into())]),
+        D::Seq(vec![
+            D::Rec(vec![D::I(2), D::S("b".into())]),
+            D::Rec(vec![D::I(3), D::S("c".into())]),
+        ]),
+        D::S("cfg".into()),
+        D::Seq(vec![]),
+        D::I(7),
+    ]);
+    let encoded = to_bytes(Format::Toml, shape, &value);
+    let text = String::from_utf8(encoded.clone()).unwrap();
+    // Scalars and empty arrays stay in declaration order before [nested] and [[items]].
+    let title_pos = text.find("title = \"cfg\"").unwrap();
+    let empty_pos = text.find("empty = []").unwrap();
+    let count_pos = text.find("count = 7").unwrap();
+    let nested_pos = text.find("[nested]").unwrap();
+    let items_pos = text.find("[[items]]").unwrap();
+    assert!(title_pos < empty_pos && empty_pos < count_pos);
+    assert!(count_pos < nested_pos && nested_pos < items_pos);
+    assert_eq!(from_bytes(Format::Toml, shape, &encoded).unwrap(), value);
+}
+
 #[test]
 fn decode_error_display_covers_every_variant() {
     let cases = [

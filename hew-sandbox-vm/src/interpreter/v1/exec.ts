@@ -14,6 +14,7 @@ import { encodingStorage, releaseEncoding } from "./encoding-storage.js";
 /// `checked.binary` names rather than trapping on its own.
 
 import { executeCodec } from "./codecs.js";
+import { UrlHandleTable } from "./url.js";
 import { actorIdentical } from "./actor-identity.js";
 import { ActorWaits } from "./actor-waits.js";
 import { TraceBuilder, runtimeFailure } from "../trace.js";
@@ -565,6 +566,10 @@ class ExecutorV1 {
       },
       calendarBridge: options.calendarBridge,
       codecBridge: options.codecBridge,
+      unicodeBridge: options.unicodeBridge,
+      cryptoBridge: options.cryptoBridge,
+      urlBridge: options.urlBridge,
+      urls: new UrlHandleTable(),
       encodingError: (format, message) => {
         const actor = this.current.context.actor;
         const errors = actor

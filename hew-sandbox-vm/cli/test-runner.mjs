@@ -2,7 +2,15 @@ import fs from "node:fs";
 import process from "node:process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { classifyHewFault, runBytecode, traceToDownloadJson } from "../dist/interpreter/index.js";
+import {
+  classifyHewFault,
+  runBytecode,
+  traceToDownloadJson,
+} from "../dist/interpreter/index.js";
+import {
+  bridgesFromWasmModule,
+  packageNeedsWasmBridges,
+} from "../dist/interpreter/wasm-bridges.js";
 
 function parseArgs(args) {
   if (args.length !== 7 || args[1] !== "--schedule" || args[3] !== "--seed" || args[5] !== "--step-budget") {
@@ -21,10 +29,8 @@ const tracePath = process.env.HEW_TEST_TRACE_PATH;
 try {
   const args = parseArgs(process.argv.slice(2));
   const packageValue = JSON.parse(fs.readFileSync(args.path, "utf8"));
-  let codecBridge;
-  let regexBridge;
-  let calendarBridge;
-  if (packageValue.codecs?.length) {
+  let wasmBridges = {};
+  if (packageNeedsWasmBridges(packageValue)) {
     const local = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../hew-wasm/pkg/hew_wasm.js");
     const location = process.env.HEW_WASM_MODULE ?? (fs.existsSync(local) ? pathToFileURL(local).href : "@hew-lang/wasm");
     const wasm = await import(location);
@@ -32,16 +38,12 @@ try {
       const resolved = location.startsWith("file:") ? location : import.meta.resolve(location);
       await wasm.default({ module_or_path: fs.readFileSync(new URL(resolved.replace(/\.js$/, "_bg.wasm"))) });
     }
-    codecBridge = wasm.executeCodec ?? wasm.default?.executeCodec;
-    regexBridge = wasm.compileSandboxRegex ?? wasm.default?.compileSandboxRegex;
-    calendarBridge = wasm.executeCalendar ?? wasm.default?.executeCalendar;
-    if (typeof codecBridge !== "function") throw new Error("hew-wasm executeCodec export is missing; rebuild the Wasm package");
+    wasmBridges = bridgesFromWasmModule(wasm);
+    if (typeof wasmBridges.codecBridge !== "function") throw new Error("hew-wasm executeCodec export is missing; rebuild the Wasm package");
   }
   const propertyPath = reportPath ? path.join(path.dirname(reportPath), "property.cbor") : null;
   const trace = await runBytecode(packageValue, {
-    codecBridge,
-    regexBridge,
-    calendarBridge,
+    ...wasmBridges,
     propertyInput: propertyPath && fs.existsSync(propertyPath) ? [...fs.readFileSync(propertyPath)] : [],
     fixtureId: "hew-test",
     traceId: "trace:hew-test",

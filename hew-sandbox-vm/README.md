@@ -123,3 +123,13 @@ compiles each literal on its first use and releases it when the program exits.
 UTC calendar operations also require the initialized `executeCalendar`
 export as `calendarBridge`. Both hosts use the shared UTC calendar engine.
 The bridge preserves integer seconds and nanoseconds exactly.
+
+Unicode scalar classification and case-mapping operations (`char.is_*`,
+`char.to_upper`, `char.to_lower`, `char.to_title`) execute against the same
+Rust `char` + `finl_unicode` tables via `unicodeBridge` (`{ charProperties,
+charToUpper, charToLower, charToTitle }`).
+
+Cryptographic digests, HMAC-SHA256, and constant-time equality in
+`std.crypto.hash` execute via `executeCrypto` (`cryptoBridge`), while
+`random_bytes` stays refused under deterministic execution. Parsed URL
+operations in `std.net.url` execute via `executeUrl` (`urlBridge`).

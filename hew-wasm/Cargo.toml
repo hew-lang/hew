@@ -42,6 +42,13 @@ js-sys = "0.3"
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true
+finl_unicode = { version = "=1.5.0", default-features = false, features = [
+  "categories",
+] }
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+url = "2"
 toml.workspace = true
 schemars = "1.2"
 # The present-null deserializer preserves wire presence; it does not change TS types.

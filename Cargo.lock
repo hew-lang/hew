@@ -2360,6 +2360,7 @@ name = "hew-wasm"
 version = "0.11.3"
 dependencies = [
  "assert_cmd",
+ "finl_unicode",
  "hew-analysis",
  "hew-calendar",
  "hew-codec",
@@ -2371,14 +2372,18 @@ dependencies = [
  "hew-sir",
  "hew-testutil",
  "hew-types",
+ "hmac",
  "js-sys",
  "regex",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "subtle",
  "tempfile",
  "toml",
  "ts-rs",
+ "url",
  "walkdir",
  "wasm-bindgen",
 ]

@@ -800,6 +800,7 @@ pub mod peer_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
 pub mod pid;
+pub(crate) mod platform;
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;

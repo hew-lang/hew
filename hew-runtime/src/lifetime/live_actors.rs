@@ -26,14 +26,10 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use rustc_hash::FxHashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::{rt_current, rt_current_opt};
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
 ///
@@ -57,119 +53,45 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // SAFETY: production spawn stamps the owning runtime before route
-        // registration. A valid token therefore implies a valid owner stamp.
-        let owner = unsafe { (*actor).runtime };
-        assert!(
-            !owner.is_null(),
-            "tracked actor with a local handle has no owning runtime"
-        );
-        // SAFETY: RuntimeInner owns and outlives every tracked actor.
-        let handles = unsafe { &(*owner).local_handles };
-        let retired = crate::lifetime::local_handles::retire_actor_in(handles, token, actor_id);
-        assert_ne!(
-            retired,
-            crate::lifetime::local_handles::RetireActorResult::Mismatch,
-            "live actor route retirement lost exact authority"
-        );
-        // The handle lock is released before taking a monitor shard. Terminal
-        // publication takes the shard first and checks identity liveness there.
-        // SAFETY: the owning runtime outlives this actor's retirement.
-        unsafe { &(*owner).monitors }.forget_unreferenced_actor_terminal(actor_id, handles);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let retired = crate::lifetime::local_handles::retire_current_actor(token, actor_id);
-        assert_ne!(
-            retired,
-            crate::lifetime::local_handles::RetireActorResult::Mismatch,
-            "live actor route retirement lost exact authority"
-        );
-        crate::monitor::forget_unreferenced_actor_terminal(actor_id);
-    }
+    // SAFETY: callers invoke this only after removal from the live map while
+    // retaining allocation ownership until finalization.
+    let runtime = unsafe { (*actor).runtime };
+    // SAFETY: the owning runtime outlives tracked actor route retirement.
+    unsafe { crate::platform::executor::retire_tracked_actor_route(runtime, token, actor_id) };
 }
 
 /// Runtime-owned actor-liveness state.
-///
-/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals; now a field of
-/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
-/// any still-pending teardown join handles.
-///
-/// The threaded runtime owns this state in `RuntimeInner`. The single-thread
-/// WASI runtime backs the same registry with a module-private static (`LIVE_ACTORS_WASM`)
-/// instead — see the `with_live_actors` resolver below.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct LiveActors {
-    /// Map of live actor id → pointer. Single shard (see module doc).
+    /// Map of live actor id -> pointer. Single shard (see module doc).
     map: PoisonSafe<Option<FxHashMap<u64, LiveActor>>>,
-    /// Background teardown threads (deferred actor frees and deferred supervisor
-    /// stops) that hold raw actor/supervisor pointers while they run. They MUST
-    /// be joined before any global sweep (`cleanup_all_actors`) frees the actors
-    /// they still reference, or the sweep races an in-flight teardown into a
-    /// use-after-free / double-free.
+    /// Background teardown threads that hold raw actor/supervisor pointers.
+    #[cfg(not(target_arch = "wasm32"))]
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LiveActors {
-    /// Construct an empty liveness registry for a new runtime.
-    pub(crate) fn new() -> Self {
+    /// Construct an empty liveness registry for a runtime.
+    pub(crate) const fn new() -> Self {
         Self {
             map: PoisonSafe::new(None),
+            #[cfg(not(target_arch = "wasm32"))]
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
         }
     }
 }
 
-/// Module-private liveness map for the single-threaded WASM runtime.
-///
-/// The WASM runtime has no `RuntimeInner` to own the registry, so the map lives
-/// in a process-global static (as it did before the registry moved onto
-/// `RuntimeInner` for native). Single-threaded cooperative scheduling means
-/// there is no cross-thread contention; the `PoisonSafe` wrapper keeps the
-/// access path identical to native.
-#[cfg(target_arch = "wasm32")]
-static LIVE_ACTORS_WASM: PoisonSafe<Option<FxHashMap<u64, LiveActor>>> = PoisonSafe::new(None);
-
-/// Run `f` with mutable access to the current runtime's live-actor map.
-#[cfg(not(target_arch = "wasm32"))]
+/// Run `f` with mutable access to the active runtime's live-actor map.
 fn with_live_actors<R>(f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R) -> R {
-    rt_current().live_actors.map.access(f)
+    crate::platform::executor::current_live_actors()
+        .map
+        .access(f)
 }
 
-/// Run `f` with mutable access to the current runtime's live-actor map, if one
-/// is installed.
-///
-/// The liveness probe/read surface is reachable from trap/teardown paths that
-/// also support manually-constructed actors with no runtime installed. When the
-/// map was a process-global static, those probes observed an empty map and
-/// returned "not live"; after deglobalization they must keep that read-only
-/// default while registration/removal paths continue to fail closed through
-/// [`with_live_actors`].
-#[cfg(not(target_arch = "wasm32"))]
+/// Run `f` with mutable access to the active runtime's live-actor map when installed.
 fn with_live_actors_opt<R>(
     f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R,
 ) -> Option<R> {
-    rt_current_opt().map(|rt| rt.live_actors.map.access(f))
-}
-
-/// Run `f` with mutable access to the WASM runtime's live-actor map.
-///
-/// WASM still uses a module-private static, so the optional native resolver is
-/// always present there.
-#[cfg(target_arch = "wasm32")]
-fn with_live_actors_opt<R>(
-    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R,
-) -> Option<R> {
-    Some(with_live_actors(f))
-}
-
-/// Run `f` with mutable access to the WASM runtime's live-actor map.
-#[cfg(target_arch = "wasm32")]
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R) -> R {
-    LIVE_ACTORS_WASM.access(f)
+    crate::platform::executor::current_live_actors_opt().map(|actors| actors.map.access(f))
 }
 
 /// Register an actor in the live tracking map.
@@ -200,7 +122,7 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
 
 #[cfg(test)]
 pub(crate) fn actor_count_for_test() -> usize {
-    with_live_actors_opt(|map| map.as_ref().map_or(0, HashMap::len)).unwrap_or(0)
+    with_live_actors_opt(|map| map.as_ref().map_or(0, FxHashMap::len)).unwrap_or(0)
 }
 
 /// Remove an actor from the live tracking map.
@@ -295,77 +217,6 @@ pub(crate) fn with_live_actor<R>(
 /// null under THIS registry lock before dropping the reference
 /// (`scheduler::release_parked_ask_channel`).
 ///
-/// A parked handler with no ask (plain recv, timer or stream) is genuinely
-/// outstanding work and keeps blocking.
-// Native-only: the shutdown drain (and the `reply_channel` module this scan
-// consults) is not compiled on wasm32.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
-    with_live_actors_opt(|map| {
-        map.as_ref().is_some_and(|actors| {
-            actors.values().any(|entry| {
-                let actor = &entry.actor.0;
-                // SAFETY: the pointer remains tracked under the liveness lock;
-                // every free path must untrack it before reclaiming the box.
-                let a = unsafe { &**actor };
-                if a.actor_state.load(Ordering::Acquire)
-                    != crate::internal::types::HewActorState::Suspended as i32
-                {
-                    return false;
-                }
-                if !a.checked_invocation.load(Ordering::Acquire).is_null() {
-                    // An abandoned reply cannot release the checked turn's
-                    // state or children before cooperative cleanup completes.
-                    return true;
-                }
-                let gate = a.parked_ask_channel.load(Ordering::Acquire);
-                if gate.is_null() {
-                    // Parked with no ask: a plain wait (recv, timer, stream)
-                    // is outstanding work.
-                    return true;
-                }
-                // SAFETY: the gate slot owns a retained channel reference that
-                // is released only after a swap performed under this same
-                // registry lock, so the channel is alive while we hold it.
-                let cancelled = unsafe {
-                    (*gate.cast::<crate::reply_channel::HewReplyChannel>())
-                        .cancelled
-                        .load(Ordering::Acquire)
-                };
-                // A live ask blocks the drain; an abandoned one does not.
-                !cancelled
-            })
-        })
-    })
-    .unwrap_or(false)
-}
-
-/// Retained guest snapshots require every actor turn and its cleanup to finish.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn has_active_guest_actor() -> bool {
-    use crate::internal::types::HewActorState;
-
-    with_live_actors_opt(|map| {
-        map.as_ref().is_some_and(|actors| {
-            actors.values().any(|entry| {
-                // SAFETY: the liveness registry retains the allocation during
-                // this inspection; the guest has one execution thread.
-                let actor = unsafe { &*entry.actor.0 };
-                let state = actor.actor_state.load(Ordering::Acquire);
-                ![
-                    HewActorState::Idle,
-                    HewActorState::Stopped,
-                    HewActorState::Crashed,
-                ]
-                .iter()
-                .any(|idle| state == *idle as i32)
-                    || !actor.checked_invocation.load(Ordering::Acquire).is_null()
-            })
-        })
-    })
-    .unwrap_or(false)
-}
-
 /// Swap `slot` to null under the live-actors registry lock.
 ///
 /// Serialization primitive for pointer slots that the shutdown drain scan
@@ -709,149 +560,193 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// cleanup sweep. Used by `actor::retire_parked_activations`, which must run
 /// before the sweep but must not take the actors from it.
 ///
-/// Safe to call only once worker threads are joined: the returned pointers
-/// are unpinned, so a concurrent free would dangle them.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
-    with_live_actors_opt(|map| {
-        map.as_ref()
-            .map(|m| m.values().map(|entry| entry.actor.0).collect())
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
-}
+mod native {
+    use super::{
+        retire_actor_route, with_live_actors_opt, ActorPtr, FxHashMap, HewActor, Ordering,
+    };
+    use crate::runtime::{rt_current, rt_current_opt};
+    use std::collections::HashMap;
 
-/// Copy exact incarnations before cooperative cleanup advances the driver.
-/// Each entry must be resolved again before touching its current allocation.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn snapshot_live_incarnations() -> Vec<ActorIncarnation> {
-    with_live_actors_opt(|map| {
-        map.as_ref()
-            .map(|actors| {
-                actors
-                    .values()
-                    .map(|entry| {
-                        // SAFETY: the registry lock retains this tracked allocation.
-                        unsafe { ActorIncarnation::of(entry.actor.0) }
-                    })
-                    .collect()
+    pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
+        with_live_actors_opt(|map| {
+            map.as_ref().is_some_and(|actors| {
+                actors.values().any(|entry| {
+                    let actor = &entry.actor.0;
+                    // SAFETY: the pointer remains tracked under the liveness lock;
+                    // every free path must untrack it before reclaiming the box.
+                    let a = unsafe { &**actor };
+                    if a.actor_state.load(Ordering::Acquire)
+                        != crate::internal::types::HewActorState::Suspended as i32
+                    {
+                        return false;
+                    }
+                    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+                        return true;
+                    }
+                    let gate = a.parked_ask_channel.load(Ordering::Acquire);
+                    if gate.is_null() {
+                        return true;
+                    }
+                    // SAFETY: the gate slot owns a retained channel reference that
+                    // is released only after a swap performed under this same
+                    // registry lock.
+                    let cancelled = unsafe {
+                        (*gate.cast::<crate::reply_channel::HewReplyChannel>())
+                            .cancelled
+                            .load(Ordering::Acquire)
+                    };
+                    !cancelled
+                })
             })
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
-}
+        })
+        .unwrap_or(false)
+    }
 
-/// Copy identities while workers are live. Resolve each through a fresh pin
-/// before accessing its allocation; an actor may retire after this snapshot.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
-    with_live_actors_opt(|map| {
-        map.as_ref()
-            .map(|actors| actors.keys().copied().collect())
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
-}
+    /// Safe to call only once worker threads are joined: the returned pointers
+    /// are unpinned, so a concurrent free would dangle them.
+    pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
+        with_live_actors_opt(|map| {
+            map.as_ref()
+                .map(|m| m.values().map(|entry| entry.actor.0).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
 
-/// Take all currently tracked actors out of the live map.
-///
-/// Returns the drained map so the caller can free each actor.
-/// Called by `actor::cleanup_all_actors` after worker threads have stopped.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
-    let drained = with_live_actors_opt(|map| match map.as_mut() {
-        Some(m) => std::mem::take(m),
-        None => FxHashMap::default(),
-    })
-    .unwrap_or_default();
-    // The LIVE_ACTORS lock is released before route retirement. Resolvers that
-    // copied an ActorId first must still acquire a send pin; with the liveness
-    // entry gone they fail closed, while already-held pins are drained by the
-    // cleanup caller before allocation reclamation.
-    for (&actor_id, entry) in &drained {
-        if !entry.actor.0.is_null() {
-            retire_actor_route(entry.actor.0, actor_id);
+    /// Copy identities while workers are live. Resolve each through a fresh pin
+    /// before accessing its allocation; an actor may retire after this snapshot.
+    pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
+        with_live_actors_opt(|map| {
+            map.as_ref()
+                .map(|actors| actors.keys().copied().collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Take all currently tracked actors out of the live map.
+    pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
+        let drained = with_live_actors_opt(|map| match map.as_mut() {
+            Some(m) => std::mem::take(m),
+            None => FxHashMap::default(),
+        })
+        .unwrap_or_default();
+        for (&actor_id, entry) in &drained {
+            if !entry.actor.0.is_null() {
+                retire_actor_route(entry.actor.0, actor_id);
+            }
         }
+        drained
+            .into_iter()
+            .map(|(id, entry)| (id, entry.actor))
+            .collect()
     }
-    drained
-        .into_iter()
-        .map(|(id, entry)| (id, entry.actor))
-        .collect()
-}
 
-// ── Deferred teardown threads ───────────────────────────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
-    // Opportunistic reap: after pushing the new handle, pull out and join any
-    // handles for threads that have already finished. `JoinHandle::is_finished`
-    // is a non-blocking poll (just checks whether the thread's `Thread` has been
-    // marked dead), and `.join()` on an already-finished handle returns
-    // immediately without blocking the caller — so this cannot stall a hot
-    // actor-free/supervisor-stop path waiting on some *other* still-running
-    // deferred-teardown thread.
-    //
-    // Without this, a long-lived runtime with repeated actor self-terminate/free
-    // accumulates one `JoinHandle` per deferred free forever: the only other
-    // drain (`drain_deferred_teardown_threads`) runs solely at runtime shutdown,
-    // so completed background-free threads would otherwise sit joinable (and
-    // their OS thread-handle resources retained) for the runtime's entire
-    // lifetime. This does not touch the shutdown join-before-free barrier:
-    // `drain_deferred_teardown_threads` still takes and joins every remaining
-    // (by definition, still-running-or-just-finished) handle before any global
-    // actor sweep.
-    let finished = rt_current()
-        .live_actors
-        .deferred_teardown_threads
-        .access(|threads| {
-            threads.push(handle);
-            // Swap-remove every already-finished handle (order doesn't matter for
-            // this Vec — it's just a teardown bag, not a queue). Iterate indices
-            // in reverse so each `swap_remove` doesn't invalidate not-yet-visited
-            // earlier indices.
-            let mut finished = Vec::new();
-            for i in (0..threads.len()).rev() {
-                if threads[i].is_finished() {
-                    finished.push(threads.swap_remove(i));
+    pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
+        let finished = rt_current()
+            .live_actors
+            .deferred_teardown_threads
+            .access(|threads| {
+                threads.push(handle);
+                let mut finished = Vec::new();
+                for i in (0..threads.len()).rev() {
+                    if threads[i].is_finished() {
+                        finished.push(threads.swap_remove(i));
+                    }
                 }
-            }
-            finished
-        });
-    for handle in finished {
-        // Ordering: only handles that reported `is_finished() == true`
-        // under the lock above reach here, so this join is non-blocking.
-        crate::util::report_join_panic("deferred teardown thread", handle.join());
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn drain_deferred_teardown_threads() {
-    let Some(rt) = rt_current_opt() else { return };
-    let threads = &rt.live_actors.deferred_teardown_threads;
-    loop {
-        let handles = threads.access(|threads| {
-            if threads.is_empty() {
-                None
-            } else {
-                Some(std::mem::take(threads))
-            }
-        });
-        let Some(handles) = handles else { return };
-        for handle in handles {
+                finished
+            });
+        for handle in finished {
             crate::util::report_join_panic("deferred teardown thread", handle.join());
         }
     }
+
+    pub(crate) fn drain_deferred_teardown_threads() {
+        let Some(rt) = rt_current_opt() else { return };
+        let threads = &rt.live_actors.deferred_teardown_threads;
+        loop {
+            let handles = threads.access(|threads| {
+                if threads.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(threads))
+                }
+            });
+            let Some(handles) = handles else { return };
+            for handle in handles {
+                crate::util::report_join_panic("deferred teardown thread", handle.join());
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deferred_teardown_thread_count() -> usize {
+        rt_current()
+            .live_actors
+            .deferred_teardown_threads
+            .access(|threads| threads.len())
+    }
 }
 
-/// Test-only observability hook: current pending deferred-teardown handle
-/// count, without joining or otherwise disturbing any of them.
 #[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) fn deferred_teardown_thread_count() -> usize {
-    rt_current()
-        .live_actors
-        .deferred_teardown_threads
-        .access(|threads| threads.len())
+pub(crate) use native::deferred_teardown_thread_count;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::{
+    drain_all_for_cleanup, drain_deferred_teardown_threads, has_drain_blocking_suspended_actor,
+    push_deferred_teardown_thread, snapshot_live_actor_ids, snapshot_live_actor_ptrs,
+};
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_guest {
+    use super::{with_live_actors_opt, ActorIncarnation, Ordering};
+
+    /// Retained guest snapshots require every actor turn and its cleanup to finish.
+    pub(crate) fn has_active_guest_actor() -> bool {
+        use crate::internal::types::HewActorState;
+
+        with_live_actors_opt(|map| {
+            map.as_ref().is_some_and(|actors| {
+                actors.values().any(|entry| {
+                    // SAFETY: the liveness registry retains the allocation during
+                    // this inspection; the guest has one execution thread.
+                    let actor = unsafe { &*entry.actor.0 };
+                    let state = actor.actor_state.load(Ordering::Acquire);
+                    ![
+                        HewActorState::Idle,
+                        HewActorState::Stopped,
+                        HewActorState::Crashed,
+                    ]
+                    .iter()
+                    .any(|idle| state == *idle as i32)
+                        || !actor.checked_invocation.load(Ordering::Acquire).is_null()
+                })
+            })
+        })
+        .unwrap_or(false)
+    }
+
+    /// Copy exact incarnations before cooperative cleanup advances the driver.
+    pub(crate) fn snapshot_live_incarnations() -> Vec<ActorIncarnation> {
+        with_live_actors_opt(|map| {
+            map.as_ref()
+                .map(|actors| {
+                    actors
+                        .values()
+                        .map(|entry| {
+                            // SAFETY: the registry lock retains this tracked allocation.
+                            unsafe { ActorIncarnation::of(entry.actor.0) }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use wasm_guest::{has_active_guest_actor, snapshot_live_incarnations};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

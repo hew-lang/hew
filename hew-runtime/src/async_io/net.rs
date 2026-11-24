@@ -263,6 +263,7 @@ fn io_timed_out() -> IoFailure {
 /// as the slot's waiter and arm readiness.
 pub(super) fn advance(operation: &Arc<HewAsyncIo>) {
     let net = operation
+        .native
         .net
         .as_ref()
         .expect("advance runs only on readiness operations");

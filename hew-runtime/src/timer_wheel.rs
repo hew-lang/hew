@@ -33,19 +33,8 @@ mod formal_registration;
 // `clock::hew_now_ms` which is already `#[no_mangle]`.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_arch = "wasm32"))]
 fn now_ms_for_wheel() -> u64 {
-    // SAFETY: hew_now_ms has no preconditions on native targets.
-    unsafe { crate::clock::hew_now_ms() }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn now_ms_for_wheel() -> u64 {
-    extern "C" {
-        fn hew_now_ms() -> u64;
-    }
-    // SAFETY: symbol is always present on wasm32 (wasm_stubs::hew_now_ms).
-    unsafe { hew_now_ms() }
+    crate::platform::clock::now_ms()
 }
 
 pub(crate) fn now_for_wheel() -> Deadline {

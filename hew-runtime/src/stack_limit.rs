@@ -20,17 +20,11 @@ use std::cell::Cell;
 
 /// Reserve below the soft limit that cleanup during a stack-overflow unwind
 /// may use, including runtime calls such as formatting and allocation.
-#[cfg(not(target_arch = "wasm32"))]
-const SOFT_RESERVE: usize = 256 * 1024;
-#[cfg(target_arch = "wasm32")]
-const SOFT_RESERVE: usize = 64 * 1024;
+const SOFT_RESERVE: usize = crate::platform::executor::STACK_SOFT_RESERVE;
 
 /// Reserve that the hard limit always keeps for creating and returning the
 /// fault itself.
-#[cfg(not(target_arch = "wasm32"))]
-const HARD_RESERVE: usize = 64 * 1024;
-#[cfg(target_arch = "wasm32")]
-const HARD_RESERVE: usize = 16 * 1024;
+const HARD_RESERVE: usize = crate::platform::executor::STACK_HARD_RESERVE;
 
 /// Stack every thread that runs Hew code gets, sized so 10,000 nested calls of
 /// an ordinary function fit at O0 (HEW-SPEC-2026 §2.2): scheduler workers are
@@ -92,25 +86,9 @@ thread_local! {
 /// Lowest usable address of the current thread's stack, if known. The
 /// thread's recorded bounds are the one source; a thread that never set up
 /// fault reporting records them here on its first check.
-#[cfg(not(target_arch = "wasm32"))]
+#[inline]
 fn stack_floor() -> Option<usize> {
-    use crate::signal::stack;
-    if !stack::is_registered() {
-        stack::register_current_thread(stack::ThreadLabel::Other);
-    }
-    let bounds = stack::current();
-    bounds.is_known().then_some(bounds.low)
-}
-
-/// The linear-memory shadow stack starts at `__stack_low` (wasm-ld, placed
-/// first with `--stack-first`) and grows down towards it.
-#[cfg(target_arch = "wasm32")]
-fn stack_floor() -> Option<usize> {
-    extern "C" {
-        static __stack_low: u8;
-    }
-    // Only the symbol's address is taken; wasm-ld defines it.
-    Some(std::ptr::addr_of!(__stack_low) as usize)
+    crate::platform::executor::current_thread_stack_floor()
 }
 
 fn limits() -> Option<Limits> {

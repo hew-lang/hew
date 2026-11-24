@@ -165,8 +165,7 @@ pub unsafe extern "C" fn hew_coro_run_root(
 ) -> i32 {
     // A program with no actors never starts the scheduler, so the process
     // thread's first root is where its faults become reportable.
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::signal::init_crash_handling();
+    crate::platform::executor::init_root_crash_handling();
     // SAFETY: the root closure drains and destroys its frame before returning.
     unsafe {
         with_root_invocation(|state, readiness| {

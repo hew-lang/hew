@@ -325,17 +325,7 @@ pub(crate) fn poll_turn_stop() {
 pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
     let shutdown_status = drain_to_quiescence();
     let status = if source_status != 0 {
-        // A native `main` return is the process exit code directly (unlike
-        // the `exit()` builtin, it never passes through `hew_exit`), so it
-        // needs the same portable byte truncation applied here.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            crate::exit_status::to_process_exit_byte(i64::from(source_status))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            source_status
-        }
+        crate::platform::host_io::normalize_main_status(source_status)
     } else if shutdown_status != 0 {
         1
     } else {
@@ -356,58 +346,7 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
 /// supervisor and actor terminal owners inline, then closes local admission
 /// and verifies that all routes and teardown leases have drained.
 fn drain_to_quiescence() -> i32 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if crate::driver::active() {
-            crate::driver::run_to_quiescence();
-        }
-        crate::shutdown::hew_shutdown_initiate_implicit(0);
-        let status = crate::shutdown::hew_shutdown_wait();
-        crate::scheduler::hew_runtime_cleanup_after_main();
-        status
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::driver::run_to_quiescence();
-        if !crate::supervisor::roots::stop_registered_supervisors() {
-            return 1;
-        }
-        // Root teardown can enqueue detached incarnation frees. Drain them
-        // before selecting the remaining process-owned actors.
-        crate::driver::run_to_quiescence();
-        let actors = crate::lifetime::live_actors::snapshot_live_incarnations();
-        for &target in &actors {
-            crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
-                // SAFETY: the exact incarnation pin protects this stop request.
-                unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
-            });
-        }
-        for target in actors {
-            let actor = crate::lifetime::live_actors::with_live_incarnation(
-                target,
-                crate::lifetime::live_actors::ActorPin::as_ptr,
-            );
-            let Some(actor) = actor else { continue };
-            // SAFETY: the single driver cannot retire this freshly resolved
-            // actor before free takes over. Release the lookup pin first so
-            // free can drain admitted pins; never retain another actor address
-            // across the scheduler progress made by this call.
-            if unsafe { crate::actor::hew_actor_free(actor) } != 0 {
-                return 1;
-            }
-        }
-        crate::driver::run_to_quiescence();
-        crate::lifetime::local_handles::begin_current_shutdown();
-        crate::lifetime::local_handles::close_current_supervisor_teardown_admission();
-        if !crate::lifetime::local_handles::wait_for_current_supervisor_teardowns(
-            std::time::Duration::from_secs(5),
-        ) {
-            return 1;
-        }
-        crate::lifetime::local_handles::assert_current_actor_routes_empty();
-        crate::lifetime::local_handles::assert_current_supervisors_empty();
-        0
-    }
+    crate::platform::executor::drain_to_quiescence()
 }
 
 /// Allocate a generated state or message wrapper with the native allocator.

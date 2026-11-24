@@ -19,8 +19,6 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use super::{HewAsyncIo, IoFailure, IoValue};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::reactor::{Direction, Slot};
 use crate::util::MutexExt;
 use crate::wake::HewWaker;
 
@@ -248,31 +246,59 @@ fn reader_loop() {
     }
 }
 
-/// Take a line or wait for input. Concurrent reads take lines in the order
-/// they started: a read behind another waits for its turn without
-/// attempting. The buffer lock is held from the turn check until the
-/// operation waits on the slot, so input that arrives in between finds the
-/// waiter.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
+mod native_stdin {
     #[cfg(windows)]
-    if let Err(error) = ensure_reader() {
-        operation.complete(Err(error));
-        return;
+    use super::ensure_reader;
+    use super::{attempt, Arc, HewAsyncIo, HewWaker, MutexExt, STDIN};
+    use crate::reactor::{Direction, Slot};
+
+    /// Take a line or wait for input. Concurrent reads take lines in the order
+    /// they started: a read behind another waits for its turn without
+    /// attempting. The buffer lock is held from the turn check until the
+    /// operation waits on the slot, so input that arrives in between finds the
+    /// waiter.
+    pub(crate) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
+        #[cfg(windows)]
+        if let Err(error) = ensure_reader() {
+            operation.complete(Err(error));
+            return;
+        }
+        let mut buffer = STDIN.lock_or_recover();
+        if !slot.take_turn(operation) {
+            return;
+        }
+        let result = match attempt(&mut buffer) {
+            Some(result) => result,
+            None => match slot.wait(Direction::Read, operation) {
+                Ok(_) => return,
+                Err(error) => Err(error),
+            },
+        };
+        drop(buffer);
+        operation.complete(result);
     }
-    let mut buffer = STDIN.lock_or_recover();
-    if !slot.take_turn(operation) {
-        return;
+
+    pub(crate) unsafe fn start_native_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
+        // SAFETY: the caller supplies the borrowed readiness descriptor.
+        unsafe { super::super::net::start_stdin_line(crate::reactor::stdin_slot(), waker) }
     }
-    let result = match attempt(&mut buffer) {
-        Some(result) => result,
-        None => match slot.wait(Direction::Read, operation) {
-            Ok(_) => return,
-            Err(error) => Err(error),
-        },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native_stdin::{advance, start_native_read_line};
+
+/// Read one line of standard input at submission; the operation returned is
+/// already complete.
+#[cfg(target_arch = "wasm32")]
+pub(crate) unsafe fn start_blocking_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
+    // SAFETY: the caller lends the descriptor through construction.
+    let operation = unsafe { HewAsyncIo::new(waker) };
+    let Some(result) = attempt(&mut STDIN.lock_or_recover()) else {
+        unreachable!("a blocking fill ends in a line, end of input or an error")
     };
-    drop(buffer);
     operation.complete(result);
+    Arc::into_raw(operation)
 }
 
 /// Start reading one line of standard input. The result is the line with its
@@ -282,28 +308,10 @@ pub(super) fn advance(operation: &Arc<HewAsyncIo>, slot: &Arc<Slot>) {
 ///
 /// # Safety
 /// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_async_stdin_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
-    // SAFETY: the caller supplies the borrowed readiness descriptor.
-    unsafe { super::net::start_stdin_line(crate::reactor::stdin_slot(), waker) }
-}
-
-/// Read one line of standard input at submission; the operation returned is
-/// already complete. The result contract matches the native entry.
-///
-/// # Safety
-/// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_async_stdin_read_line(waker: *const HewWaker) -> *const HewAsyncIo {
-    // SAFETY: the caller lends the descriptor through construction.
-    let operation = unsafe { HewAsyncIo::new(waker) };
-    let Some(result) = attempt(&mut STDIN.lock_or_recover()) else {
-        unreachable!("a blocking fill ends in a line, end of input or an error")
-    };
-    operation.complete(result);
-    Arc::into_raw(operation)
+    // SAFETY: forwarded from caller contract.
+    unsafe { crate::platform::host_io::start_stdin_read_line(waker) }
 }
 
 #[cfg(test)]

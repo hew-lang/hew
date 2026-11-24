@@ -920,10 +920,7 @@ pub unsafe extern "C" fn hew_coro_safepoint(state: *mut HewCoroState, budget: u3
     if unsafe { hew_coro_state_is_cancelled(state) } != 0 {
         return 2;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let runnable = crate::scheduler::has_runnable_work();
-    #[cfg(target_arch = "wasm32")]
-    let runnable = crate::driver::has_queued_work();
+    let runnable = crate::platform::executor::has_runnable_work();
     if runnable {
         state.execution().waker.wake();
         return 1;

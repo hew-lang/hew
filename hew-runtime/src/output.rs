@@ -49,9 +49,6 @@ static QUEUE: Mutex<Queue> = Mutex::new(Queue {
     draining: false,
 });
 static PROGRESS: Condvar = Condvar::new();
-/// Signalled when the queue gains a chunk for the drainer thread.
-#[cfg(not(target_arch = "wasm32"))]
-static WORK: Condvar = Condvar::new();
 
 /// Queue a copy of `bytes` for `stream`, in order with every other write.
 pub(crate) fn write(stream: Stream, bytes: &[u8]) {
@@ -107,8 +104,7 @@ fn enqueue(
     }
     queue.bytes += bytes.len();
     queue.draining = true;
-    #[cfg(not(target_arch = "wasm32"))]
-    WORK.notify_one();
+    crate::platform::executor::notify_output_drainer();
 }
 
 /// Wait until everything queued so far has been written.
@@ -121,35 +117,19 @@ pub(crate) fn flush() {
 
 /// Whether queued writes reach the drainer thread, starting it on the first
 /// write under a runtime. Called with the queue locked.
-#[cfg(not(target_arch = "wasm32"))]
 fn drainer_running() -> bool {
-    static DRAINER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if crate::runtime::rt_current_opt().is_none() {
-        return false;
-    }
-    *DRAINER.get_or_init(|| {
-        std::thread::Builder::new()
-            .name("hew-output".into())
-            .spawn(drain)
-            .is_ok()
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn drainer_running() -> bool {
-    false
+    crate::platform::executor::output_drainer_running(drain)
 }
 
 /// The drainer thread: write each batch outside the lock, for the life of the
 /// process.
-#[cfg(not(target_arch = "wasm32"))]
 fn drain() {
     let mut queue = QUEUE.lock_or_recover();
     loop {
         if queue.chunks.is_empty() {
             queue.draining = false;
             PROGRESS.notify_all();
-            queue = WORK.wait_or_recover(queue);
+            queue = crate::platform::executor::wait_output_work(queue);
             continue;
         }
         let batch = std::mem::take(&mut queue.chunks);

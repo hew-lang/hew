@@ -34,39 +34,6 @@ pub(crate) fn actor_free_state_is_quiescent(state: i32) -> bool {
         || state == HewActorState::Idle as i32
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy)]
-struct DeferredActorFree(*mut HewActor);
-
-#[cfg(not(target_arch = "wasm32"))]
-// SAFETY: the deferred free thread only observes the raw pointer value after
-// the owning dispatch thread has requested teardown.
-unsafe impl Send for DeferredActorFree {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn free_deferred_actor(deferred: DeferredActorFree) {
-    // SAFETY: the runtime still owns `actor`; the background thread simply
-    // retries the same free once the current dispatch unwinds.
-    let rc = unsafe { hew_actor_free(deferred.0) };
-    if rc != 0 {
-        eprintln!("hew: warning: deferred actor free failed with rc={rc}");
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
-    let deferred = DeferredActorFree(actor);
-    let Ok(handle) = std::thread::Builder::new()
-        .name("deferred-actor-free".into())
-        .spawn(move || free_deferred_actor(deferred))
-    else {
-        crate::set_last_error("hew_actor_free: failed to spawn deferred free thread");
-        return -1;
-    };
-    live_actors::push_deferred_teardown_thread(handle);
-    0
-}
-
 /// Quiesce actor-owned wake producers before retiring a quiescent actor.
 ///
 /// Cancels periodic timers and (on native targets) detaches reactor and
@@ -91,11 +58,10 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     // SAFETY: caller guarantees the actor is valid and quiescent.
     let actor_id = unsafe { (*actor).id };
     crate::timer_periodic::cancel_all_timers_for_actor(actor);
-    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: name retirement requires only the actor identity.
     unsafe {
-        crate::hew_node::unregister_actor_names(actor_id);
-    };
+        crate::platform::host_io::unregister_actor_names(actor_id);
+    }
     crate::parse_error_slot::clear_all_for_actor(actor_id);
 }
 
@@ -370,7 +336,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
     // supervisor-stop thread dereferences its supervisor's self actor and
     // child actors while it waits for quiescence; freeing those allocations
     // out from under it would be a use-after-free followed by a double-free.
-    #[cfg(not(target_arch = "wasm32"))]
     live_actors::drain_deferred_teardown_threads();
 
     // Close the publication gate and wait for every spawn that reserved a
@@ -882,7 +847,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
                 // Retirement already gave reclamation to the outer finalizer.
                 return 0;
             }
-            return defer_actor_free_on_background_thread(actor);
+            return crate::platform::executor::defer_single_actor_free(actor);
         }
         crate::set_last_error("hew_actor_free: current actor is still dispatching");
         return -2;
@@ -1142,178 +1107,238 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn drain_outcome_from_lists(
-    mut still_live: Vec<ActorId>,
-    mut crashed: Vec<ActorId>,
-) -> DrainOutcome {
-    still_live.sort_unstable();
-    crashed.sort_unstable();
-    if still_live.is_empty() && crashed.is_empty() {
-        DrainOutcome::Drained
-    } else {
-        DrainOutcome::Incomplete {
-            still_live,
-            crashed,
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn collect_pending_actor(id: ActorId) -> Option<(ActorId, live_actors::ActorPin)> {
-    live_actors::pin_actor_by_id(id).map(|pin| (id, pin))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn pin_pending_actor(actor_id: ActorId, expected: *mut HewActor) -> Option<live_actors::ActorPin> {
-    let pin = live_actors::pin_actor_by_id(actor_id)?;
-    (pin.as_ptr() == expected).then_some(pin)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
-    (delay.saturating_mul(2)).min(std::time::Duration::from_millis(50))
-}
-
-/// Quiesce and free an actor that has already reached a terminal state inside
-/// `drain_actors`.
-///
-/// This consolidates the sequence — cancel timers/links/monitors, wake-proof,
-/// take ownership from `LIVE_ACTORS`, drain pins, and run
-/// `finalize_quiescent_actor_cleanup` — into one call site so both the inner
-/// loop and the post-deadline pass use the same ordering.
-///
-/// ## Finalize decision (CAS-result, never a snapshot)
-///
-/// The finalize decision comes from [`decide_finalize_by_latch`] — the same
-/// CAS-result primitive `cleanup_all_actors` uses — applied BEFORE untracking,
-/// not from a state value the caller snapshotted earlier. `drain_actors` calls
-/// `hew_actor_stop` on every actor BEFORE waiting for quiescence, so by the time
-/// this runs the actor is already terminal (`Stopped`): the latch CAS returns
-/// `Err(Stopped)` ⇒ `Finalize(Stopped)`, the same finalize the previous
-/// snapshot-based code performed. The latch additionally HARDENS the path
-/// against stop-first contract drift: were a future caller to skip the stop, a
-/// re-enqueued (`Runnable`) actor now fails closed (`Skip` ⇒ leak) instead of
-/// being finalized while a scheduler queue still holds its pointer.
-///
-/// **Callers should still uphold the stop-first contract** so the common path
-/// finalizes cleanly rather than relying on the defensive `Skip` leak.
-///
-/// # Safety
-///
-/// `pin` must name the exact actor tracked under `actor_id`, and the caller must
-/// have observed it in a quiescent state while holding this pin.
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn drain_quiesced_actor(
-    actor_id: ActorId,
-    pin: live_actors::ActorPin,
-    deadline: std::time::Instant,
-) {
-    let expected = pin.as_ptr();
-    // The caller pin bridges the state-observation -> first-dereference gap.
-    // A concurrent free may retire the actor now, but its post-untrack pin
-    // drain cannot reclaim the allocation until this preparation and the
-    // retirement claim below finish.
-    //
-    // SAFETY: caller guarantees `pin` owns this valid quiescent allocation.
-    unsafe { prepare_quiescent_actor_for_cleanup(expected) };
-
-    // Wake-proof + finalize decision by the CAS RESULT, BEFORE untracking
-    // (mirrors `hew_actor_free_inner` / `cleanup_all_actors`). Under the
-    // stop-first contract this is `Err(Stopped) ⇒ Finalize(Stopped)`; a
-    // re-enqueued actor (contract drift) takes the fail-closed `Skip` leak.
-    let a = pin.actor();
-    let finalize_state = match decide_finalize_by_latch(a) {
-        FinalizeDecision::Finalize(state) => state,
-        FinalizeDecision::Skip => {
-            // Re-enqueued/active despite stop-first: leave it tracked so the
-            // shutdown sweep (`cleanup_all_actors`) reclaims it once it drains,
-            // and leak fail-closed here rather than free a queued actor.
-            crate::set_last_error(
-                "drain_quiesced_actor: actor re-enqueued during drain; leaked fail-closed",
-            );
-            return;
-        }
+mod native_drain {
+    use super::{
+        actor_free_state_is_quiescent, decide_finalize_by_latch, finalize_quiescent_actor_cleanup,
+        hew_actor_stop, live_actors, prepare_quiescent_actor_for_cleanup, ptr,
+        scrub_actor_relationships_after_pin_drain, ActorId, DrainOutcome, DrainOutcomeRepr,
+        FinalizeDecision, HashSet, HewActor, HewActorState, Ordering,
+    };
+    #[cfg(test)]
+    use super::{
+        run_registration_retirement_hook, DRAIN_POST_PIN_PRE_STOP_HOOK,
+        DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
     };
 
-    if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-        // This function now owns the retired allocation. Release its caller pin
-        // before waiting for all remaining pins, otherwise it would wait on
-        // itself until the deadline. The allocation stays live by cleanup
-        // ownership after take_actor_by_id.
-        drop(pin);
-
-        // After take_actor_by_id the map entry is removed: no new send pins
-        // can be taken.  Drain any in-flight pins before finalizing.
-        // LIVE_ACTORS is not held here; pinned senders can re-acquire it.
-        // SAFETY: actor is a live pointer returned by take_actor_by_id.
-        let a = unsafe { &*actor };
-        loop {
-            if a.send_pin_count.load(Ordering::Acquire) == 0
-                && !a.dispatch_active.load(Ordering::Acquire)
-            {
-                break;
+    pub(super) fn drain_outcome_from_lists(
+        mut still_live: Vec<ActorId>,
+        mut crashed: Vec<ActorId>,
+    ) -> DrainOutcome {
+        still_live.sort_unstable();
+        crashed.sort_unstable();
+        if still_live.is_empty() && crashed.is_empty() {
+            DrainOutcome::Drained
+        } else {
+            DrainOutcome::Incomplete {
+                still_live,
+                crashed,
             }
-            if std::time::Instant::now() >= deadline {
-                // An outstanding pin may still insert a relationship, so no
-                // final scrub is safe on this fail-closed allocation leak.
+        }
+    }
+
+    pub(super) fn collect_pending_actor(id: ActorId) -> Option<(ActorId, live_actors::ActorPin)> {
+        live_actors::pin_actor_by_id(id).map(|pin| (id, pin))
+    }
+
+    pub(super) fn pin_pending_actor(
+        actor_id: ActorId,
+        expected: *mut HewActor,
+    ) -> Option<live_actors::ActorPin> {
+        let pin = live_actors::pin_actor_by_id(actor_id)?;
+        (pin.as_ptr() == expected).then_some(pin)
+    }
+
+    pub(super) fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
+        (delay.saturating_mul(2)).min(std::time::Duration::from_millis(50))
+    }
+
+    /// Quiesce and free an actor that has already reached a terminal state inside
+    /// `drain_actors`.
+    ///
+    /// This consolidates the sequence — cancel timers/links/monitors, wake-proof,
+    /// take ownership from `LIVE_ACTORS`, drain pins, and run
+    /// `finalize_quiescent_actor_cleanup` — into one call site so both the inner
+    /// loop and the post-deadline pass use the same ordering.
+    ///
+    /// ## Finalize decision (CAS-result, never a snapshot)
+    ///
+    /// The finalize decision comes from [`decide_finalize_by_latch`] — the same
+    /// CAS-result primitive `cleanup_all_actors` uses — applied BEFORE untracking,
+    /// not from a state value the caller snapshotted earlier. `drain_actors` calls
+    /// `hew_actor_stop` on every actor BEFORE waiting for quiescence, so by the time
+    /// this runs the actor is already terminal (`Stopped`): the latch CAS returns
+    /// `Err(Stopped)` ⇒ `Finalize(Stopped)`, the same finalize the previous
+    /// snapshot-based code performed. The latch additionally HARDENS the path
+    /// against stop-first contract drift: were a future caller to skip the stop, a
+    /// re-enqueued (`Runnable`) actor now fails closed (`Skip` ⇒ leak) instead of
+    /// being finalized while a scheduler queue still holds its pointer.
+    ///
+    /// **Callers should still uphold the stop-first contract** so the common path
+    /// finalizes cleanly rather than relying on the defensive `Skip` leak.
+    ///
+    /// # Safety
+    ///
+    /// `pin` must name the exact actor tracked under `actor_id`, and the caller must
+    /// have observed it in a quiescent state while holding this pin.
+    pub(super) unsafe fn drain_quiesced_actor(
+        actor_id: ActorId,
+        pin: live_actors::ActorPin,
+        deadline: std::time::Instant,
+    ) {
+        let expected = pin.as_ptr();
+        // The caller pin bridges the state-observation -> first-dereference gap.
+        // A concurrent free may retire the actor now, but its post-untrack pin
+        // drain cannot reclaim the allocation until this preparation and the
+        // retirement claim below finish.
+        //
+        // SAFETY: caller guarantees `pin` owns this valid quiescent allocation.
+        unsafe { prepare_quiescent_actor_for_cleanup(expected) };
+
+        // Wake-proof + finalize decision by the CAS RESULT, BEFORE untracking
+        // (mirrors `hew_actor_free_inner` / `cleanup_all_actors`). Under the
+        // stop-first contract this is `Err(Stopped) ⇒ Finalize(Stopped)`; a
+        // re-enqueued actor (contract drift) takes the fail-closed `Skip` leak.
+        let a = pin.actor();
+        let finalize_state = match decide_finalize_by_latch(a) {
+            FinalizeDecision::Finalize(state) => state,
+            FinalizeDecision::Skip => {
+                // Re-enqueued/active despite stop-first: leave it tracked so the
+                // shutdown sweep (`cleanup_all_actors`) reclaims it once it drains,
+                // and leak fail-closed here rather than free a queued actor.
                 crate::set_last_error(
-                    "drain_quiesced_actor: lifetime pins or dispatch ownership did not drain \
-                     after timeout",
+                    "drain_quiesced_actor: actor re-enqueued during drain; leaked fail-closed",
                 );
-                // Fail-closed: actor is untracked but not freed (leak).
                 return;
             }
-            std::thread::yield_now();
-        }
-        // SAFETY: take_actor_by_id retired the actor and the loop above proved
-        // every operation pinned before retirement has completed.
-        unsafe { scrub_actor_relationships_after_pin_drain(actor) };
-        // SAFETY: the actor is quiescent, prepared for cleanup, wake-proofed,
-        // no longer tracked, and all send pins have drained.
-        unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
-    }
-    // If another freer won retirement, `pin` drops here and releases that
-    // winner's final reclamation wait.
-}
-
-/// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
-    if ids.is_empty() {
-        return DrainOutcome::Drained;
-    }
-
-    let mut seen = HashSet::with_capacity(ids.len());
-    let mut pending = Vec::with_capacity(ids.len());
-    for actor_id in ids.iter().copied().filter(|id| seen.insert(*id)) {
-        let Some((actor_id, pin)) = collect_pending_actor(actor_id) else {
-            continue;
         };
-        let actor = pin.as_ptr();
-        // Deterministic proof hook: a concurrent free may retire this actor
-        // now, but cannot reclaim it while `pin` is held across stop.
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        run_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id);
 
-        // SAFETY: `pin` was acquired while actor_id was tracked and keeps the
-        // allocation live across this raw-pointer stop operation.
-        unsafe { hew_actor_stop(actor) };
-        pending.push((actor_id, actor));
-        // Release exactly after the last unvalidated raw-pointer dereference.
-        // Later state/cleanup work acquires a fresh exact-pointer pin.
-        drop(pin);
+        if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+            // This function now owns the retired allocation. Release its caller pin
+            // before waiting for all remaining pins, otherwise it would wait on
+            // itself until the deadline. The allocation stays live by cleanup
+            // ownership after take_actor_by_id.
+            drop(pin);
+
+            // After take_actor_by_id the map entry is removed: no new send pins
+            // can be taken.  Drain any in-flight pins before finalizing.
+            // LIVE_ACTORS is not held here; pinned senders can re-acquire it.
+            // SAFETY: actor is a live pointer returned by take_actor_by_id.
+            let a = unsafe { &*actor };
+            loop {
+                if a.send_pin_count.load(Ordering::Acquire) == 0
+                    && !a.dispatch_active.load(Ordering::Acquire)
+                {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    // An outstanding pin may still insert a relationship, so no
+                    // final scrub is safe on this fail-closed allocation leak.
+                    crate::set_last_error(
+                        "drain_quiesced_actor: lifetime pins or dispatch ownership did not drain \
+                         after timeout",
+                    );
+                    // Fail-closed: actor is untracked but not freed (leak).
+                    return;
+                }
+                std::thread::yield_now();
+            }
+            // SAFETY: take_actor_by_id retired the actor and the loop above proved
+            // every operation pinned before retirement has completed.
+            unsafe { scrub_actor_relationships_after_pin_drain(actor) };
+            // SAFETY: the actor is quiescent, prepared for cleanup, wake-proofed,
+            // no longer tracked, and all send pins have drained.
+            unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
+        }
+        // If another freer won retirement, `pin` drops here and releases that
+        // winner's final reclamation wait.
     }
 
-    let mut crashed = Vec::new();
-    let mut backoff = std::time::Duration::from_millis(1);
+    /// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
+    #[must_use]
+    pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
+        if ids.is_empty() {
+            return DrainOutcome::Drained;
+        }
 
-    loop {
-        let mut index = 0;
-        while index < pending.len() {
-            let (actor_id, expected) = pending[index];
+        let mut seen = HashSet::with_capacity(ids.len());
+        let mut pending = Vec::with_capacity(ids.len());
+        for actor_id in ids.iter().copied().filter(|id| seen.insert(*id)) {
+            let Some((actor_id, pin)) = collect_pending_actor(actor_id) else {
+                continue;
+            };
+            let actor = pin.as_ptr();
+            // Deterministic proof hook: a concurrent free may retire this actor
+            // now, but cannot reclaim it while `pin` is held across stop.
+            #[cfg(test)]
+            run_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id);
+
+            // SAFETY: `pin` was acquired while actor_id was tracked and keeps the
+            // allocation live across this raw-pointer stop operation.
+            unsafe { hew_actor_stop(actor) };
+            pending.push((actor_id, actor));
+            // Release exactly after the last unvalidated raw-pointer dereference.
+            // Later state/cleanup work acquires a fresh exact-pointer pin.
+            drop(pin);
+        }
+
+        let mut crashed = Vec::new();
+        let mut backoff = std::time::Duration::from_millis(1);
+
+        loop {
+            let mut index = 0;
+            while index < pending.len() {
+                let (actor_id, expected) = pending[index];
+                let Some(pin) = pin_pending_actor(actor_id, expected) else {
+                    pending.swap_remove(index);
+                    continue;
+                };
+                let state = pin.actor().actor_state.load(Ordering::Acquire);
+                match state {
+                    state if state == HewActorState::Crashed as i32 => {
+                        drop(pin);
+                        crashed.push(actor_id);
+                        pending.swap_remove(index);
+                    }
+                    state if actor_free_state_is_quiescent(state) => {
+                        // Deterministic proof hook: the exact allocation remains
+                        // pinned from this state observation into cleanup.
+                        #[cfg(test)]
+                        run_registration_retirement_hook(
+                            &DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
+                            actor_id,
+                        );
+
+                        // SAFETY: `pin` names expected under actor_id and held the
+                        // allocation across the quiescent state observation.
+                        unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
+                        pending.swap_remove(index);
+                    }
+                    _ => {
+                        drop(pin);
+                        index += 1;
+                    }
+                }
+            }
+
+            if pending.is_empty() {
+                return drain_outcome_from_lists(Vec::new(), crashed);
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+
+            let sleep_for = backoff.min(deadline.saturating_duration_since(now));
+            if !sleep_for.is_zero() {
+                std::thread::sleep(sleep_for);
+            }
+            backoff = drain_backoff_duration(backoff);
+        }
+
+        let mut still_live = Vec::with_capacity(pending.len());
+        for (actor_id, expected) in pending {
             let Some(pin) = pin_pending_actor(actor_id, expected) else {
-                pending.swap_remove(index);
                 continue;
             };
             let state = pin.actor().actor_state.load(Ordering::Acquire);
@@ -1321,118 +1346,76 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
                 state if state == HewActorState::Crashed as i32 => {
                     drop(pin);
                     crashed.push(actor_id);
-                    pending.swap_remove(index);
                 }
                 state if actor_free_state_is_quiescent(state) => {
-                    // Deterministic proof hook: the exact allocation remains
-                    // pinned from this state observation into cleanup.
-                    #[cfg(all(test, not(target_arch = "wasm32")))]
-                    run_registration_retirement_hook(&DRAIN_POST_STATE_PRE_CLEANUP_HOOK, actor_id);
-
                     // SAFETY: `pin` names expected under actor_id and held the
                     // allocation across the quiescent state observation.
                     unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
-                    pending.swap_remove(index);
                 }
                 _ => {
                     drop(pin);
-                    index += 1;
+                    still_live.push(actor_id);
                 }
             }
         }
 
-        if pending.is_empty() {
-            return drain_outcome_from_lists(Vec::new(), crashed);
-        }
-
-        let now = std::time::Instant::now();
-        if now >= deadline {
-            break;
-        }
-
-        let sleep_for = backoff.min(deadline.saturating_duration_since(now));
-        if !sleep_for.is_zero() {
-            std::thread::sleep(sleep_for);
-        }
-        backoff = drain_backoff_duration(backoff);
+        drain_outcome_from_lists(still_live, crashed)
     }
 
-    let mut still_live = Vec::with_capacity(pending.len());
-    for (actor_id, expected) in pending {
-        let Some(pin) = pin_pending_actor(actor_id, expected) else {
-            continue;
+    pub(super) fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
+        if ids.is_empty() {
+            return Ok(ptr::null_mut());
+        }
+
+        let Some(bytes) = ids.len().checked_mul(std::mem::size_of::<ActorId>()) else {
+            return Err("hew_actor_drain_set: actor id list size overflow");
         };
-        let state = pin.actor().actor_state.load(Ordering::Acquire);
-        match state {
-            state if state == HewActorState::Crashed as i32 => {
-                drop(pin);
-                crashed.push(actor_id);
-            }
-            state if actor_free_state_is_quiescent(state) => {
-                // SAFETY: `pin` names expected under actor_id and held the
-                // allocation across the quiescent state observation.
-                unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
-            }
-            _ => {
-                drop(pin);
-                still_live.push(actor_id);
-            }
+        // SAFETY: malloc returns an allocation large enough for `ids.len()` ActorIds or null on failure.
+        let out = crate::mem::buf_try_alloc(bytes).cast::<ActorId>();
+        if out.is_null() {
+            return Err("hew_actor_drain_set: failed to allocate outcome buffer");
         }
+
+        // SAFETY: `out` points to `ids.len()` initialized ActorId slots allocated above.
+        unsafe { ptr::copy_nonoverlapping(ids.as_ptr(), out, ids.len()) };
+        Ok(out)
     }
 
-    drain_outcome_from_lists(still_live, crashed)
+    pub(super) fn write_drain_outcome_repr(
+        out: &mut DrainOutcomeRepr,
+        outcome: DrainOutcome,
+    ) -> Result<(), &'static str> {
+        *out = DrainOutcomeRepr::default();
+        let (still_live, crashed) = match outcome {
+            DrainOutcome::Drained => (Vec::new(), Vec::new()),
+            DrainOutcome::Incomplete {
+                still_live,
+                crashed,
+            } => (still_live, crashed),
+        };
+
+        let still_live_ptr = actor_ids_to_malloc(&still_live)?;
+        let crashed_ptr = match actor_ids_to_malloc(&crashed) {
+            Ok(ptr) => ptr,
+            Err(err) => {
+                // SAFETY: `still_live_ptr` came from `actor_ids_to_malloc` in this function.
+                unsafe { crate::mem::buf_free(still_live_ptr.cast()) };
+                return Err(err);
+            }
+        };
+
+        out.still_live_ptr = still_live_ptr;
+        out.still_live_len = still_live.len();
+        out.crashed_ptr = crashed_ptr;
+        out.crashed_len = crashed.len();
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
-    if ids.is_empty() {
-        return Ok(ptr::null_mut());
-    }
-
-    let Some(bytes) = ids.len().checked_mul(std::mem::size_of::<ActorId>()) else {
-        return Err("hew_actor_drain_set: actor id list size overflow");
-    };
-    // SAFETY: malloc returns an allocation large enough for `ids.len()` ActorIds or null on failure.
-    let out = crate::mem::buf_try_alloc(bytes).cast::<ActorId>();
-    if out.is_null() {
-        return Err("hew_actor_drain_set: failed to allocate outcome buffer");
-    }
-
-    // SAFETY: `out` points to `ids.len()` initialized ActorId slots allocated above.
-    unsafe { ptr::copy_nonoverlapping(ids.as_ptr(), out, ids.len()) };
-    Ok(out)
-}
-
+pub use native_drain::drain_actors;
 #[cfg(not(target_arch = "wasm32"))]
-fn write_drain_outcome_repr(
-    out: &mut DrainOutcomeRepr,
-    outcome: DrainOutcome,
-) -> Result<(), &'static str> {
-    *out = DrainOutcomeRepr::default();
-    let (still_live, crashed) = match outcome {
-        DrainOutcome::Drained => (Vec::new(), Vec::new()),
-        DrainOutcome::Incomplete {
-            still_live,
-            crashed,
-        } => (still_live, crashed),
-    };
-
-    let still_live_ptr = actor_ids_to_malloc(&still_live)?;
-    let crashed_ptr = match actor_ids_to_malloc(&crashed) {
-        Ok(ptr) => ptr,
-        Err(err) => {
-            // SAFETY: `still_live_ptr` came from `actor_ids_to_malloc` in this function.
-            unsafe { crate::mem::buf_free(still_live_ptr.cast()) };
-            return Err(err);
-        }
-    };
-
-    out.still_live_ptr = still_live_ptr;
-    out.still_live_len = still_live.len();
-    out.crashed_ptr = crashed_ptr;
-    out.crashed_len = crashed.len();
-    Ok(())
-}
+use native_drain::write_drain_outcome_repr;
 
 /// Free buffers allocated by [`hew_actor_drain_set`].
 ///
@@ -1961,36 +1944,7 @@ pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int
 /// once at the boundary before the refusal.
 #[inline]
 pub(crate) fn actor_runtime_matches(a: &HewActor) -> bool {
-    // wasm32 has one runtime by construction, so no actor can be foreign to the
-    // caller and the boundary is always in-runtime.
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = a;
-        true
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // Resolve the calling runtime's id without trapping when none is installed.
-        // With no runtime bound there is no second runtime the actor could be
-        // foreign to, so the boundary treats the send as in-runtime — it must not
-        // introduce a "runtime must be installed" precondition the pre-check never
-        // had (e.g. an alias send before init, or a unit test driving a send path
-        // without a runtime guard).
-        let Some(current) = crate::runtime::rt_current_id() else {
-            return true;
-        };
-        if current == a.runtime_id {
-            return true;
-        }
-        eprintln!(
-            "hew-runtime: refused a send to actor {:#x} owned by runtime {} from runtime {} \
-             (cross-runtime boundary; pointer not routed)",
-            a.id,
-            a.runtime_id.as_u64(),
-            current.as_u64(),
-        );
-        false
-    }
+    crate::platform::executor::actor_runtime_matches(a.id, a.runtime_id)
 }
 
 /// Terminal-state send gate: `true` once the actor has been published into a
@@ -2080,8 +2034,7 @@ pub(crate) unsafe fn actor_send_result_internal_reply(
         return HewError::ErrForeignRuntime as i32;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+    let Ok(_ingress) = crate::platform::executor::admit_external_work() else {
         return HewError::ErrActorStopped as i32;
     };
 
@@ -2813,9 +2766,8 @@ pub unsafe extern "C" fn hew_local_pid_ask(
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return actor_ask_null(AskError::OrphanedAsk);
     };
-    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: the resolved ActorId is pinned by the by-ID ask send phase.
-    return unsafe { hew_actor_ask_by_id(actor_id, msg_type, data, size) };
+    unsafe { hew_actor_ask_by_id(actor_id, msg_type, data, size) }
 }
 
 /// Submit an ask with a caller-owned reply channel through a stable identity.
@@ -2836,9 +2788,8 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
         return HewError::ErrActorStopped as i32;
     };
     live_actors::with_actor_send_by_id(actor_id, |actor| {
-        #[cfg(not(target_arch = "wasm32"))]
         // SAFETY: actor is pinned; channel and data follow this function's contract.
-        return unsafe {
+        unsafe {
             submit_ask_with_reply_channel(
                 ch.cast(),
                 AskReplyChannelFailureCleanup::KeepCreatorRef,
@@ -2853,7 +2804,7 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
                     )
                 },
             )
-        };
+        }
     })
     .unwrap_or_else(|| {
         record_ask_error(AskError::ActorStopped);
@@ -3110,8 +3061,7 @@ impl TerminalNotification {
         // two-process link fixture can confirm a LOCAL linked actor actually crashed
         // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
         // free. Gated by HEW_LINK_PROBE so production pays nothing.
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::link::record_link_probe_terminal(actor_id, terminal);
+        crate::platform::host_io::record_link_probe_terminal(actor_id, terminal);
 
         // Propagate exit to linked actors and notify monitors.
         // Do this BEFORE notifying supervisor to ensure proper ordering.
@@ -3650,15 +3600,4 @@ pub extern "C" fn hew_actor_self_stop() {
         Ordering::AcqRel,
         Ordering::Acquire,
     );
-}
-
-// ── WASM actor API ──────────────────────────────────────────────────────
-// On WASM, spawn/send/ask/stop/close use the WASM mailbox and cooperative
-// scheduler. These provide the same C ABI surface as native so that
-// codegen-emitted calls resolve transparently.
-
-#[cfg(target_arch = "wasm32")]
-fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
-    crate::driver::publish_actor_free(vec![actor]);
-    0
 }

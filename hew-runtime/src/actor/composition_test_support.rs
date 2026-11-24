@@ -73,7 +73,7 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
         suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
         runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-        runtime: ptr::null(),
+        runtime: crate::platform::executor::RuntimeHandle::null(),
         send_pin_count: AtomicU32::new(0),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: u64::MAX - 2_848,

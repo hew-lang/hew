@@ -83,16 +83,6 @@ pub mod blocking {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
 
-    #[cfg(not(target_arch = "wasm32"))]
-    use crate::scheduler::spin::{SpinBudget, DEFAULT_SPIN_LIMIT};
-
-    #[cfg(not(target_arch = "wasm32"))]
-    thread_local! {
-        /// Adaptive spin budget of the synchronous waiter on this thread.
-        static WAITER_SPIN: std::cell::Cell<SpinBudget> =
-            const { std::cell::Cell::new(SpinBudget::new(DEFAULT_SPIN_LIMIT)) };
-    }
-
     /// `pending` and `blocked` form a Dekker pair under `SeqCst`: the waiter
     /// publishes `blocked` before its last `pending` check under `lock`, and a
     /// waker publishes `pending` before reading `blocked`, so a waker that sees
@@ -145,19 +135,10 @@ pub mod blocking {
             }
             // A reply usually lands within a futex round trip; spin for it
             // first so neither side makes a syscall.
-            #[cfg(not(target_arch = "wasm32"))]
+            if crate::platform::executor::spin_waiter(|| self.pending.load(Ordering::Acquire))
+                && self.take_ready()
             {
-                let spun = WAITER_SPIN.with(|budget| {
-                    let mut current = budget.get();
-                    let spun = crate::scheduler::spin_waiter(&mut current, || {
-                        self.pending.load(Ordering::Acquire)
-                    });
-                    budget.set(current);
-                    spun
-                });
-                if spun && self.take_ready() {
-                    return;
-                }
+                return;
             }
             let mut guard = self.lock.lock_or_recover();
             self.blocked.store(true, Ordering::SeqCst);

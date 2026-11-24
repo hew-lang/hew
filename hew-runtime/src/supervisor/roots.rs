@@ -22,16 +22,7 @@ unsafe impl Send for SupervisorPtr {}
 /// runtime exists is a lifecycle error, not a silent no-op.
 #[inline]
 pub(crate) fn with_supervisor_roots<R>(f: impl FnOnce(&mut Vec<SupervisorPtr>) -> R) -> R {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::runtime::rt_current().supervisor_roots.access(f)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        static ROOTS: crate::lifetime::PoisonSafe<Vec<SupervisorPtr>> =
-            crate::lifetime::PoisonSafe::new(Vec::new());
-        ROOTS.access(f)
-    }
+    crate::platform::executor::with_supervisor_roots(f)
 }
 
 /// Delayed restarts and retiring children remain admitted work even while the

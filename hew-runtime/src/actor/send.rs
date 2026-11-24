@@ -168,8 +168,7 @@ pub(crate) unsafe fn actor_await_send_pinned(
     if !actor_runtime_matches(target) {
         return (HewError::ErrForeignRuntime as i32, 0);
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+    let Ok(_ingress) = crate::platform::executor::admit_external_work() else {
         return (HewError::ErrActorStopped as i32, 0);
     };
     if actor_send_is_terminal(target) {
@@ -246,9 +245,8 @@ pub unsafe extern "C" fn hew_local_pid_send(
         return HewError::ErrActorStopped as i32;
     };
     live_actors::with_actor_send_by_id(actor_id, |actor| {
-        #[cfg(not(target_arch = "wasm32"))]
         // SAFETY: the actor is pinned and data follows this function's contract.
-        return unsafe { actor_send_result_internal(actor, msg_type, data, size) };
+        unsafe { actor_send_result_internal(actor, msg_type, data, size) }
     })
     .unwrap_or(HewError::ErrActorStopped as i32)
 }
@@ -275,8 +273,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+    let Ok(_ingress) = crate::platform::executor::admit_external_work() else {
         return HewError::ErrClosed as i32;
     };
     // Terminal-state send gate (see `actor_send_is_terminal`): reject once the

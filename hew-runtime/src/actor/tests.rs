@@ -1492,7 +1492,7 @@ fn make_stop_test_actor_with_id(
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: ptr::null(),
+            runtime: crate::platform::executor::RuntimeHandle::null(),
             send_pin_count: AtomicU32::new(0),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
@@ -5328,7 +5328,8 @@ fn track_native_submit_actor(
     // tracking publishes it without taking an allocation reference. The
     // owner stamp is what `untrack_actor` retires the route through.
     unsafe {
-        (*actor).runtime = std::ptr::from_ref(runtime);
+        (*actor).runtime =
+            crate::platform::executor::RuntimeHandle::from_raw(std::ptr::from_ref(runtime));
         (*actor).local_pid_id = token;
         assert!(live_actors::track_actor(actor));
     }

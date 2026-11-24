@@ -233,25 +233,11 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
     if current.is_null() {
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(imported) = crate::lifetime::local_handles::current_imported_actor(target) {
-        // SAFETY: the current activation owns its actor allocation.
-        let actor = unsafe { (*current).id };
-        for (id, authority) in crate::runtime::rt_current()
-            .monitors
-            .remove_imported_links(actor, imported.identity())
-        {
-            crate::hew_node::monitor_link::send_admitted_cleanup(
-                imported.identity(),
-                authority,
-                id,
-                true,
-            );
-        }
-        return;
-    }
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { (*current).id };
+    if crate::platform::host_io::unlink_imported_actor(current, target) {
+        return;
+    }
     match crate::lifetime::local_handles::resolve_current_observed_target(target) {
         Some(crate::lifetime::local_handles::ObservedActorTarget::Actor(target)) => {
             unlink_by_ids(current, target);
@@ -797,7 +783,7 @@ mod tests {
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: std::ptr::null(),
+            runtime: crate::platform::executor::RuntimeHandle::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,

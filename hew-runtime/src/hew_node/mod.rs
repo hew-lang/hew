@@ -2550,7 +2550,7 @@ impl InboundRequest {
                 None,
                 caller,
                 ptr::null(),
-                Some(admission),
+                crate::platform::host_io::RemoteAdmissionSlot::from_native(Some(admission)),
                 self.codec.layout,
                 reply.map_or(ptr::null(), |reply| reply.layout),
             )

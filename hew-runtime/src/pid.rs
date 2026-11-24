@@ -121,14 +121,7 @@ pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
 /// and the checker refuses its surface before codegen, so every PID this target
 /// mints is node-local.
 fn local_route_slot() -> u16 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        0
-    }
+    crate::platform::executor::local_route_slot()
 }
 
 /// Set this process's node ID.

@@ -8,8 +8,6 @@ use hew_cabi::host_error::{HewError, HostStatus};
 
 use crate::coro_root::{poll_root, HewRootStart, RootExecution};
 use crate::fault::HewFault;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::runtime_handle::HewRuntime;
 use crate::wake::scheduled::ReadyState;
 use crate::wake::{HewWaker, OwnedWaker};
 
@@ -65,8 +63,7 @@ impl HostReadiness {
 pub struct HewHostCall {
     execution: RootExecution,
     readiness: Arc<HostReadiness>,
-    #[cfg(not(target_arch = "wasm32"))]
-    runtime: *mut HewRuntime,
+    runtime: crate::platform::host_io::HostRuntimeLease,
     frame: *mut c_void,
     arguments: *mut c_void,
     finish: Option<HewHostCallFinish>,
@@ -90,7 +87,7 @@ unsafe fn refuse(error: *mut *mut HewError, message: &str) -> i32 {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_host_call_new(
-    runtime: *mut HewRuntime,
+    runtime: *mut crate::runtime_handle::HewRuntime,
     waker: *const HewWaker,
     error: *mut *mut HewError,
 ) -> *mut HewHostCall {
@@ -108,7 +105,7 @@ pub unsafe extern "C" fn hew_host_call_new(
     }
     // SAFETY: the non-null borrowed wake target was validated above.
     let mut call = unsafe { prepare(waker) };
-    call.runtime = runtime;
+    call.runtime = crate::platform::host_io::HostRuntimeLease::from_raw(runtime);
     Box::into_raw(call)
 }
 
@@ -148,8 +145,7 @@ unsafe fn prepare(waker: *const HewWaker) -> Box<HewHostCall> {
     Box::new(HewHostCall {
         execution,
         readiness,
-        #[cfg(not(target_arch = "wasm32"))]
-        runtime: std::ptr::null_mut(),
+        runtime: crate::platform::host_io::HostRuntimeLease::NULL,
         frame: std::ptr::null_mut(),
         arguments: std::ptr::null_mut(),
         finish: None,
@@ -299,11 +295,9 @@ pub unsafe extern "C" fn hew_host_call_release(
         *owner = std::ptr::null_mut();
         let call = Box::from_raw(pointer);
         call.free.unwrap_or_else(|| std::process::abort())(call.arguments);
-        #[cfg(not(target_arch = "wasm32"))]
         let runtime = call.runtime;
         drop(call);
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::runtime_handle::hew_runtime_release(runtime);
+        runtime.release();
     }
     0
 }

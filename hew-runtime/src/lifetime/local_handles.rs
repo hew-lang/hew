@@ -125,14 +125,7 @@ struct LocalHandleState {
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
     supervisor_role_tokens: HashMap<(HewLocalPidId, u32, SupervisorRoleKind), HewLocalPidId>,
-    #[cfg(not(target_arch = "wasm32"))]
-    imports: HashMap<HewLocalPidId, ImportedActorBinding>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ImportedActorBinding {
-    references: usize,
-    service: Arc<crate::hew_node::service_api::ImportedService>,
+    imports: crate::platform::host_io::ImportedActorRegistry,
 }
 
 impl LocalHandleState {
@@ -712,8 +705,7 @@ impl LocalHandles {
         true
     }
 
-    #[cfg(any(test, target_arch = "wasm32"))]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn reopen_after_shutdown(&self) {
         let mut state = self
             .publication_gate
@@ -1218,63 +1210,47 @@ impl LocalHandlePublication<'_> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-static WASM_LOCAL_HANDLES: std::sync::OnceLock<LocalHandles> = std::sync::OnceLock::new();
-
-#[cfg(not(target_arch = "wasm32"))]
+#[inline]
 pub(crate) fn current_handles() -> Option<&'static LocalHandles> {
-    crate::runtime::rt_current_opt().map(|rt| &rt.local_handles)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn current_handles() -> Option<&'static LocalHandles> {
-    Some(WASM_LOCAL_HANDLES.get_or_init(LocalHandles::new))
+    crate::platform::executor::current_handles()
 }
 
 /// Runtime identity corresponding to the selected local-handle authority.
+#[inline]
 fn current_runtime_id() -> Option<RuntimeId> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::runtime::rt_current_opt().map(crate::runtime::RuntimeInner::runtime_id)
+    crate::platform::executor::current_runtime_id()
+}
+
+/// Imported actor descriptor helpers on native runtimes.
+#[cfg(not(target_arch = "wasm32"))]
+mod imported_actors {
+    use super::{allocate, current_handles, Arc, HewLocalPidId, LocalHandleError};
+
+    /// Publish one admitted descriptor in the existing actor-handle authority.
+    pub(crate) fn register_current_imported_actor(
+        service: Arc<crate::hew_node::service_api::ImportedService>,
+    ) -> Result<HewLocalPidId, LocalHandleError> {
+        let handles = current_handles().ok_or(LocalHandleError::ShuttingDown)?;
+        let _publication = handles.begin_publication()?;
+        let token = allocate().ok_or(LocalHandleError::Exhausted)?;
+        handles.state.access(|state| {
+            state.imports.insert(token, service);
+        });
+        Ok(token)
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        Some(RuntimeId::DEFAULT)
+
+    /// Borrow the descriptor without extending either peer's node session.
+    pub(crate) fn current_imported_actor(
+        token: HewLocalPidId,
+    ) -> Option<Arc<crate::hew_node::service_api::ImportedService>> {
+        current_handles()?
+            .state
+            .access(|state| state.imports.clone_service(token))
     }
 }
 
-/// Publish one admitted descriptor in the existing actor-handle authority.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_current_imported_actor(
-    service: Arc<crate::hew_node::service_api::ImportedService>,
-) -> Result<HewLocalPidId, LocalHandleError> {
-    let handles = current_handles().ok_or(LocalHandleError::ShuttingDown)?;
-    let _publication = handles.begin_publication()?;
-    let token = allocate().ok_or(LocalHandleError::Exhausted)?;
-    handles.state.access(|state| {
-        state.imports.insert(
-            token,
-            ImportedActorBinding {
-                references: 1,
-                service,
-            },
-        );
-    });
-    Ok(token)
-}
-
-/// Borrow the descriptor without extending either peer's node session.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_imported_actor(
-    token: HewLocalPidId,
-) -> Option<Arc<crate::hew_node::service_api::ImportedService>> {
-    current_handles()?.state.access(|state| {
-        state
-            .imports
-            .get(&token)
-            .map(|binding| Arc::clone(&binding.service))
-    })
-}
+pub(crate) use imported_actors::{current_imported_actor, register_current_imported_actor};
 
 /// Observe an actor's identity independently of descriptor allocation and grant liveness.
 #[no_mangle]
@@ -1282,32 +1258,8 @@ pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLoca
     if left == right {
         return 1;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // A role names a stable place, never its current incarnation.
-        if current_actor_role_owner_slot(left).is_some()
-            || current_actor_role_owner_slot(right).is_some()
-        {
-            return 0;
-        }
-        let left_import = current_imported_actor(left);
-        let right_import = current_imported_actor(right);
-        match (left_import, right_import) {
-            (Some(left), Some(right)) => return i32::from(left.identity() == right.identity()),
-            (Some(imported), None) => {
-                return i32::from(
-                    crate::hew_node::service_api::local_actor_identity(right)
-                        == Some(imported.identity()),
-                )
-            }
-            (None, Some(imported)) => {
-                return i32::from(
-                    crate::hew_node::service_api::local_actor_identity(left)
-                        == Some(imported.identity()),
-                )
-            }
-            (None, None) => {}
-        }
+    if let Some(equal) = crate::platform::host_io::imported_actor_handles_identical(left, right) {
+        return i32::from(equal);
     }
     0
 }
@@ -1318,15 +1270,8 @@ pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLoca
 pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId {
     if let Some(handles) = current_handles() {
         handles.state.access(|state| {
-            if state.retain_actor(token) {
-                return;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(binding) = state.imports.get_mut(&token) {
-                binding.references = binding
-                    .references
-                    .checked_add(1)
-                    .expect("actor descriptor reference count overflow");
+            if !state.retain_actor(token) {
+                state.imports.retain(token);
             }
         });
     }
@@ -1338,7 +1283,6 @@ pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId
 #[no_mangle]
 pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
     if let Some(handles) = current_handles() {
-        #[cfg(not(target_arch = "wasm32"))]
         let (actor_id, retired) = handles.state.access(|state| {
             let actor_id = match state.routes.get(&token) {
                 Some(Route::RetiredActor {
@@ -1351,72 +1295,19 @@ pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
             if state.release_actor(token) {
                 return (actor_id, None);
             }
-            let retired = state.imports.get_mut(&token).and_then(|binding| {
-                binding.references -= 1;
-                (binding.references == 0).then_some(())
-            });
-            (None, retired.and_then(|()| state.imports.remove(&token)))
+            (None, Some(state.imports.release(token)))
         });
-        #[cfg(not(target_arch = "wasm32"))]
         drop(retired);
-        #[cfg(target_arch = "wasm32")]
-        let actor_id = handles.state.access(|state| {
-            let actor_id = match state.routes.get(&token) {
-                Some(Route::RetiredActor {
-                    actor_id,
-                    references: 1,
-                    ..
-                }) => Some(*actor_id),
-                _ => None,
-            };
-            state.release_actor(token);
-            actor_id
-        });
         if let Some(actor_id) = actor_id {
             crate::monitor::forget_unreferenced_actor_terminal(actor_id);
         }
     }
 }
 
-/// Start one actor publication in the current runtime authority.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn begin_current_actor_publication(
-) -> Result<LocalHandlePublication<'static>, LocalHandleError> {
-    current_handles()
-        .ok_or(LocalHandleError::ShuttingDown)?
-        .begin_publication()
-}
-
-/// Start one actor publication in an explicitly selected runtime authority.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn begin_actor_publication_in(
-    handles: &LocalHandles,
-) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
-    handles.begin_publication()
-}
-
 pub(crate) fn begin_supervisor_publication_in(
     handles: &LocalHandles,
 ) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
     handles.begin_publication()
-}
-
-/// Retire an exact direct actor route in the current runtime authority.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn retire_current_actor(token: HewLocalPidId, actor_id: u64) -> RetireActorResult {
-    current_handles().map_or(RetireActorResult::AlreadyRetired, |handles| {
-        handles.retire_actor(token, actor_id)
-    })
-}
-
-/// Retire an exact direct route in an explicitly selected runtime authority.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn retire_actor_in(
-    handles: &LocalHandles,
-    token: HewLocalPidId,
-    actor_id: u64,
-) -> RetireActorResult {
-    handles.retire_actor(token, actor_id)
 }
 
 /// Assert that actor cleanup retired every direct actor route.
@@ -1672,10 +1563,7 @@ pub(crate) fn close_current_supervisor(control: &SupervisorControl) -> bool {
 /// Resolve a direct actor route in the current runtime authority.
 #[allow(dead_code, reason = "consumed by the runtime token operation commit")]
 pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
-    #[cfg(target_arch = "wasm32")]
-    let runtime_id = RuntimeId::DEFAULT;
+    let runtime_id = current_runtime_id()?;
     current_handles()?.resolve_actor(runtime_id, token)
 }
 
@@ -1698,10 +1586,7 @@ pub(crate) fn with_current_actor<R>(
 
 /// Resolve an observation target even after its allocation has been reclaimed.
 pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
-    #[cfg(target_arch = "wasm32")]
-    let runtime_id = RuntimeId::DEFAULT;
+    let runtime_id = current_runtime_id()?;
     current_handles()?.observation_actor(runtime_id, token)
 }
 
@@ -1728,10 +1613,7 @@ pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<Ob
     reason = "consumed by `this` and spawn during the atomic compiler token cutover"
 )]
 pub(crate) fn current_actor_token(actor_id: u64) -> Option<HewLocalPidId> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
-    #[cfg(target_arch = "wasm32")]
-    let runtime_id = RuntimeId::DEFAULT;
+    let runtime_id = current_runtime_id()?;
     current_handles()?.actor_token(runtime_id, actor_id)
 }
 

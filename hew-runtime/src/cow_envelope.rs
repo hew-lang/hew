@@ -647,8 +647,7 @@ mod tests {
             crate::reply_channel::configure_native_request(
                 channel,
                 crate::request_deadline::RequestDeadline::default(),
-                #[cfg(not(target_arch = "wasm32"))]
-                None,
+                crate::platform::host_io::RemoteAdmissionSlot::NONE,
             );
             let env = new(ptr::null_mut(), 0, None, alloc);
             assert!(!env.is_null());

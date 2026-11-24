@@ -608,7 +608,8 @@ mod tests {
                     .local_handles
                     .register_actor(crate::runtime_id::RuntimeId::DEFAULT, actor.id)
                     .unwrap();
-                (*actor.ptr()).runtime = std::ptr::from_ref(runtime);
+                (*actor.ptr()).runtime =
+                    crate::platform::executor::RuntimeHandle::from_raw(std::ptr::from_ref(runtime));
                 (*actor.ptr()).local_pid_id = token;
                 if outcome != "immediate" {
                     assert_eq!(mailbox::hew_mailbox_send(mailbox, 0, ptr::null_mut(), 0), 0);

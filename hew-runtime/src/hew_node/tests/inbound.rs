@@ -986,7 +986,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
             None,
             crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             ptr::null(),
-            Some(admission),
+            crate::platform::host_io::RemoteAdmissionSlot::from_native(Some(admission)),
             core::ptr::null(),
             core::ptr::null(),
         )
@@ -1109,7 +1109,7 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
                     None,
                     crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
                     ptr::null(),
-                    Some(admission),
+                    crate::platform::host_io::RemoteAdmissionSlot::from_native(Some(admission)),
                     core::ptr::null(),
                     core::ptr::null(),
                 )

@@ -371,21 +371,15 @@ pub unsafe extern "C" fn hew_supervisor_new(
     max_restarts: c_int,
     window_secs: c_int,
 ) -> *mut HewSupervisor {
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime = crate::runtime::rt_current();
     let Some(handles) = crate::lifetime::local_handles::current_handles() else {
         set_last_error(
             "hew_supervisor_new: supervisor construction requires a local handle authority",
         );
         return ptr::null_mut();
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    let runtime_id = runtime.runtime_id();
-    #[cfg(target_arch = "wasm32")]
-    let runtime_id = crate::runtime_id::RuntimeId::DEFAULT;
+    let runtime_id = crate::platform::executor::current_runtime_id_or_default();
     let sup = Box::new(HewSupervisor {
-        #[cfg(not(target_arch = "wasm32"))]
-        runtime: runtime as *const crate::runtime::RuntimeInner,
+        runtime: crate::platform::executor::RuntimeHandle::current(),
         handles: std::ptr::from_ref(handles),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         strategy,
@@ -835,9 +829,9 @@ pub(crate) unsafe fn finish_claimed_supervisor(
 /// deterministic driver's ready list. The teardown lease keeps runtime
 /// cleanup from reclaiming the allocation before this entry runs.
 pub(crate) struct QueuedSupervisorStop {
-    pub(super) supervisor: *mut HewSupervisor,
-    pub(super) root_unregistered: bool,
-    pub(super) teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+    pub(crate) supervisor: *mut HewSupervisor,
+    pub(crate) root_unregistered: bool,
+    pub(crate) teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 }
 
 // SAFETY: the teardown lease protects the supervisor allocation across the
@@ -1060,6 +1054,7 @@ pub(crate) fn stop_local_supervisor(
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+    use crate::scheduler;
     use std::sync::atomic::AtomicUsize;
 
     #[test]

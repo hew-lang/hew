@@ -9,8 +9,6 @@ use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_fault, hew_actor_wait_edge_free, hew_actor_wait_edge_pending,
     hew_actor_wait_edge_prepare, select_alternatives, HewActorWaitEdge,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::async_io::start_readiness_watch;
 use crate::async_io::{hew_async_io_free, hew_async_io_status, AsyncIoStatus, HewAsyncIo};
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
@@ -183,19 +181,17 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     let selection = unsafe { &mut *selection };
     // SAFETY: the stream is a live borrowed handle per the caller's contract.
     let readable = match unsafe { stream.as_ref() }.filter(|stream| stream.pipe_core().is_none()) {
-        Some(stream) => match stream.select_readiness() {
-            SelectReadiness::Ready => ptr::null(),
-            SelectReadiness::Generator => ptr::null(),
-            #[cfg(not(target_arch = "wasm32"))]
-            SelectReadiness::Reactor(connection) => {
-                // SAFETY: the stream retains the connection and the selection its waker.
-                unsafe { start_readiness_watch(connection, selection.waker) }
+        Some(stream) => {
+            // SAFETY: stream backing and borrowed waker remain live for readiness registration.
+            let arm_result = unsafe { stream.arm_select_readiness(selection.waker) };
+            match arm_result {
+                Ok(watch) => watch,
+                Err(reason) => {
+                    selection.refusal.get_or_insert_with(|| reason.to_string());
+                    ptr::null()
+                }
             }
-            SelectReadiness::Unsupported(reason) => {
-                selection.refusal.get_or_insert_with(|| reason.to_string());
-                ptr::null()
-            }
-        },
+        }
         None => ptr::null(),
     };
     selection.sources.push(SelectSource::Stream {

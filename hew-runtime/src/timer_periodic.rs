@@ -469,8 +469,7 @@ pub unsafe extern "C" fn hew_periodic_shutdown() {
     // is executing, so the only remaining strong references to any
     // PeriodicCtx are the registry references and the wheel's pending
     // one-shot references.
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::reactor::reactor_shutdown();
+    crate::platform::clock::shutdown_timer_reactor();
 
     // Drain every tracked periodic ctx before freeing the wheel. Without this
     // the wheel would free entry nodes but not their `data` references.
@@ -545,7 +544,7 @@ mod tests {
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
-            runtime: std::ptr::null(),
+            runtime: crate::platform::executor::RuntimeHandle::null(),
             send_pin_count: std::sync::atomic::AtomicU32::new(0),
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,

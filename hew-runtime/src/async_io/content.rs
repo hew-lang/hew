@@ -30,7 +30,7 @@ impl super::HewAsyncIo {
     ) -> (Option<Result<super::IoValue, super::IoFailure>>, bool) {
         use super::{IoValue, State};
         let owner = {
-            let mut ownership = self.stream_content.lock_or_recover();
+            let mut ownership = self.native.stream_content.lock_or_recover();
             let Some(ownership) = ownership.as_mut() else {
                 return (Some(result), false);
             };
@@ -75,7 +75,7 @@ impl super::HewAsyncIo {
             return;
         }
         let waiter = {
-            let mut ownership = self.stream_content.lock_or_recover();
+            let mut ownership = self.native.stream_content.lock_or_recover();
             let ownership = ownership.as_mut().expect("managed publication");
             ownership.publishing = false;
             ownership.waiter.take()
@@ -108,7 +108,7 @@ impl super::HewAsyncIo {
             0
         };
         let deferred = {
-            let mut ownership = self.stream_content.lock_or_recover();
+            let mut ownership = self.native.stream_content.lock_or_recover();
             let Some(ownership) = ownership.as_mut() else {
                 return 0;
             };

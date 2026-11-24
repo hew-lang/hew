@@ -2044,13 +2044,6 @@ pub(crate) enum SendOutcome {
     Oom,
     /// The runtime is shutting down and refused root or external work before
     /// the message reached the mailbox. The message was not sent.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "wasm32 has no shutdown admission gate; only native submissions are refused"
-        )
-    )]
     ShuttingDown,
 }
 

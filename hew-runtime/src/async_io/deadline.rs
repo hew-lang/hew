@@ -82,7 +82,7 @@ impl HewAsyncIo {
         }
         // Hold registration through publication: an immediate callback may
         // complete the operation but cannot remove an unpublished handle.
-        let mut deadline = self.deadline.lock_or_recover();
+        let mut deadline = self.native.deadline.lock_or_recover();
         if !self.is_pending() {
             return;
         }
@@ -115,11 +115,11 @@ impl HewAsyncIo {
     }
 
     pub(super) fn has_deadline(&self) -> bool {
-        self.deadline.lock_or_recover().is_some()
+        self.native.deadline.lock_or_recover().is_some()
     }
 
     pub(super) fn clear_deadline(&self) {
-        let deadline = self.deadline.lock_or_recover().take();
+        let deadline = self.native.deadline.lock_or_recover().take();
         drop(deadline);
     }
 }

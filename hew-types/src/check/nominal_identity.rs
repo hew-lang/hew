@@ -594,10 +594,10 @@ impl Checker {
     /// The program's entry function: the `main` its root module declares.
     pub(super) fn entry_function(&self) -> Option<crate::DefId> {
         let root = self.defs.root_module()?;
-        match self
-            .scopes
-            .item(self.scopes.namespace_of(root), hew_parser::ast::sym::MAIN)?
-        {
+        match self.scopes.item(
+            self.scopes.namespace_of(root),
+            Ident::from_symbol(hew_parser::ast::sym::MAIN),
+        )? {
             super::scope::Binding::Fn(id) => Some(id),
             _ => None,
         }

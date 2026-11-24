@@ -208,7 +208,7 @@ impl Checker {
                 .unwrap_or_else(IndirectCallCandidates::unknown);
             if previous.depth.is_some_and(|boundary| {
                 self.env
-                    .lookup_with_depth(&capture.name)
+                    .lookup_with_depth(hew_parser::ast::Ident::new(&capture.name))
                     .is_some_and(|(depth, binding)| {
                         depth < boundary && binding.id == capture.binding_id
                     })

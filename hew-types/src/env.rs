@@ -7,46 +7,6 @@ use crate::ty::Ty;
 use hew_parser::ast::{Expr, Ident, Span, Spanned, Symbol};
 use indexmap::IndexMap;
 
-/// A spelling the lexical environment binds or looks up. Lexical scopes are
-/// keyed by `(Symbol, SyntaxContext)` — an [`Ident`] — so a binding written
-/// by one hygiene context is invisible to an identifier from another.
-///
-/// TRANSITION(A1): a caller that still holds only a spelling binds it in the
-/// source context; deleted once every caller passes the AST `Ident`.
-pub trait LexicalName {
-    fn lexical_key(&self) -> Ident;
-}
-
-impl LexicalName for Ident {
-    fn lexical_key(&self) -> Ident {
-        *self
-    }
-}
-
-impl LexicalName for Symbol {
-    fn lexical_key(&self) -> Ident {
-        Ident::from_symbol(*self)
-    }
-}
-
-impl LexicalName for str {
-    fn lexical_key(&self) -> Ident {
-        Ident::new(self)
-    }
-}
-
-impl LexicalName for String {
-    fn lexical_key(&self) -> Ident {
-        Ident::new(self)
-    }
-}
-
-impl<T: LexicalName + ?Sized> LexicalName for &T {
-    fn lexical_key(&self) -> Ident {
-        (**self).lexical_key()
-    }
-}
-
 /// Checker-local identity for a lexical binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeBindingId(pub u32);
@@ -717,7 +677,7 @@ impl TypeEnv {
     /// on this path has re-initialised the place since.
     pub fn note_loop_use(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         path: &[String],
         span: &Span,
         projection_base: bool,
@@ -868,8 +828,7 @@ impl TypeEnv {
     }
 
     /// Define a variable in the current scope (synthetic, no source span — not warned about).
-    pub fn define(&mut self, name: impl LexicalName, ty: Ty, is_mutable: bool) {
-        let name = name.lexical_key();
+    pub fn define(&mut self, name: hew_parser::ast::Ident, ty: Ty, is_mutable: bool) {
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             Self::bind(
@@ -906,8 +865,7 @@ impl TypeEnv {
 
     /// Bind an actor state field that `init` must initialize (D447). It is
     /// mutable, uninitialized on entry and exempt from the unused lint.
-    pub fn define_deferred_field(&mut self, name: impl LexicalName, ty: Ty) {
-        let name = name.lexical_key();
+    pub fn define_deferred_field(&mut self, name: hew_parser::ast::Ident, ty: Ty) {
         self.define(name, ty, true);
         if let Some(binding) = self
             .scopes
@@ -919,8 +877,7 @@ impl TypeEnv {
         }
     }
 
-    pub(crate) fn mark_unassigned(&mut self, name: impl LexicalName) {
-        let name = name.lexical_key();
+    pub(crate) fn mark_unassigned(&mut self, name: hew_parser::ast::Ident) {
         if let Some(binding) = self
             .scopes
             .last_mut()
@@ -930,12 +887,12 @@ impl TypeEnv {
         }
     }
 
-    pub(crate) fn unassigned(&self, name: impl LexicalName) -> bool {
+    pub(crate) fn unassigned(&self, name: hew_parser::ast::Ident) -> bool {
         self.lookup_ref(name)
             .is_some_and(|binding| binding.init_state == InitState::Unassigned)
     }
 
-    pub(crate) fn first_store_allowed(&self, name: impl LexicalName) -> bool {
+    pub(crate) fn first_store_allowed(&self, name: hew_parser::ast::Ident) -> bool {
         let Some((depth, _)) = self.lookup_ref_with_depth(name) else {
             return false;
         };
@@ -969,8 +926,7 @@ impl TypeEnv {
 
     /// Whether `name` is a deferred init field still awaiting its first store.
     #[must_use]
-    pub fn deferred_field_uninitialized(&self, name: impl LexicalName) -> bool {
-        let name = name.lexical_key();
+    pub fn deferred_field_uninitialized(&self, name: hew_parser::ast::Ident) -> bool {
         self.lookup_ref(name).is_some_and(|binding| {
             binding.deferred_init() && binding.init_state == InitState::Unassigned
         })
@@ -978,8 +934,7 @@ impl TypeEnv {
 
     /// The binding id of `name` when it is a deferred init field.
     #[must_use]
-    pub fn deferred_field_id(&self, name: impl LexicalName) -> Option<TypeBindingId> {
-        let name = name.lexical_key();
+    pub fn deferred_field_id(&self, name: hew_parser::ast::Ident) -> Option<TypeBindingId> {
         self.lookup_ref(name)
             .filter(|binding| binding.deferred_init())
             .map(|binding| binding.id)
@@ -988,10 +943,9 @@ impl TypeEnv {
     /// Record exact declaration sites while the owning AST binding is in hand.
     pub fn set_binding_declaration(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         declaration: BindingDeclaration,
     ) {
-        let name = name.lexical_key();
         if let Some(binding) = self
             .scopes
             .iter_mut()
@@ -1005,12 +959,11 @@ impl TypeEnv {
     /// Define a user-visible variable with a source span for diagnostics.
     pub fn define_with_span(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         ty: Ty,
         is_mutable: bool,
         span: Span,
     ) {
-        let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             Self::bind(
@@ -1057,12 +1010,11 @@ impl TypeEnv {
     /// the same treatment given to shadowing a user-declared local variable.
     pub fn define_param_with_span(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         ty: Ty,
         is_mutable: bool,
         span: Span,
     ) {
-        let name = name.lexical_key();
         self.define_param_with_span_and_origin(
             name,
             ty,
@@ -1073,8 +1025,7 @@ impl TypeEnv {
     }
 
     /// Preserve declared parameter ownership independently of local mutability.
-    pub fn set_parameter_consume(&mut self, name: impl LexicalName, is_consume: bool) {
-        let name = name.lexical_key();
+    pub fn set_parameter_consume(&mut self, name: hew_parser::ast::Ident, is_consume: bool) {
         if let Some(binding) = self
             .scopes
             .last_mut()
@@ -1089,7 +1040,7 @@ impl TypeEnv {
     /// write-back provenance for mutation diagnostics.
     pub fn define_receiver_param_with_span(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         ty: Ty,
         is_mutable: bool,
         span: Span,
@@ -1105,13 +1056,12 @@ impl TypeEnv {
 
     fn define_param_with_span_and_origin(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         ty: Ty,
         is_mutable: bool,
         span: Span,
         origin: BindingOrigin,
     ) {
-        let name = name.lexical_key();
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             Self::bind(
@@ -1206,8 +1156,7 @@ impl TypeEnv {
     }
 
     /// Mark a variable as moved, returning `true` if found.
-    pub fn mark_moved(&mut self, name: impl LexicalName, span: Span) -> bool {
-        let name = name.lexical_key();
+    pub fn mark_moved(&mut self, name: hew_parser::ast::Ident, span: Span) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
@@ -1228,11 +1177,10 @@ impl TypeEnv {
     /// which is the one a diagnostic should point at.
     pub fn mark_place_moved(
         &mut self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         path: PlacePath,
         span: Span,
     ) -> bool {
-        let name = name.lexical_key();
         debug_assert!(!path.is_empty(), "empty place path is `mark_moved`");
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
@@ -1259,7 +1207,7 @@ impl TypeEnv {
     #[must_use]
     pub fn place_move_conflict(
         &self,
-        name: impl LexicalName,
+        name: hew_parser::ast::Ident,
         path: &[String],
     ) -> Option<(PlaceConflict, PlacePath, Span)> {
         let binding = self.lookup_ref(name)?;
@@ -1279,8 +1227,7 @@ impl TypeEnv {
     }
 
     /// Attach the initializer's collection loan to its lexical binding.
-    pub fn set_collection_borrow(&mut self, name: impl LexicalName, origin: Option<Span>) {
-        let name = name.lexical_key();
+    pub fn set_collection_borrow(&mut self, name: hew_parser::ast::Ident, origin: Option<Span>) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.collection_borrow = origin;
@@ -1291,8 +1238,7 @@ impl TypeEnv {
 
     /// Whether a selected place still carries an ordinary parameter borrow.
     #[must_use]
-    pub fn place_borrows_parameter(&self, name: impl LexicalName, path: &[String]) -> bool {
-        let name = name.lexical_key();
+    pub fn place_borrows_parameter(&self, name: hew_parser::ast::Ident, path: &[String]) -> bool {
         self.lookup_ref(name).is_some_and(|binding| {
             binding.is_param()
                 && !binding.is_receiver()
@@ -1310,8 +1256,7 @@ impl TypeEnv {
     ///
     /// The empty `path` is a whole-binding re-initialisation and additionally
     /// clears `is_moved`.
-    pub fn reinit_place(&mut self, name: impl LexicalName, path: &[String]) {
-        let name = name.lexical_key();
+    pub fn reinit_place(&mut self, name: hew_parser::ast::Ident, path: &[String]) {
         let loops = self.loop_scope_floors.len();
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
@@ -1355,8 +1300,11 @@ impl TypeEnv {
     /// Discharge one affine resource without making its closed handle bits
     /// unreadable. Returns the earlier discharge site when this binding was
     /// already released.
-    pub fn mark_released(&mut self, name: impl LexicalName, span: Span) -> Option<Option<Span>> {
-        let name = name.lexical_key();
+    pub fn mark_released(
+        &mut self,
+        name: hew_parser::ast::Ident,
+        span: Span,
+    ) -> Option<Option<Span>> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
@@ -1371,8 +1319,7 @@ impl TypeEnv {
     /// Restore a binding after a validated receiver-identity method result is
     /// discarded in place. The method temporarily transfers the one owner
     /// through `consume self` and returns that exact owner to this binding.
-    pub fn unmark_moved(&mut self, name: impl LexicalName) -> bool {
-        let name = name.lexical_key();
+    pub fn unmark_moved(&mut self, name: hew_parser::ast::Ident) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.is_moved = false;
@@ -1577,8 +1524,7 @@ impl TypeEnv {
     /// it saw the old value, so `mutation_observed` resets here and only a
     /// later read can set it again. Value origins are updated separately at
     /// the checked assignment or mutable-call place.
-    pub fn mark_written(&mut self, name: impl LexicalName) {
-        let name = name.lexical_key();
+    pub fn mark_written(&mut self, name: hew_parser::ast::Ident) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.mutation = MutationState::Unobserved;
@@ -1592,8 +1538,7 @@ impl TypeEnv {
     ///
     /// Reads taken inside this window resolve the target place or compute the
     /// new value from the old one; neither observes the mutation's result.
-    pub fn begin_mutation(&mut self, name: impl LexicalName) -> Option<TypeBindingId> {
-        let name = name.lexical_key();
+    pub fn begin_mutation(&mut self, name: hew_parser::ast::Ident) -> Option<TypeBindingId> {
         let previous = self.mutation_root;
         self.mutation_root = self.lookup_ref(name).map(|binding| binding.id);
         previous
@@ -1610,8 +1555,7 @@ impl TypeEnv {
     /// the method writes back, which is the same target resolution that plain
     /// assignment undoes with `unmark_used`. Skipped when the receiver is
     /// already the mutation root, since that read was never counted.
-    pub fn discount_mutation_receiver_read(&mut self, name: impl LexicalName) {
-        let name = name.lexical_key();
+    pub fn discount_mutation_receiver_read(&mut self, name: hew_parser::ast::Ident) {
         let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
@@ -1715,8 +1659,7 @@ impl TypeEnv {
     /// task was defined inside the innermost enclosing loop: a select that
     /// re-waits on an outer task each iteration joins it eventually. A task
     /// defined inside a `scope within` body is bounded by that deadline.
-    pub fn note_timed_select_task(&mut self, name: impl LexicalName, arm: &Span) {
-        let name = name.lexical_key();
+    pub fn note_timed_select_task(&mut self, name: hew_parser::ast::Ident, arm: &Span) {
         let floor = self.loop_scope_floors.last().map_or(0, |scope| scope.floor);
         let deadline = self.deadline_scope_floors.first().copied();
         let Some((depth, binding)) = self
@@ -1739,8 +1682,7 @@ impl TypeEnv {
 
     /// Look up a variable by name, marking it as used.
     #[must_use]
-    pub fn lookup(&mut self, name: impl LexicalName) -> Option<&Binding> {
-        let name = name.lexical_key();
+    pub fn lookup(&mut self, name: hew_parser::ast::Ident) -> Option<&Binding> {
         let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
@@ -1768,8 +1710,7 @@ impl TypeEnv {
     ///
     /// Used when a reassignment joins an inferred closure binding to the
     /// callable shape that holds every closure assigned to it.
-    pub fn widen_ty(&mut self, name: impl LexicalName, ty: Ty) {
-        let name = name.lexical_key();
+    pub fn widen_ty(&mut self, name: hew_parser::ast::Ident, ty: Ty) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 binding.ty = ty;
@@ -1780,8 +1721,7 @@ impl TypeEnv {
 
     /// Look up a variable by name without marking it as used.
     #[must_use]
-    pub fn lookup_ref(&self, name: impl LexicalName) -> Option<&Binding> {
-        let name = name.lexical_key();
+    pub fn lookup_ref(&self, name: hew_parser::ast::Ident) -> Option<&Binding> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(&name) {
                 return Some(binding);
@@ -1796,8 +1736,7 @@ impl TypeEnv {
     /// locals and parameters live in a body scope. Callers that validate an
     /// imported namespace must preserve that ordinary local-shadowing rule.
     #[must_use]
-    pub fn lookup_ref_with_depth(&self, name: impl LexicalName) -> Option<(usize, &Binding)> {
-        let name = name.lexical_key();
+    pub fn lookup_ref_with_depth(&self, name: hew_parser::ast::Ident) -> Option<(usize, &Binding)> {
         self.scopes
             .iter()
             .enumerate()
@@ -1807,8 +1746,7 @@ impl TypeEnv {
 
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.
     #[must_use]
-    pub fn lookup_with_depth(&mut self, name: impl LexicalName) -> Option<(usize, &Binding)> {
-        let name = name.lexical_key();
+    pub fn lookup_with_depth(&mut self, name: hew_parser::ast::Ident) -> Option<(usize, &Binding)> {
         let root = self.mutation_root;
         for (i, scope) in self.scopes.iter_mut().enumerate().rev() {
             if let Some(binding) = scope.get_mut(&name) {
@@ -1822,8 +1760,7 @@ impl TypeEnv {
 
     /// Check if a variable is defined in the current (innermost) scope only.
     #[must_use]
-    pub fn is_defined_in_current_scope(&self, name: impl LexicalName) -> bool {
-        let name = name.lexical_key();
+    pub fn is_defined_in_current_scope(&self, name: hew_parser::ast::Ident) -> bool {
         self.scopes
             .last()
             .is_some_and(|scope| scope.contains_key(&name))
@@ -1841,8 +1778,7 @@ impl TypeEnv {
     /// span, `Some(None)` when found but synthetic, or `None` when the name
     /// is not bound in the current scope.
     #[must_use]
-    pub fn find_in_current_scope(&self, name: impl LexicalName) -> Option<Option<Span>> {
-        let name = name.lexical_key();
+    pub fn find_in_current_scope(&self, name: hew_parser::ast::Ident) -> Option<Option<Span>> {
         self.scopes
             .last()
             .and_then(|scope| scope.get(&name))
@@ -1855,8 +1791,7 @@ impl TypeEnv {
     /// span, `Some(None)` when found but synthetic (e.g. actor fields), or
     /// `None` when the name is not bound in any outer scope.
     #[must_use]
-    pub fn find_in_outer_scope(&self, name: impl LexicalName) -> Option<Option<Span>> {
-        let name = name.lexical_key();
+    pub fn find_in_outer_scope(&self, name: hew_parser::ast::Ident) -> Option<Option<Span>> {
         // Skip the last (current) scope and check all outer scopes
         for scope in self.scopes.iter().rev().skip(1) {
             if let Some(binding) = scope.get(&name) {
@@ -1925,8 +1860,7 @@ impl TypeEnv {
 
     /// Undo the `is_used` mark on a variable (used for plain assignment LHS).
     /// Decrements the read count so that write-only variables are still detected.
-    pub fn unmark_used(&mut self, name: impl LexicalName) {
-        let name = name.lexical_key();
+    pub fn unmark_used(&mut self, name: hew_parser::ast::Ident) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name) {
                 // Decrement the read count to undo the lookup that resolved the
@@ -1947,8 +1881,8 @@ mod tests {
     #[test]
     fn test_define_and_lookup() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::I32, false);
-        let binding = env.lookup("x").unwrap();
+        env.define(Ident::new("x"), Ty::I32, false);
+        let binding = env.lookup(Ident::new("x")).unwrap();
         assert_eq!(binding.ty, Ty::I32);
         assert!(!binding.is_mutable);
     }
@@ -1956,56 +1890,56 @@ mod tests {
     #[test]
     fn test_shadowing() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::I32, false);
+        env.define(Ident::new("x"), Ty::I32, false);
         env.push_scope();
-        env.define("x".to_string(), Ty::Bool, true);
+        env.define(Ident::new("x"), Ty::Bool, true);
 
-        let binding = env.lookup("x").unwrap();
+        let binding = env.lookup(Ident::new("x")).unwrap();
         assert_eq!(binding.ty, Ty::Bool);
         assert!(binding.is_mutable);
 
         env.pop_scope();
-        let binding = env.lookup("x").unwrap();
+        let binding = env.lookup(Ident::new("x")).unwrap();
         assert_eq!(binding.ty, Ty::I32);
     }
 
     #[test]
     fn test_lookup_outer_scope() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::I32, false);
+        env.define(Ident::new("x"), Ty::I32, false);
         env.push_scope();
-        env.define("y".to_string(), Ty::Bool, false);
+        env.define(Ident::new("y"), Ty::Bool, false);
 
         // Can still find x from outer scope
-        assert!(env.lookup("x").is_some());
-        assert!(env.lookup("y").is_some());
+        assert!(env.lookup(Ident::new("x")).is_some());
+        assert!(env.lookup(Ident::new("y")).is_some());
     }
 
     #[test]
     fn test_undefined() {
         let mut env = TypeEnv::new();
-        assert!(env.lookup("x").is_none());
+        assert!(env.lookup(Ident::new("x")).is_none());
     }
 
     #[test]
     fn test_is_defined_in_current_scope() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::I32, false);
+        env.define(Ident::new("x"), Ty::I32, false);
         env.push_scope();
 
-        assert!(!env.is_defined_in_current_scope("x"));
-        env.define("x".to_string(), Ty::Bool, false);
-        assert!(env.is_defined_in_current_scope("x"));
+        assert!(!env.is_defined_in_current_scope(Ident::new("x")));
+        env.define(Ident::new("x"), Ty::Bool, false);
+        assert!(env.is_defined_in_current_scope(Ident::new("x")));
     }
 
     #[test]
     fn test_mark_moved() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::String, false);
-        assert!(!env.lookup("x").unwrap().is_moved);
+        env.define(Ident::new("x"), Ty::String, false);
+        assert!(!env.lookup(Ident::new("x")).unwrap().is_moved);
 
-        assert!(env.mark_moved("x", 10..20));
-        let binding = env.lookup("x").unwrap();
+        assert!(env.mark_moved(Ident::new("x"), 10..20));
+        let binding = env.lookup(Ident::new("x")).unwrap();
         assert!(binding.is_moved);
         assert_eq!(binding.moved_at, Some(10..20));
     }
@@ -2013,14 +1947,14 @@ mod tests {
     #[test]
     fn test_mark_moved_not_found() {
         let mut env = TypeEnv::new();
-        assert!(!env.mark_moved("x", 0..1));
+        assert!(!env.mark_moved(Ident::new("x"), 0..1));
     }
 
     #[test]
     fn test_new_binding_not_moved() {
         let mut env = TypeEnv::new();
-        env.define("x".to_string(), Ty::I32, false);
-        let binding = env.lookup("x").unwrap();
+        env.define(Ident::new("x"), Ty::I32, false);
+        let binding = env.lookup(Ident::new("x")).unwrap();
         assert!(!binding.is_moved);
         assert_eq!(binding.moved_at, None);
     }
@@ -2028,23 +1962,23 @@ mod tests {
     #[test]
     fn test_define_with_span_tracks_usage() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::I32, false, 0..5);
+        env.define_with_span(Ident::new("x"), Ty::I32, false, 0..5);
         // Not yet used
-        let b = env.lookup_ref("x").unwrap();
+        let b = env.lookup_ref(Ident::new("x")).unwrap();
         assert_eq!(b.read_count, 0);
         assert!(!b.is_written());
         assert_eq!(b.def_span, Some(0..5));
 
         // lookup() marks as used
-        let b = env.lookup("x").unwrap();
+        let b = env.lookup(Ident::new("x")).unwrap();
         assert!(b.read_count > 0);
     }
 
     #[test]
     fn test_synthetic_define_always_used() {
         let mut env = TypeEnv::new();
-        env.define("self_".to_string(), Ty::I32, false);
-        let b = env.lookup_ref("self_").unwrap();
+        env.define(Ident::new("self_"), Ty::I32, false);
+        let b = env.lookup_ref(Ident::new("self_")).unwrap();
         assert!(b.read_count > 0, "synthetic bindings should start as used");
         assert!(b.def_span.is_none());
     }
@@ -2052,14 +1986,14 @@ mod tests {
     #[test]
     fn restore_ownership_undoes_a_move_taken_after_the_snapshot() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        env.define_with_span(Ident::new("x"), Ty::String, false, 0..1);
         let entry = env.ownership_snapshot();
 
-        assert!(env.mark_moved("x", 10..20));
-        assert!(env.mark_released("x", 10..20).is_some());
+        assert!(env.mark_moved(Ident::new("x"), 10..20));
+        assert!(env.mark_released(Ident::new("x"), 10..20).is_some());
         env.restore_ownership(&entry);
 
-        let b = env.lookup_ref("x").unwrap();
+        let b = env.lookup_ref(Ident::new("x")).unwrap();
         assert!(!b.is_moved);
         assert_eq!(b.moved_at, None);
         assert_eq!(b.released_at, None);
@@ -2071,14 +2005,14 @@ mod tests {
         // branch arm must survive the restore, or the unused / never-mutated
         // lints regress silently.
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, true, 0..1);
+        env.define_with_span(Ident::new("x"), Ty::String, true, 0..1);
         let entry = env.ownership_snapshot();
 
-        let _ = env.lookup("x");
-        env.mark_written("x");
+        let _ = env.lookup(Ident::new("x"));
+        env.mark_written(Ident::new("x"));
         env.restore_ownership(&entry);
 
-        let b = env.lookup_ref("x").unwrap();
+        let b = env.lookup_ref(Ident::new("x")).unwrap();
         assert_eq!(b.read_count, 1);
         assert!(b.is_written());
     }
@@ -2087,69 +2021,69 @@ mod tests {
     fn restore_ownership_leaves_bindings_created_after_the_snapshot_alone() {
         let mut env = TypeEnv::new();
         let entry = env.ownership_snapshot();
-        env.define_with_span("later".to_string(), Ty::String, false, 0..1);
-        assert!(env.mark_moved("later", 5..6));
+        env.define_with_span(Ident::new("later"), Ty::String, false, 0..1);
+        assert!(env.mark_moved(Ident::new("later"), 5..6));
 
         env.restore_ownership(&entry);
 
-        assert!(env.lookup_ref("later").unwrap().is_moved);
+        assert!(env.lookup_ref(Ident::new("later")).unwrap().is_moved);
     }
 
     #[test]
     fn restore_ownership_does_not_reach_a_shadowing_rebinding() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
-        assert!(env.mark_moved("x", 2..3));
+        env.define_with_span(Ident::new("x"), Ty::String, false, 0..1);
+        assert!(env.mark_moved(Ident::new("x"), 2..3));
         let entry = env.ownership_snapshot();
 
         env.push_scope();
-        env.define_with_span("x".to_string(), Ty::String, false, 4..5);
+        env.define_with_span(Ident::new("x"), Ty::String, false, 4..5);
         env.restore_ownership(&entry);
 
         // The inner `x` is a distinct binding id and keeps its own live state.
-        assert!(!env.lookup_ref("x").unwrap().is_moved);
+        assert!(!env.lookup_ref(Ident::new("x")).unwrap().is_moved);
         env.pop_scope();
-        assert!(env.lookup_ref("x").unwrap().is_moved);
+        assert!(env.lookup_ref(Ident::new("x")).unwrap().is_moved);
     }
 
     #[test]
     fn parameter_replacements_join_selected_places_without_touching_siblings() {
         let mut env = TypeEnv::new();
-        env.define_param_with_span("holder".to_string(), Ty::Unit, true, 0..1);
+        env.define_param_with_span(Ident::new("holder"), Ty::Unit, true, 0..1);
         let entry = env.ownership_snapshot();
         let parent = vec!["nested".to_string()];
         let child = vec!["nested".to_string(), "next".to_string()];
         let sibling = vec!["nested".to_string(), "other".to_string()];
-        env.reinit_place("holder", &parent);
+        env.reinit_place(Ident::new("holder"), &parent);
         let parent_exit = env.ownership_snapshot();
         env.restore_ownership(&entry);
-        env.reinit_place("holder", &child);
+        env.reinit_place(Ident::new("holder"), &child);
         let child_exit = env.ownership_snapshot();
         env.merge_ownership(&entry, &[parent_exit, child_exit]);
-        assert!(!env.place_borrows_parameter("holder", &child));
-        assert!(env.place_borrows_parameter("holder", &sibling));
-        assert!(env.place_borrows_parameter("holder", &[]));
+        assert!(!env.place_borrows_parameter(Ident::new("holder"), &child));
+        assert!(env.place_borrows_parameter(Ident::new("holder"), &sibling));
+        assert!(env.place_borrows_parameter(Ident::new("holder"), &[]));
         let replaced = env.ownership_snapshot();
         env.merge_ownership(&entry, &[replaced, entry.clone()]);
-        assert!(env.place_borrows_parameter("holder", &child));
+        assert!(env.place_borrows_parameter(Ident::new("holder"), &child));
     }
 
     #[test]
     fn merge_ownership_unions_a_move_from_any_single_path() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        env.define_with_span(Ident::new("x"), Ty::String, false, 0..1);
         let entry = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
         let live_exit = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
-        assert!(env.mark_moved("x", 10..20));
+        assert!(env.mark_moved(Ident::new("x"), 10..20));
         let moved_exit = env.ownership_snapshot();
 
         env.merge_ownership(&entry, &[live_exit, moved_exit]);
 
-        let b = env.lookup_ref("x").unwrap();
+        let b = env.lookup_ref(Ident::new("x")).unwrap();
         assert!(b.is_moved, "moved on one path means moved after the join");
         assert_eq!(b.moved_at, Some(10..20));
     }
@@ -2157,20 +2091,20 @@ mod tests {
     #[test]
     fn merge_ownership_unions_move_and_release_from_different_paths() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        env.define_with_span(Ident::new("x"), Ty::String, false, 0..1);
         let entry = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
-        assert!(env.mark_moved("x", 10..20));
+        assert!(env.mark_moved(Ident::new("x"), 10..20));
         let moved_exit = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
-        assert!(env.mark_released("x", 30..40).is_some());
+        assert!(env.mark_released(Ident::new("x"), 30..40).is_some());
         let released_exit = env.ownership_snapshot();
 
         env.merge_ownership(&entry, &[moved_exit, released_exit]);
 
-        let b = env.lookup_ref("x").unwrap();
+        let b = env.lookup_ref(Ident::new("x")).unwrap();
         assert!(b.is_moved);
         assert_eq!(b.moved_at, Some(10..20));
         assert_eq!(b.released_at, Some(30..40));
@@ -2179,11 +2113,11 @@ mod tests {
     #[test]
     fn merge_ownership_over_only_live_paths_leaves_the_binding_live() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::String, false, 0..1);
+        env.define_with_span(Ident::new("x"), Ty::String, false, 0..1);
         let entry = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
-        assert!(env.mark_moved("x", 10..20));
+        assert!(env.mark_moved(Ident::new("x"), 10..20));
         let diverging_exit = env.ownership_snapshot();
 
         env.restore_ownership(&entry);
@@ -2191,58 +2125,58 @@ mod tests {
 
         // The diverging arm's exit is excluded by the caller; it must not leak.
         env.merge_ownership(&entry, &[live_exit]);
-        assert!(!env.lookup_ref("x").unwrap().is_moved);
+        assert!(!env.lookup_ref(Ident::new("x")).unwrap().is_moved);
 
         // Including it flips the verdict, proving the exclusion is what matters.
         env.merge_ownership(&entry, &[diverging_exit]);
-        assert!(env.lookup_ref("x").unwrap().is_moved);
+        assert!(env.lookup_ref(Ident::new("x")).unwrap().is_moved);
     }
 
     #[test]
     fn merge_ownership_ignores_bindings_that_did_not_exist_at_entry() {
         let mut env = TypeEnv::new();
         let entry = env.ownership_snapshot();
-        env.define_with_span("arm_local".to_string(), Ty::String, false, 0..1);
-        assert!(env.mark_moved("arm_local", 5..6));
+        env.define_with_span(Ident::new("arm_local"), Ty::String, false, 0..1);
+        assert!(env.mark_moved(Ident::new("arm_local"), 5..6));
         let exit = env.ownership_snapshot();
 
         env.merge_ownership(&entry, &[exit]);
 
-        assert!(env.lookup_ref("arm_local").unwrap().is_moved);
+        assert!(env.lookup_ref(Ident::new("arm_local")).unwrap().is_moved);
     }
 
     #[test]
     fn test_mark_written() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
-        assert!(!env.lookup_ref("x").unwrap().is_written());
-        env.mark_written("x");
-        assert!(env.lookup_ref("x").unwrap().is_written());
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
+        assert!(!env.lookup_ref(Ident::new("x")).unwrap().is_written());
+        env.mark_written(Ident::new("x"));
+        assert!(env.lookup_ref(Ident::new("x")).unwrap().is_written());
     }
 
     #[test]
     fn test_unmark_used_on_first_assignment() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
         // Simulate what synthesize does during assignment target resolution
-        let _ = env.lookup("x"); // read_count = 1
-        assert!(env.lookup_ref("x").unwrap().read_count > 0);
+        let _ = env.lookup(Ident::new("x")); // read_count = 1
+        assert!(env.lookup_ref(Ident::new("x")).unwrap().read_count > 0);
         // unmark_used should reverse it for first assignment
-        env.unmark_used("x");
-        assert_eq!(env.lookup_ref("x").unwrap().read_count, 0);
+        env.unmark_used(Ident::new("x"));
+        assert_eq!(env.lookup_ref(Ident::new("x")).unwrap().read_count, 0);
     }
 
     #[test]
     fn test_unmark_used_preserves_after_genuine_read() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
         // First: variable is genuinely used somewhere
-        let _ = env.lookup("x"); // read_count = 1
-                                 // Then: an assignment target lookup + unmark (simulating `x = 1`)
-        let _ = env.lookup("x"); // read_count = 2
-        env.unmark_used("x"); // read_count = 1
+        let _ = env.lookup(Ident::new("x")); // read_count = 1
+                                             // Then: an assignment target lookup + unmark (simulating `x = 1`)
+        let _ = env.lookup(Ident::new("x")); // read_count = 2
+        env.unmark_used(Ident::new("x")); // read_count = 1
         assert!(
-            env.lookup_ref("x").unwrap().read_count > 0,
+            env.lookup_ref(Ident::new("x")).unwrap().read_count > 0,
             "unmark_used should not undo usage when there was a genuine read"
         );
     }
@@ -2250,10 +2184,10 @@ mod tests {
     #[test]
     fn test_lookup_ref_does_not_mark_used() {
         let mut env = TypeEnv::new();
-        env.define_with_span("x".to_string(), Ty::I32, false, 0..5);
-        let _ = env.lookup_ref("x");
+        env.define_with_span(Ident::new("x"), Ty::I32, false, 0..5);
+        let _ = env.lookup_ref(Ident::new("x"));
         assert_eq!(
-            env.lookup_ref("x").unwrap().read_count,
+            env.lookup_ref(Ident::new("x")).unwrap().read_count,
             0,
             "lookup_ref should not mark as used"
         );
@@ -2263,7 +2197,7 @@ mod tests {
     fn test_pop_scope_warns_unused() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        env.define_with_span("unused".to_string(), Ty::I32, false, 0..6);
+        env.define_with_span(Ident::new("unused"), Ty::I32, false, 0..6);
         let warnings = env.pop_scope_with_warnings();
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].name, "unused");
@@ -2274,8 +2208,8 @@ mod tests {
     fn test_pop_scope_warns_never_mutated() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
-        let _ = env.lookup("x"); // mark used but never written
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
+        let _ = env.lookup(Ident::new("x")); // mark used but never written
         let warnings = env.pop_scope_with_warnings();
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].name, "x");
@@ -2286,9 +2220,9 @@ mod tests {
     fn test_pop_scope_no_warn_if_used_and_written() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
-        let _ = env.lookup("x"); // used
-        env.mark_written("x"); // written
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
+        let _ = env.lookup(Ident::new("x")); // used
+        env.mark_written(Ident::new("x")); // written
         let warnings = env.pop_scope_with_warnings();
         assert!(warnings.is_empty(), "no warning for used+written var");
     }
@@ -2297,7 +2231,7 @@ mod tests {
     fn test_pop_scope_no_warn_underscore_prefix() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        env.define_with_span("_ignored".to_string(), Ty::I32, false, 0..8);
+        env.define_with_span(Ident::new("_ignored"), Ty::I32, false, 0..8);
         let warnings = env.pop_scope_with_warnings();
         assert!(
             warnings.is_empty(),
@@ -2310,7 +2244,7 @@ mod tests {
         let mut env = TypeEnv::new();
         env.push_scope();
         // synthetic define — no span, read_count = 1
-        env.define("self_".to_string(), Ty::I32, false);
+        env.define(Ident::new("self_"), Ty::I32, false);
         let warnings = env.pop_scope_with_warnings();
         assert!(
             warnings.is_empty(),
@@ -2323,7 +2257,7 @@ mod tests {
         let mut env = TypeEnv::new();
         env.push_scope();
         // mutable AND unused — should get Unused, not NeverMutated
-        env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
+        env.define_with_span(Ident::new("x"), Ty::I32, true, 0..5);
         let warnings = env.pop_scope_with_warnings();
         assert_eq!(warnings.len(), 1);
         assert!(
@@ -2335,9 +2269,9 @@ mod tests {
     #[test]
     fn test_all_names() {
         let mut env = TypeEnv::new();
-        env.define("a".to_string(), Ty::I32, false);
+        env.define(Ident::new("a"), Ty::I32, false);
         env.push_scope();
-        env.define("b".to_string(), Ty::Bool, false);
+        env.define(Ident::new("b"), Ty::Bool, false);
         let names: Vec<_> = env.all_names().collect();
         assert!(names.contains(&Symbol::intern("a")));
         assert!(names.contains(&Symbol::intern("b")));

@@ -86,9 +86,9 @@ pub(super) fn substitute_pattern_field_ty(
 ///
 /// This is intentionally shallow (top-level only) so the caller decides
 /// whether to recurse into constructor payloads.
-fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
+fn binding_name_for_pattern(pattern: &Pattern) -> Option<Ident> {
     match pattern {
-        Pattern::Identifier(name) if !name.name.as_str().contains("::") => Some(name.to_string()),
+        Pattern::Identifier(name) if !name.name.as_str().contains("::") => Some(*name),
         _ => None,
     }
 }
@@ -422,8 +422,8 @@ impl Checker {
         );
         if left_names == right_names {
             for name in sorted_pattern_bound_names(left_names) {
-                let left_binding = left_env.lookup_ref(&name);
-                let right_binding = right_env.lookup_ref(&name);
+                let left_binding = left_env.lookup_ref(Ident::new(&name));
+                let right_binding = right_env.lookup_ref(Ident::new(&name));
                 if let (Some(left_binding), Some(right_binding)) = (left_binding, right_binding) {
                     let left_ty = self.subst.resolve(&left_binding.ty);
                     let right_ty = self.subst.resolve(&right_binding.ty);
@@ -489,8 +489,8 @@ impl Checker {
             return false;
         }
         left_names.iter().all(|name| {
-            let left = left_env.lookup_ref(name);
-            let right = right_env.lookup_ref(name);
+            let left = left_env.lookup_ref(Ident::new(name));
+            let right = right_env.lookup_ref(Ident::new(name));
             matches!(
                 (left, right),
                 (Some(left_binding), Some(right_binding))
@@ -512,12 +512,8 @@ impl Checker {
                 self.bind_pattern(pat, ty, is_mutable, ps);
             } else {
                 self.check_shadowing(pf.name, span);
-                self.env.define_with_span(
-                    pf.name.to_string(),
-                    ty.clone(),
-                    is_mutable,
-                    span.clone(),
-                );
+                self.env
+                    .define_with_span(pf.name, ty.clone(), is_mutable, span.clone());
             }
         }
     }
@@ -855,7 +851,7 @@ impl Checker {
                     {
                         self.record_pattern_place_transfer(root, path, &field.ty, &field.span);
                     }
-                    self.check_shadowing(name, &field.span);
+                    self.check_shadowing(*name, &field.span);
                     self.env.define_with_span(
                         *name,
                         field.ty.clone(),
@@ -1433,7 +1429,7 @@ impl Checker {
                                     } else {
                                         self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
-                                            pf.name.to_string(),
+                                            pf.name,
                                             field_ty,
                                             is_mutable,
                                             span.clone(),
@@ -1472,7 +1468,7 @@ impl Checker {
                                     } else {
                                         self.check_shadowing(pf.name, span);
                                         self.env.define_with_span(
-                                            pf.name.to_string(),
+                                            pf.name,
                                             field_ty,
                                             is_mutable,
                                             span.clone(),
@@ -1551,7 +1547,7 @@ impl Checker {
                                 } else {
                                     self.check_shadowing(pf.name, span);
                                     self.env.define_with_span(
-                                        pf.name.to_string(),
+                                        pf.name,
                                         field_ty,
                                         is_mutable,
                                         span.clone(),
@@ -1759,7 +1755,7 @@ impl Checker {
                     binding_name: binding_name.to_string(),
                     def_span: self
                         .env
-                        .lookup_ref(binding_name.name.as_str())
+                        .lookup_ref(*binding_name)
                         .and_then(|binding| binding.def_span.clone()),
                     ty: self.project_assoc_types(ty),
                 })
@@ -2153,15 +2149,15 @@ impl Checker {
                         let binding_name = if let Some((sub_pat, _)) = &pf.pattern {
                             binding_name_for_pattern(sub_pat)
                         } else {
-                            Some(pf.name.to_string())
+                            Some(pf.name)
                         };
                         binding_name.map(|binding_name| PayloadBinding {
                             field_idx,
                             def_span: self
                                 .env
-                                .lookup_ref(&binding_name)
+                                .lookup_ref(binding_name)
                                 .and_then(|binding| binding.def_span.clone()),
-                            binding_name,
+                            binding_name: binding_name.to_string(),
                             ty: self.project_assoc_types(&ty),
                         })
                     })
@@ -2249,9 +2245,9 @@ impl Checker {
                             field_idx,
                             def_span: self
                                 .env
-                                .lookup_ref(&binding_name)
+                                .lookup_ref(binding_name)
                                 .and_then(|binding| binding.def_span.clone()),
-                            binding_name,
+                            binding_name: binding_name.to_string(),
                             ty: self.project_assoc_types(ty),
                         })
                     })
@@ -2409,7 +2405,7 @@ impl Checker {
                                                 binding_name: binding_name.to_string(),
                                                 def_span: self
                                                     .env
-                                                    .lookup_ref(binding_name)
+                                                    .lookup_ref(*binding_name)
                                                     .and_then(|binding| binding.def_span.clone()),
                                                 ty: self.project_assoc_types(&field.ty),
                                             })
@@ -2570,7 +2566,7 @@ impl Checker {
                         binding_name: binding_name.to_string(),
                         def_span: self
                             .env
-                            .lookup_ref(binding_name.name.as_str())
+                            .lookup_ref(*binding_name)
                             .and_then(|binding| binding.def_span.clone()),
                         ty: self.project_assoc_types(&inner_ty),
                     });

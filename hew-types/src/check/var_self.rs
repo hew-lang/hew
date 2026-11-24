@@ -50,14 +50,14 @@ impl Checker {
     /// The first receiver place moved out on the current path.
     fn receiver_hole(&self) -> Option<String> {
         let receiver = self.var_self_receiver_in_scope()?;
-        let binding = self.env.lookup_ref(receiver)?;
+        let binding = self.env.lookup_ref(hew_parser::ast::Ident::new(receiver))?;
         if binding.is_moved {
             return Some(receiver.to_string());
         }
         binding
             .moved_places
             .first()
-            .map(|moved| Self::render_place(receiver, &moved.path))
+            .map(|moved| Self::render_place(hew_parser::ast::Ident::new(receiver), &moved.path))
     }
 
     /// Refuse an operation that can fail while a receiver field is out.

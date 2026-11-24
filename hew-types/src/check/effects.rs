@@ -445,7 +445,7 @@ impl Checker {
     ) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let ty = self.expr_types.get(&key).cloned().or_else(|| match expr {
-            Expr::Ident(name) => self.env.lookup_ref(name).map(|binding| binding.ty.clone()),
+            Expr::Ident(name) => self.env.lookup_ref(*name).map(|binding| binding.ty.clone()),
             _ => None,
         });
         let Some(ty) = ty else {
@@ -563,9 +563,9 @@ impl Checker {
         let place = self.expr_place(expr);
         let consumed = place.as_ref().is_some_and(|(root, path)| {
             self.env
-                .lookup_ref(root)
+                .lookup_ref(*root)
                 .is_some_and(|binding| binding.is_moved)
-                || self.env.place_move_conflict(root, path).is_some()
+                || self.env.place_move_conflict(*root, path).is_some()
         });
         let snapshot = place.is_some()
             && !consumed
@@ -766,10 +766,7 @@ impl Checker {
             .get(&SpanKey::in_module(&callee.1, self.current_module_idx))
             .cloned()
             .or_else(|| match &callee.0 {
-                Expr::Ident(name) => self
-                    .env
-                    .lookup_ref(name.name.as_str())
-                    .map(|binding| binding.ty.clone()),
+                Expr::Ident(name) => self.env.lookup_ref(*name).map(|binding| binding.ty.clone()),
                 _ => None,
             })
     }

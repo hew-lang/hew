@@ -257,7 +257,7 @@ impl Checker {
                     // derivation. In particular, a lambda-actor handle is an
                     // opaque wrapper, but release still consumes its sole runtime
                     // handle and any later receiver use is invalid.
-                    self.env.mark_moved(name, receiver.1.clone());
+                    self.env.mark_moved(*name, receiver.1.clone());
                 }
             } else if newly_recorded {
                 self.record_value_transfer(&receiver.0, &receiver.1);
@@ -357,7 +357,7 @@ impl Checker {
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Ident(name) = &receiver.0 {
-            let receiver_is_binding = self.env.lookup_ref(name).is_some();
+            let receiver_is_binding = self.env.lookup_ref(*name).is_some();
             // The shared type-head resolver already selected every
             // declaration-proven nominal above. Preserve that classification
             // while deciding whether an unresolved head is a module call.
@@ -381,11 +381,11 @@ impl Checker {
             // exact source owner, so resolve the binding before every authority
             // lookup. Never recover the owner from the final path segment: two
             // nested stdlib modules may share both a leaf and a function name.
-            let canonical_owner = self.canonical_module_import_owner(name);
+            let canonical_owner = self.canonical_module_import_owner(*name);
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.module_binding_in_current_file(name)
+                && (self.module_binding_in_current_file(*name)
                     || self.module_fn_exports.contains(&key)
                     || self.has_fn_sig(&key));
             if looks_like_module_call {
@@ -395,7 +395,7 @@ impl Checker {
                         module_name: canonical_owner.clone(),
                     },
                 );
-                if self.module_binding_in_current_file(name) {
+                if self.module_binding_in_current_file(*name) {
                     self.note_import_use(name.name.as_str());
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
@@ -1987,8 +1987,7 @@ impl Checker {
                                     _ => None,
                                 };
                                 let receiver_is_mutable = receiver_binding_name
-                                    .map(|ident| ident.name.as_str())
-                                    .and_then(|n| self.env.lookup_ref(n))
+                                    .and_then(|ident| self.env.lookup_ref(ident))
                                     .is_some_and(|b| b.is_mutable);
                                 if !receiver_is_mutable {
                                     let receiver_name = if let Some(n) = &receiver_binding_name {
@@ -2010,17 +2009,13 @@ impl Checker {
                                     // binding as written so the unused-mut analysis does
                                     // not flag `var lc = ...; lc.step(...)` as a
                                     // never-reassigned mutable binding.
-                                    self.env.discount_mutation_receiver_read(n.name.as_str());
-                                    self.env.mark_written(n.name.as_str());
+                                    self.env.discount_mutation_receiver_read(*n);
+                                    self.env.mark_written(*n);
                                     self.replace_place_value_candidates(
                                         receiver,
                                         IndirectCallCandidates::unknown(),
                                     );
-                                    self.reject_borrowed_parameter_mutation(
-                                        n.name.as_str(),
-                                        &[],
-                                        span,
-                                    );
+                                    self.reject_borrowed_parameter_mutation(*n, &[], span);
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
@@ -2090,10 +2085,7 @@ impl Checker {
                             self.method_call_discharges_receiver
                                 .insert(SpanKey::in_module(span, self.current_module_idx));
                             if let Expr::Ident(receiver_name) = &receiver.0 {
-                                match self
-                                    .env
-                                    .mark_released(receiver_name.name.as_str(), receiver.1.clone())
-                                {
+                                match self.env.mark_released(*receiver_name, receiver.1.clone()) {
                                     Some(Some(prior)) => {
                                         let mut error = TypeError::new(
                                             TypeErrorKind::UseAfterConsume,
@@ -2121,10 +2113,7 @@ impl Checker {
                                             MarkerTrait::Copy,
                                         ) =>
                                     {
-                                        self.env.mark_moved(
-                                            receiver_name.name.as_str(),
-                                            receiver.1.clone(),
-                                        );
+                                        self.env.mark_moved(*receiver_name, receiver.1.clone());
                                     }
                                     Some(None) | None => {}
                                 }
@@ -2756,7 +2745,7 @@ impl Checker {
     ) {
         let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
         if let Expr::Ident(binding) = &receiver.0 {
-            if self.env.lookup_ref(binding).is_some()
+            if self.env.lookup_ref(*binding).is_some()
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),
                     self.current_module_idx,

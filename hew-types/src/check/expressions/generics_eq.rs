@@ -93,7 +93,7 @@ impl Checker {
         let Expr::Ident(name) = expr else {
             return None;
         };
-        match env.lookup_ref(name.name.as_str())?.ty {
+        match env.lookup_ref(*name)?.ty {
             Ty::Var(v) => Some(v),
             _ => None,
         }

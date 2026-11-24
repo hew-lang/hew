@@ -1325,18 +1325,18 @@ impl Checker {
         if method.contains("::") {
             return None;
         }
-        if !self.module_binding_in_current_file(module_name) {
+        if !self.module_binding_in_current_file(Ident::new(module_name)) {
             return None;
         }
         // The parsed qualifier is only a lexical binding. Resolve it through
         // the import table before consulting declaration/export authority so
         // nested modules and aliases retain their exact source identity.
-        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
         if !self.has_fn_sig(&key) {
             return None;
         }
-        if self.module_binding_in_current_file(module_name) {
+        if self.module_binding_in_current_file(Ident::new(module_name)) {
             self.note_import_use(module_name);
         }
         // Export gate: only `pub` functions are reachable across the module
@@ -2028,10 +2028,10 @@ impl Checker {
                         // identifiers on the existing name-building path
                         // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                         // names are not registered as value bindings.
-                        if self.env.lookup_ref(obj_name).is_some() {
+                        if self.env.lookup_ref(*obj_name).is_some() {
                             let receiver_ty = self
                                 .env
-                                .lookup_ref(obj_name)
+                                .lookup_ref(*obj_name)
                                 .map(|binding| self.subst.resolve(&binding.ty));
                             let has_method = receiver_ty
                                 .as_ref()
@@ -2466,7 +2466,7 @@ impl Checker {
             if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
                 self.visible_fn_signature_key(*ident)
             } else {
-                self.visible_fn_signature_key(func_name.as_str())
+                self.visible_fn_signature_key(Ident::new(func_name.as_str()))
             }
             .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
@@ -2937,7 +2937,7 @@ impl Checker {
     /// produce, so a hit means the programmer declared the name and the
     /// builtin of that spelling does not apply.
     fn declares_function(&self, name: &str) -> bool {
-        self.visible_fn_signature_key(name)
+        self.visible_fn_signature_key(Ident::new(name))
             .is_some_and(|key| self.fn_def_spans.contains_key(&key))
     }
 

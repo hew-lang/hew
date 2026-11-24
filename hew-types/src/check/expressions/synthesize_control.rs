@@ -241,9 +241,9 @@ impl Checker {
                         let capture_is_copy = self.ty_is_non_owning(&capture.ty);
                         let borrowed_parameter = !capture_is_copy
                             && capture.acquisition == crate::ClosureCaptureAcquisition::Move
-                            && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
-                                binding.id == capture.binding_id && binding.is_param()
-                            });
+                            && self.env.lookup_ref(Ident::new(&capture.name)).is_some_and(
+                                |binding| binding.id == capture.binding_id && binding.is_param(),
+                            );
                         let borrowed_view = matches!(capture.ty, Ty::Borrow { .. });
                         if borrowed_parameter || borrowed_view {
                             self.errors.push(TypeError::new(

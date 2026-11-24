@@ -151,7 +151,7 @@ impl Checker {
         &mut self,
         expr: &Expr,
         span: &Span,
-    ) -> Option<String> {
+    ) -> Option<Ident> {
         hew_parser::stack::ensure_sufficient_stack(|| {
             self.preserve_discarded_receiver_identity_chain_inner(expr, span)
         })
@@ -161,7 +161,7 @@ impl Checker {
         &mut self,
         expr: &Expr,
         span: &Span,
-    ) -> Option<String> {
+    ) -> Option<Ident> {
         let Expr::MethodCall { receiver, .. } = expr else {
             return None;
         };
@@ -191,7 +191,7 @@ impl Checker {
         }
 
         let (root, nested_identity) = match &receiver.0 {
-            Expr::Ident(name) => (name.to_string(), false),
+            Expr::Ident(name) => (*name, false),
             Expr::MethodCall { .. } => {
                 let root =
                     self.preserve_discarded_receiver_identity_chain(&receiver.0, &receiver.1)?;
@@ -219,7 +219,7 @@ impl Checker {
         // binding behind its own discarded method call.
         let root_was_moved = root
             .as_ref()
-            .and_then(|name| self.env.lookup_ref(name))
+            .and_then(|name| self.env.lookup_ref(*name))
             .is_some_and(|binding| binding.is_moved);
         self.task_lifetimes
             .discarded_values
@@ -248,7 +248,7 @@ impl Checker {
         }
         if !root_was_moved {
             if let Some(root) = self.preserve_discarded_receiver_identity_chain(expr, span) {
-                self.env.unmark_moved(&root);
+                self.env.unmark_moved(root);
             }
         }
         self.record_discard_cleanup_effect(expr, &ty);
@@ -507,7 +507,7 @@ impl Checker {
             return None;
         }
         let joined = self.join_callable_values(target_ty, &value_ty, &value.1);
-        self.env.widen_ty(name.name.as_str(), joined.clone());
+        self.env.widen_ty(*name, joined.clone());
         Some(joined)
     }
 
@@ -1188,7 +1188,7 @@ impl Checker {
                         // Synthetic binding (no source span) — pre-populated for body lookup.
                         // Marked as already-used (read_count=1 in `define`) to avoid a
                         // spurious unused-variable warning at this site.
-                        self.env.define(bind_name.to_string(), handle_ty, false);
+                        self.env.define(*bind_name, handle_ty, false);
                         self.record_binding_value_candidates(*bind_name, value.as_ref());
                     }
                 }
@@ -1884,7 +1884,7 @@ impl Checker {
                 // width then fails `check_against`'s ordinary implicit-convert
                 // gate instead of drifting.
                 if let Expr::Ident(name) = &target.0 {
-                    if let Some(binding) = self.env.lookup_ref(name) {
+                    if let Some(binding) = self.env.lookup_ref(*name) {
                         if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
                             let value_resolved = self.subst.resolve(&value_ty);
                             if self.subst.resolve(&binding_ty).is_numeric_literal()

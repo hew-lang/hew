@@ -37,13 +37,13 @@ impl ConstEnv {
         }
     }
 
-    pub fn insert(&mut self, name: impl crate::env::LexicalName, value: i128) {
-        self.values.insert(name.lexical_key(), value);
+    pub fn insert(&mut self, name: hew_parser::ast::Ident, value: i128) {
+        self.values.insert(name, value);
     }
 
     #[must_use]
-    pub fn get(&self, name: impl crate::env::LexicalName) -> Option<i128> {
-        self.values.get(&name.lexical_key()).copied()
+    pub fn get(&self, name: hew_parser::ast::Ident) -> Option<i128> {
+        self.values.get(&name).copied()
     }
 }
 
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn named_const_lookup_succeeds() {
         let mut env = ConstEnv::new();
-        env.insert("MAX_SIZE", 64);
+        env.insert(hew_parser::ast::Ident::new("MAX_SIZE"), 64);
         let expr = bin(
             BinaryOp::Multiply,
             span(Expr::Ident(hew_parser::ast::Ident::new("MAX_SIZE"))),
@@ -520,7 +520,7 @@ mod tests {
     fn nested_with_named_const() {
         // (BASE + 1) * 2  with BASE = 7  → 16
         let mut env = ConstEnv::new();
-        env.insert("BASE", 7);
+        env.insert(hew_parser::ast::Ident::new("BASE"), 7);
         let expr = bin(
             BinaryOp::Multiply,
             bin(

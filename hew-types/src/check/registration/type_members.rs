@@ -1282,10 +1282,10 @@ impl Checker {
     pub(in crate::check) fn register_type_namespace_name(
         &mut self,
         module_owner: Option<&str>,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         span: &Span,
     ) -> bool {
-        let ident = name.lexical_key();
+        let ident = name;
         let name = ident.name.as_str();
         if self.reject_protected_prelude_declaration_for_owner(module_owner, name, span) {
             return false;
@@ -1932,7 +1932,7 @@ impl Checker {
         let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
 
         let event_type_name = format!("{}.Event", md.name);
-        let event_identity = self.declaration_identity(&event_type_name);
+        let event_identity = self.declaration_identity(Ident::new(&event_type_name));
         let event_ty = self.named_ty_for_key(&event_identity, machine_generic_args.clone());
 
         // Build state variants
@@ -2063,7 +2063,7 @@ impl Checker {
         let event_field_types = self.expand_for_marker_registration(&event_field_types);
         self.registry.register_type(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(&event_type_name))
+                self.nominal_head_for_key(&self.declaration_identity(Ident::new(&event_type_name)))
                     .expect("registered type has a declaration")
                     .id,
             ),
@@ -2071,7 +2071,7 @@ impl Checker {
         );
         self.registry.register_type_params(
             self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(&event_type_name))
+                self.nominal_head_for_key(&self.declaration_identity(Ident::new(&event_type_name)))
                     .expect("registered type has a declaration")
                     .id,
             ),

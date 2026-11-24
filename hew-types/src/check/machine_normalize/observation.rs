@@ -197,7 +197,7 @@ impl Builder {
             default_provider: None,
             name: Ident::new("self"),
             name_span: self.span(),
-            ty: self.ty("Self"),
+            ty: self.ty(Ident::new("Self")),
             is_mutable: false,
             is_consume: false,
             is_receiver: true,
@@ -223,7 +223,7 @@ impl Builder {
                 body,
             });
         }
-        let receiver = self.ident("self");
+        let receiver = self.ident(Ident::new("self"));
         let body = self.expr(Expr::Match {
             scrutinee: Box::new(receiver),
             arms,
@@ -281,7 +281,7 @@ impl Builder {
                 let field_value = if region.is_some() && region == next_region {
                     value.take().expect("nested restored configuration")
                 } else if depth + 1 == path.len() && saved.iter().any(|(name, _)| *name == field) {
-                    self.ident(format!("_$machine_saved_{field}"))
+                    self.ident(Ident::new(&format!("_$machine_saved_{field}")))
                 } else {
                     let owner = restore_field_owner(hierarchy, *config, field, region.is_some());
                     let parameter = snapshot
@@ -322,7 +322,7 @@ impl Builder {
             let no = self.boolean(false);
             stmts.push(self.var(&flag, None, no));
             let yes = self.boolean(true);
-            let assign = self.assign(&flag, yes);
+            let assign = self.assign(Ident::new(&flag), yes);
             let unit = self.expr(Expr::Tuple(Vec::new()));
             let body = self.block(vec![assign], unit);
             let pattern = self.pattern(group.name, &[], "");
@@ -334,7 +334,7 @@ impl Builder {
             });
         }
         if !arms.is_empty() {
-            let request = self.ident("_$machine_request");
+            let request = self.ident(Ident::new("_$machine_request"));
             let select = self.expr(Expr::Match {
                 scrutinee: Box::new(request),
                 arms,
@@ -344,7 +344,7 @@ impl Builder {
                 Pattern::Identifier(Ident::new("_$machine_request")),
                 self.span(),
             );
-            let iterable = self.ident("requested");
+            let iterable = self.ident(Ident::new("requested"));
             stmts.push(self.stmt(Stmt::For {
                 label: None,
                 pattern,
@@ -359,7 +359,7 @@ impl Builder {
     }
 
     pub(super) fn observed_report(&mut self, report: Spanned<Expr>) -> Spanned<Expr> {
-        let departures = self.ident(DEPARTURES);
+        let departures = self.ident(Ident::new(DEPARTURES));
         self.record_value(
             "MachineObservedStep",
             vec![
@@ -386,7 +386,7 @@ impl Builder {
         name: &str,
         args: Vec<Spanned<Expr>>,
     ) -> Spanned<Expr> {
-        let receiver = self.ident(receiver);
+        let receiver = self.ident(Ident::new(receiver));
         let method = (Ident::new(name), self.span());
         self.expr(Expr::MethodCall {
             receiver: hew_parser::chain::Chain::new(receiver),
@@ -407,7 +407,7 @@ impl Builder {
             let selected = rules
                 .iter()
                 .filter(|index| hierarchy.crosses(**index, snapshot.scope))
-                .map(|index| self.ident(format!("_$machine_selected_{index}")))
+                .map(|index| self.ident(Ident::new(&format!("_$machine_selected_{index}"))))
                 .collect();
             let selected = self.disjunction(selected);
             let scope = self.enum_value(
@@ -415,16 +415,21 @@ impl Builder {
                 hierarchy.name(machine, snapshot.scope),
                 Vec::new(),
             );
-            let requested = self.ident(format!(
+            let requested = self.ident(Ident::new(&format!(
                 "_$machine_observe_{}",
                 hierarchy.name(machine, snapshot.scope)
-            ));
+            )));
             let condition = self.binary_expr(hew_parser::ast::BinaryOp::And, selected, requested);
             let mut captures = Vec::new();
             for (node, fields) in snapshot.variants {
                 let fields = fields
                     .into_iter()
-                    .map(|(field, _)| (field, self.ident(format!("_$machine_state_{field}"))))
+                    .map(|(field, _)| {
+                        (
+                            field,
+                            self.ident(Ident::new(&format!("_$machine_state_{field}"))),
+                        )
+                    })
                     .collect();
                 let saved = self.enum_value(
                     machine_companion(machine, &snapshot.suffix),
@@ -468,7 +473,7 @@ impl Builder {
     pub(super) fn observed_forwarding(&mut self) -> Block {
         let args = ["event", "limit", "requested"]
             .into_iter()
-            .map(|name| self.ident(name))
+            .map(|name| self.ident(Ident::new(name)))
             .collect();
         let call = self.method_call("self", "step_observed_with_limit", args);
         Block {

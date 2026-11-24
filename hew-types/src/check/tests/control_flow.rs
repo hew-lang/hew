@@ -730,7 +730,7 @@ mod for_loop_iterable_fail_closed {
 
     fn check_for_over(iter_ty: Ty) -> Vec<TypeError> {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.env.define("it".to_string(), iter_ty, false);
+        checker.env.define(Ident::new("it"), iter_ty, false);
         let for_stmt = Stmt::For {
             label: None,
             pattern: (Pattern::Identifier(Ident::new("x")), 0..1),

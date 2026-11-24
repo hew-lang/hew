@@ -68,7 +68,7 @@ impl Builder {
 
     pub(super) fn assign(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
         let target = self.ident(name);
@@ -136,7 +136,7 @@ impl Builder {
             let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
             let mut locals = Vec::new();
             for (field, _) in &state.fields {
-                let value = self.ident(format!("_$machine_in_{field}"));
+                let value = self.ident(Ident::new(&format!("_$machine_in_{field}")));
                 let name = format!("_$machine_state_{field}");
                 if shared_read_only
                     && depth + 1 != path.len()
@@ -145,7 +145,7 @@ impl Builder {
                         .iter()
                         .any(|region| hierarchy.name(machine, *region) == *field)
                 {
-                    locals.push(self.let_value(name, None, value));
+                    locals.push(self.let_value(Ident::new(&name), None, value));
                 } else {
                     locals.push(self.var(name, None, value));
                 }
@@ -166,29 +166,31 @@ impl Builder {
                     .container(path[depth + 1])
                     .expect("nested configuration region");
                 let field = hierarchy.name(machine, region);
-                locals.push(self.assign(format!("_$machine_state_{field}"), body));
+                locals.push(self.assign(Ident::new(&format!("_$machine_state_{field}")), body));
                 body = self.state_value(machine, &state);
             }
             body = self.block(locals, body);
             let input = if depth == 0 {
-                self.ident(WORK)
+                self.ident(Ident::new(WORK))
             } else {
                 let region = hierarchy
                     .container(*current)
                     .expect("nested configuration region");
-                self.ident(format!(
+                self.ident(Ident::new(&format!(
                     "_$machine_state_{}",
                     hierarchy.name(machine, region)
-                ))
+                )))
             };
             let fallback = match mode {
                 Focus::Predicate => self.boolean(false),
-                Focus::Configuration(Some(region)) if depth > 0 && !rebuild => self.ident(format!(
-                    "_$machine_state_{}",
-                    hierarchy.name(machine, region)
-                )),
+                Focus::Configuration(Some(region)) if depth > 0 && !rebuild => {
+                    self.ident(Ident::new(&format!(
+                        "_$machine_state_{}",
+                        hierarchy.name(machine, region)
+                    )))
+                }
                 Focus::Configuration(Some(_)) => input.clone(),
-                Focus::Configuration(None) => self.ident(WORK),
+                Focus::Configuration(None) => self.ident(Ident::new(WORK)),
             };
             let wildcard = (Pattern::Wildcard, self.span());
             body = self.expr(Expr::Match {
@@ -222,29 +224,31 @@ impl Builder {
         let mut verified_passes = Vec::new();
         let mut shell = self.step_body_shell(machine);
         if !observed {
-            let event = self.ident("event");
-            shell.stmts.push(self.let_value(EVENT, None, event));
+            let event = self.ident(Ident::new("event"));
+            shell
+                .stmts
+                .push(self.let_value(Ident::new(EVENT), None, event));
         }
         if observed {
             shell.stmts.extend(self.observation_prelude(machine));
         }
-        let limit = self.ident("limit");
+        let limit = self.ident(Ident::new("limit"));
         let zero = self.integer(0);
         let invalid = self.binary(hew_parser::ast::BinaryOp::LessEqual, limit, zero);
         let failure = self.limit_failure("InvalidLimit");
         shell.stmts.push(self.if_do(invalid, vec![failure]));
         shell.stmts.extend(self.history_prelude(machine, hierarchy));
-        let current = self.ident("self");
+        let current = self.ident(Ident::new("self"));
         let ty = self.machine_ty(machine, "");
         shell.stmts.push(self.var(WORK, Some(ty), current));
         let zero = self.integer(0);
-        let ty = self.ty("i64");
+        let ty = self.ty(Ident::new("i64"));
         shell.stmts.push(self.var(USED, Some(ty), zero));
         let mut arms = Vec::new();
         for event in &machine.events {
             let pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
             let input = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
-            let set_input = self.assign(INPUT, input);
+            let set_input = self.assign(Ident::new(INPUT), input);
             let pass = self.configuration_pass(
                 machine,
                 hierarchy,
@@ -262,7 +266,7 @@ impl Builder {
                 body,
             });
         }
-        let event = self.ident(EVENT);
+        let event = self.ident(Ident::new(EVENT));
         let dispatch = self.expr(Expr::Match {
             scrutinee: Box::new(event),
             arms,
@@ -295,7 +299,7 @@ impl Builder {
                 },
             }));
         }
-        let candidate = self.ident(WORK);
+        let candidate = self.ident(Ident::new(WORK));
         self.finish_step(machine, &mut shell, candidate);
         let report = *shell.trailing_expr.take().expect("step report");
         let report = if observed {
@@ -409,7 +413,7 @@ impl Builder {
             }
             let seen = self.boolean(true);
             let seen = self.assign(
-                format!("_$machine_seen_{}", hierarchy.ordinal(*index)),
+                Ident::new(&format!("_$machine_seen_{}", hierarchy.ordinal(*index))),
                 seen,
             );
             let guard = self.block(vec![seen], guard);
@@ -425,36 +429,39 @@ impl Builder {
                 guard
             };
             let mut conditions = Vec::new();
-            let seen = self.ident(format!("_$machine_seen_{}", hierarchy.ordinal(*index)));
+            let seen = self.ident(Ident::new(&format!(
+                "_$machine_seen_{}",
+                hierarchy.ordinal(*index)
+            )));
             conditions.push(self.not(seen));
             for prior in &ordered[..position] {
                 if hierarchy.conflicts(*index, *prior) {
-                    let selected = self.ident(format!("_$machine_selected_{prior}"));
+                    let selected = self.ident(Ident::new(&format!("_$machine_selected_{prior}")));
                     conditions.push(self.not(selected));
                 }
             }
             let eligible = self.conjunction(conditions);
-            let select = self.assign(format!("_$machine_selected_{index}"), guard);
+            let select = self.assign(Ident::new(&format!("_$machine_selected_{index}")), guard);
             stmts.push(self.if_do(eligible, vec![select]));
         }
         let selections = ordered
             .iter()
-            .map(|index| self.ident(format!("_$machine_selected_{index}")))
+            .map(|index| self.ident(Ident::new(&format!("_$machine_selected_{index}"))))
             .collect();
         let selected = self.disjunction(selections);
-        stmts.push(self.let_value("_$machine_any", None, selected));
+        stmts.push(self.let_value(Ident::new("_$machine_any"), None, selected));
         #[cfg(feature = "verify-machines")]
         let selection_end = stmts.len();
-        let used = self.ident(USED);
-        let limit = self.ident("limit");
+        let used = self.ident(Ident::new(USED));
+        let limit = self.ident(Ident::new("limit"));
         let exhausted = self.binary(hew_parser::ast::BinaryOp::GreaterEqual, used, limit);
         let failure = self.limit_failure("LimitExceeded");
         let refuse = self.if_do(exhausted, vec![failure]);
-        let used = self.ident(USED);
+        let used = self.ident(Ident::new(USED));
         let one = self.integer(1);
         let increment = self.binary(hew_parser::ast::BinaryOp::Add, used, one);
-        let charge = self.assign(USED, increment);
-        let selected = self.ident("_$machine_any");
+        let charge = self.assign(Ident::new(USED), increment);
+        let selected = self.ident(Ident::new("_$machine_any"));
         stmts.push(self.if_do(selected, vec![refuse, charge]));
         self.configuration_hooks(
             machine,
@@ -522,16 +529,16 @@ impl Builder {
                 hierarchy.regional_owner(index),
             )?;
             let body = self.retain_history(machine, hierarchy, body)?;
-            let update = self.assign(WORK, body);
+            let update = self.assign(Ident::new(WORK), body);
             #[cfg(feature = "verify-machines")]
             effects.push(super::verification::Effect {
                 span: update.1.clone(),
                 stage: super::verification::Stage::Body(index),
             });
-            let selected = self.ident(format!("_$machine_selected_{index}"));
+            let selected = self.ident(Ident::new(&format!("_$machine_selected_{index}")));
             let record = self.record_rule(hierarchy.ordinal(index));
             let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
-            let disposition = self.assign(DISPOSITION, taken);
+            let disposition = self.assign(Ident::new(DISPOSITION), taken);
             stmts.push(self.if_do(selected, vec![update, record, disposition]));
         }
         self.configuration_hooks(
@@ -545,7 +552,7 @@ impl Builder {
             &mut effects,
         )?;
 
-        let selected = self.ident("_$machine_any");
+        let selected = self.ident(Ident::new("_$machine_any"));
         let result = self.block(stmts, selected);
         #[cfg(feature = "verify-machines")]
         super::verification::verify(
@@ -610,7 +617,7 @@ impl Builder {
             }
             let conditions = eligible
                 .iter()
-                .map(|index| self.ident(format!("_$machine_selected_{index}")))
+                .map(|index| self.ident(Ident::new(&format!("_$machine_selected_{index}"))))
                 .collect();
             let condition = self.disjunction(conditions);
             let mut updates = Vec::new();
@@ -635,7 +642,7 @@ impl Builder {
                     Focus::Configuration(hierarchy.container(config)),
                     hierarchy.container(node).is_some(),
                 )?;
-                let update = self.assign(WORK, update);
+                let update = self.assign(Ident::new(WORK), update);
                 #[cfg(feature = "verify-machines")]
                 effects.push(super::verification::Effect {
                     span: update.1.clone(),
@@ -681,7 +688,10 @@ impl Builder {
                 {
                     fields.push((*field, self.initial_region(machine, hierarchy, sibling)?));
                 } else {
-                    fields.push((*field, self.ident(format!("_$machine_state_{field}"))));
+                    fields.push((
+                        *field,
+                        self.ident(Ident::new(&format!("_$machine_state_{field}"))),
+                    ));
                 }
             }
             value = self.qualified_variant(machine, state.name, fields);
@@ -712,7 +722,7 @@ impl Builder {
                         if *field == name {
                             value.clone()
                         } else {
-                            self.ident(format!("_$machine_state_{field}"))
+                            self.ident(Ident::new(&format!("_$machine_state_{field}")))
                         },
                     )
                 })
@@ -808,8 +818,8 @@ impl Builder {
                 .iter()
                 .find(|(name, _)| *name == field)
                 .map(|(_, ty)| ty.clone());
-            stmts.push(self.let_value(local.clone(), ty, value));
-            fields.push((field, self.ident(local)));
+            stmts.push(self.let_value(Ident::new(&local), ty, value));
+            fields.push((field, self.ident(Ident::new(&local))));
         }
         if group.regions.is_empty() {
             for (field, _) in &config.fields {

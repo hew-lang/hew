@@ -395,7 +395,10 @@ impl Checker {
                 0,
             );
             *ordinal += 1;
-            match self.defs.declare(occurrence, name, None, key) {
+            match self
+                .defs
+                .declare(occurrence, Ident::from_symbol(name), None, key)
+            {
                 Ok(declaration) => declaration,
                 Err(error) => {
                     self.errors.push(TypeError::new(

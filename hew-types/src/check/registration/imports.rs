@@ -1603,7 +1603,7 @@ impl Checker {
         // importing one file each get their own copy of its names.
         let importer = self.current_module.clone();
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
-            && self.register_type_namespace_name(importer.as_deref(), name, span)
+            && self.register_type_namespace_name(importer.as_deref(), Ident::new(name), span)
     }
 
     /// Publish an imported file's type-shaped declaration into the importing

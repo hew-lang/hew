@@ -1168,7 +1168,7 @@ impl Checker {
         if let Some((Some(name), binding_span)) = error {
             self.check_shadowing(*name, binding_span);
             self.env
-                .define_with_span(name, error_ty, false, binding_span.clone());
+                .define_with_span(*name, error_ty, false, binding_span.clone());
             self.record_local_resolution(*name, binding_span);
         }
         let body_ty = if payload == Ty::Never {
@@ -1348,7 +1348,7 @@ impl Checker {
 
     pub(in crate::check) fn synthesize_identifier(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         span: &Span,
     ) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
@@ -1360,11 +1360,11 @@ impl Checker {
     )]
     pub(super) fn synthesize_identifier_with_type_args(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
-        let ident = name.lexical_key();
+        let ident = name;
         let name = ident.name.as_str();
         if type_args.is_some() && self.env.lookup_ref(ident).is_some() {
             self.report_error(
@@ -1438,7 +1438,7 @@ impl Checker {
             if let Some(colon_pos) = rest.find("::") {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];
-                let is_binding = self.env.lookup_ref(candidate_module).is_some();
+                let is_binding = self.env.lookup_ref(Ident::new(candidate_module)).is_some();
                 let is_known_type = self.type_def_at(candidate_module);
                 let qualified_key = format!("{candidate_module}.{type_name}");
                 let qualified_in_type_defs = self.type_def_at(&qualified_key);
@@ -1575,7 +1575,7 @@ impl Checker {
             }
             self.record_call_edge(&fn_sig_key);
             self.instantiate_function_value(&fn_sig_key, type_args, span, None)
-        } else if self.module_binding_in_current_file(surface_name) {
+        } else if self.module_binding_in_current_file(Ident::new(surface_name)) {
             self.report_error(
                 TypeErrorKind::ModuleUsedAsValue,
                 span,

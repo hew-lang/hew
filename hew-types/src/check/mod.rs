@@ -906,8 +906,10 @@ impl Checker {
             return None;
         }
         match self.current_declaration_module().and_then(|module| {
-            self.scopes
-                .item(self.scopes.namespace_of(module), Symbol::intern(name))
+            self.scopes.item(
+                self.scopes.namespace_of(module),
+                Ident::from_symbol(Symbol::intern(name)),
+            )
         }) {
             Some(scope::Binding::Fn(declaration)) => Some(declaration),
             _ => None,
@@ -957,11 +959,8 @@ impl Checker {
     /// Select a free-function signature in the current source file. Explicit
     /// imports publish only lexical bindings; their canonical declarations own
     /// the signatures, leaving ambient builtin signatures intact.
-    pub(super) fn visible_fn_signature_key(
-        &self,
-        name: impl crate::env::LexicalName,
-    ) -> Option<String> {
-        let ident = name.lexical_key();
+    pub(super) fn visible_fn_signature_key(&self, name: hew_parser::ast::Ident) -> Option<String> {
+        let ident = name;
         let name = ident.name.as_str();
         if ident.ctx != hew_parser::ast::SyntaxContext::ROOT {
             let site = self.scope_site()?;
@@ -987,8 +986,10 @@ impl Checker {
         // precedence. Join the exact scoped DefId to its registered signature.
         if let Some(scope::Binding::Fn(declaration)) =
             self.current_declaration_module().and_then(|module| {
-                self.scopes
-                    .item(self.scopes.namespace_of(module), Symbol::intern(name))
+                self.scopes.item(
+                    self.scopes.namespace_of(module),
+                    Ident::from_symbol(Symbol::intern(name)),
+                )
             })
         {
             for key in [&canonical, name] {
@@ -1274,9 +1275,14 @@ impl Checker {
                     self.scopes.declare_member(owner, name, resolution);
                 }
                 None => {
-                    if self.scopes.item(namespace, name).is_none() {
+                    if self
+                        .scopes
+                        .item(namespace, Ident::from_symbol(name))
+                        .is_none()
+                    {
                         if let Some(binding) = scope::Binding::of_item(&self.defs, id) {
-                            self.scopes.declare_item(namespace, name, binding);
+                            self.scopes
+                                .declare_item(namespace, Ident::from_symbol(name), binding);
                         }
                     }
                 }
@@ -1291,7 +1297,10 @@ impl Checker {
             return;
         };
         let name = Symbol::intern(name);
-        if let Some(binding) = self.scopes.item(self.scopes.namespace_of(module), name) {
+        if let Some(binding) = self
+            .scopes
+            .item(self.scopes.namespace_of(module), Ident::from_symbol(name))
+        {
             self.scopes.bind_prelude(name, binding);
         }
     }
@@ -1403,7 +1412,10 @@ impl Checker {
                         .bind_implicit_module_import(file, module_name.name, target, site);
                 }
                 for selected in names {
-                    if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
+                    if let Some(binding) = self
+                        .scopes
+                        .item(namespace, Ident::from_symbol(selected.name.name))
+                    {
                         if self.binding_is_importable(file, binding) {
                             let bound = selected.alias.unwrap_or(selected.name);
                             self.scopes.bind_import(file, bound.name, binding, site);
@@ -1502,10 +1514,12 @@ impl Checker {
             ),
         ] {
             let occurrence = crate::DeclarationOccurrence::new(module, span, kind, 0);
-            match self
-                .defs
-                .declare(occurrence, name, minted.first().copied(), path)
-            {
+            match self.defs.declare(
+                occurrence,
+                Ident::from_symbol(name),
+                minted.first().copied(),
+                path,
+            ) {
                 Ok(declaration) => minted.push(declaration),
                 Err(error) => {
                     self.errors.push(TypeError::new(

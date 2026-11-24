@@ -41,14 +41,14 @@ impl Checker {
     /// Read the binder inventory when registering a named source declaration.
     pub(in crate::check) fn declaration_parameter_heads(
         &mut self,
-        name: impl crate::env::LexicalName,
+        name: hew_parser::ast::Ident,
     ) -> Vec<crate::ParamHead> {
-        let ident = name.lexical_key();
+        let ident = name;
         if let Some(owner) = self.named_item_declaration(ident) {
             return self.scopes.declaration_parameters(owner);
         }
         let name = ident.name.as_str();
-        let path = self.declaration_identity(name);
+        let path = self.declaration_identity(Ident::new(name));
         let Some(owner) = self
             .lookup_declaration(&path)
             .or_else(|| self.lookup_declaration(name))
@@ -384,7 +384,7 @@ impl Checker {
                     self.register_receive_fn(&identity, rf);
                 }
                 let actor_parameters = self
-                    .declaration_parameter_heads(&identity)
+                    .declaration_parameter_heads(ad.name)
                     .into_iter()
                     .map(Ty::param)
                     .collect();
@@ -2105,7 +2105,7 @@ impl Checker {
             return;
         };
         let signature = FnSig {
-            type_params: self.declaration_parameter_heads(owner),
+            type_params: self.scopes.declaration_parameters(declaration),
             param_names: params.iter().map(|param| param.name.to_string()).collect(),
             params: params
                 .iter()

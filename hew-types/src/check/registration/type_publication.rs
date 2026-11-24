@@ -588,7 +588,7 @@ impl Checker {
                     && matches!(item, Item::TypeDecl(declaration)
                     if self
                         .scopes
-                        .item(identity_module, declaration.name.name)
+                        .item(identity_module, Ident::from_symbol(declaration.name.name))
                         .is_none());
                 if matches!(item, Item::Impl(_)) || unminted_type {
                     self.mint_item_declaration_identities(
@@ -1746,7 +1746,7 @@ impl Checker {
                         let importer = self.current_module.clone();
                         if self.register_type_namespace_name(
                             importer.as_deref(),
-                            &binding_name,
+                            Ident::new(&binding_name),
                             span,
                         ) {
                             Some(binding_name)

@@ -291,7 +291,8 @@ else needs `impl Display for {rendered}`)"
         }
         // A local/parameter in an inner body scope shadows imports normally.
         // Only an outer import-scope binding can be ill-formed here.
-        if matches!(self.env.lookup_ref_with_depth(name), Some((depth, _)) if depth > 0) {
+        if matches!(self.env.lookup_ref_with_depth(Ident::new(name)), Some((depth, _)) if depth > 0)
+        {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
@@ -799,7 +800,7 @@ else needs `impl Display for {rendered}`)"
         else {
             return Ty::Error;
         };
-        if !self.module_binding_in_current_file(module_short) {
+        if !self.module_binding_in_current_file(Ident::new(module_short)) {
             let similar =
                 crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
             self.report_error_with_suggestions(
@@ -843,7 +844,7 @@ else needs `impl Display for {rendered}`)"
             .unwrap_or_else(|| {
                 format!(
                     "{}.{type_name}",
-                    self.canonical_module_import_owner(module_short)
+                    self.canonical_module_import_owner(Ident::new(module_short))
                 )
             });
         if Self::variant_is_source_unit(&td, variant_name) {

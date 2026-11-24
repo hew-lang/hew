@@ -436,7 +436,7 @@ impl Checker {
         let Some(receiver) = self
             .var_self_receiver
             .as_ref()
-            .and_then(|name| self.env.lookup_ref(name.as_str()))
+            .and_then(|name| self.env.lookup_ref(Ident::new(name.as_str())))
         else {
             return;
         };

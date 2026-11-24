@@ -1801,7 +1801,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         make_test_type_def("Boxy", vec![crate::ParamHead::for_test("T")], methods),
     );
     checker.env.define(
-        "boxy".to_string(),
+        Ident::new("boxy"),
         checker.test_named("Boxy", vec![Ty::String]),
         false,
     );
@@ -1852,7 +1852,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
         },
     );
     checker.env.define(
-        "wrapper".to_string(),
+        Ident::new("wrapper"),
         checker.test_named("Wrapper", vec![Ty::String]),
         false,
     );
@@ -1915,7 +1915,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
         ),
     );
     checker.env.define(
-        "m".to_string(),
+        Ident::new("m"),
         checker.test_named("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
@@ -2065,7 +2065,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
         },
     );
     checker.env.define(
-        "thing".to_string(),
+        Ident::new("thing"),
         checker.test_named("widgets.Thing", vec![]),
         false,
     );

@@ -1014,7 +1014,8 @@ impl Checker {
             |owner| self.defs.module_for_path(owner),
         ) {
             let namespace = self.scopes.namespace_of(module);
-            self.scopes.unbind_item(namespace, Symbol::intern(name));
+            self.scopes
+                .unbind_item(namespace, Ident::from_symbol(Symbol::intern(name)));
         }
         let declaration_key = (declaration_owner.map(str::to_string), name.to_string());
         if self

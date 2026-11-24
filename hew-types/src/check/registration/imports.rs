@@ -44,16 +44,16 @@ impl Checker {
             });
     }
 
-    /// Count a use of the import binding `name` in the current file.
-    ///
-    /// TRANSITION(A1c3): WHY record-literal and module-member paths still
-    /// arrive as dotted strings. WHEN they resolve through `Scope`, the
-    /// resolution marks the import and this is deleted. WHAT: the struct
-    /// literal and member checkers take the written `Path`.
-    pub(in crate::check) fn note_import_use(&mut self, name: &str) {
+    /// Resolve a written identifier through `Scope` to mark its import use in
+    /// the current file.
+    pub(in crate::check) fn resolve_import_use(&mut self, name: Ident) {
         if let Some(site) = self.scope_site() {
-            self.scopes
-                .mark_import_binding_used(site.file, Symbol::intern(name));
+            let _ = self.scopes.resolve_prefix(
+                &self.env,
+                site,
+                super::super::scope::Namespace::Value,
+                &[(name, 0..0)],
+            );
         }
     }
 
@@ -138,7 +138,7 @@ impl Checker {
 
     fn note_import_use_of_expr_head_inner(&mut self, expr: &Expr) {
         match expr {
-            Expr::Ident(name) => self.note_import_use(name.name.as_str()),
+            Expr::Ident(name) => self.resolve_import_use(*name),
             Expr::FieldAccess { object, .. } => self.note_import_use_of_expr_head(&object.0),
             _ => {}
         }

@@ -396,7 +396,7 @@ impl Checker {
                     },
                 );
                 if self.module_binding_in_current_file(*name) {
-                    self.note_import_use(name.name.as_str());
+                    self.resolve_import_use(*name);
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a

@@ -313,12 +313,7 @@ impl Checker {
         // spurious unused-import warning when the supervisor is the only
         // reference.
         for child in &sd.children {
-            if let [(module, _), _, ..] = child.actor_type.segments.as_slice() {
-                let module = module.name.as_str();
-                if self.modules.contains(module) {
-                    self.note_import_use(module);
-                }
-            }
+            self.resolve_type_path(&child.actor_type);
         }
 
         // ── 2. Duplicate child names ─────────────────────────────────────────

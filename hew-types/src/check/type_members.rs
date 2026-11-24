@@ -180,7 +180,7 @@ impl Checker {
                     });
                 }
                 self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
-                self.note_import_use(module_short.name.as_str());
+                self.resolve_import_use(*module_short);
                 let canonical = format!(
                     "{}.{}",
                     self.canonical_module_import_owner(*module_short),
@@ -224,7 +224,7 @@ impl Checker {
                     return None;
                 }
                 self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
-                self.note_import_use(module.name.as_str());
+                self.resolve_import_use(*module);
                 Some(format!(
                     "{}.{}",
                     self.canonical_module_import_owner(*module),

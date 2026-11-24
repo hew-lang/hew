@@ -803,7 +803,7 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         }
-        self.note_import_use(module_short);
+        self.resolve_import_use(Ident::new(module_short));
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
                 .module_type_exports_for_binding(module_short)

@@ -1332,7 +1332,7 @@ impl Checker {
             return None;
         }
         if self.module_binding_in_current_file(Ident::new(module_name)) {
-            self.note_import_use(module_name);
+            self.resolve_import_use(Ident::new(module_name));
         }
         // Export gate: only `pub` functions are reachable across the module
         // boundary, mirroring the dot-form path. A `package fn` accessible
@@ -2596,7 +2596,12 @@ impl Checker {
                 self.current_module_idx,
                 func_name.clone(),
             )) {
-                self.note_import_use(&func_name);
+                let ident = if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                    *ident
+                } else {
+                    Ident::new(func_name.as_str())
+                };
+                self.resolve_import_use(ident);
             }
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)

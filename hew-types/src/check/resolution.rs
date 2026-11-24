@@ -290,7 +290,7 @@ impl Checker {
             );
             return Err(());
         }
-        self.note_import_use(&binding);
+        self.resolve_import_use(Ident::new(&binding));
         Ok(Some(format!("{canonical}{suffix}")))
     }
 

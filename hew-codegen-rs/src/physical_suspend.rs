@@ -376,9 +376,24 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "safepoint.exhausted",
             )
             .llvm_ctx("test invocation countdown")?;
-        self.builder
+        let cold = self.ctx.metadata_node(&[
+            self.ctx.metadata_string("branch_weights").into(),
+            self.ctx.i32_type().const_int(1, false).into(),
+            self.ctx
+                .i32_type()
+                .const_int(
+                    u64::from(hew_mir::SAFEPOINT_BUDGET.saturating_sub(1)),
+                    false,
+                )
+                .into(),
+        ]);
+        let branch = self
+            .builder
             .build_conditional_branch(exhausted, slow, continuing)
             .llvm_ctx("select safepoint slow path")?;
+        branch
+            .set_metadata(cold, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         self.builder.position_at_end(slow);
         self.emit_safepoint_poll(continuing, cancel)?;
         self.builder.position_at_end(continuing);
@@ -405,6 +420,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 false,
             ),
         )?;
+        poll.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.ctx.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
         let status = call_value(
             &self.builder,
             poll,

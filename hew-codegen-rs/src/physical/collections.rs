@@ -196,14 +196,27 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let inline = self
             .ctx
             .append_basic_block(self.value, "vector.push.inline");
-        self.builder
+        let hot = self.ctx.metadata_node(&[
+            self.ctx.metadata_string("branch_weights").into(),
+            self.ctx.i32_type().const_int(1 << 12, false).into(),
+            self.ctx.i32_type().const_int(1, false).into(),
+        ]);
+        let room_branch = self
+            .builder
             .build_conditional_branch(room, owned, slow)
             .llvm_ctx("select inline vector append")?;
+        room_branch
+            .set_metadata(hot, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         self.builder.position_at_end(owned);
         let unique = self.vector_buffer_unique(vector)?;
-        self.builder
+        let unique_branch = self
+            .builder
             .build_conditional_branch(unique, inline, slow)
             .llvm_ctx("select unshared vector append")?;
+        unique_branch
+            .set_metadata(hot, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         self.builder.position_at_end(inline);
         let value = self
             .builder
@@ -696,6 +709,50 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
                 self.emit_vector_index_guard(vector, index, failure()?, false)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
+                let done = if scalar {
+                    let element_ty = llvm_type(self.ctx, &element_layout.repr)?;
+                    let inline = self.ctx.append_basic_block(self.value, "vector.set.inline");
+                    let slow = self.ctx.append_basic_block(self.value, "vector.set.slow");
+                    let done = self.ctx.append_basic_block(self.value, "vector.set.done");
+                    let unique = self.vector_buffer_unique(vector)?;
+                    let hot = self.ctx.metadata_node(&[
+                        self.ctx.metadata_string("branch_weights").into(),
+                        self.ctx.i32_type().const_int(1 << 12, false).into(),
+                        self.ctx.i32_type().const_int(1, false).into(),
+                    ]);
+                    let branch = self
+                        .builder
+                        .build_conditional_branch(unique, inline, slow)
+                        .llvm_ctx("select unshared vector store")?;
+                    branch
+                        .set_metadata(hot, self.ctx.get_kind_id("prof"))
+                        .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+                    self.builder.position_at_end(inline);
+                    let value = self
+                        .builder
+                        .build_load(
+                            element_ty,
+                            self.slots[source(2)?.0 as usize],
+                            "vector.set.value",
+                        )
+                        .llvm_ctx("read scalar vector set element")?;
+                    let slot = self.vector_element_slot(vector, index, element_ty)?;
+                    self.builder
+                        .build_store(slot, value)
+                        .llvm_ctx("store scalar vector element")?;
+                    if moved {
+                        self.clear_owned(source(2)?)?;
+                    }
+                    self.clear_owned(receiver)?;
+                    self.store(result, vector.into())?;
+                    self.builder
+                        .build_unconditional_branch(done)
+                        .llvm_ctx("finish inline scalar vector store")?;
+                    self.builder.position_at_end(slow);
+                    Some(done)
+                } else {
+                    None
+                };
                 let cleanup = values.entry_scratch(pointer.into(), "vector.set.cleanup")?;
                 let function = get_or_declare_external(
                     self.llvm,
@@ -742,6 +799,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
                 release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+                if let Some(done) = done {
+                    self.builder
+                        .build_unconditional_branch(done)
+                        .llvm_ctx("converge scalar vector store")?;
+                    self.builder.position_at_end(done);
+                }
             }
             PhysicalVectorOp::Index
             | PhysicalVectorOp::IndexBorrow

@@ -438,9 +438,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "exhausted",
             )
             .llvm_ctx("test local countdown")?;
-        self.builder
+        let cold = self.ctx.metadata_node(&[
+            self.ctx.metadata_string("branch_weights").into(),
+            self.ctx.i32_type().const_int(1, false).into(),
+            self.ctx
+                .i32_type()
+                .const_int(
+                    u64::from(hew_mir::SAFEPOINT_BUDGET.saturating_sub(1)),
+                    false,
+                )
+                .into(),
+        ]);
+        let branch = self
+            .builder
             .build_conditional_branch(exhausted, poll, continuing)
             .llvm_ctx("select chunk budget exit")?;
+        branch
+            .set_metadata(cold, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         self.builder.position_at_end(continuing);
         self.emit_edge(normal)?;
         Ok(())

@@ -453,10 +453,11 @@ pub enum KnownDecl {
     ActorTimerMailbox,
     Timer,
     SemaphoreHandle,
+    NodeTransport,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -485,6 +486,7 @@ impl KnownDecl {
         Self::ActorTimerMailbox,
         Self::Timer,
         Self::SemaphoreHandle,
+        Self::NodeTransport,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -512,6 +514,7 @@ impl KnownDecl {
             Self::VecIter => "std.builtins.VecIter",
             Self::HashMapIter => "std.builtins.HashMapIter",
             Self::NodeConfig => "std.builtins.NodeConfig",
+            Self::NodeTransport => "std.builtins.NodeTransport",
             Self::PartitionPolicy => "std.link_monitor.PartitionPolicy",
             Self::ActorId => "std.builtins.ActorId",
             Self::Caller => "std.builtins.Caller",
@@ -545,6 +548,7 @@ impl KnownDecl {
             Self::VecIter => "VecIter",
             Self::HashMapIter => "HashMapIter",
             Self::NodeConfig => "NodeConfig",
+            Self::NodeTransport => "NodeTransport",
             Self::PartitionPolicy => "PartitionPolicy",
             Self::ActorId => "ActorId",
             Self::Caller => "Caller",
@@ -661,6 +665,7 @@ pub struct DefTable {
     /// TRANSITION(P2): deleted by A1 commit 3, when every consumer holds the
     /// id `Scope::resolve` returned instead of a rendered path.
     by_path: HashMap<String, DefId>,
+    builtin_callables: HashMap<Symbol, DefId>,
     default_bodies: HashMap<DefaultBodyKey, DefId>,
     /// The shared sourceless protocol selected for lambda actor calls.
     lambda_actor_protocol: Option<DefId>,
@@ -715,6 +720,7 @@ impl DefTable {
             restricted: HashMap::new(),
             private_record_fields: HashMap::new(),
             by_path: HashMap::new(),
+            builtin_callables: HashMap::new(),
             default_bodies: HashMap::new(),
             lambda_actor_protocol: None,
             builtin_declarations: HashMap::new(),
@@ -779,20 +785,37 @@ impl DefTable {
 
     /// Intern a compiler-provided callable at its registration boundary.
     pub(crate) fn builtin_callable(&mut self, name: &str) -> DefId {
-        let path = format!("<builtin>.{name}");
-        if let Some(id) = self.by_path.get(&path) {
-            return *id;
+        let symbol = Symbol::intern(name);
+        if let Some(&id) = self.builtin_callables.get(&symbol) {
+            return id;
         }
         let id = self.push_row(DefRow {
-            name: Ident::new(name),
+            name: Ident::from_symbol(symbol),
             kind: DeclarationKind::Function,
             module: None,
             owner: None,
             site: None,
-            path: path.clone(),
+            path: format!("<builtin>.{name}"),
         });
-        self.by_path.insert(path, id);
+        self.builtin_callables.insert(symbol, id);
         id
+    }
+
+    /// Resolve a spelling in the compiler callable catalogue.
+    #[must_use]
+    pub fn lookup_builtin_callable(&self, name: Symbol) -> Option<DefId> {
+        self.builtin_callables.get(&name).copied()
+    }
+
+    /// Enumerate callable catalogue declarations for name completion.
+    pub fn builtin_callables(&self) -> impl Iterator<Item = (Symbol, DefId)> + '_ {
+        self.builtin_callables.iter().map(|(&name, &id)| (name, id))
+    }
+
+    pub(crate) fn is_builtin_callable(&self, id: DefId) -> bool {
+        self.defs.get(id.0 as usize).is_some_and(|row| {
+            row.module.is_none() && self.lookup_builtin_callable(row.name.name) == Some(id)
+        })
     }
 
     /// The row of a known `std.builtins` declaration: known rows follow the
@@ -842,31 +865,6 @@ impl DefTable {
     #[must_use]
     pub fn member(&self, owner: DefId, name: Symbol) -> Option<DefId> {
         self.members.get(&(owner, name))?.first().copied()
-    }
-
-    /// Mint (or return) a sourceless row at `path`: a module item registered
-    /// from a route that reads it before the module's own declarations are
-    /// minted, which adopt the row when they are.
-    ///
-    /// TRANSITION(A1 commit 4): WHY registry and module-surface routes
-    /// register a module's items before its declarations are minted. WHEN one
-    /// `Checker` mints every declaration before any registration reads it.
-    /// WHAT: the source `declare` is the only mint.
-    pub(crate) fn mint_sourceless(&mut self, path: &str, kind: DeclarationKind) -> DefId {
-        if let Some(&established) = self.by_path.get(path) {
-            return established;
-        }
-        let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
-        let id = self.push_row(DefRow {
-            name: Ident::from_symbol(name),
-            kind,
-            module: None,
-            owner: None,
-            site: None,
-            path: path.to_string(),
-        });
-        self.by_path.insert(path.to_string(), id);
-        id
     }
 
     /// The member of `owner` declared as `name` with `kind`.
@@ -1505,26 +1503,14 @@ impl DefTable {
             })
     }
 
-    /// Bind a FURTHER occurrence to the declaration already established under
-    /// `canonical_path`.
-    ///
-    /// [`Self::declare`] refuses two occurrences claiming one path because
-    /// that would equate two declarations. An `extern "C"` symbol is the one
-    /// place where they ARE one: the linker binds every call to a single
-    /// implementation, peer files of one directory module routinely
-    /// re-declare a runtime symbol, and the checker keys every declaration of
-    /// it by the same fn-sig path — so the extern table resolves the
-    /// redeclaration against the established ABI contract rather than minting
-    /// a second one. Binding never creates a path or a declaration: it
-    /// answers `None` when nothing owns `canonical_path`, and it leaves an
-    /// occurrence that already resolves untouched.
+    /// Bind another occurrence to a declaration the checker has identified
+    /// as the same source declaration or extern contract.
     pub(crate) fn bind_redeclaration(
         &mut self,
         occurrence: DeclarationOccurrence,
-        canonical_path: &str,
-    ) -> Option<DefId> {
-        let established = *self.by_path.get(canonical_path)?;
-        Some(*self.by_occurrence.entry(occurrence).or_insert(established))
+        established: DefId,
+    ) -> DefId {
+        *self.by_occurrence.entry(occurrence).or_insert(established)
     }
 
     /// Mint the body identity of a trait default materialized for one
@@ -1639,15 +1625,6 @@ impl DefTable {
     #[must_use]
     pub fn lookup_path(&self, canonical_path: &str) -> Option<DefId> {
         self.by_path.get(canonical_path).copied()
-    }
-
-    /// The nominal identity at an established canonical path.
-    ///
-    /// TRANSITION(P2): deleted by A1 commit 2.
-    #[must_use]
-    pub fn lookup_nominal(&self, canonical_path: &str) -> Option<NominalId> {
-        self.lookup_path(canonical_path)
-            .map(NominalId::from_minted_declaration)
     }
 
     /// The declaration kind established for a canonical path.

@@ -203,14 +203,31 @@ impl Checker {
             .or_else(|| self.strip_module_prefix(key).and_then(declared))
     }
 
-    /// The definition filed under an exact declaration path.
-    ///
-    /// TRANSITION(A1 commit 3): see [`Self::type_def_key`].
-    pub(in crate::check) fn type_def_exact(&self, path: &str) -> Option<&TypeDef> {
-        self.type_defs
-            .get(&crate::NominalId::from_minted_declaration(
-                self.lookup_declaration(path)?,
-            ))
+    /// Resolve a type item in its declaring namespace without consulting
+    /// imports or the prelude.
+    pub(in crate::check) fn nominal_in_module(
+        &self,
+        module: crate::ModuleId,
+        ident: Ident,
+    ) -> Option<crate::NominalId> {
+        match self.scopes.item(self.scopes.namespace_of(module), ident)? {
+            scope::Binding::Type(id) | scope::Binding::Actor(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The event type declared by a particular machine.
+    pub(in crate::check) fn machine_event(
+        &self,
+        machine: crate::NominalId,
+    ) -> Option<crate::NominalId> {
+        self.defs
+            .member_of_kind(
+                machine.declaration(),
+                hew_parser::ast::sym::EVENT,
+                crate::DeclarationKind::MachineEventType,
+            )
+            .map(crate::NominalId::of_declaration)
     }
 
     /// The definition a registry key spells (see [`Self::type_def_key`]).
@@ -218,119 +235,80 @@ impl Checker {
         self.type_defs.get(&self.type_def_key(key)?)
     }
 
-    /// The definition a registry key spells, mutably.
-    pub(in crate::check) fn type_def_at_mut(&mut self, key: &str) -> Option<&mut TypeDef> {
-        let id = self.type_def_key(key)?;
-        self.type_defs.get_mut(&id)
-    }
-
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
-        crate::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+        crate::check::FnSigView::new(
+            &self.defs,
+            &self.fn_sigs,
+            &self.impl_method_declaration_ids,
+            &self.dispatch,
+        )
     }
 
     /// The signature a key spells.
     ///
-    /// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): the remaining callers pass rendered names
+    /// instead of the callable declaration.
     pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
-        self.sigs().get(key)
+        self.fn_sigs.get(&self.signature_declaration(key)?)
+    }
+
+    pub(in crate::check) fn signature_declaration(&self, key: &str) -> Option<crate::DefId> {
+        self.lookup_declaration(key)
+            .filter(|id| self.fn_sigs.contains_key(id))
+            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
+            .or_else(|| {
+                let (module, name) = key.rsplit_once('.')?;
+                let module = self.defs.module_for_path(module)?;
+                match self
+                    .scopes
+                    .item(self.scopes.namespace_of(module), Ident::new(name))?
+                {
+                    scope::Binding::Fn(declaration) => Some(declaration),
+                    _ => None,
+                }
+            })
+            .or_else(|| match self.scopes.prelude_binding(Symbol::intern(key)) {
+                Some(scope::Binding::Fn(declaration)) => Some(declaration),
+                _ => self.defs.lookup_builtin_callable(Symbol::intern(key)),
+            })
     }
 
     /// Whether a key spells a signature.
     pub(in crate::check) fn has_fn_sig(&self, key: &str) -> bool {
-        self.sigs().contains(key)
+        self.fn_sig(key).is_some()
     }
 
     /// The signature a key spells, mutably.
     pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
-        match self.fn_sig_keys.get(key) {
-            Some(id) => self.fn_sigs.get_mut(id),
-            None => self.builtin_fn_sigs.get_mut(&Symbol::intern(key)),
-        }
+        let declaration = self.signature_declaration(key)?;
+        self.fn_sigs.get_mut(&declaration)
     }
 
-    /// File `sig` under `declaration`, reachable by `key`.
-    pub(in crate::check) fn insert_fn_sig(
-        &mut self,
-        key: &str,
-        declaration: crate::DefId,
-        sig: FnSig,
-    ) {
-        self.fn_sig_keys.insert(key.to_string(), declaration);
+    /// File the signature on its declaration.
+    pub(in crate::check) fn insert_fn_sig(&mut self, declaration: crate::DefId, sig: FnSig) {
         self.fn_sigs.insert(declaration, sig);
     }
 
-    /// File the constructor signature of the member `name` of the declaration
-    /// `owner` spells (a variant, a machine state), reachable by `key`.
+    /// Publish a constructor signature on the owner's declared member.
     pub(in crate::check) fn insert_member_sig(
         &mut self,
-        key: &str,
-        owner: &str,
+        owner: crate::DefId,
         name: Symbol,
         kind: crate::DeclarationKind,
         sig: FnSig,
     ) {
-        match self
-            .lookup_declaration(owner)
-            .and_then(|owner| self.defs.member_of_kind(owner, name, kind))
-        {
-            Some(member) => self.insert_fn_sig(key, member, sig),
-            None => self.insert_fn_sig_at(key, sig),
-        }
-    }
-
-    /// Make `key` spell the signature `source` spells: an import binding or a
-    /// module surface for one declaration.
-    ///
-    /// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
-    /// resolve through it.
-    pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self.fn_sig_keys.get(source).copied() {
-            self.fn_sig_keys.insert(key.to_string(), declaration);
-        } else if let Some(sig) = self.builtin_fn_sigs.get(&Symbol::intern(source)).cloned() {
-            self.builtin_fn_sigs.insert(Symbol::intern(key), sig);
-        }
-    }
-
-    /// File `sig` under the declaration `key` names: an established
-    /// signature key, an impl or trait method key, or a declaration path.
-    /// A key that names no declaration is an internal error, never dropped.
-    ///
-    /// TRANSITION(A1 commit 4): registration passes the declaration id.
-    pub(in crate::check) fn insert_fn_sig_at(&mut self, key: &str, sig: FnSig) {
-        let declaration = self
-            .fn_sig_keys
-            .get(key)
-            .copied()
-            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
-            .or_else(|| self.trait_method_ids.get(key).map(|(_, method)| *method))
-            .or_else(|| self.lookup_declaration(key))
-            .or_else(|| {
-                self.current_module_identity()
-                    .and_then(|owner| self.lookup_declaration(&format!("{owner}.{key}")))
-            })
-            .or_else(|| {
-                let (owner, member) = key.rsplit_once("::")?;
-                let owner = self
-                    .lookup_declaration(owner)
-                    .or_else(|| self.lookup_declaration(&self.canonical_nominal_name(owner)?))?;
-                self.defs.member(owner, Symbol::intern(member))
-            })
-            .or_else(|| {
-                // A module function a registry publishes before its source is
-                // read: the source declaration adopts this row.
-                (key.contains('.') && !key.contains("::")).then(|| {
-                    self.defs
-                        .mint_sourceless(key, crate::DeclarationKind::Function)
-                })
-            });
-        match declaration {
-            Some(declaration) => self.insert_fn_sig(key, declaration, sig),
-            None => self.errors.push(crate::error::TypeError::new(
+        if let Some(member) = self.defs.member_of_kind(owner, name, kind) {
+            self.insert_fn_sig(member, sig);
+        } else {
+            self.errors.push(crate::error::TypeError::new(
                 crate::error::TypeErrorKind::InvalidOperation,
                 0..0,
-                format!("internal: signature `{key}` names no declaration"),
-            )),
+                format!(
+                    "internal: `{}::{name}` has no constructor declaration",
+                    self.defs.path(owner)
+                ),
+            ));
         }
     }
 
@@ -346,14 +324,7 @@ impl Checker {
         path: &str,
         info: TraitInfo,
     ) -> Option<crate::DefId> {
-        // A module trait a route registers before the module's declarations
-        // are minted gets a sourceless row its declaration adopts.
-        let declaration = self.lookup_declaration(path).or_else(|| {
-            path.contains('.').then(|| {
-                self.defs
-                    .mint_sourceless(path, crate::DeclarationKind::Trait)
-            })
-        });
+        let declaration = self.lookup_declaration(path);
         if let Some(declaration) = declaration {
             self.trait_defs.insert(declaration, info);
         } else {
@@ -383,44 +354,9 @@ impl Checker {
         self.type_def_at(name).cloned()
     }
 
-    /// Look up a type definition mutably by registry key.
-    pub(in crate::check) fn lookup_type_def_mut(&mut self, name: &str) -> Option<&mut TypeDef> {
-        self.type_def_at_mut(name)
-    }
-
-    /// File a definition under the declaration a registration key names in
-    /// the current module. A key no declaration answers to is an import
-    /// surface spelling of a declaration filed under its own identity.
-    ///
-    /// TRANSITION(A1 commit 4): registration passes the declaration id.
-    pub(in crate::check) fn insert_type_def(&mut self, key: &str, def: TypeDef) {
-        let declared = |path: &str| {
-            self.lookup_declaration(path)
-                .map(crate::NominalId::from_minted_declaration)
-        };
-        let id = if key.contains('.') {
-            declared(key)
-        } else {
-            self.current_module_identity()
-                .and_then(|owner| declared(&format!("{owner}.{key}")))
-                .or_else(|| declared(key))
-        };
-        if let Some(id) = id {
-            // TRANSITION(A1 commit 3): WHY a declaration is re-registered after
-            // impls published methods onto it, and the rebuilt definition must
-            // keep them. WHEN the dispatch table owns methods, `td.methods` is
-            // deleted and this merge with it. WHAT: impl methods are dispatch
-            // rows keyed by head, never members of the definition.
-            let mut def = def;
-            if let Some(existing) = self.type_defs.get(&id) {
-                for (name, sig) in &existing.methods {
-                    def.methods
-                        .entry(name.clone())
-                        .or_insert_with(|| sig.clone());
-                }
-            }
-            self.type_defs.insert(id, def);
-        }
+    /// Publish a checked definition on its minted declaration.
+    pub(in crate::check) fn file_type_def(&mut self, id: crate::NominalId, def: TypeDef) {
+        self.type_defs.insert(id, def);
     }
 
     /// Resolve a `(module, type)` pair to its `TypeDef`, gated on the type being
@@ -436,6 +372,15 @@ impl Checker {
         module_short: &str,
         type_name: &str,
     ) -> Option<TypeDef> {
+        let nominal = self.resolve_module_type_declaration(module_short, type_name)?;
+        self.type_defs.get(&nominal).cloned()
+    }
+
+    pub(in crate::check) fn resolve_module_type_declaration(
+        &self,
+        module_short: &str,
+        type_name: &str,
+    ) -> Option<crate::NominalId> {
         if !self.module_binding_in_current_file(Ident::new(module_short)) {
             return None;
         }
@@ -452,7 +397,7 @@ impl Checker {
             return None;
         }
         let qualified = format!("{resolved_module}.{type_name}");
-        self.type_def_at(&qualified).cloned()
+        self.type_def_key(&qualified)
     }
 
     /// Return the exact source owner's exported type set for a lexical module
@@ -553,7 +498,7 @@ impl Checker {
                 self.defs.kind(id),
                 crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
             ) {
-                return BareActorResolution::Resolved(self.defs.path(id).to_string());
+                return BareActorResolution::Resolved(crate::NominalId::of_declaration(id));
             }
         }
         self.resolve_bare_declaration_identity(
@@ -567,57 +512,60 @@ impl Checker {
         name: &str,
         kinds: &[TypeDefKind],
     ) -> BareActorResolution {
-        let is_actor = |key: &str| {
-            self.type_def_exact(key)
-                .is_some_and(|td| kinds.contains(&td.kind))
+        let actor_at = |key: &str| {
+            let nominal = crate::NominalId::of_declaration(self.lookup_declaration(key)?);
+            self.type_defs
+                .get(&nominal)
+                .filter(|td| kinds.contains(&td.kind))
+                .map(|_| nominal)
         };
         if let Some(module) = self.current_module.as_deref() {
             let dotted = format!("{module}.{name}");
-            if is_actor(&dotted) {
-                return BareActorResolution::Resolved(dotted);
+            if let Some(nominal) = actor_at(&dotted) {
+                return BareActorResolution::Resolved(nominal);
             }
         }
-        if is_actor(name) {
-            return BareActorResolution::Resolved(name.to_string());
+        if let Some(nominal) = actor_at(name) {
+            return BareActorResolution::Resolved(nominal);
         }
         if let Some(owners) = self.published_bare_type_owners.get(&(
             self.current_module.clone(),
             self.current_module_idx,
             name.to_string(),
         )) {
-            let candidates: Vec<String> = owners
+            let candidates: Vec<_> = owners
                 .iter()
-                .filter(|identity| is_actor(identity))
-                .cloned()
+                .filter_map(|identity| Some((identity, actor_at(identity)?)))
                 .collect();
             match candidates.as_slice() {
-                [identity] => return BareActorResolution::Resolved(identity.clone()),
+                [(_, nominal)] => return BareActorResolution::Resolved(*nominal),
                 [] => {}
                 _ => {
                     let modules = candidates
                         .iter()
-                        .filter_map(|identity| identity.rsplit_once('.'))
+                        .filter_map(|(identity, _)| identity.rsplit_once('.'))
                         .map(|(module, _)| module.to_string())
                         .collect();
                     return BareActorResolution::Ambiguous(modules);
                 }
             }
         }
-        let mut candidates: Vec<&str> = self
+        let mut candidates: Vec<_> = self
             .module_type_exports
             .iter()
-            .filter(|(module, exports)| {
-                exports.contains(name) && is_actor(&format!("{module}.{name}"))
-            })
-            .map(|(module, _)| module.as_str())
+            .filter(|(_, exports)| exports.contains(name))
+            .filter_map(|(module, _)| Some((module, actor_at(&format!("{module}.{name}"))?)))
             .collect();
         candidates.sort_unstable();
         match candidates.as_slice() {
             [] => BareActorResolution::Unknown,
-            [module] => BareActorResolution::Resolved(format!("{module}.{name}")),
-            _ => {
-                BareActorResolution::Ambiguous(candidates.iter().map(ToString::to_string).collect())
-            }
+            [(_, nominal)] => BareActorResolution::Resolved(*nominal),
+            _ => BareActorResolution::Ambiguous(
+                candidates
+                    .into_iter()
+                    .map(|(module, _)| module.clone())
+                    .collect(),
+            ),
         }
     }
 }

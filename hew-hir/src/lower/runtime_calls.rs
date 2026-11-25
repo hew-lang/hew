@@ -182,42 +182,11 @@ impl LowerCtx<'_> {
             .enumerate()
             .map(|(idx, expr)| (idx.to_string(), expr))
             .collect();
-        // Register the generic-enum instantiation before building result_ty so
-        // the registry is populated when codegen performs its mangled lookup.
-
-        // Checker-authoritative result type: the checker records the full
-        // `Named { name: "Option", args: [I64] }` at this call-expression span.
-        // Using it directly preserves type args so codegen can compute the
-        // mangled registry key (e.g. `"Option$$i64"`).  Fall back to bare-name
-        // with a diagnostic if expr_types has no entry — absence is a real
-        // signal (checker should always populate this site).
-        let checker_key = self.mk_key(span);
-        let result_ty = if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned)
-        {
-            match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => self.restore_type_declaration_facts(resolved),
-                Err(err) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: type_name_owned.clone(),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "checker-authoritative variant-ctor result type failed boundary conversion",
-                    ));
-                    ResolvedTy::named_path(&self.defs, &type_name_owned, Vec::new())
-                }
-            }
-        } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: type_name_owned.clone(),
-                    reason: "expr_types has no entry for variant-ctor site".into(),
-                },
-                span.clone(),
-                "checker did not record a result type for this variant constructor call",
-            ));
-            ResolvedTy::named_path(&self.defs, &type_name_owned, Vec::new())
+        let Some(result_ty) = self.checker_expr_ty(span, &type_name_owned) else {
+            return (
+                HirExprKind::Unsupported("unchecked variant constructor".to_string()),
+                ResolvedTy::Unit,
+            );
         };
         (
             HirExprKind::MachineVariantCtor {

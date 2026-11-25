@@ -283,7 +283,7 @@ pub(crate) fn visible_from_root(
     owner.is_none()
         || tc.defs.visibility_access_allowed(
             owner,
-            tc.defs.root_module(),
+            tc.viewed_source(),
             tc.defs.visibility(declaration),
         )
 }

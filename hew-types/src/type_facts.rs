@@ -2261,16 +2261,46 @@ fn main() {}"#,
         }
         let wrap = |leaf: ResolvedTy| {
             (0..28).fold(leaf, |ty, _| {
-                ResolvedTy::named_path(service.defs(), "Wrapper", vec![ty])
+                ResolvedTy::named_head(
+                    crate::TypeHead::of_declaration(
+                        service.defs(),
+                        service
+                            .defs()
+                            .lookup_path("Wrapper")
+                            .map(crate::NominalId::of_declaration)
+                            .unwrap(),
+                    ),
+                    vec![ty],
+                )
             })
         };
-        let ty = wrap(ResolvedTy::named_path(service.defs(), "Leaf", vec![]));
+        let ty = wrap(ResolvedTy::named_head(
+            crate::TypeHead::of_declaration(
+                service.defs(),
+                service
+                    .defs()
+                    .lookup_path("Leaf")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
+            ),
+            vec![],
+        ));
         let (_, args) = service.display_method_for_type(&ty, &ty).unwrap().unwrap();
         let ResolvedTy::Named { args: expected, .. } = &ty else {
             panic!("nominal receiver");
         };
         assert_eq!(&args, expected);
-        let missing = wrap(ResolvedTy::named_path(service.defs(), "Missing", vec![]));
+        let missing = wrap(ResolvedTy::named_head(
+            crate::TypeHead::of_declaration(
+                service.defs(),
+                service
+                    .defs()
+                    .lookup_path("Missing")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
+            ),
+            vec![],
+        ));
         assert_eq!(
             service.display_method_for_type(&missing, &missing),
             Ok(None)
@@ -2294,8 +2324,28 @@ fn main() {}"#,
         let output = checker.check_program(&parsed.program);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let service = TypeFactService::new(output.type_fact_context, output.type_facts);
-        let actor = ResolvedTy::named_actor_path(service.defs(), "Worker", vec![]);
-        let holder = ResolvedTy::named_path(service.defs(), "Holder", vec![]);
+        let actor = ResolvedTy::named_head(
+            crate::TypeHead::Actor(crate::NominalHead::new(
+                service
+                    .defs()
+                    .lookup_path("Worker")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
+                "Worker",
+            )),
+            vec![],
+        );
+        let holder = ResolvedTy::named_head(
+            crate::TypeHead::of_declaration(
+                service.defs(),
+                service
+                    .defs()
+                    .lookup_path("Holder")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
+            ),
+            vec![],
+        );
         let vector = ResolvedTy::named_builtin(BuiltinType::Vec, vec![actor.clone()]);
         for ty in [actor, holder, vector] {
             assert_eq!(
@@ -2329,14 +2379,34 @@ fn main() {}"#,
                 let mut walk = CapabilityWalk::default();
                 let mut calls = Vec::new();
                 for name in order {
-                    let ty = ResolvedTy::named_path(service.defs(), name, vec![]);
+                    let ty = ResolvedTy::named_head(
+                        crate::TypeHead::of_declaration(
+                            service.defs(),
+                            service
+                                .defs()
+                                .lookup_path(name)
+                                .map(crate::NominalId::of_declaration)
+                                .unwrap(),
+                        ),
+                        vec![],
+                    );
                     assert_eq!(
                         service.select_capability_inner(&ty, capability, &mut walk, &mut calls),
                         Ok(None)
                     );
                     assert!(calls.is_empty());
                 }
-                let node = ResolvedTy::named_path(service.defs(), "Node", vec![]);
+                let node = ResolvedTy::named_head(
+                    crate::TypeHead::of_declaration(
+                        service.defs(),
+                        service
+                            .defs()
+                            .lookup_path("Node")
+                            .map(crate::NominalId::of_declaration)
+                            .unwrap(),
+                    ),
+                    vec![],
+                );
                 assert_eq!(
                     service.select_capability_inner(&node, capability, &mut walk, &mut calls),
                     Ok(Some(ValueMethodPlan::Derived))

@@ -191,7 +191,12 @@ impl Checker {
                         format!("invalid regex literal `re\"{pattern}\"`: {err}"),
                     );
                 }
-                self.named_ty_for_key("std.text.regex.Pattern", vec![])
+                self.defs
+                    .module_for_path("std.text.regex")
+                    .and_then(|module| self.nominal_in_module(module, Ident::new("Pattern")))
+                    .map_or(Ty::Error, |id| {
+                        Ty::named_head(self.head_of_declaration(id), Vec::new())
+                    })
             }
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
@@ -1106,7 +1111,7 @@ impl Checker {
         if flatten {
             body_ty
         } else {
-            self.named_ty_for_key("Option", vec![body_ty])
+            Ty::option(body_ty)
         }
     }
 
@@ -1124,7 +1129,12 @@ impl Checker {
         let (payload, error_ty) = if scope_recovery {
             Some((
                 container.clone(),
-                self.named_ty_for_key("std.builtins.ScopeFailure", Vec::new()),
+                self.defs
+                    .module_for_path("std.builtins")
+                    .and_then(|module| self.nominal_in_module(module, Ident::new("ScopeFailure")))
+                    .map_or(Ty::Error, |id| {
+                        Ty::named_head(self.head_of_declaration(id), Vec::new())
+                    }),
             ))
         } else if error.is_some() {
             container
@@ -1970,7 +1980,6 @@ impl Checker {
                 Ty::U8
             }
             Ty::Named { head, args } => {
-                let name = head.registry_key();
                 if let Some(index_trait) = self
                     .lang_trait(crate::LangItem::Index)
                     .filter(|index_trait| self.type_satisfies_trait(&resolved_obj, *index_trait))
@@ -1989,7 +1998,7 @@ impl Checker {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 // Bracket indexing via a named type's `.get()` method is no longer
                 // supported. Use the explicit method call instead.
-                if self.lookup_named_method_sig(name, args, "get").is_some() {
+                if self.lookup_named_method_sig(*head, args, "get").is_some() {
                     self.report_error_with_suggestions(
                         TypeErrorKind::InvalidOperation,
                         span,

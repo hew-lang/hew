@@ -390,7 +390,7 @@ impl LowerCtx<'_> {
                 ResolvedTy::Unit,
             );
         };
-        let Some(result_ty) = self.checked_actor_ask_result_ty(span, handler) else {
+        let Some(result_ty) = self.checked_actor_ask_result_ty(span) else {
             return (
                 HirExprKind::Unsupported("lambda actor call has no checked result".to_string()),
                 ResolvedTy::Unit,

@@ -81,7 +81,7 @@ impl Checker {
         // as invoking it. An unsafe block may wrap that checked operation in
         // an ordinary callable, as an authored closure can.
         self.require_unsafe(
-            self.fn_sig_keys.get(signature_key).copied(),
+            self.signature_declaration(signature_key),
             signature_key,
             span,
         );

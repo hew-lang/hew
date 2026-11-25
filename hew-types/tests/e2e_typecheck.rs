@@ -11,7 +11,7 @@ use common::{
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
-use hew_types::{MethodCallRewrite, RcIntrinsicOp};
+use hew_types::{MethodCallRewrite, RcIntrinsicOp, Ty};
 
 fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment: &str) -> usize {
     output
@@ -499,8 +499,8 @@ fn use_widget(w: Widget) -> i64 {
             .values()
             .any(|kind| matches!(
                 kind,
-                hew_types::MethodCallReceiverKind::NamedTypeInstance { type_name }
-                    if type_name == "Widget"
+                hew_types::MethodCallReceiverKind::NamedTypeInstance { head }
+                    if Some(*head) == output.visible_type_head("Widget")
             )),
         "expected named-type method call receiver metadata, got: {:?}",
         output.method_call_receiver_kinds
@@ -3917,18 +3917,16 @@ fn type_defs_with_error_shapes_are_pruned_from_output() {
             "{label}: expected TaskNotNameable, got: {:#?}",
             output.errors
         );
-        let widget = output
-            .type_def_at_path("Widget")
-            .expect("type_defs should retain Widget when only a method signature is errored");
+        let head = output.visible_type_head("Widget").expect("Widget declaration");
+        let receiver = Ty::named_head(head, vec![]);
+        assert!(output.types().of(head).is_some());
         assert!(
-            widget.methods.contains_key("good"),
-            "{label}: clean methods must survive: {:#?}",
-            widget.methods
+            output.dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("good")).is_some(),
+            "{label}: clean method must survive"
         );
         assert!(
-            !widget.methods.contains_key("broken"),
-            "{label}: errored method must be pruned: {:#?}",
-            widget.methods
+            output.dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("broken")).is_none(),
+            "{label}: errored method must be pruned"
         );
     }
 }

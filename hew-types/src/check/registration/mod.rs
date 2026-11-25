@@ -126,11 +126,14 @@ fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
             head: head @ crate::TypeHead::Nominal(_),
             args,
         } => {
-            let name = head.registry_key();
-            checker.named_ty_for_key(
-                &checker
-                    .extern_signature_nominal_owner(name)
-                    .unwrap_or_else(|| name.to_string()),
+            let selected = checker
+                .extern_signature_nominal_owner(head.spelling())
+                .and_then(|path| checker.lookup_declaration(&path))
+                .map_or(*head, |id| {
+                    checker.head_of_declaration(crate::NominalId::of_declaration(id))
+                });
+            Ty::named_head(
+                selected,
                 args.iter()
                     .map(|arg| extern_contract_nominal_identity(checker, arg))
                     .collect(),
@@ -527,7 +530,7 @@ fn derive_source_resource_candidate(
     producer_symbol: &str,
     producer_contract: &crate::ffi_contracts::ExternOwnershipContract,
     source_declarations: &[SourceExternDeclaration],
-    fn_sigs: crate::check::FnSigView<'_>,
+    fn_sigs: &HashMap<crate::DefId, FnSig>,
     module_import_bindings: &HashMap<ImportBindingKey, String>,
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
@@ -567,7 +570,7 @@ fn derive_source_resource_candidate(
         );
     };
 
-    let Some(producer_signature) = fn_sigs.get(&producer_declaration.signature_key) else {
+    let Some(producer_signature) = fn_sigs.get(&producer_declaration.declaration) else {
         if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
             return SourceCandidateOutcome::Irrelevant;
         }
@@ -625,7 +628,7 @@ fn derive_source_resource_candidate(
             },
         );
     }
-    let Some(release_signature) = fn_sigs.get(&release_declaration.signature_key) else {
+    let Some(release_signature) = fn_sigs.get(&release_declaration.declaration) else {
         return failure(
             OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch {
                 detail: "source release signature is missing".to_string(),
@@ -673,7 +676,7 @@ fn source_declaration_matches_endpoint(
 
 fn derive_opaque_resource_candidate_graph(
     source_declarations: &[SourceExternDeclaration],
-    fn_sigs: crate::check::FnSigView<'_>,
+    fn_sigs: &HashMap<crate::DefId, FnSig>,
     module_import_bindings: &HashMap<ImportBindingKey, String>,
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,

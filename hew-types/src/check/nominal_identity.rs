@@ -211,24 +211,7 @@ impl Checker {
                         return crate::ty::Ty::param(*parameter);
                     }
                 }
-                let name = self
-                    .resolve_nominal_declaration(
-                        NominalOrigin::RegistrySignature { canonical_owner },
-                        spelling,
-                    )
-                    .unwrap_or_else(|| path.clone());
-                if let Some(kind) = self
-                    .resolved_builtin_type(&name)
-                    .filter(|kind| kind.is_encoding_value())
-                {
-                    return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
-                }
-                if let Some(resolved) =
-                    self.resolve_registry_named_via_scope(canonical_owner, spelling, &name, &args)
-                {
-                    return resolved;
-                }
-                self.named_ty_for_key(&name, args)
+                self.registry_named_ty(canonical_owner, spelling, args)
             }
             RegistryTy::Tuple(elems) => crate::ty::Ty::Tuple(
                 elems
@@ -283,6 +266,39 @@ impl Checker {
         }
     }
 
+    fn registry_named_ty(&self, canonical_owner: &str, spelling: &str, args: Vec<Ty>) -> Ty {
+        let name = self
+            .resolve_nominal_declaration(
+                NominalOrigin::RegistrySignature { canonical_owner },
+                spelling,
+            )
+            .unwrap_or_else(|| spelling.to_owned());
+        if let Some(kind) = self
+            .resolved_builtin_type(&name)
+            .filter(|kind| kind.is_encoding_value())
+        {
+            return crate::ty::Ty::named_head(crate::TypeHead::Builtin(kind), args);
+        }
+        if let Some(resolved) =
+            self.resolve_registry_named_via_scope(canonical_owner, spelling, &name, &args)
+        {
+            return resolved;
+        }
+        if let Some(primitive) = Ty::from_name(&name).filter(|_| args.is_empty()) {
+            return primitive;
+        }
+        // A registry signature arrives as a spelling and may name a
+        // source declaration with no lexical binding in the importer.
+        // Project that spelling once at the registry boundary.
+        let canonical = self.canonical_nominal_name(&name);
+        let path = canonical.as_deref().unwrap_or(&name);
+        let head = self
+            .lookup_declaration(path)
+            .map(|id| self.head_of_declaration(crate::NominalId::of_declaration(id)))
+            .or_else(|| crate::lookup_builtin_type(path).map(crate::TypeHead::Builtin));
+        head.map_or(Ty::Error, |head| Ty::named_head(head, args))
+    }
+
     fn resolve_registry_named_via_scope(
         &self,
         canonical_owner: &str,
@@ -334,53 +350,6 @@ impl Checker {
 }
 
 impl Checker {
-    /// The nominal head a string registry key names: the declaration the key
-    /// was minted under, rendered as the key.
-    ///
-    /// TRANSITION(A1 commit 3): deleted when the registries are keyed by
-    /// identity and every carrier holds the head `Scope::resolve` returned.
-    pub(super) fn nominal_head_for_key(&self, key: &str) -> Option<crate::NominalHead> {
-        let id = self.lookup_declaration(key)?;
-        Some(crate::NominalHead::new(
-            crate::NominalId::from_minted_declaration(id),
-            self.defs.path(id),
-        ))
-    }
-
-    /// The named type a string registry key names: its declared nominal, or
-    /// the builtin the key spells when no declaration claims it.
-    ///
-    /// TRANSITION(A1 commit 3): see [`Self::nominal_head_for_key`].
-    pub(super) fn named_ty_for_key(&self, key: &str, args: Vec<Ty>) -> Ty {
-        if let Some(primitive) = Ty::from_name(key).filter(|_| args.is_empty()) {
-            return primitive;
-        }
-        // An import alias spelling projects to its declaration's owner.
-        let canonical = self.canonical_nominal_name(key);
-        let key = canonical.as_deref().unwrap_or(key);
-        if let Some(nominal) = self.nominal_head_for_key(key) {
-            return Ty::named_head(self.head_of_declaration(nominal.id), args);
-        }
-        if let Some(builtin) = crate::builtin_type::lookup_builtin_type(key) {
-            return Ty::named_head(crate::TypeHead::Builtin(builtin), args);
-        }
-        // A trait written in type position names the trait's declaration; a
-        // handler-style trait becomes the actor handle it types.
-        if let Some(id) = self
-            .lookup_declaration(key)
-            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
-        {
-            return Ty::named_head(
-                crate::TypeHead::Nominal(crate::NominalHead::new(
-                    crate::NominalId::from_minted_declaration(id),
-                    self.defs.path(id),
-                )),
-                args,
-            );
-        }
-        Ty::Error
-    }
-
     /// The head a declared nominal names in this run.
     pub(super) fn head_of_declaration(&self, nominal: crate::NominalId) -> crate::TypeHead {
         if let Some(known) = crate::KnownDecl::of(nominal) {

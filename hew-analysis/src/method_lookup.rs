@@ -1,3 +1,4 @@
+use hew_parser::ast::Symbol;
 use hew_types::check::{FnSig, SpanKey, TypeDef};
 use hew_types::{method_resolution, Ty, TypeCheckOutput, TypeHead};
 use std::collections::HashSet;
@@ -36,23 +37,36 @@ pub(crate) fn collect_method_sigs_for_receiver(
     tc: &TypeCheckOutput,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
-    let methods = method_resolution::collect_method_sigs_for_receiver(
-        &tc.defs,
-        &tc.type_defs,
-        tc.sigs(),
-        receiver_ty,
-    );
-    let methods: Vec<_> = methods
-        .into_iter()
-        .filter(|(_, sig)| method_visible_from_root(tc, sig))
-        .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
-        .collect();
     let Ty::Named {
         head: TypeHead::Nominal(nominal),
         ..
     } = receiver_ty
     else {
-        return methods;
+        let mut methods = method_resolution::collect_method_sigs_for_receiver(
+            &tc.defs,
+            &tc.type_defs,
+            tc.sigs(),
+            receiver_ty,
+        )
+        .into_iter()
+        .filter(|(_, sig)| method_visible_from_root(tc, sig))
+        .collect::<std::collections::HashMap<_, _>>();
+        if let Some(receiver) = hew_types::ResolvedTy::from_ty(receiver_ty)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance())
+        {
+            for (name, _, _) in tc.dispatch.methods_of(receiver.head) {
+                if let Some(sig) = tc.dispatched_method_sig(receiver_ty, name) {
+                    if method_visible_from_root(tc, &sig) {
+                        methods.insert(name.to_string(), sig);
+                    }
+                }
+            }
+        }
+        return methods
+            .into_iter()
+            .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
+            .collect();
     };
     let mut declared: HashSet<String> = tc
         .dispatch
@@ -62,9 +76,12 @@ pub(crate) fn collect_method_sigs_for_receiver(
     if let Some(definition) = tc.type_defs.get(&nominal.id) {
         declared.extend(definition.methods.keys().cloned());
     }
-    methods
+    declared
         .into_iter()
-        .filter(|(name, _)| declared.contains(name))
+        .filter_map(|name| {
+            let signature = lookup_method_sig(tc, receiver_ty, &name)?;
+            Some((name, signature))
+        })
         .collect()
 }
 
@@ -86,11 +103,26 @@ pub(crate) fn lookup_method_sig(
             .dispatch
             .methods_of(TypeHead::Nominal(*nominal))
             .any(|(name, _, _)| name.as_str() == method);
-        if !declared_in_type && !declared_in_dispatch {
+        if declared_in_dispatch {
+            return tc
+                .dispatched_method_sig(receiver_ty, Symbol::intern(method))
+                .filter(|sig| method_visible_from_root(tc, sig))
+                .map(|sig| instantiate_receiver_projections(tc, sig));
+        }
+        if !declared_in_type {
             return None;
         }
     }
-    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
+    tc.dispatched_method_sig(receiver_ty, Symbol::intern(method))
+        .or_else(|| {
+            method_resolution::lookup_method_sig(
+                &tc.defs,
+                &tc.type_defs,
+                tc.sigs(),
+                receiver_ty,
+                method,
+            )
+        })
         .filter(|sig| method_visible_from_root(tc, sig))
         .map(|sig| instantiate_receiver_projections(tc, sig))
 }

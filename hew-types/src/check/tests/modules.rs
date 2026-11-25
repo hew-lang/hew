@@ -290,13 +290,12 @@ fn generic_same_leaf_owner_conflict_is_rejected_before_inference_binds() {
 
 #[test]
 fn expected_constructor_args_do_not_cross_same_leaf_nominal_owners() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.local_type_defs.insert("Envelope".to_string());
-    checker.source_type_defs.insert("Envelope".to_string());
+    let checker = Checker::new(ModuleRegistry::new(vec![]));
     let expected = Ty::named_for_test("Envelope", vec![Ty::String]);
+    let foreign = crate::NominalId::for_test("foreign.Envelope");
 
     assert_eq!(
-        checker.expected_constructor_type_args(&expected, "foreign.Envelope", 1),
+        checker.expected_constructor_type_args(&expected, foreign, 1),
         None,
         "expected-type inference must not lend local generic arguments to a foreign constructor"
     );

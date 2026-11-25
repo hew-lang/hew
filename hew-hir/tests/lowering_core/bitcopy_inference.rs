@@ -60,7 +60,18 @@ fn struct_of_primitives_is_inferred_bitcopy() {
         "Point's fields are all BitCopy primitives; auto-inference must promote it"
     );
 
-    let ty = ResolvedTy::named_path(&output.module.defs, "Point", Vec::new());
+    let ty = ResolvedTy::named_head(
+        hew_types::TypeHead::of_declaration(
+            &output.module.defs,
+            output
+                .module
+                .defs
+                .lookup_path("Point")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
+        ),
+        Vec::new(),
+    );
     assert_eq!(
         lookup_type_marker_for_ty(&ty, &output.module.type_classes),
         Some(ResourceMarker::BitCopy),
@@ -98,7 +109,18 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
         entry.0,
     );
 
-    let ty = ResolvedTy::named_path(&output.module.defs, "Sparse", Vec::new());
+    let ty = ResolvedTy::named_head(
+        hew_types::TypeHead::of_declaration(
+            &output.module.defs,
+            output
+                .module
+                .defs
+                .lookup_path("Sparse")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
+        ),
+        Vec::new(),
+    );
     assert_ne!(
         lookup_type_marker_for_ty(&ty, &output.module.type_classes),
         Some(ResourceMarker::BitCopy),
@@ -204,7 +226,18 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
         "no diagnostics expected; got: {:#?}",
         output.diagnostics
     );
-    let user_ty = ResolvedTy::named_path(&output.module.defs, "Stream", Vec::new());
+    let user_ty = ResolvedTy::named_head(
+        hew_types::TypeHead::of_declaration(
+            &output.module.defs,
+            output
+                .module
+                .defs
+                .lookup_path("Stream")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
+        ),
+        Vec::new(),
+    );
     assert_eq!(
         lookup_type_marker_for_ty(&user_ty, &output.module.type_classes),
         Some(ResourceMarker::None),
@@ -230,8 +263,24 @@ fn nested_generic_records_use_exact_checker_value_classes() {
     let defs = checked.defs.clone();
     let mut facts = hew_types::TypeFactService::new(checked.type_fact_context, checked.type_facts);
     for name in ["Inner", "Outer"] {
-        let primitive = ResolvedTy::named_path(&defs, name, vec![ResolvedTy::I64]);
-        let owned = ResolvedTy::named_path(&defs, name, vec![ResolvedTy::String]);
+        let primitive = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &defs,
+                defs.lookup_path(name)
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
+            ),
+            vec![ResolvedTy::I64],
+        );
+        let owned = ResolvedTy::named_head(
+            hew_types::TypeHead::of_declaration(
+                &defs,
+                defs.lookup_path(name)
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
+            ),
+            vec![ResolvedTy::String],
+        );
         assert_eq!(
             facts.require(&primitive).unwrap().class,
             hew_types::ValueClass::BitCopy

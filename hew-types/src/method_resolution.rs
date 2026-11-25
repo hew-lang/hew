@@ -6,14 +6,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named_type_def};
+use crate::builtin_names::{builtin_named_kind, builtin_type_def as builtin_named_type_def};
+use crate::check::dispatch_table::MethodSelection;
 #[cfg(test)]
 use crate::check::TypeDefKind;
 use crate::check::{FnSig, FnSigView, ReceiverObligation, TypeDef};
-use crate::resolved_ty::{mangle_impl_self_name, ResolvedTy};
+use crate::resolved_ty::ResolvedTy;
 use crate::BuiltinType;
+use crate::DeclarationKind;
 use crate::Ty;
-use crate::{DefTable, NominalId};
+use crate::{DefTable, NominalId, TypeHead};
+use hew_parser::ast::Symbol;
 
 pub(crate) fn instantiate_named_method_sig(
     mut sig: FnSig,
@@ -106,26 +109,6 @@ pub(crate) fn impl_receiver_substitution(
     )
 }
 
-fn lookup_user_type_def<'a>(
-    defs: &'a DefTable,
-    type_defs: &'a HashMap<NominalId, TypeDef>,
-    type_name: &str,
-) -> Option<&'a TypeDef> {
-    // TRANSITION(A1 commit 3): the catalog move hands method lookup the
-    // receiver head; a registry key that spells a builtin names its std
-    // declaration until then.
-    let types = crate::check::TypeDefView::new(defs, type_defs);
-    types.at_path(type_name).or_else(|| {
-        types.of(crate::TypeHead::Builtin(crate::lookup_builtin_type(
-            type_name,
-        )?))
-    })
-}
-
-fn lookup_user_fn_sig<'a>(fn_sigs: FnSigView<'a>, key: &str) -> Option<&'a FnSig> {
-    fn_sigs.get(key)
-}
-
 fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
     if type_def.type_params.is_empty() {
         type_def.type_params = builtin.type_params;
@@ -136,34 +119,19 @@ fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
     type_def
 }
 
-fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
-    match ty {
-        Ty::I8 => Some(("i8", &[])),
-        Ty::I16 => Some(("i16", &[])),
-        Ty::I32 => Some(("i32", &[])),
-        Ty::I64 => Some(("i64", &[])),
-        Ty::U8 => Some(("u8", &[])),
-        Ty::U16 => Some(("u16", &[])),
-        Ty::U32 => Some(("u32", &[])),
-        Ty::U64 => Some(("u64", &[])),
-        Ty::Isize => Some(("isize", &[])),
-        Ty::Usize => Some(("usize", &[])),
-        Ty::F32 => Some(("f32", &[])),
-        Ty::F64 => Some(("f64", &[])),
-        Ty::Bool => Some(("bool", &[])),
-        Ty::Char => Some(("char", &[])),
-        Ty::String => Some(("string", &[])),
-        Ty::Bytes => Some(("bytes", &[])),
-        Ty::CancellationToken => Some(("CancellationToken", &[])),
-        Ty::Duration => Some(("duration", &[])),
-        // An actor handle names the actor itself, so the single-method
-        // `lookup_method_sig` path the checker falls back to for receive-fn
-        // dispatch resolves `orders.order(arg)` against `Orders::order` in
-        // `fn_sigs` through the ordinary named arm below.
-        Ty::Named { head, args } => Some((head.registry_key(), args.as_slice())),
-        _ => None,
+fn receiver_head_and_args(ty: &Ty) -> Option<(TypeHead, &[Ty])> {
+    if let Ty::Named { head, args } = ty {
+        return Some((*head, args));
     }
+    let instance = ResolvedTy::from_ty(ty).ok()?.impl_receiver_instance()?;
+    Some((instance.head, &[]))
 }
+
+const MEMBER_METHOD_KINDS: [DeclarationKind; 3] = [
+    DeclarationKind::ActorReceive,
+    DeclarationKind::ActorMethod,
+    DeclarationKind::TraitMethod,
+];
 
 fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
     if method != "clone" {
@@ -198,78 +166,49 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
     }
 }
 
-/// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
+/// Look up a source method on the checked receiver.
 #[must_use]
 pub fn lookup_named_method_sig(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
     fn_sigs: FnSigView<'_>,
-    type_name: &str,
+    head: TypeHead,
     type_args: &[Ty],
     method: &str,
 ) -> Option<FnSig> {
-    named_method_sig(
-        lookup_user_type_def(defs, type_defs, type_name),
-        fn_sigs,
-        type_name,
-        type_args,
-        method,
-    )
-}
-
-fn named_method_sig(
-    user: Option<&TypeDef>,
-    fn_sigs: FnSigView<'_>,
-    type_name: &str,
-    type_args: &[Ty],
-    method: &str,
-) -> Option<FnSig> {
+    let user = crate::check::TypeDefView::new(defs, type_defs).of(head);
     if let Some(td) = user {
-        if let Some(sig) = td.methods.get(method).cloned() {
+        if let Some(sig) = td.methods.get(method) {
             return Some(instantiate_named_method_sig(
-                sig,
+                sig.clone(),
                 &td.type_params,
                 type_args,
             ));
         }
     }
 
-    let type_params = user.map(|td| td.type_params.clone());
-
-    // Concrete-specialised-impl lookup (#2270): when the receiver has non-empty
-    // concrete type args (e.g. `Wrapper<i64>`), try the mangled key first
-    // (`"Wrapper$$i64::describe"`).  This resolves to the correct impl when two
-    // concrete specialisations (`Wrapper<i64>` and `Wrapper<string>`) both exist.
-    // Falls back to the bare key for generic impls (`impl<T> Trait for Wrapper<T>`),
-    // inherent methods, and any arg that cannot be mangled.
-    //
-    // A specialised key is exact and unambiguous. It must never fall through
-    // to a leaf-name retry when the specialised declaration is absent.
-    if !type_args.is_empty() {
-        let resolved_args: Option<Vec<ResolvedTy>> = type_args
-            .iter()
-            .map(|ty| ResolvedTy::from_ty(ty).ok())
-            .collect();
-        if let Some(resolved_args) = resolved_args {
-            if let Some(mangled_self) = mangle_impl_self_name(type_name, &resolved_args) {
-                let mangled_key = format!("{mangled_self}::{method}");
-                if let Some(sig) = fn_sigs.get(&mangled_key).cloned() {
-                    // The mangled-key entry has no generic type params (it was
-                    // registered for a concrete specialised impl), so we
-                    // instantiate with the type-def params (empty for concrete).
-                    let tps = type_params.clone().unwrap_or_default();
-                    return Some(instantiate_named_method_sig(sig, &tps, type_args));
-                }
-            }
+    let name = Symbol::intern(method);
+    let receiver = Ty::named_head(head, type_args.to_vec()).materialize_literal_defaults();
+    let instance = ResolvedTy::from_ty(&receiver)
+        .ok()
+        .and_then(|ty| ty.impl_receiver_instance());
+    let declaration = match fn_sigs.dispatch.select(head, instance.as_ref(), name) {
+        MethodSelection::Unique(_, method) => method,
+        MethodSelection::Ambiguous(_) => return None,
+        MethodSelection::Missing => {
+            let owner = head.declaration(defs)?.declaration();
+            MEMBER_METHOD_KINDS
+                .into_iter()
+                .find_map(|kind| defs.member_of_kind(owner, name, kind))?
         }
-    }
-
-    lookup_user_fn_sig(fn_sigs, &format!("{type_name}::{method}"))
-        .cloned()
-        .map(|sig| {
-            let type_params = type_params.unwrap_or_else(|| sig.type_params.clone());
-            instantiate_named_method_sig(sig, &type_params, type_args)
-        })
+    };
+    let sig = fn_sigs.of(declaration)?;
+    let type_params = user.map_or(&sig.type_params, |td| &td.type_params);
+    Some(instantiate_named_method_sig(
+        sig.clone(),
+        type_params,
+        type_args,
+    ))
 }
 
 /// Instantiate a snapshotted stdlib method signature against the receiver's
@@ -295,8 +234,14 @@ pub fn instantiate_stdlib_method_sig(
 /// Look up a builtin method signature for `Sender`, `Receiver`, `Stream`, or `Sink`.
 #[must_use]
 pub fn lookup_builtin_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
-    let (type_name, type_args) = named_receiver_parts(receiver_ty)?;
-    let builtin = builtin_named_type_def(builtin_named_type(type_name)?);
+    let Ty::Named {
+        head,
+        args: type_args,
+    } = receiver_ty
+    else {
+        return None;
+    };
+    let builtin = builtin_named_type_def(builtin_named_kind(head.builtin()?)?);
     let sig = builtin.methods.get(method).cloned()?;
     Some(instantiate_named_method_sig(
         sig,
@@ -314,17 +259,10 @@ pub fn lookup_method_sig(
     receiver_ty: &Ty,
     method: &str,
 ) -> Option<FnSig> {
-    let (type_name, type_args) = named_receiver_parts(receiver_ty)?;
-    let user = crate::check::TypeDefView::new(defs, type_defs).of_ty(receiver_ty);
+    let (head, type_args) = receiver_head_and_args(receiver_ty)?;
     lookup_builtin_method_sig(receiver_ty, method)
         .or_else(|| lookup_collection_clone_method_sig(receiver_ty, method))
-        .or_else(|| named_method_sig(user, fn_sigs, type_name, type_args, method))
-}
-
-/// Synthesize a type definition for a builtin type name.
-#[must_use]
-pub fn builtin_type_def(type_name: &str) -> Option<TypeDef> {
-    builtin_named_type(type_name).map(|kind| builtin_named_type_def(kind).clone())
+        .or_else(|| lookup_named_method_sig(defs, type_defs, fn_sigs, head, type_args, method))
 }
 
 /// Look up a type definition, augmenting builtin placeholders with builtin methods.
@@ -332,18 +270,23 @@ pub fn builtin_type_def(type_name: &str) -> Option<TypeDef> {
 pub fn lookup_type_def(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
-    type_name: &str,
+    head: TypeHead,
 ) -> Option<TypeDef> {
-    type_def_with_builtin(lookup_user_type_def(defs, type_defs, type_name), type_name)
+    type_def_with_builtin(
+        crate::check::TypeDefView::new(defs, type_defs).of(head),
+        head.builtin(),
+    )
 }
 
-fn type_def_with_builtin(user: Option<&TypeDef>, type_name: &str) -> Option<TypeDef> {
-    let user_type = user.cloned();
-    let builtin_type = builtin_type_def(type_name);
-    match (user_type, builtin_type) {
-        (Some(type_def), Some(builtin)) => Some(merge_builtin_type_def(type_def, builtin)),
-        (Some(type_def), None) => Some(type_def),
-        (None, Some(builtin)) => Some(builtin),
+fn type_def_with_builtin(user: Option<&TypeDef>, builtin: Option<BuiltinType>) -> Option<TypeDef> {
+    let builtin_type = builtin
+        .and_then(builtin_named_kind)
+        .map(builtin_named_type_def);
+    match (user, builtin_type) {
+        (Some(type_def), Some(builtin)) => {
+            Some(merge_builtin_type_def(type_def.clone(), builtin.clone()))
+        }
+        (Some(type_def), None) | (None, Some(type_def)) => Some(type_def.clone()),
         (None, None) => None,
     }
 }
@@ -367,99 +310,11 @@ pub fn lookup_type_def_for_receiver(
     {
         return None;
     }
-    let (type_name, _) = named_receiver_parts(receiver_ty)?;
-    type_def_with_builtin(
-        crate::check::TypeDefView::new(defs, type_defs).of_ty(receiver_ty),
-        type_name,
-    )
+    lookup_type_def(defs, type_defs, receiver_ty.head()?)
 }
 
-/// Collect all method signatures visible on a named type.
-#[must_use]
-pub fn collect_method_sigs_for_named_type(
-    defs: &DefTable,
-    type_defs: &HashMap<NominalId, TypeDef>,
-    fn_sigs: FnSigView<'_>,
-    type_name: &str,
-    type_args: &[Ty],
-) -> Vec<(String, FnSig)> {
-    collect_named_method_sigs(
-        lookup_user_type_def(defs, type_defs, type_name),
-        None,
-        fn_sigs,
-        type_name,
-        type_args,
-    )
-}
-
-fn collect_named_method_sigs(
-    user: Option<&TypeDef>,
-    receiver_ty: Option<&Ty>,
-    fn_sigs: FnSigView<'_>,
-    type_name: &str,
-    type_args: &[Ty],
-) -> Vec<(String, FnSig)> {
-    let mut methods = Vec::new();
-    let mut seen = HashSet::new();
-    let builtin_receiver = receiver_ty.cloned().or_else(|| {
-        crate::builtin_type::lookup_builtin_type(type_name)
-            .map(|builtin| Ty::named_head(crate::TypeHead::Builtin(builtin), type_args.to_vec()))
-    });
-    let receiver_type_params = type_def_with_builtin(user, type_name)
-        .map(|type_def| type_def.type_params)
-        .unwrap_or_default();
-
-    if let Some(receiver) = builtin_receiver.as_ref() {
-        if let Some(sig) = lookup_collection_clone_method_sig(receiver, "clone") {
-            seen.insert("clone".to_string());
-            methods.push(("clone".to_string(), sig));
-        }
-    }
-
-    if let Some(type_def) = type_def_with_builtin(user, type_name) {
-        for (method_name, sig) in type_def.methods {
-            if seen.insert(method_name.clone()) {
-                // A source declaration and its builtin methods have distinct
-                // generic parameter identities. Instantiate builtin signatures
-                // through their own receiver contract, as lookup_method_sig does.
-                let sig = builtin_receiver
-                    .as_ref()
-                    .and_then(|receiver| lookup_builtin_method_sig(receiver, &method_name))
-                    .unwrap_or_else(|| {
-                        instantiate_named_method_sig(sig, &type_def.type_params, type_args)
-                    });
-                methods.push((method_name, sig));
-            }
-        }
-    }
-
-    let exact_prefix = format!("{type_name}::");
-    for (sig_name, sig) in fn_sigs.entries() {
-        let method_name = sig_name.strip_prefix(&exact_prefix);
-        if let Some(method_name) = method_name {
-            let method_name = method_name.to_string();
-            if seen.insert(method_name.clone()) {
-                methods.push((
-                    method_name,
-                    instantiate_named_method_sig(sig.clone(), &receiver_type_params, type_args),
-                ));
-            }
-        }
-    }
-
-    methods
-}
-
-/// Collect all method signatures visible on a receiver type.
-///
-/// For an actor handle, this produces two groups:
-/// 1. The handle's own impl methods (`send`, etc.).
-/// 2. The actor's receive handlers (the methods callers can dispatch to via the
-///    handle), resolved against the handle's own name.
-///
-/// An actor handle is the actor's own type, so this path offers the actor's
-/// receive handlers; the checker's own dispatch arm in `methods.rs` decides the
-/// call, and this path drives LSP completions.
+/// Collect method signatures visible on the receiver, including intrinsic
+/// methods and the actor's receive handlers.
 #[must_use]
 pub fn collect_method_sigs_for_receiver(
     defs: &DefTable,
@@ -467,16 +322,33 @@ pub fn collect_method_sigs_for_receiver(
     fn_sigs: FnSigView<'_>,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
-    let Some((type_name, type_args)) = named_receiver_parts(receiver_ty) else {
+    let Some((head, _)) = receiver_head_and_args(receiver_ty) else {
         return Vec::new();
     };
-    collect_named_method_sigs(
-        crate::check::TypeDefView::new(defs, type_defs).of_ty(receiver_ty),
-        Some(receiver_ty),
-        fn_sigs,
-        type_name,
-        type_args,
-    )
+    let mut names = HashSet::new();
+    if let Some(definition) = lookup_type_def(defs, type_defs, head) {
+        names.extend(definition.methods.keys().map(|name| Symbol::intern(name)));
+    }
+    if lookup_collection_clone_method_sig(receiver_ty, "clone").is_some() {
+        names.insert(Symbol::intern("clone"));
+    }
+    names.extend(fn_sigs.dispatch.methods_of(head).map(|(name, _, _)| name));
+    if let Some(owner) = head.declaration(defs) {
+        for kind in MEMBER_METHOD_KINDS {
+            names.extend(
+                defs.members_of_kind(owner.declaration(), kind)
+                    .map(|id| defs.name(id)),
+            );
+        }
+    }
+
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let sig = lookup_method_sig(defs, type_defs, fn_sigs, receiver_ty, name.as_str())?;
+            Some((name.to_string(), sig))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -510,13 +382,23 @@ mod tests {
             },
         );
 
-        let type_def = lookup_type_def(&crate::DefTable::new(), &type_defs, "stream.Stream")
-            .expect("builtin stream type def should resolve");
+        let type_def = lookup_type_def(
+            &crate::DefTable::new(),
+            &type_defs,
+            TypeHead::Builtin(BuiltinType::Stream),
+        )
+        .expect("builtin stream type def should resolve");
         // Channel-family naming: .recv() replaced .next() in the fundamental surface.
         assert!(type_def.methods.contains_key("recv"));
         // Iterator-style aliases are removed from the fundamental method table.
         assert!(!type_def.methods.contains_key("next"));
         assert!(!type_def.methods.contains_key("decode"));
+    }
+
+    #[test]
+    fn nominal_stream_does_not_acquire_builtin_pipe_methods() {
+        let receiver = Ty::user_for_test("Stream", vec![Ty::String]);
+        assert!(lookup_builtin_method_sig(&receiver, "recv").is_none());
     }
 
     #[test]
@@ -535,8 +417,9 @@ mod tests {
     fn collect_method_sigs_fallback_instantiates_receiver_type_args() {
         let mut defs = crate::DefTable::new();
         let mut type_defs = HashMap::new();
+        let wrapper = defs.mint_nominal_for_test("Wrapper");
         type_defs.insert(
-            defs.mint_nominal_for_test("Wrapper"),
+            wrapper,
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
@@ -552,9 +435,18 @@ mod tests {
             },
         );
 
+        let method = defs.mint_for_test("Wrapper::value");
+        let mut dispatch = crate::check::dispatch_table::DispatchTable::default();
+        let head = TypeHead::of_declaration(&defs, wrapper);
+        dispatch.insert_generic(
+            head,
+            crate::check::dispatch_table::MethodOwner::Inherent,
+            Symbol::intern("value"),
+            method,
+        );
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(
-            "Wrapper::value".to_string(),
+            method,
             FnSig {
                 param_names: vec!["next".to_string()],
                 params: vec![crate::CallableParameter {
@@ -566,12 +458,11 @@ mod tests {
             },
         );
 
-        let methods = collect_method_sigs_for_named_type(
+        let methods = collect_method_sigs_for_receiver(
             &defs,
             &type_defs,
-            crate::check::FnSigFixture::new(fn_sigs.clone()).view(),
-            "Wrapper",
-            &[Ty::String],
+            FnSigView::new(&defs, &fn_sigs, &HashMap::new(), &dispatch),
+            &Ty::named_head(head, vec![Ty::String]),
         );
         let (_, value_sig) = methods
             .into_iter()
@@ -674,8 +565,12 @@ mod tests {
             },
         );
 
-        let type_def = lookup_type_def(&crate::DefTable::new(), &type_defs, "Stream")
-            .expect("builtin stream type def should resolve");
+        let type_def = lookup_type_def(
+            &crate::DefTable::new(),
+            &type_defs,
+            TypeHead::Builtin(BuiltinType::Stream),
+        )
+        .expect("builtin stream type def should resolve");
         assert_eq!(
             type_def.type_params,
             vec![crate::DefTable::builtin_parameter(
@@ -723,12 +618,11 @@ mod tests {
 
     #[test]
     fn collect_method_sigs_includes_hashset_clone() {
-        let methods = collect_method_sigs_for_named_type(
+        let methods = collect_method_sigs_for_receiver(
             &crate::DefTable::new(),
             &HashMap::new(),
             crate::check::FnSigFixture::default().view(),
-            "HashSet",
-            &[Ty::String],
+            &Ty::builtin_named(BuiltinType::HashSet, vec![Ty::String]),
         );
         let (_, sig) = methods
             .into_iter()

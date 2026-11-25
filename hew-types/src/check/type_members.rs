@@ -9,10 +9,22 @@ use crate::method_resolution::instantiate_stdlib_method_sig;
 
 pub(super) struct ResolvedDottedTypeHead {
     pub(super) canonical_type: String,
+    receiver_head: Option<crate::TypeHead>,
     builtin: Option<crate::BuiltinType>,
     trait_id: Option<crate::DefId>,
     type_args: Option<Vec<Spanned<TypeExpr>>>,
     span: Span,
+}
+
+impl ResolvedDottedTypeHead {
+    pub(super) fn receiver_type(&self, args: Vec<Ty>) -> Ty {
+        Ty::from_name(&self.canonical_type)
+            .filter(|_| args.is_empty())
+            .unwrap_or_else(|| {
+                self.receiver_head
+                    .map_or(Ty::Error, |head| Ty::named_head(head, args))
+            })
+    }
 }
 
 pub(super) enum DottedTypeMemberUse<'a> {
@@ -25,6 +37,24 @@ pub(super) enum DottedTypeMemberUse<'a> {
         expected: Option<&'a Ty>,
         span: &'a Span,
     },
+}
+
+impl ResolvedDottedTypeHead {
+    fn event(
+        checker: &Checker,
+        event: crate::NominalId,
+        type_args: Option<Vec<Spanned<TypeExpr>>>,
+        target: &Spanned<Expr>,
+    ) -> Self {
+        Self {
+            canonical_type: checker.defs.path(event.declaration()).to_owned(),
+            receiver_head: Some(checker.head_of_declaration(event)),
+            builtin: None,
+            trait_id: None,
+            type_args,
+            span: target.1.clone(),
+        }
+    }
 }
 
 impl Checker {
@@ -76,6 +106,7 @@ impl Checker {
         }
         let head = ResolvedDottedTypeHead {
             canonical_type: name.to_string(),
+            receiver_head: Some(head),
             builtin: Some(builtin),
             trait_id: None,
             type_args: None,
@@ -147,16 +178,10 @@ impl Checker {
                 }
             }
             Expr::FieldAccess { object, field } => {
-                if field.0.name == hew_parser::ast::sym::EVENT {
-                    if let Some(canonical_type) = self.machine_event_type_head(object) {
-                        return Some(ResolvedDottedTypeHead {
-                            canonical_type,
-                            builtin: None,
-                            trait_id: None,
-                            type_args,
-                            span: target.1.clone(),
-                        });
-                    }
+                if let Some(event) = self.machine_event_type_head(object, field.0) {
+                    return Some(ResolvedDottedTypeHead::event(
+                        self, event, type_args, target,
+                    ));
                 }
                 let Expr::Ident(module_short) = &object.0 else {
                     return None;
@@ -173,6 +198,7 @@ impl Checker {
                 {
                     return Some(ResolvedDottedTypeHead {
                         canonical_type: trait_path.to_string(),
+                        receiver_head: None,
                         builtin: None,
                         trait_id: Some(trait_id),
                         type_args,
@@ -192,8 +218,13 @@ impl Checker {
             _ => return None,
         };
 
+        let receiver_head = self
+            .type_def_key(&canonical_type)
+            .map(|id| self.head_of_declaration(id))
+            .or_else(|| builtin.map(crate::TypeHead::Builtin));
         Some(ResolvedDottedTypeHead {
             canonical_type,
+            receiver_head,
             builtin,
             trait_id,
             type_args,
@@ -204,15 +235,19 @@ impl Checker {
     /// Resolve the machine declaration before selecting its owned event type.
     /// Whole-module imports are gated through the type export table; a local
     /// machine follows the same nominal authority as other type heads.
-    fn machine_event_type_head(&mut self, object: &Spanned<Expr>) -> Option<String> {
+    fn machine_event_type_head(
+        &mut self,
+        object: &Spanned<Expr>,
+        field: Ident,
+    ) -> Option<crate::NominalId> {
+        if field.name != hew_parser::ast::sym::EVENT {
+            return None;
+        }
         let machine = match &object.0 {
             Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => self
                 .named_item_declaration(*name)
-                .map(|id| self.defs.path(id).to_string())
-                .or_else(|| self.source_nominal_declaration(name.name.as_str()))
-                .or_else(|| {
-                    self.resolve_nominal_declaration(NominalOrigin::Lexical, name.name.as_str())
-                }),
+                .map(crate::NominalId::of_declaration)
+                .or_else(|| self.type_def_key(name.name.as_str())),
             Expr::FieldAccess {
                 object,
                 field: machine,
@@ -223,23 +258,16 @@ impl Checker {
                 if self.env.lookup_ref(*module).is_some() {
                     return None;
                 }
-                self.resolve_module_type(module.name.as_str(), machine.0.name.as_str())?;
+                let owner = self.resolve_module_type_declaration(
+                    module.name.as_str(),
+                    machine.0.name.as_str(),
+                )?;
                 self.resolve_import_use(*module);
-                Some(format!(
-                    "{}.{}",
-                    self.canonical_module_import_owner(*module),
-                    machine.0
-                ))
+                Some(owner)
             }
             _ => None,
         }?;
-        let machine = self.defs.lookup_path(&machine)?;
-        let event = self.defs.member_of_kind(
-            machine,
-            hew_parser::ast::sym::EVENT,
-            crate::DeclarationKind::MachineEventType,
-        )?;
-        Some(self.defs.path(event).to_string())
+        self.machine_event(machine)
     }
 
     /// Dispatch a member selected from a resolved type head. The declaration
@@ -293,8 +321,7 @@ impl Checker {
                 .map(|argument| self.resolve_type_expr(argument))
                 .collect()
         });
-        let receiver =
-            self.named_ty_for_key(&head.canonical_type, owner_args.clone().unwrap_or_default());
+        let receiver = head.receiver_type(owner_args.clone().unwrap_or_default());
         let crate::check::dispatch_table::MethodSelection::Unique(_, declaration) =
             self.select_method(&receiver, member)
         else {
@@ -316,7 +343,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let type_def = self.type_def_at(&head.canonical_type)?;
+        let type_def = self.head_type_def(head.receiver_head?)?;
         if !matches!(
             type_def.kind,
             TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -359,12 +386,12 @@ impl Checker {
                             span,
                         )
                     });
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::EnumConstructorPath {
-                        type_name: head.canonical_type.clone(),
-                    },
-                );
+                if let Some(head) = self.subst.resolve(&result).head() {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::EnumConstructorPath { head },
+                    );
+                }
                 Some(result)
             }
             // A record variant called like a function: name the braced form.
@@ -457,12 +484,12 @@ impl Checker {
                     .or_else(|| self.check_builtin_variant_call(constructor, args, span))
                     .expect("builtin enum variants are Some, None, Ok and Err");
                 self.record_construct_call(span);
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::EnumConstructorPath {
-                        type_name: head.canonical_type.clone(),
-                    },
-                );
+                if let Some(head) = self.subst.resolve(&result).head() {
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::EnumConstructorPath { head },
+                    );
+                }
                 result
             }
         };
@@ -631,24 +658,28 @@ impl Checker {
             return Some(result);
         }
 
-        let receiver = self.named_ty_for_key(&head.canonical_type, Vec::new());
-        if let crate::check::dispatch_table::MethodSelection::Ambiguous(traits) =
-            self.select_method(&receiver, method)
-        {
-            if let Some(result) =
-                self.check_concrete_from_call(&receiver, method, &traits, args, span)
-            {
-                return Some(result);
+        let receiver = head.receiver_type(Vec::new());
+        let source_method = match self.select_method(&receiver, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
+                self.fn_sigs.get(&declaration).cloned()
             }
-            for arg in args {
-                let (expr, arg_span) = arg.expr();
-                self.synthesize(expr, arg_span);
+            crate::check::dispatch_table::MethodSelection::Ambiguous(traits) => {
+                if let Some(result) =
+                    self.check_concrete_from_call(&receiver, method, &traits, args, span)
+                {
+                    return Some(result);
+                }
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_ambiguous_method(&receiver, method, &traits, span);
+                return Some(Ty::Error);
             }
-            self.report_ambiguous_method(&receiver, method, &traits, span);
-            return Some(Ty::Error);
-        }
-        let type_def = self.type_def_at(&head.canonical_type).cloned()?;
-        let raw_sig = type_def.methods.get(method).cloned()?;
+            crate::check::dispatch_table::MethodSelection::Missing => None,
+        };
+        let type_def = self.ty_type_def(&receiver).cloned()?;
+        let raw_sig = source_method.or_else(|| type_def.methods.get(method).cloned())?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
             if type_args.len() != type_def.type_params.len() {
                 self.report_error(

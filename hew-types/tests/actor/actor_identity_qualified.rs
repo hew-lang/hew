@@ -111,11 +111,11 @@ fn main() {
     );
     let bank_sig = output
         .sigs()
-        .get("hew.bank.Account::deposit")
+        .test_entry("hew.bank.Account::deposit")
         .expect("hew.bank.Account::deposit must be registered under the canonical key");
     let store_sig = output
         .sigs()
-        .get("hew.store.Account::deposit")
+        .test_entry("hew.store.Account::deposit")
         .expect("hew.store.Account::deposit must be registered under the canonical key");
     assert!(
         matches!(bank_sig.return_type, Ty::I64),

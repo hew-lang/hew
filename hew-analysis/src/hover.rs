@@ -91,7 +91,7 @@ pub fn hover(
     })
     .or_else(|| {
         word.as_ref().and_then(|word| {
-            if let Some(sig) = type_output.sigs().get(word.as_str()) {
+            if let Some(sig) = type_output.visible_callable_signature(word.as_str()) {
                 let hover_text = format_fn_signature(word, sig);
                 return Some(HoverResult {
                     contents: hover_text,
@@ -99,15 +99,30 @@ pub fn hover(
                 });
             }
 
-            method_resolution::lookup_type_def(
-                &type_output.defs,
-                &type_output.type_defs,
-                word.as_str(),
+            let head = type_output.visible_type_head(word)?;
+            method_resolution::lookup_type_def(&type_output.defs, &type_output.type_defs, head).map(
+                |mut type_def| {
+                    let receiver = Ty::named_head(
+                        head,
+                        type_def
+                            .type_params
+                            .iter()
+                            .copied()
+                            .map(Ty::param)
+                            .collect(),
+                    );
+                    type_def.methods.extend(
+                        crate::method_lookup::collect_method_sigs_for_receiver(
+                            type_output,
+                            &receiver,
+                        ),
+                    );
+                    HoverResult {
+                        contents: format_type_def_hover(&type_def),
+                        span: None,
+                    }
+                },
             )
-            .map(|type_def| HoverResult {
-                contents: format_type_def_hover(&type_def),
-                span: None,
-            })
         })
     })
 }
@@ -329,18 +344,13 @@ fn hover_field_declaration_at_offset(
                             );
                             if let Some(span) = span {
                                 if span.start <= offset && offset < span.end {
-                                    let ty_text = method_resolution::lookup_type_def(
-                                        &type_output.defs,
-                                        &type_output.type_defs,
-                                        type_decl.name.name.as_str(),
-                                    )
-                                    .and_then(|type_def| {
-                                        type_def
-                                            .fields
-                                            .get(name.name.as_str())
-                                            .map(|ty| ty.user_facing().to_string())
-                                    })
-                                    .unwrap_or_else(|| format_type_expr_hover(&ty.0));
+                                    let ty_text = type_output
+                                        .resolved_annotation_types
+                                        .get(&SpanKey::in_module(&ty.1, 0))
+                                        .map_or_else(
+                                            || format_type_expr_hover(&ty.0),
+                                            |ty| ty.user_facing().to_string(),
+                                        );
                                     return Some(field_hover_result(
                                         name.name.as_str(),
                                         &ty_text,
@@ -381,18 +391,13 @@ fn hover_field_declaration_at_offset(
                         );
                         if let Some(span) = span {
                             if span.start <= offset && offset < span.end {
-                                let ty_text = method_resolution::lookup_type_def(
-                                    &type_output.defs,
-                                    &type_output.type_defs,
-                                    record_decl.name.name.as_str(),
-                                )
-                                .and_then(|type_def| {
-                                    type_def
-                                        .fields
-                                        .get(field.name.name.as_str())
-                                        .map(|ty| ty.user_facing().to_string())
-                                })
-                                .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
+                                let ty_text = type_output
+                                    .resolved_annotation_types
+                                    .get(&SpanKey::in_module(&field.ty.1, 0))
+                                    .map_or_else(
+                                        || format_type_expr_hover(&field.ty.0),
+                                        |ty| ty.user_facing().to_string(),
+                                    );
                                 return Some(field_hover_result(
                                     field.name.name.as_str(),
                                     &ty_text,
@@ -1355,7 +1360,7 @@ fn hover_param_in_item(
         Item::Function(function) => hover_param_in_decl(
             &function.fn_span,
             &function.params,
-            fn_sigs.get(function.name.name.as_str()),
+            type_output.visible_callable_signature(function.name.name.as_str()),
             word,
             word_span,
             offset,
@@ -1366,7 +1371,7 @@ fn hover_param_in_item(
                 if let Some(result) = hover_param_in_decl(
                     &recv.span,
                     &recv.params,
-                    fn_sigs.get(key.as_str()),
+                    type_output.visible_callable_signature(&key),
                     word,
                     word_span,
                     offset,
@@ -1378,7 +1383,7 @@ fn hover_param_in_item(
                 let key = format!("{}::{}", actor.name, method.name);
                 if let Some(result) = hover_param_in_method(
                     method,
-                    fn_sigs.get(key.as_str()),
+                    type_output.visible_callable_signature(&key),
                     word,
                     word_span,
                     offset,
@@ -1414,7 +1419,7 @@ fn hover_param_in_item(
                     if let Some(result) = hover_param_in_decl(
                         &method.span,
                         &method.params,
-                        fn_sigs.get(key.as_str()),
+                        type_output.visible_callable_signature(&key),
                         word,
                         word_span,
                         offset,
@@ -1678,10 +1683,8 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: fn_sig_parts.0,
-            fn_sig_keys: fn_sig_parts.1,
-            builtin_fn_sigs: fn_sig_parts.2,
+            defs: fn_sig_parts.1,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
@@ -2039,7 +2042,6 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
@@ -2147,7 +2149,6 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
@@ -2270,7 +2271,6 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
@@ -2443,7 +2443,6 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),

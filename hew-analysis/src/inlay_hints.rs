@@ -46,8 +46,7 @@ fn collect_inlay_hints_from_item(
                 &f.fn_span,
                 f.return_type.is_none(),
                 checked_decl_sig(tc, &f.fn_span, f.name.name.as_str())
-                    .or_else(|| tc.sigs().get(f.name.name.as_str()).cloned())
-                    .or_else(|| find_fallback_fn_sig(f.name.name.as_str(), tc)),
+                    .or_else(|| tc.visible_callable_signature(f.name.name.as_str()).cloned()),
                 hints,
             );
             collect_inlay_hints_from_block(source, &f.body, tc, hints);
@@ -66,9 +65,10 @@ fn collect_inlay_hints_from_item(
                     method.return_type.is_none(),
                     checked_decl_sig(tc, &method.fn_span, method.name.name.as_str()).or_else(
                         || {
-                            tc.sigs()
-                                .get(format!("{}::{}", a.name, method.name).as_str())
-                                .cloned()
+                            tc.visible_callable_signature(
+                                format!("{}::{}", a.name, method.name).as_str(),
+                            )
+                            .cloned()
                         },
                     ),
                     hints,
@@ -80,8 +80,7 @@ fn collect_inlay_hints_from_item(
             for method in &i.methods {
                 let fallback = match &i.target_type.0 {
                     TypeExpr::Named { path, .. } => tc
-                        .sigs()
-                        .get(format!("{path}::{}", method.name).as_str())
+                        .visible_callable_signature(format!("{path}::{}", method.name).as_str())
                         .cloned(),
                     _ => None,
                 };
@@ -105,9 +104,10 @@ fn collect_inlay_hints_from_item(
                             method.return_type.is_none(),
                             checked_decl_sig(tc, &method.span, method.name.name.as_str()).or_else(
                                 || {
-                                    tc.sigs()
-                                        .get(format!("{}::{}", t.name, method.name).as_str())
-                                        .cloned()
+                                    tc.visible_callable_signature(
+                                        format!("{}::{}", t.name, method.name).as_str(),
+                                    )
+                                    .cloned()
                                 },
                             ),
                             hints,
@@ -608,15 +608,17 @@ fn find_call_signature(
     function_span: &Span,
     tc: &TypeCheckOutput,
 ) -> Option<FnSig> {
-    let callee = source.get(function_span.start..function_span.end)?.trim();
-    if let Some(sig) = tc.sigs().get(callee) {
+    if let Some(sig) =
+        crate::identity::callable_signature_at(tc, function_span.start, function_span.end)
+    {
         return Some(sig.clone());
     }
-    if let Some(sig) = find_fallback_fn_sig(callee, tc) {
-        return Some(sig);
+    let callee = source.get(function_span.start..function_span.end)?.trim();
+    if let Some(sig) = tc.visible_callable_signature(callee) {
+        return Some(sig.clone());
     }
     if let Expr::Ident(name) = function {
-        return tc.sigs().get(name.name.as_str()).cloned();
+        return tc.visible_callable_signature(name.name.as_str()).cloned();
     }
     None
 }
@@ -637,24 +639,6 @@ fn find_method_call_signature(
     collect_method_sigs_for_receiver(tc, receiver_ty)
         .into_iter()
         .find_map(|(candidate, sig)| (candidate == method).then_some(sig))
-}
-
-fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    let last = name
-        .rsplit(['.', ':'])
-        .find(|segment| !segment.is_empty())?;
-    if last == name {
-        return None;
-    }
-    if let Some(sig) = tc.sigs().get(last) {
-        return Some(sig.clone());
-    }
-    for (sig_name, sig) in tc.sigs().entries() {
-        if sig_name.ends_with(&format!("::{last}")) {
-            return Some(sig.clone());
-        }
-    }
-    None
 }
 
 fn push_parameter_hints(
@@ -742,7 +726,6 @@ mod tests {
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
-            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
@@ -1169,8 +1152,6 @@ fn main() -> i64 {
             Item::Impl(implementation) => &implementation.methods[0],
             other => panic!("expected impl item, got {other:?}"),
         };
-        // Signatures are checker-owned identities; the legacy spelling index
-        // is deliberately absent, as it will be after that mirror is deleted.
         let mut selected = 0;
         for (id, signature) in &mut output.fn_sigs {
             let Some(site) = output.defs.site(*id) else {
@@ -1185,7 +1166,6 @@ fn main() -> i64 {
             }
         }
         assert_eq!(selected, 2, "both impl methods need declaration identities");
-        output.fn_sig_keys.clear();
         let hints = build_inlay_hints(source, &parsed, &output);
         let a_offset = find_named_return_hint_offset(source, &method(1).fn_span).unwrap();
         let b_offset = find_named_return_hint_offset(source, &method(3).fn_span).unwrap();

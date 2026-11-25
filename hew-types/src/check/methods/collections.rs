@@ -425,7 +425,7 @@ impl Checker {
         })
     }
 
-    pub(super) fn dispatch_pattern_to_ty(&self, pattern: &TyPattern) -> Ty {
+    fn dispatch_pattern_to_ty(pattern: &TyPattern) -> Ty {
         match pattern {
             TyPattern::Primitive(name) => match name.as_str() {
                 "i8" => Ty::I8,
@@ -447,20 +447,25 @@ impl Checker {
                 "duration" => Ty::Duration,
                 "()" => Ty::Unit,
                 "!" => Ty::Never,
-                other => self.named_ty_for_key(other, vec![]),
+                other => crate::lookup_builtin_type(other).map_or(Ty::Error, |kind| {
+                    Ty::named_head(crate::TypeHead::Builtin(kind), Vec::new())
+                }),
             },
-            TyPattern::App { ctor, args } => self.named_ty_for_key(
-                ctor,
-                args.iter()
-                    .map(|arg| self.dispatch_pattern_to_ty(arg))
-                    .collect(),
+            TyPattern::App { ctor, args } => {
+                crate::lookup_builtin_type(ctor).map_or(Ty::Error, |kind| {
+                    Ty::named_head(
+                        crate::TypeHead::Builtin(kind),
+                        args.iter().map(Self::dispatch_pattern_to_ty).collect(),
+                    )
+                })
+            }
+            TyPattern::Named { head, args } => Ty::named_head(
+                *head,
+                args.iter().map(Self::dispatch_pattern_to_ty).collect(),
             ),
-            TyPattern::Tuple(items) => Ty::Tuple(
-                items
-                    .iter()
-                    .map(|item| self.dispatch_pattern_to_ty(item))
-                    .collect(),
-            ),
+            TyPattern::Tuple(items) => {
+                Ty::Tuple(items.iter().map(Self::dispatch_pattern_to_ty).collect())
+            }
             TyPattern::Parameter(parameter) => Ty::param(*parameter),
             TyPattern::Var(_) => Ty::Error,
         }
@@ -480,7 +485,7 @@ impl Checker {
         let registry = collection_dispatch_registry_impl();
         let resolved =
             resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
-                let ty = self.dispatch_pattern_to_ty(ty);
+                let ty = Self::dispatch_pattern_to_ty(ty);
                 self.collection_key_marker_available(&ty, marker)
             });
         match resolved {
@@ -500,7 +505,7 @@ impl Checker {
                 // diagnostic with attribution to the witness type.
                 // `MethodCallNoRewrite` is permanently demoted to a
                 // boundary-violation-only diagnostic.
-                let witness_ty = self.dispatch_pattern_to_ty(&witness);
+                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
                 let bound_summary = unsatisfied
                     .iter()
                     .map(|b| format!("{}: {}", b.var, b.trait_name))
@@ -563,7 +568,7 @@ impl Checker {
             if *ty == key_pattern {
                 return self.param_carries_marker(key_param.id, marker);
             }
-            let ty = self.dispatch_pattern_to_ty(ty);
+            let ty = Self::dispatch_pattern_to_ty(ty);
             self.registry.implements_marker(&ty, marker)
         });
         match resolved {
@@ -576,7 +581,7 @@ impl Checker {
                 witness,
                 ..
             }) => {
-                let witness_ty = self.dispatch_pattern_to_ty(&witness);
+                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
                 let bound_summary = unsatisfied
                     .iter()
                     .map(|b| format!("{}: {}", b.var, b.trait_name))

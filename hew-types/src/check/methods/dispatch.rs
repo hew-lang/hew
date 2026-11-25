@@ -327,7 +327,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
                 }
-                let receiver_ty = self.named_ty_for_key(&head.canonical_type, Vec::new());
+                let receiver_ty = head.receiver_type(Vec::new());
                 let candidates = crate::method_resolution::collect_method_sigs_for_receiver(
                     &self.defs,
                     &self.type_defs,
@@ -411,7 +411,7 @@ impl Checker {
                     let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
                     let constructor_match = self.lookup_variant_constructor(constructor_surface);
                     if let Some(crate::check::calls::VariantConstructor {
-                        type_name,
+                        owner,
                         expected_params,
                         type_params,
                         ..
@@ -445,7 +445,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return self.variant_nominal_ty(&type_name, resolved_args);
+                        return self.variant_nominal_ty(owner, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
@@ -513,7 +513,7 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
+                self.require_unsafe(self.signature_declaration(&key), &key, span);
                 // Call and value-position references share the manifest's
                 // canonical member/module capability selection.
                 self.reject_wasm_native_only_module_function(name.name.as_str(), method, span);
@@ -658,7 +658,7 @@ impl Checker {
                 &self.defs,
                 &self.type_defs,
                 self.sigs(),
-                head.registry_key(),
+                *head,
                 type_args,
                 method,
             )
@@ -1471,7 +1471,7 @@ impl Checker {
                     } = resolved
                     {
                         if let Some(sig) = self.lookup_named_method_sig(
-                            actor_ref_builtin.canonical_name(),
+                            crate::TypeHead::Builtin(actor_ref_builtin),
                             receiver_args,
                             method,
                         ) {
@@ -1567,9 +1567,7 @@ impl Checker {
                             self.enforce_actor_method_send_args(args);
                             self.record_method_call_receiver_kind(
                                 span,
-                                MethodCallReceiverKind::ActorInstance {
-                                    actor_name: actor_identity.clone(),
-                                },
+                                MethodCallReceiverKind::ActorInstance { head: *head },
                             );
                             let call_ty = self.record_actor_method_dispatch(
                                 span,
@@ -1873,7 +1871,7 @@ impl Checker {
                     (Some(b @ (BuiltinType::Result | BuiltinType::Option)), _) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
-                    _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
+                    _ => self.lookup_named_method_sig(*head, type_args, method),
                 };
                 if let Some(sig) = sig {
                     if self.refuse_associated_dot_call(&sig, name, method, args, span) {
@@ -1928,9 +1926,7 @@ impl Checker {
                     if let Some(handler) = actor_handler {
                         self.record_method_call_receiver_kind(
                             span,
-                            MethodCallReceiverKind::ActorInstance {
-                                actor_name: name.to_string(),
-                            },
+                            MethodCallReceiverKind::ActorInstance { head: *head },
                         );
                         // Every arg crosses the mailbox boundary; record the
                         // per-arg alias-vs-copy decision so the fail-closed
@@ -1949,9 +1945,7 @@ impl Checker {
                     }
                     self.record_method_call_receiver_kind(
                         span,
-                        MethodCallReceiverKind::NamedTypeInstance {
-                            type_name: name.to_string(),
-                        },
+                        MethodCallReceiverKind::NamedTypeInstance { head: *head },
                     );
                     // Machine method dispatch: `.step()` and `.state_name()` on a
                     // machine-typed receiver are recorded in the checker-owned

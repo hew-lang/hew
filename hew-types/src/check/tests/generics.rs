@@ -609,7 +609,7 @@ impl<T> Pair<T> {
     // The new method should return Pair<T>
     let new_sig = output
         .sigs()
-        .get("Pair::new")
+        .test_entry("Pair::new")
         .expect("Pair::new should exist");
     if let Ty::Named {
         head: name_head,

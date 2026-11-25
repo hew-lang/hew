@@ -273,15 +273,15 @@ fn machine_registers_type_def() {
     assert!(td.variants.contains_key("Closed"));
     assert!(td.variants.contains_key("Established"));
 
-    // step() and state_name() should be registered as methods
-    assert!(
-        td.methods.contains_key("step"),
-        "step method not registered"
-    );
-    assert!(
-        td.methods.contains_key("state_name"),
-        "state_name method not registered"
-    );
+    let receiver = Ty::named_head(output.visible_type_head("TcpState").unwrap(), vec![]);
+    for name in ["step", "state_name"] {
+        assert!(
+            output
+                .dispatched_method_sig(&receiver, Symbol::intern(name))
+                .is_some(),
+            "{name} method not registered"
+        );
+    }
 }
 
 // ── Test: companion event enum is generated ─────────────────────────
@@ -991,22 +991,25 @@ fn main() {
         other => panic!("expected Load to be a struct variant, got: {other:?}"),
     }
 
+    let parameter = Ty::param(machine_td.type_params[0]);
+    let receiver = Ty::named_head(
+        output.visible_type_head("Lifecycle").unwrap(),
+        vec![parameter.clone()],
+    );
+    let step = output
+        .dispatched_method_sig(&receiver, Symbol::intern("step"))
+        .expect("checked machine step");
     assert_eq!(
-        machine_td.methods["step"]
-            .params
+        step.params
             .iter()
             .map(|parameter| parameter.ty.clone())
             .collect::<Vec<_>>(),
         vec![
-            Ty::named_in(
-                &output.defs,
-                "Lifecycle.Event",
-                vec![Ty::param(machine_td.methods["step"].type_params[0])]
-            ),
+            Ty::named_in(&output.defs, "Lifecycle.Event", vec![parameter]),
             Ty::I64
         ]
     );
-    assert!(machine_td.methods["step"].param_defaults[1].is_some());
+    assert!(step.param_defaults[1].is_some());
 }
 
 #[test]
@@ -1130,14 +1133,22 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // State constructors must be registered in fn_sigs so that transition bodies
     // that reference bare state names can resolve them.
-    assert!(
-        output.sigs().contains("Red"),
-        "unit state 'Red' constructor must be registered in fn_sigs for the import path"
-    );
-    assert!(
-        output.sigs().contains("Green"),
-        "unit state 'Green' constructor must be registered in fn_sigs for the import path"
-    );
+    let machine = output.defs.lookup_path("lights.Traffic").unwrap();
+    let receiver = Ty::named_in(&output.defs, "lights.Traffic", vec![]);
+    for state in ["Red", "Green"] {
+        let constructor = output
+            .defs
+            .member_of_kind(
+                machine,
+                hew_parser::ast::Symbol::intern(state),
+                hew_types::DeclarationKind::MachineState,
+            )
+            .unwrap();
+        assert_eq!(
+            output.fn_sigs[&constructor].return_type, receiver,
+            "an imported state constructor must return the exact machine identity"
+        );
+    }
 
     // Machine TypeDef must be populated with state variants
     assert!(
@@ -1159,14 +1170,11 @@ fn imported_machine_unit_state_constructor_resolves() {
         output.type_def_at_path("lights.Traffic.Event").is_some(),
         "imported event registration must preserve its exact source owner"
     );
+    let step = output
+        .dispatched_method_sig(&receiver, Symbol::intern("step"))
+        .expect("checked machine step");
     assert_eq!(
-        output.sigs()["Red"].return_type,
-        Ty::named_in(&output.defs, "lights.Traffic", vec![]),
-        "an imported state constructor must return the exact machine identity"
-    );
-    assert_eq!(
-        output.type_def_at_path("lights.Traffic").unwrap().methods["step"]
-            .params
+        step.params
             .iter()
             .map(|parameter| parameter.ty.clone())
             .collect::<Vec<_>>(),
@@ -1176,10 +1184,7 @@ fn imported_machine_unit_state_constructor_resolves() {
         ],
         "an imported step method must accept the exact companion event identity"
     );
-    assert!(
-        output.type_def_at_path("lights.Traffic").unwrap().methods["step"].param_defaults[1]
-            .is_some()
-    );
+    assert!(step.param_defaults[1].is_some());
 }
 
 /// Payload state constructors (struct variants) resolve in a non-root module.
@@ -1443,14 +1448,18 @@ fn two_modules_with_different_machines_no_collision() {
         output.type_def_at_path("mod_b.Beta").is_some(),
         "Beta must be registered"
     );
-    assert!(
-        output.sigs().contains("Off"),
-        "Alpha::Off constructor must be registered"
-    );
-    assert!(
-        output.sigs().contains("Idle"),
-        "Beta::Idle constructor must be registered"
-    );
+    for (machine, state) in [("mod_a.Alpha", "Off"), ("mod_b.Beta", "Idle")] {
+        let owner = output.defs.lookup_path(machine).unwrap();
+        let constructor = output
+            .defs
+            .member_of_kind(
+                owner,
+                hew_parser::ast::Symbol::intern(state),
+                hew_types::DeclarationKind::MachineState,
+            )
+            .unwrap();
+        assert!(output.fn_sigs.contains_key(&constructor));
+    }
 }
 
 /// Gate program: a machine declaring `<T: Resource>` parses and

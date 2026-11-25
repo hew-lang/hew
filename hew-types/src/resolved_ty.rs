@@ -549,6 +549,7 @@ impl ResolvedTy {
                 | BuiltinType::HashMap
                 | BuiltinType::HashSet
                 | BuiltinType::Stream
+                | BuiltinType::Sink
                 | BuiltinType::NodeId
                 | BuiltinType::Location => builtin(*kind, args.clone()),
                 other
@@ -1191,27 +1192,29 @@ impl ResolvedTy {
         }
     }
 
+    /// Construct a named type from its checked head and type arguments.
+    #[must_use]
+    pub fn named_head(head: TypeHead, args: Vec<ResolvedTy>) -> Self {
+        Self::Named {
+            head,
+            args,
+            is_opaque: false,
+        }
+    }
+
     /// Construct a `Named` for a known builtin. Use this in production code
     /// when the call site holds an actual [`BuiltinType`] — it prevents
     /// "I'll just pass `None`" sites that would silently fall onto the
     /// user-record branch of every downstream discriminator.
     #[must_use]
     pub fn named_builtin(kind: BuiltinType, args: Vec<ResolvedTy>) -> Self {
-        ResolvedTy::Named {
-            head: TypeHead::Builtin(kind),
-            args,
-            is_opaque: false,
-        }
+        Self::named_head(TypeHead::Builtin(kind), args)
     }
 
     /// Construct a `Named` for a declared nominal.
     #[must_use]
     pub fn named_user(nominal: crate::NominalHead, args: Vec<ResolvedTy>) -> Self {
-        ResolvedTy::Named {
-            head: TypeHead::Nominal(nominal),
-            args,
-            is_opaque: false,
-        }
+        Self::named_head(TypeHead::Nominal(nominal), args)
     }
 
     /// Construct a `Named` for a checked `#[opaque]` runtime-handle declaration
@@ -1231,19 +1234,6 @@ impl ResolvedTy {
         match self {
             Self::Named { head, .. } => Some(*head),
             _ => None,
-        }
-    }
-
-    /// A named type spelled by a declaration path.
-    ///
-    /// TRANSITION(A1): deleted by B1/B2, when HIR and SIR consume the heads the
-    /// checker published instead of resolving spellings again.
-    #[must_use]
-    pub fn named_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
-        ResolvedTy::Named {
-            head: Self::path_head(defs, path),
-            args,
-            is_opaque: false,
         }
     }
 
@@ -1309,32 +1299,6 @@ impl ResolvedTy {
             args: Vec::new(),
             is_opaque: false,
         }
-    }
-
-    /// The handle type of an actor spelled by its declaration path.
-    ///
-    /// TRANSITION(A1): see [`Self::named_path`].
-    #[must_use]
-    pub fn named_actor_path(defs: &DefTable, path: &str, args: Vec<ResolvedTy>) -> Self {
-        let head = match Self::path_head(defs, path) {
-            TypeHead::Nominal(actor) => TypeHead::Actor(actor),
-            other => other,
-        };
-        ResolvedTy::Named {
-            head,
-            args,
-            is_opaque: false,
-        }
-    }
-
-    fn path_head(defs: &DefTable, path: &str) -> TypeHead {
-        if let Some(nominal) = defs.lookup_nominal(path) {
-            return TypeHead::of_declaration(defs, nominal);
-        }
-        if let Some(builtin) = crate::lookup_builtin_type(path) {
-            return TypeHead::Builtin(builtin);
-        }
-        panic!("no declaration `{path}` in the table")
     }
 
     /// User-facing display wrapper that mirrors [`Ty::user_facing`]: numeric

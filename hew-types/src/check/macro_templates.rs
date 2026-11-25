@@ -97,7 +97,7 @@ impl TemplateNames<'_> {
                 .resolve_prefix(&self.env, self.site, namespace, &path.segments);
         let (resolved, remaining) = match resolved {
             Ok(value) => value,
-            Err(_) if matches!(namespace, Namespace::Value) && self.checker.builtin_fn_sigs.contains_key(&name.name) => return Ok(()),
+            Err(_) if matches!(namespace, Namespace::Value) && self.checker.defs.lookup_builtin_callable(name.name).is_some() => return Ok(()),
             Err(_) => return Err(self.fail(format!("E_MACRO_UNBOUND_NAME: `{name}` is not defined in this macro's module or template"), span)),
         };
         if let Resolution::Module(_) = resolved {

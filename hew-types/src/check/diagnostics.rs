@@ -206,21 +206,25 @@ impl Checker {
             return;
         }
 
+        let root_function_name = |path: &str| {
+            let id = self.lookup_declaration(path)?;
+            (self.defs.kind(id) == crate::DeclarationKind::Function
+                && self.defs.module(id) == self.defs.root_module())
+            .then(|| self.defs.name(id).as_str())
+        };
+
         // A root without main is a library: its public entry points and their
         // transitive callees are reachable by consumers of this unit.
         let library_unit = !self
             .fn_def_spans
             .keys()
-            .any(|name| self.root_owned_fn_leaf(name) == Some("main"));
+            .any(|name| root_function_name(name) == Some("main"));
 
         let mut reachable = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
 
-        // rc1-F1 stage A: `fn_def_spans`/`call_graph` key ROOT declarations
-        // canonically (`{root}.{name}`), so root-fn classification tests the
-        // root-owned LEAF (`root_owned_fn_leaf`), never "key has no dot".
         for fn_name in self.fn_def_spans.keys() {
-            let root_leaf = self.root_owned_fn_leaf(fn_name);
+            let root_leaf = root_function_name(fn_name);
             if root_leaf == Some("main")
                 || fn_name.contains("::")
                 || fn_name.starts_with('_')
@@ -262,7 +266,7 @@ impl Checker {
             // Only ROOT free functions are warned (module functions keep
             // their historical exemption); the finding renders the bare
             // source leaf, exactly as before root keys became canonical.
-            let Some(leaf) = self.root_owned_fn_leaf(fn_name) else {
+            let Some(leaf) = root_function_name(fn_name) else {
                 continue;
             };
             if leaf == "main" || leaf.starts_with('_') || self.test_fn_names.contains(fn_name) {

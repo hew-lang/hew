@@ -37,6 +37,12 @@ fn selected_actor_import(path: &[&str], alias: Option<&str>, actor_source: &str)
     )
 }
 
+fn test_type_def<'a>(checker: &'a Checker, path: &str) -> Option<&'a TypeDef> {
+    checker.type_defs.iter().find_map(|(id, definition)| {
+        (checker.defs.path(id.declaration()) == path).then_some(definition)
+    })
+}
+
 #[test]
 fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
@@ -454,7 +460,7 @@ pub fn score() -> i64 {
     assert_eq!(
         output
             .sigs()
-            .get("hew.deepalias.make")
+            .test_entry("hew.deepalias.make")
             .map(|sig| &sig.return_type),
         Some(&Ty::named_for_test("hew.aliassrc.Color", vec![]))
     );
@@ -624,7 +630,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
     assert_eq!(
         output
             .sigs()
-            .get("ClosableHandle::close")
+            .test_entry("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
@@ -633,9 +639,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
         "the nested impl return must retain the exact source owner"
     );
     assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.closableerr.CloseError")
-            .is_some(),
+        test_type_def(&checker, "hew.closableerr.CloseError").is_some(),
         "source declaration must be registered under its canonical owner"
     );
 }
@@ -664,7 +668,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     assert_eq!(
         output
             .sigs()
-            .get("ClosableHandle::close")
+            .test_entry("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
@@ -715,11 +719,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         "imported i32 actor ask must typecheck: {:#?}",
         output.errors
     );
-    assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.testffi.Db")
-            .is_some()
-    );
+    assert!(test_type_def(&checker, "hew.testffi.Db").is_some());
     assert!(checker
         .module_type_exports
         .get("hew.testffi")
@@ -736,7 +736,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.Db::count32")
+            .test_entry("hew.testffi.Db::count32")
             .map(|sig| &sig.return_type),
         Some(&Ty::I32)
     );
@@ -959,37 +959,27 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.Db::query")
+            .test_entry("hew.testffi.Db::query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.hew_testffi_query")
+            .test_entry("hew.testffi.hew_testffi_query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
-    assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("hew.testffi.TestResult")
-            .is_some_and(|result| result.methods.contains_key("echo_len"))
-    );
-    let echo_id = output
-        .impl_method_declaration_ids
-        .get("hew.testffi.TestResult::echo_len")
-        .unwrap_or_else(|| {
-            panic!(
-                "canonical emitted impl symbol must publish its declaration ID; keys: {:?}",
-                output
-                    .impl_method_declaration_ids
-                    .keys()
-                    .collect::<Vec<_>>()
-            )
-        });
+    let method = output
+        .dispatched_method_sig(&result_ty, Symbol::intern("echo_len"))
+        .expect("imported record keeps its impl method");
+    let echo_id = method
+        .impl_method
+        .expect("source impl provenance")
+        .declaration;
     assert!(output
         .defs
-        .path(*echo_id)
+        .path(echo_id)
         .starts_with("hew.testffi.TestResult::<impl "));
 }
 
@@ -1200,10 +1190,11 @@ fn bare_import_registers_qualified_name() {
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
-    assert!(
-        output.sigs().contains("utils.helper"),
-        "bare import should register qualified name 'utils.helper'"
-    );
+    let declaration = output
+        .defs
+        .lookup_path("myapp.utils.helper")
+        .expect("bare import registers the source declaration");
+    assert!(output.fn_sigs.contains_key(&declaration));
     assert!(
         !output.sigs().contains("helper"),
         "bare import should NOT register unqualified name 'helper'"
@@ -1386,6 +1377,8 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
         module_doc: None,
     });
 
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+
     assert_eq!(
         checker.published_bare_type_qualified("R"),
         Some("myapp.mod_a.Reply".to_string()),
@@ -1394,9 +1387,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     // The reconstructed `myapp.mod_a.R` must never exist as a registered def — the bug
     // was binding it (or failing closed) instead of the real source type.
     assert!(
-        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
-            .at_path("myapp.mod_a.R")
-            .is_none(),
+        test_type_def(&checker, "myapp.mod_a.R").is_none(),
         "no `myapp.mod_a.R` def should exist; the alias binds the source `Reply`"
     );
 }
@@ -1508,17 +1499,11 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker
-            .type_def_view()
-            .at_path("std.net.websocket.Server")
-            .is_some(),
+        test_type_def(&checker, "std.net.websocket.Server").is_some(),
         "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
-    assert!(checker
-        .type_def_view()
-        .at_path("websocket.Server")
-        .is_none());
-    assert!(checker.type_def_view().at_path("Server").is_none());
+    assert!(test_type_def(&checker, "websocket.Server").is_none());
+    assert!(test_type_def(&checker, "Server").is_none());
     assert!(
         checker
             .module_type_exports
@@ -1675,7 +1660,7 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
 
     let signature = checker
         .sigs()
-        .get("std.net.net_error")
+        .test_entry("std.net.net_error")
         .expect("source declaration must publish its canonical signature");
     assert!(matches!(
         signature.return_type,
@@ -1758,9 +1743,7 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         "a private type referenced bare within its nested declaring module must be accessible: {:?}",
         checker.errors
     );
-    let holder = checker
-        .type_def_view()
-        .at_path("std.net.tls.Holder")
+    let holder = test_type_def(&checker, "std.net.tls.Holder")
         .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { head, .. }) => assert_eq!(
@@ -1909,7 +1892,10 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         ("keep_left", "pkg.left.Shared"),
         ("keep_right", "pkg.right.Shared"),
     ] {
-        let signature = output.sigs().get(function).expect("function signature");
+        let signature = output
+            .sigs()
+            .test_entry(function)
+            .expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
             [crate::CallableParameter { ty: Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }, .. }] if head.spelling() == expected
@@ -2404,10 +2390,8 @@ fn user_module_fn_sig_has_correct_types() {
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
-    let sig = output
-        .sigs()
-        .get("math.add")
-        .expect("math.add should be registered");
+    let declaration = output.defs.lookup_path("mylib.math.add").unwrap();
+    let sig = &output.fn_sigs[&declaration];
     assert_eq!(sig.params.len(), 2, "should have 2 params");
     assert_eq!(sig.params[0].ty, Ty::I32);
     assert_eq!(sig.params[1].ty, Ty::I32);
@@ -2450,11 +2434,10 @@ fn two_modules_same_fn_name_no_collision() {
         (Item::Import(import_b), 0..0),
     ]);
 
-    assert!(output.sigs().contains("alpha.run"));
-    assert!(output.sigs().contains("beta.run"));
-    // Both should have different return types
-    assert_eq!(output.sigs()["alpha.run"].return_type, Ty::I32);
-    assert_eq!(output.sigs()["beta.run"].return_type, Ty::String);
+    let alpha = output.defs.lookup_path("pkg.alpha.run").unwrap();
+    let beta = output.defs.lookup_path("pkg.beta.run").unwrap();
+    assert_eq!(output.fn_sigs[&alpha].return_type, Ty::I32);
+    assert_eq!(output.fn_sigs[&beta].return_type, Ty::String);
 }
 
 // -- Import with no resolved items (stdlib) still works --
@@ -2537,7 +2520,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let output = checker.check_program(&program);
     let stream_open = output
         .sigs()
-        .get("std.stream.open")
+        .test_entry("std.stream.open")
         .expect("expected std::stream import to register std.stream.open");
     assert!(
         !output.sigs().contains("stream.open"),
@@ -2970,8 +2953,13 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         )])),
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
+    let wrap = output.defs.lookup_path("Wrap").unwrap();
+    let has = output
+        .defs
+        .member_of_kind(wrap, Symbol::intern("Has"), crate::DeclarationKind::Variant)
+        .unwrap();
     assert_eq!(
-        output.sigs().get("Has").map(|sig| sig
+        output.fn_sigs.get(&has).map(|sig| sig
             .params
             .iter()
             .map(|parameter| parameter.ty.clone())
@@ -2981,7 +2969,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
             "myapp.mod_a.Payload",
             vec![]
         )]),
-        "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
+        "the variant constructor `Has` must take `myapp.mod_a.Payload`"
     );
 }
 
@@ -4094,7 +4082,7 @@ fn user_import_registers_type_alias_and_publishes_bindings() {
         ]))
     );
     let sigs = output.sigs();
-    let sig = sigs.get("use_aliases").expect("use_aliases sig");
+    let sig = sigs.test_entry("use_aliases").expect("use_aliases sig");
     assert_eq!(sig.params.first().map(|p| &p.ty), Some(&Ty::I64));
     assert!(
         matches!(

@@ -367,13 +367,16 @@ else needs `impl Display for {rendered}`)"
     /// by the checker. An exact generated-enum owner retains the catalog's
     /// builtin discriminator; every other source declaration wins over builtin
     /// normalization even when its leaf spelling is `Option` or `Result`.
-    /// Non-source entries retain normal builtin canonicalization (including
-    /// imported aliases).
-    pub(in crate::check) fn variant_nominal_ty(&self, type_name: &str, type_args: Vec<Ty>) -> Ty {
-        if let Some(builtin) = self.source_authorized_generated_enum_builtin(type_name) {
+    pub(in crate::check) fn variant_nominal_ty(
+        &self,
+        owner: crate::NominalId,
+        type_args: Vec<Ty>,
+    ) -> Ty {
+        let path = self.defs.path(owner.declaration());
+        if let Some(builtin) = self.source_authorized_generated_enum_builtin(path) {
             return Ty::named_head(crate::TypeHead::Builtin(builtin), type_args);
         }
-        self.named_ty_for_key(type_name, type_args)
+        Ty::named_head(self.head_of_declaration(owner), type_args)
     }
 
     /// A bare variant is an error-recovery candidate only when its enum is
@@ -423,11 +426,10 @@ else needs `impl Display for {rendered}`)"
         if let Some((id, td, spelling)) = self.bare_variant_owner(name, |td, variant| {
             matches!(variant, VariantDef::Tuple(_)) || Self::variant_is_source_unit(td, name)
         }) {
-            let owner = self.defs.path(id.declaration());
             let recovery = if matches!(td.variants.get(name), Some(VariantDef::Tuple(_))) {
                 Ty::Error
             } else {
-                self.instantiated_unit_variant_ty(owner, td)
+                self.instantiated_unit_variant_ty(id, td)
             };
             self.report_bare_variant_expr(name, &format!("{spelling}.{name}"), span);
             return recovery;
@@ -457,7 +459,10 @@ else needs `impl Display for {rendered}`)"
                         })
                         .unwrap_or_else(|| type_prefix.to_string())
                 };
-                if let Some(td) = self.type_def_at(&canonical_type_prefix) {
+                if let Some((owner, td)) = self
+                    .type_def_key(&canonical_type_prefix)
+                    .and_then(|id| Some((id, self.type_defs.get(&id)?)))
+                {
                     if let Some(_variant) = td.variants.get(variant_name) {
                         if Self::variant_is_source_unit(
                             td,
@@ -473,7 +478,7 @@ else needs `impl Display for {rendered}`)"
                             // declaring `None`) would collide in fn_sigs because the key is the
                             // bare variant name; without the guard, `A::None` could return
                             // `Named { B, [?] }`.
-                            let ty = self.instantiated_unit_variant_ty(&canonical_type_prefix, td);
+                            let ty = self.instantiated_unit_variant_ty(owner, td);
                             found = Some(ty);
                         }
                     }
@@ -504,13 +509,16 @@ else needs `impl Display for {rendered}`)"
                         ))
                         .cloned()
                     {
-                        if let Some(td) = self.type_def_at(canonical.as_str()) {
+                        if let Some((owner, td)) = self
+                            .type_def_key(&canonical)
+                            .and_then(|id| Some((id, self.type_defs.get(&id)?)))
+                        {
                             if let Some(_variant) = td.variants.get(variant_name) {
                                 if Self::variant_is_source_unit(
                                     td,
                                     name.rsplit("::").next().unwrap_or(name),
                                 ) {
-                                    let ty = self.instantiated_unit_variant_ty(&canonical, td);
+                                    let ty = self.instantiated_unit_variant_ty(owner, td);
                                     found = Some(ty);
                                 }
                             }
@@ -602,13 +610,13 @@ else needs `impl Display for {rendered}`)"
     /// it must introduce fresh variables that its expected type can unify;
     /// consulting a bare `Created` signature lets an unrelated owner erase
     /// that generic identity.
-    pub(super) fn instantiated_unit_variant_ty(&self, type_name: &str, td: &TypeDef) -> Ty {
+    fn instantiated_unit_variant_ty(&self, owner: crate::NominalId, td: &TypeDef) -> Ty {
         let args = td
             .type_params
             .iter()
             .map(|_| Ty::Var(TypeVar::fresh()))
             .collect();
-        self.variant_nominal_ty(type_name, args)
+        self.variant_nominal_ty(owner, args)
     }
 
     pub(super) fn record_dyn_index_method_call(
@@ -804,7 +812,10 @@ else needs `impl Display for {rendered}`)"
             return Ty::Error;
         }
         self.resolve_import_use(Ident::new(module_short));
-        let Some(td) = self.resolve_module_type(module_short, type_name) else {
+        let Some((owner, td)) = self
+            .resolve_module_type_declaration(module_short, type_name)
+            .and_then(|id| Some((id, self.type_defs.get(&id)?.clone())))
+        else {
             let similar = self
                 .module_type_exports_for_binding(module_short)
                 .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
@@ -817,9 +828,7 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         };
-        let Some((_td_again, variant)) =
-            self.resolve_module_variant(module_short, type_name, variant_name)
-        else {
+        let Some(variant) = td.variants.get(variant_name).cloned() else {
             let similar =
                 crate::error::find_similar(variant_name, td.variants.keys().map(String::as_str));
             self.report_error_with_suggestions(
@@ -845,7 +854,7 @@ else needs `impl Display for {rendered}`)"
                 .iter()
                 .map(|_| Ty::Var(TypeVar::fresh()))
                 .collect();
-            let result = self.named_ty_for_key(&qualified_type, args);
+            let result = self.variant_nominal_ty(owner, args);
             self.record_variant_constructor_plan(&qualified_type, variant_name, &result, &[], span);
             return result;
         }
@@ -859,7 +868,7 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .map(|_| Ty::Var(TypeVar::fresh()))
                     .collect();
-                self.named_ty_for_key(&qualified_type, args)
+                self.variant_nominal_ty(owner, args)
             }
             VariantDef::Tuple(params) => {
                 // Tuple-variant naked reference (no call): treat as a function
@@ -882,7 +891,7 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .map(|p| p.substitute_type_params_parallel(&ctor_subst_map))
                     .collect();
-                let ret = self.named_ty_for_key(&qualified_type, args);
+                let ret = self.variant_nominal_ty(owner, args);
                 Ty::Function {
                     capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: subst_params
@@ -918,17 +927,13 @@ else needs `impl Display for {rendered}`)"
     pub(super) fn lookup_struct_variant_init(
         &self,
         surface_name: &str,
-    ) -> Option<(String, Vec<(String, Ty)>, Vec<crate::ParamHead>)> {
+    ) -> Option<(crate::NominalId, Vec<(String, Ty)>, Vec<crate::ParamHead>)> {
         let variant_name = surface_name.rsplit("::").next().unwrap_or(surface_name);
-        let mut candidates: Vec<(String, Vec<(String, Ty)>, Vec<crate::ParamHead>)> = self
+        let candidates: Vec<_> = self
             .type_defs
             .iter()
-            .filter_map(|(type_name, td)| {
-                let type_name = self.defs.path(type_name.declaration());
-                let canonical_type_name = self
-                    .canonical_nominal_name(type_name)
-                    .unwrap_or_else(|| type_name.to_string());
-                let expected = self.named_ty_for_key(&canonical_type_name, vec![]);
+            .filter_map(|(&owner, td)| {
+                let expected = self.variant_nominal_ty(owner, Vec::new());
                 if !self.variant_surface_owner_matches(surface_name, &expected) {
                     return None;
                 }
@@ -938,19 +943,18 @@ else needs `impl Display for {rendered}`)"
                     .or_else(|| td.variants.get(surface_name))
                 {
                     Some(VariantDef::Struct(fields)) => {
-                        Some((canonical_type_name, fields.clone(), td.type_params.clone()))
+                        Some((owner, fields.clone(), td.type_params.clone()))
                     }
                     _ => None,
                 }
             })
             .collect();
-        candidates.sort_by(|a, b| a.0.cmp(&b.0));
-        candidates.dedup_by(|a, b| a.0 == b.0);
 
         if !surface_name.contains("::") {
             let mut local = candidates
                 .iter()
-                .filter(|(type_name, _, _)| {
+                .filter(|(owner, _, _)| {
+                    let type_name = self.defs.path(owner.declaration());
                     self.local_type_defs.contains(type_name)
                         || self.source_type_defs.contains(type_name)
                 })
@@ -1027,8 +1031,8 @@ else needs `impl Display for {rendered}`)"
             return None;
         };
         Ty::from_name(name.name.as_str()).or_else(|| {
-            self.lookup_type_def(name.name.as_str())
-                .map(|type_def| self.named_ty_for_key(&type_def.name, vec![]))
+            self.type_def_key(name.name.as_str())
+                .map(|id| Ty::named_head(self.head_of_declaration(id), Vec::new()))
         })
     }
 

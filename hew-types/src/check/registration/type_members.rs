@@ -640,18 +640,6 @@ impl Checker {
         bare_name.to_string()
     }
 
-    /// Commit a re-resolved `TypeDef` under its declaration identity.
-    /// Non-root declarations publish only their full owner; root declarations
-    /// retain the bare key because that is their canonical identity.
-    pub(super) fn commit_reresolved_type_def(&mut self, name: &str, type_def: TypeDef) {
-        if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
-            self.register_canonical_type_def(&module_owner, name, &type_def);
-        } else {
-            self.insert_type_def(name, type_def);
-        }
-        self.handle_bearing_dirty = true;
-    }
-
     /// Populate `type_defs` with a full `TypeDef` for a non-root module's
     /// `TypeDecl`, including resolved fields and variant constructors.
     ///
@@ -674,32 +662,17 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn pre_register_type_decl_in_scope(&mut self, td: &TypeDecl) {
-        // Idempotency guard, keyed per-module. Two non-root modules that each
-        // declare a type of the same bare name (`badpkg.Reply` and
-        // `goodpkg.Reply`) must BOTH register: the bare `type_defs` entry is
-        // last-write-wins across modules (the qualified alias is the authority),
-        // but each module's qualified marker set must be seeded so the ask-reply
-        // Send gate derives `Send` from the correct module's fields. Keying the
-        // guard on the bare name skipped the second module's `Reply` entirely,
-        // leaving the gate to read whichever module won the bare-key race.
-        let canonical_name = self
-            .type_declaration_identity(td)
-            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
-        let guard_key = canonical_name.clone();
-        if self.type_def_at(guard_key.as_str()).is_some() {
-            return;
-        }
-        let Some(head) = self.nominal_head_for_key(&guard_key) else {
-            // A rejected duplicate declaration has no owner to register.
-            let span = self
-                .type_def_spans
-                .get(&guard_key)
-                .cloned()
-                .unwrap_or_default();
-            self.require_declaration_path(&guard_key, &span);
+        let Some(declaration) = self.type_declaration_identity(td) else {
+            let name = td.name.name.as_str();
+            let span = self.type_def_spans.get(name).cloned().unwrap_or_default();
+            self.require_declaration_path(name, &span);
             return;
         };
-        let declaration = head.id;
+        let canonical_name = self.defs.path(declaration).to_string();
+        let declaration = crate::NominalId::of_declaration(declaration);
+        if self.type_defs.contains_key(&declaration) {
+            return;
+        }
         // #1295: record `#[resource]` types from pre-registered (imported)
         // modules too, so an imported handle type's inherent `close(self)`
         // consumes its receiver at the call site (mirrors `register_type_decl`).
@@ -765,7 +738,6 @@ impl Checker {
                     fields.insert(name.to_string(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -773,14 +745,13 @@ impl Checker {
                             crate::DeclarationKind::Variant
                         };
                     let return_type =
-                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
+                        self.variant_nominal_ty(declaration, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
                             // Register variant constructor so body-checking can construct values
                             self.insert_member_sig(
-                                variant.name.name.as_str(),
-                                &declaration_name,
+                                declaration.declaration(),
                                 variant.name.name,
                                 variant_member_kind,
                                 FnSig {
@@ -804,8 +775,7 @@ impl Checker {
                                 VariantDef::Tuple(variant_tys.clone()),
                             );
                             self.insert_member_sig(
-                                variant.name.name.as_str(),
-                                &declaration_name,
+                                declaration.declaration(),
                                 variant.name.name,
                                 variant_member_kind,
                                 FnSig {
@@ -877,20 +847,10 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(declaration), field_types);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(declaration),
             type_def.type_params.clone(),
         );
         // Mirror the markers under the module-qualified key so a same-bare-name
@@ -903,7 +863,7 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, td.name.name.as_str(), &type_def);
         }
-        self.insert_type_def(&canonical_name, type_def);
+        self.file_type_def(declaration, type_def);
         self.record_type_def_inference_holes(&canonical_name, hole_vars);
         self.handle_bearing_dirty = true;
         // Pre-registered declarations may need no later member refresh. Publish
@@ -1000,32 +960,17 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn register_type_decl_in_scope(&mut self, td: &TypeDecl) {
-        if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
-            let qualified = self
-                .current_declaration_module()
-                .map(|module| format!("{}.{}", self.defs.module_path(module), td.name));
-            if let Some(declaration) = qualified
-                .as_deref()
-                .and_then(|name| self.lookup_declaration(name))
-                .or_else(|| self.lookup_declaration(td.name.name.as_str()))
-            {
-                self.must_use_types.insert(declaration);
-            }
-        }
-        let canonical_name = self
-            .type_declaration_identity(td)
-            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
-        let Some(head) = self.nominal_head_for_key(&canonical_name) else {
-            // A rejected duplicate declaration has no owner to register.
-            let span = self
-                .type_def_spans
-                .get(&canonical_name)
-                .cloned()
-                .unwrap_or_default();
-            self.require_declaration_path(&canonical_name, &span);
+        let Some(declaration) = self.type_declaration_identity(td) else {
+            let name = td.name.name.as_str();
+            let span = self.type_def_spans.get(name).cloned().unwrap_or_default();
+            self.require_declaration_path(name, &span);
             return;
         };
-        let declaration = head.id;
+        if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
+            self.must_use_types.insert(declaration);
+        }
+        let canonical_name = self.defs.path(declaration).to_string();
+        let declaration = crate::NominalId::of_declaration(declaration);
         match td.resource_marker {
             hew_parser::ast::ResourceMarker::Resource => {
                 self.registry.register_resource_type(declaration);
@@ -1097,7 +1042,6 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     variant_order.push(variant.name.to_string());
-                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -1105,13 +1049,12 @@ impl Checker {
                             crate::DeclarationKind::Variant
                         };
                     let return_type =
-                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
+                        self.variant_nominal_ty(declaration, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
                             self.insert_member_sig(
-                                variant.name.name.as_str(),
-                                &declaration_name,
+                                declaration.declaration(),
                                 variant.name.name,
                                 variant_member_kind,
                                 FnSig {
@@ -1137,8 +1080,7 @@ impl Checker {
 
                             // Register variant constructor as function
                             self.insert_member_sig(
-                                variant.name.name.as_str(),
-                                &declaration_name,
+                                declaration.declaration(),
                                 variant.name.name,
                                 variant_member_kind,
                                 FnSig {
@@ -1211,20 +1153,10 @@ impl Checker {
         };
         let field_types = self.expand_for_marker_registration(&field_types);
 
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(declaration), field_types);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(declaration),
             type_param_names.clone(),
         );
         // Mirror the markers under the module-qualified key (when this type is
@@ -1233,7 +1165,7 @@ impl Checker {
         // gate. `register_qualified_type_alias` repeats this for the pub import
         // surface; this covers the registration call itself.
 
-        self.insert_type_def(&canonical_name, type_def);
+        self.file_type_def(declaration, type_def);
         self.record_type_def_inference_holes(&canonical_name, hole_vars);
         self.handle_bearing_dirty = true;
 
@@ -1283,10 +1215,13 @@ impl Checker {
             .iter()
             .map(|name| Ty::param(*name))
             .collect();
-        let declaration_name = self
-            .named_item_declaration(rd.name)
-            .map_or_else(|| rd.name.to_string(), |id| self.defs.path(id).to_string());
-        let return_type = self.named_ty_for_key(&declaration_name, enum_return_args);
+        let Some(declaration) = self.named_item_declaration(rd.name) else {
+            return;
+        };
+        let declaration_name = self.defs.path(declaration).to_string();
+        let nominal = crate::NominalId::of_declaration(declaration);
+        let head = self.head_of_declaration(nominal);
+        let return_type = Ty::named_head(head, enum_return_args);
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
@@ -1328,7 +1263,7 @@ impl Checker {
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
-                self.insert_fn_sig_at(&declaration_name, signature);
+                self.insert_fn_sig(declaration, signature);
             }
         }
 
@@ -1356,38 +1291,19 @@ impl Checker {
             tuple_field_types
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
-        self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            type_param_names.clone(),
-        );
+        self.registry.register_type(head, field_types);
+        self.registry
+            .register_type_params(head, type_param_names.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
-        self.registry.register_record_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&declaration_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-        );
+        self.registry.register_record_type(head);
 
         self.register_record_serial_layout(
             &declaration_name,
             matches!(rd.kind, RecordKind::Tuple(_)),
             &type_def,
         );
-        self.insert_type_def(&declaration_name, type_def);
+        self.file_type_def(nominal, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
@@ -1571,12 +1487,25 @@ impl Checker {
             .iter()
             .map(|name| Ty::param(*name))
             .collect();
-        let machine_identity = self.declaration_identity(md.name);
-        let machine_ty = self.named_ty_for_key(&machine_identity, machine_generic_args.clone());
+        let Some(machine) = self.named_item_declaration(md.name) else {
+            return;
+        };
+        let machine_identity = self.defs.path(machine).to_string();
+        let machine_head = self.head_of_declaration(crate::NominalId::of_declaration(machine));
+        let machine_ty = Ty::named_head(machine_head, machine_generic_args.clone());
 
         let event_type_name = format!("{}.Event", md.name);
-        let event_identity = self.declaration_identity(Ident::new(&event_type_name));
-        let event_ty = self.named_ty_for_key(&event_identity, machine_generic_args.clone());
+        let Some(event) = self.defs.member_of_kind(
+            machine,
+            hew_parser::ast::sym::EVENT,
+            crate::DeclarationKind::MachineEventType,
+        ) else {
+            return;
+        };
+        let event_identity = self.defs.path(event).to_string();
+        let event = crate::NominalId::of_declaration(event);
+        let event_head = self.head_of_declaration(event);
+        let event_ty = Ty::named_head(event_head, machine_generic_args.clone());
 
         // Build state variants
         let mut variants = HashMap::new();
@@ -1588,8 +1517,7 @@ impl Checker {
                 // machines (e.g. `machine Worker<T>`), the constructor returns
                 // `Worker<T>` so callers can instantiate with concrete args.
                 self.insert_member_sig(
-                    state.name.name.as_str(),
-                    &machine_identity,
+                    machine,
                     state.name.name,
                     crate::DeclarationKind::MachineState,
                     FnSig {
@@ -1639,24 +1567,11 @@ impl Checker {
             }
         }
         let all_field_types = self.expand_for_marker_registration(&all_field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(md.name))
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            all_field_types,
-        );
-        self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(md.name))
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            type_param_names.clone(),
-        );
+        self.registry.register_type(machine_head, all_field_types);
+        self.registry
+            .register_type_params(machine_head, type_param_names.clone());
 
-        self.commit_reresolved_type_def(md.name.name.as_str(), type_def);
+        self.file_type_def(crate::NominalId::of_declaration(machine), type_def);
         self.record_type_def_inference_holes(&machine_identity, machine_hole_vars);
         self.known_types.insert(md.name.to_string());
         self.known_types.insert(machine_identity.clone());
@@ -1704,29 +1619,20 @@ impl Checker {
         // companion enum to a `receive fn`, could not compile).
         let event_field_types = Self::structural_member_types_for_type(&event_type_def);
         let event_field_types = self.expand_for_marker_registration(&event_field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(Ident::new(&event_type_name)))
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            event_field_types,
-        );
-        self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&self.declaration_identity(Ident::new(&event_type_name)))
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            type_param_names.clone(),
-        );
-        self.commit_reresolved_type_def(&event_type_name, event_type_def);
+        self.registry.register_type(event_head, event_field_types);
+        self.registry
+            .register_type_params(event_head, type_param_names.clone());
+        self.file_type_def(event, event_type_def);
+        self.handle_bearing_dirty = true;
         self.record_type_def_inference_holes(&event_identity, event_hole_vars);
         self.known_types.insert(event_type_name.clone());
         self.known_types.insert(event_identity);
 
         // Register the step() method on the machine type
-        if let Some(td) = self.type_def_at_mut(&machine_identity) {
+        if let Some(td) = self
+            .type_defs
+            .get_mut(&crate::NominalId::of_declaration(machine))
+        {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
@@ -1757,11 +1663,6 @@ impl Checker {
                     ..FnSig::default()
                 },
             );
-        }
-        if machine_identity != md.name.name.as_str() {
-            if let Some(type_def) = self.type_def_at(&machine_identity).cloned() {
-                self.insert_type_def(md.name.name.as_str(), type_def);
-            }
         }
     }
 }

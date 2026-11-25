@@ -135,36 +135,24 @@ impl LowerCtx<'_> {
                 reply_ty,
                 policy,
             } => {
-                let Some(result_ty) = self.checked_actor_ask_result_ty(&span, handler) else {
+                let Some(result_ty) = self.checked_actor_ask_result_ty(&span) else {
                     return (
                         HirExprKind::Unsupported("actor ask has no checked result".to_string()),
                         ResolvedTy::Unit,
                     );
                 };
                 match ResolvedTy::from_ty(&reply_ty) {
-                    Ok(reply_ty) => {
-                        // Owner-qualify the ask-reply record identity to the
-                        // ASKED actor's declaring module when it collides, so
-                        // this reply type and the actor-handler layout return
-                        // type (qualified in `lower_imported_actor` under the
-                        // same collision gate) both resolve to the SAME
-                        // qualified identity the MIR record layout is keyed by.
-                        let reply_ty = self.actor_handler_module(handler).map_or_else(
-                            || reply_ty.clone(),
-                            |module| self.qualify_colliding_module_record_ty(&reply_ty, module),
-                        );
-                        (
-                            HirExprKind::ActorAsk {
-                                receiver: Box::new(lowered_receiver),
-                                handler,
-                                args: lowered_args,
-                                evaluation_order,
-                                reply_ty: reply_ty.clone(),
-                                policy,
-                            },
-                            result_ty,
-                        )
-                    }
+                    Ok(reply_ty) => (
+                        HirExprKind::ActorAsk {
+                            receiver: Box::new(lowered_receiver),
+                            handler,
+                            args: lowered_args,
+                            evaluation_order,
+                            reply_ty,
+                            policy,
+                        },
+                        result_ty,
+                    ),
                     Err(err) => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
@@ -331,8 +319,8 @@ impl LowerCtx<'_> {
 
         let key = self.mk_key(&span);
         let enum_ctor_type_name = match self.method_call_receiver_kinds.get(&key) {
-            Some(MethodCallReceiverKind::EnumConstructorPath { type_name }) => {
-                Some(type_name.clone())
+            Some(MethodCallReceiverKind::EnumConstructorPath { head }) => {
+                Some(head.registry_key().to_string())
             }
             // Builtin generic enums (`Option`, `Result`) carry no `type_defs` entry, so
             // recover their canonical variant owner from the checked result type when
@@ -1247,12 +1235,12 @@ impl LowerCtx<'_> {
             // call to `__hew_record_clone_inplace_<record_name>`.
             // Non-consuming read of the receiver — the original stays live.
             Some(MethodCallRewrite::RecordCloneInplace { record_name }) => {
-                // Prefer the checker-typed result; fall back to constructing
-                // a Named type from the record name (should always resolve).
-                let ret_ty = self
-                    .checked_expr_type(&key)
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or_else(|| ResolvedTy::named_path(&self.defs, &record_name, vec![]));
+                let Some(ret_ty) = self.checker_expr_ty(&span, "record clone") else {
+                    return (
+                        HirExprKind::Unsupported("unchecked record clone".to_string()),
+                        ResolvedTy::Unit,
+                    );
+                };
                 let sym = format!("__hew_record_clone_inplace_{record_name}");
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 (

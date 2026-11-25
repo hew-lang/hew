@@ -1072,7 +1072,7 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.insert_fn_sig_at(&qualified, sig);
+                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
@@ -1191,14 +1191,6 @@ impl Checker {
                                 }
                             }
                         }
-                        // Also register on qualified type name
-                        let unqualified_type = type_name
-                            .strip_prefix(&format!("{module_full_path}."))
-                            .unwrap_or(type_name.as_str());
-                        let qualified_type = format!("{module_short}.{unqualified_type}");
-                        if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
-                            td.methods.insert(method.name.to_string(), sig.clone());
-                        }
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {
@@ -1235,16 +1227,11 @@ impl Checker {
                 .unwrap_or(fallback_file);
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            td.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, td.name));
+                    self.refresh_type_after_impls(module_full_path, td.name.name.as_str(), nominal);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -1260,26 +1247,13 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}.Event", md.name);
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            md.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            &event_name,
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, md.name));
+                    self.refresh_type_after_impls(module_full_path, md.name.name.as_str(), nominal);
+                    let event = nominal.and_then(|id| self.machine_event(id));
+                    self.refresh_type_after_impls(module_full_path, &event_name, event);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -1323,6 +1297,29 @@ impl Checker {
         );
     }
 
+    fn publish_module_fn_signature(
+        &mut self,
+        module_path: &str,
+        function: &FnDecl,
+        span: &Span,
+        key: &str,
+        sig: FnSig,
+    ) {
+        let binding = self.defs.module_for_path(module_path).and_then(|module| {
+            self.scopes
+                .item(self.scopes.namespace_of(module), function.name)
+        });
+        if let Some(super::scope::Binding::Fn(declaration)) = binding {
+            self.insert_fn_sig(declaration, sig);
+        } else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("internal: function `{key}` has no declaration"),
+            );
+        }
+    }
+
     /// Publish a selected stdlib free function into one importer's bare scope.
     ///
     /// Declarations remain globally registered under their canonical full
@@ -1334,11 +1331,14 @@ impl Checker {
         source_identity: &str,
         publication: StdlibBarePublication<'_>,
     ) {
-        if !self.has_fn_sig(source_identity) {
+        let Some(declaration) = self
+            .lookup_declaration(source_identity)
+            .filter(|id| self.fn_sigs.contains_key(id))
+        else {
             // A declaration source that cannot supply its canonical signature
             // must not manufacture an ambient bare function binding.
             return;
-        }
+        };
         if publication.records_import_identity() {
             self.import_fn_name_aliases.insert(
                 (
@@ -1351,7 +1351,10 @@ impl Checker {
         } else {
             // Implicit language-floor bindings are ambient; explicit imports
             // only publish a lexical binding to the canonical signature.
-            self.alias_fn_sig(&binding, source_identity);
+            self.scopes.bind_prelude(
+                Symbol::intern(&binding),
+                super::scope::Binding::Fn(declaration),
+            );
         }
         self.record_published_bare_function(&binding, source_identity);
         let source_owner = source_identity
@@ -2061,10 +2064,7 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.insert_fn_sig_at(&qualified, sig);
-                    if spec.is_none() && !self.has_fn_sig(&surface_qualified) {
-                        self.alias_fn_sig(&surface_qualified, &qualified);
-                    }
+                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
 
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
@@ -2214,16 +2214,11 @@ impl Checker {
         for (item, _) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            td.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, td.name));
+                    self.refresh_type_after_impls(module_full_path, td.name.name.as_str(), nominal);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -2232,26 +2227,13 @@ impl Checker {
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
                     let event_name = format!("{}.Event", md.name);
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            md.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            &event_name,
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, md.name));
+                    self.refresh_type_after_impls(module_full_path, md.name.name.as_str(), nominal);
+                    let event = nominal.and_then(|id| self.machine_event(id));
+                    self.refresh_type_after_impls(module_full_path, &event_name, event);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -2363,10 +2345,37 @@ impl Checker {
         source_def: &TypeDef,
     ) {
         let qualified = format!("{module_full_path}.{name}");
-        self.insert_type_def(&qualified, source_def.clone());
+        let Some(declaration) = self.lookup_declaration(&qualified) else {
+            return;
+        };
+        let nominal = crate::NominalId::of_declaration(declaration);
+        self.file_type_def(nominal, source_def.clone());
+        self.publish_type_metadata(nominal, name, qualified, source_def);
+    }
+
+    fn refresh_type_after_impls(
+        &mut self,
+        module: &str,
+        name: &str,
+        nominal: Option<crate::NominalId>,
+    ) {
+        if let Some(id) = nominal {
+            if let Some(definition) = self.type_defs.get(&id).cloned() {
+                self.publish_type_metadata(id, name, format!("{module}.{name}"), &definition);
+            }
+        }
+    }
+
+    fn publish_type_metadata(
+        &mut self,
+        nominal: crate::NominalId,
+        name: &str,
+        qualified: String,
+        source_def: &TypeDef,
+    ) {
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
-                self.type_def_spans.insert(qualified.clone(), span);
+                self.type_def_spans.insert(qualified, span);
             }
         }
         // The full owner is marker authority too. Never copy marker rows from
@@ -2377,31 +2386,23 @@ impl Checker {
         let members = if source_def.kind == TypeDefKind::Enum {
             Self::structural_member_types_for_type(source_def)
         } else if source_def.kind == TypeDefKind::Record && source_def.fields.is_empty() {
-            self.fn_sig(&qualified).map_or_else(Vec::new, |signature| {
-                signature
-                    .params
-                    .iter()
-                    .map(|parameter| parameter.ty.clone())
-                    .collect()
-            })
+            self.fn_sigs
+                .get(&nominal.declaration())
+                .map_or_else(Vec::new, |signature| {
+                    signature
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.ty.clone())
+                        .collect()
+                })
         } else {
             source_def.fields.values().cloned().collect()
         };
         let members = self.expand_for_marker_registration(&members);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&qualified)
-                    .expect("published type has a declaration")
-                    .id,
-            ),
-            members,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(nominal), members);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&qualified)
-                    .expect("published type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(nominal),
             source_def.type_params.clone(),
         );
         self.handle_bearing_dirty = true;

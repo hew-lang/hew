@@ -745,18 +745,15 @@ fn v05_cross_module_machine_ctor_lsp_coverage() {
         .type_output
         .as_ref()
         .expect("cross-module machine fixture should be type checked");
-    assert!(
-        type_output
-            .type_def_at_path("machines.toggle.Toggle")
-            .is_some(),
-        "imported machine type should retain its canonical owner in type defs"
-    );
-    assert!(
-        type_output
-            .type_def_at_path("machines.toggle.Toggle.Event")
-            .is_some(),
-        "imported machine event type should retain its canonical owner in type defs"
-    );
+    for path in ["machines.toggle.Toggle", "machines.toggle.Toggle.Event"] {
+        assert!(
+            type_output
+                .type_defs
+                .keys()
+                .any(|id| type_output.defs.path(id.declaration()) == path),
+            "imported machine types should retain their canonical declaration: {path}",
+        );
+    }
 
     let state_name_offset = main_source
         .find("toggle.state_name")

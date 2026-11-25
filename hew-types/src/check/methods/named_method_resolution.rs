@@ -26,45 +26,32 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 impl Checker {
-    /// Resolve a method signature against the *module-local* type definition.
-    ///
-    /// When the checker is inside module `m` and resolving `Type::method`, the
-    /// authoritative definition is `m`'s own `Type` (registered under the
-    /// qualified `{short}.{Type}` key), not the bare `Type` key which is
-    /// last-write-wins across every module that declares a same-named type.
-    /// Used by the impl-body return-type check so a method body in module `m`
-    /// is validated against `m`'s type, not whichever module registered the
-    /// bare key last. Returns `None` outside a module or when the qualified
-    /// type def / method is absent (caller falls back to the bare lookup).
-    pub(in crate::check) fn module_local_method_sig(
-        &self,
-        type_name: &str,
-        method: &str,
-    ) -> Option<FnSig> {
-        let owner = self.current_module_identity()?;
-        let qualified = format!("{owner}.{type_name}");
-        let td = self.type_def_at(&qualified)?;
-        td.methods.get(method).cloned()
-    }
-
     pub(in crate::check) fn lookup_named_method_sig(
         &self,
-        type_name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
+        let receiver = Ty::named_head(head, type_args.to_vec());
+        match self.select_method(&receiver, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
+                return self.selected_method_sig(&receiver, declaration);
+            }
+            crate::check::dispatch_table::MethodSelection::Ambiguous(_) => return None,
+            crate::check::dispatch_table::MethodSelection::Missing => {}
+        }
         shared_lookup_named_method_sig(
             &self.defs,
             &self.type_defs,
             self.sigs(),
-            type_name,
+            head,
             type_args,
             method,
         )
         .or_else(|| {
             let target = self
                 .type_aliases
-                .get(&self.lookup_declaration(type_name)?)?
+                .get(&head.nominal()?.declaration())?
                 .instantiate(type_args)?;
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
@@ -76,7 +63,7 @@ impl Checker {
         })
         .or_else(|| {
             self.module_registry
-                .resolve_handle_method_sig(type_name, method)
+                .resolve_handle_method_sig(head.registry_key(), method)
                 .map(|(_c_symbol, params, return_type, canonical_owner)| {
                     // The registry's own projection sees only the loaded
                     // module and its imports, so a nominal that module
@@ -121,7 +108,7 @@ impl Checker {
             .ok()?
             .impl_receiver_instance()?
             .head;
-        let instance = ResolvedTy::from_ty(&resolved)
+        let instance = ResolvedTy::from_ty(&resolved.materialize_literal_defaults())
             .ok()
             .and_then(|ty| ty.impl_receiver_instance());
         Some((head, instance))
@@ -248,7 +235,7 @@ impl Checker {
                 if matches!(receiver_ty, Ty::Named { .. }) =>
             {
                 (
-                    self.lookup_named_method_sig(&canonical_name, type_args, method)?,
+                    self.lookup_named_method_sig(receiver_ty.head()?, type_args, method)?,
                     None,
                 )
             }
@@ -415,7 +402,6 @@ impl Checker {
     ) -> Ty {
         if let Some(ty) = self.try_resolve_source_method(receiver_ty, method_name, args, span) {
             if let Ty::Named { head, .. } = receiver_ty {
-                let name = head.registry_key();
                 // If the receiver type is a registered actor declaration AND
                 // the resolved method is a receive handler (tracked in
                 // `actor_receive_methods`), this dispatch crosses the
@@ -434,18 +420,14 @@ impl Checker {
                 if let Some(handler) = actor_handler {
                     self.record_method_call_receiver_kind(
                         span,
-                        MethodCallReceiverKind::ActorInstance {
-                            actor_name: name.to_string(),
-                        },
+                        MethodCallReceiverKind::ActorInstance { head: *head },
                     );
                     self.enforce_actor_method_send_args(args);
                     return self.record_actor_method_dispatch(span, handler, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
                     span,
-                    MethodCallReceiverKind::NamedTypeInstance {
-                        type_name: name.to_string(),
-                    },
+                    MethodCallReceiverKind::NamedTypeInstance { head: *head },
                 );
             }
             self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, args, span);
@@ -887,20 +869,13 @@ impl Checker {
                 head: crate::TypeHead::Param(parameter),
                 args,
             } if args.is_empty() => TyPattern::Parameter(parameter),
-            Ty::Named { head, args } => {
-                let name = head.registry_key();
-                if args.is_empty() {
-                    TyPattern::Primitive(name.to_string())
-                } else {
-                    TyPattern::App {
-                        ctor: name.to_string(),
-                        args: args
-                            .iter()
-                            .map(|arg| self.ty_to_dispatch_pattern(arg))
-                            .collect(),
-                    }
-                }
-            }
+            Ty::Named { head, args } => TyPattern::Named {
+                head,
+                args: args
+                    .iter()
+                    .map(|arg| self.ty_to_dispatch_pattern(arg))
+                    .collect(),
+            },
             other => TyPattern::Primitive(other.user_facing().to_string()),
         }
     }

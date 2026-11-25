@@ -258,7 +258,8 @@ impl Checker {
                 .collect();
             self.record_generic_instantiation_site(
                 self.current_function.clone().as_deref(),
-                self.fn_sig_keys[&owner],
+                self.signature_declaration(&owner)
+                    .expect("generic callable owner has a declaration"),
                 substitution,
                 span,
             );
@@ -482,7 +483,8 @@ impl Checker {
             .collect();
         self.record_generic_instantiation_site(
             Some(&destination),
-            self.fn_sig_keys[&implementation],
+            self.signature_declaration(&implementation)
+                .expect("generic callable implementation has a declaration"),
             substitution,
             span,
         );

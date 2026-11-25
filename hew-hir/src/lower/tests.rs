@@ -181,7 +181,11 @@ fn source_annotations_keep_user_nominals_with_builtin_spellings() {
             "{name}: {:?}",
             lowered.diagnostics
         );
-        let declaration = output.defs.lookup_nominal(name).unwrap();
+        let declaration = output
+            .defs
+            .lookup_path(name)
+            .map(hew_types::NominalId::of_declaration)
+            .unwrap();
         let function = function_named(&lowered, "keep");
         for ty in [&function.params[0].ty, &function.return_ty] {
             assert!(
@@ -3219,19 +3223,8 @@ pub enum Switch {
     }
 }
 
-/// Builds a tiny module `{mod_name}` declaring `pub actor Conn { receive
-/// fn ping() -> i64 { <ping_result> } }` plus a sibling `pub actor
-/// {holder_name} { let conn: Conn, ... }` whose state field references
-/// `Conn` by bare name — the shape `canonicalize_actor_ref_field_ty`
-/// scopes to the declaring module. The `get` handler deliberately does
-/// NOT `await`/`match` on `conn`: that ask-reply inference path is
-/// unrelated to this fix and, independent of
-/// `canonicalize_actor_ref_field_ty`, does not yet resolve correctly
-/// across two modules that both declare an actor with the same
-/// receive-fn name in this raw multi-module harness (a separate,
-/// pre-existing checker-layer gap). This isolates exactly what
-/// `canonicalize_actor_ref_field_ty` decides: the lowered type of the
-/// `conn` state field itself.
+/// Two modules can declare an actor with the same name. The sibling holder
+/// references the actor through a same-module state-field annotation.
 fn conn_holder_module(
     mod_name: &str,
     holder_name: &str,
@@ -3278,27 +3271,18 @@ fn holder_conn_field_ty(lowered: &LowerOutput, holder_name: &str) -> ResolvedTy 
 /// The canonical actor-handle shape an actor field resolves to: the actor's
 /// own qualified name carrying the handle discriminator.
 fn localpid_of(defs: &hew_types::DefTable, qualified_actor_name: &str) -> ResolvedTy {
-    ResolvedTy::named_actor_path(defs, qualified_actor_name, Vec::new())
+    ResolvedTy::named_head(
+        hew_types::TypeHead::Actor(hew_types::NominalHead::new(
+            defs.lookup_path(qualified_actor_name)
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
+            qualified_actor_name,
+        )),
+        Vec::new(),
+    )
 }
 
-/// Regression for the ambiguous-short-name case: two DIFFERENT modules
-/// each declare their own `pub actor Conn` and each has a sibling actor
-/// with a state field that references `Conn` by bare name. Before the
-/// fix, `canonicalize_actor_ref_field_ty`'s global short-name sweep over
-/// `actor_type_names` found two candidates for bare `Conn` and
-/// canonicalized NEITHER, leaving both fields fail-closed at MIR.
-/// Scoping resolution to `{decl_module}.{name}` means each module's bare
-/// `Conn` resolves to that SAME module's `Conn` — independently, with no
-/// cross-module ambiguity, because the lookup never leaves the module
-/// being lowered.
-///
-/// This exercises HIR lowering directly, bypassing `hew build`/`hew
-/// run`'s parsed-`import`-statement visibility gate — a separate,
-/// pre-existing checker-layer limitation unrelated to this fix: a plain
-/// `import pkg;` does not publish `pkg`'s types unqualified, and that
-/// gate's "not in scope" diagnostic fires on any caller of a module
-/// whose actor has a same-module bare-actor-typed field, regardless of
-/// whether the caller ever names the colliding type.
+/// Each lowered field retains the declaration checked in its own module.
 #[test]
 fn same_short_name_actors_in_different_modules_canonicalize_independently() {
     use hew_parser::module::{ModuleGraph, ModulePath};

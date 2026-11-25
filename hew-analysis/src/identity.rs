@@ -35,6 +35,10 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
     if file == 0 {
         return;
     }
+    output.focused_file = output
+        .file_span_indices
+        .file_path(file)
+        .and_then(|path| output.defs.module_for_source(path));
     let swap = |key: &mut SpanKey| {
         if key.module_idx == file {
             key.module_idx = 0;
@@ -43,6 +47,13 @@ pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
         }
     };
     output.expr_types = std::mem::take(&mut output.expr_types)
+        .into_iter()
+        .map(|(mut key, ty)| {
+            swap(&mut key);
+            (key, ty)
+        })
+        .collect();
+    output.resolved_annotation_types = std::mem::take(&mut output.resolved_annotation_types)
         .into_iter()
         .map(|(mut key, ty)| {
             swap(&mut key);
@@ -92,6 +103,22 @@ pub fn resolution_at(
         })
         .min_by_key(|(key, _)| (key.end - key.start, key.start, key.end))
         .map(|(key, resolution)| (span_of(key), *resolution))
+}
+
+/// The declaration signature attributed to a checked callee span.
+pub(crate) fn callable_signature_at(
+    output: &TypeCheckOutput,
+    start: usize,
+    end: usize,
+) -> Option<&hew_types::check::FnSig> {
+    let (span, resolution) = resolution_at(output, 0, end.checked_sub(1)?)?;
+    if span.start < start || span.end > end {
+        return None;
+    }
+    let (Resolution::Def(id) | Resolution::Member(id)) = resolution else {
+        return None;
+    };
+    output.sigs().of(id)
 }
 
 /// Whether a checked source segment is exactly one authored identifier token.

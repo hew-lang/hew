@@ -504,7 +504,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     for name in ["print", "println", "to_string"] {
         let sig = checker
             .sigs()
-            .get(name)
+            .test_entry(name)
             .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
         assert_eq!(
             sig.type_params
@@ -3575,7 +3575,7 @@ fn main() {
     let dispatched_via_named = super::root_values(&output.method_call_receiver_kinds).any(|kind| {
         matches!(
             kind,
-            MethodCallReceiverKind::NamedTypeInstance { type_name } if type_name == "Foo"
+            MethodCallReceiverKind::NamedTypeInstance { head } if head.spelling() == "Foo"
         )
     });
     let leaked_into_primitive_table = super::root_values(&output.method_call_receiver_kinds)

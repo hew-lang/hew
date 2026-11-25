@@ -103,28 +103,23 @@ pub fn complete(
                 });
             }
         }
-        // Signature lookup keys include method linkage names and canonical
-        // module paths. They are not necessarily names in this source scope.
-        // Resolve file-backed root functions by declaration owner, even when
-        // their signature key includes the root module's canonical path.
-        for (name, id) in &tc.fn_sig_keys {
-            let leaf = name.rsplit('.').next().unwrap_or(name);
+        for (&id, sig) in &tc.fn_sigs {
+            let leaf = tc.defs.name(id).as_str();
             if is_source_identifier(leaf)
                 && tc.root_value_bindings.contains(leaf)
-                && (name == leaf || tc.defs.module(*id) == tc.defs.root_module())
+                && tc.defs.ident(id).ctx == hew_parser::ast::SyntaxContext::ROOT
+                && tc.defs.module(id) == tc.defs.root_module()
                 && matches!(
-                    tc.defs.kind(*id),
+                    tc.defs.kind(id),
                     hew_types::DeclarationKind::Function
                         | hew_types::DeclarationKind::ExternFunction
                 )
             {
-                if let Some(sig) = tc.sigs().of(*id) {
-                    items.push(fn_sig_completion(leaf, sig));
-                }
+                items.push(fn_sig_completion(leaf, sig));
             }
         }
         items.extend(imported_function_completions(tc));
-        for (name, sig) in &tc.builtin_fn_sigs {
+        for (name, sig) in tc.sigs().builtin_entries() {
             if is_source_identifier(name.as_str())
                 && !sig.is_builtin_variant
                 && !sig.associated
@@ -156,13 +151,12 @@ pub fn complete(
 /// Explicit imports publish lexical bindings to canonical signatures.
 fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
     tc.import_fn_name_aliases
-        .iter()
-        .filter(|((module, file, binding), _)| {
+        .keys()
+        .filter(|(module, file, binding)| {
             module.is_none() && *file == 0 && is_source_identifier(binding)
         })
-        .filter_map(|((_, _, binding), source)| {
-            tc.sigs()
-                .get(source)
+        .filter_map(|(_, _, binding)| {
+            tc.visible_callable_signature(binding)
                 .map(|sig| fn_sig_completion(binding, sig))
         })
         .collect()
@@ -339,7 +333,7 @@ fn try_dot_completions(
         for (field_name, field_ty) in &type_def.fields {
             if nominal.is_some_and(|id| {
                 tc.defs
-                    .inaccessible_record_field(id, field_name, tc.defs.root_module())
+                    .inaccessible_record_field(id, field_name, tc.viewed_source())
                     .is_some()
             }) {
                 continue;
@@ -409,16 +403,15 @@ fn module_member_completions(
     };
 
     let mut items = Vec::new();
-    for (key, id) in &tc.fn_sig_keys {
-        if let Some(leaf) = direct_leaf(key).filter(|leaf| is_source_identifier(leaf)) {
+    for (&id, sig) in &tc.fn_sigs {
+        if let Some(leaf) = direct_leaf(tc.defs.path(id)).filter(|leaf| is_source_identifier(leaf))
+        {
             if matches!(
-                tc.defs.kind(*id),
+                tc.defs.kind(id),
                 hew_types::DeclarationKind::Function | hew_types::DeclarationKind::ExternFunction
-            ) && visible_from_root(tc, *id)
+            ) && visible_from_root(tc, id)
             {
-                if let Some(sig) = tc.sigs().of(*id) {
-                    items.push(fn_sig_completion(&leaf, sig));
-                }
+                items.push(fn_sig_completion(&leaf, sig));
             }
         }
     }
@@ -518,7 +511,7 @@ fn type_member_completions(
         && nominal.is_none_or(|id| tc.defs.declared_builtin(id.declaration()).is_some())
     {
         let prefix = format!("{name}::");
-        methods.extend(tc.builtin_fn_sigs.iter().filter_map(|(key, sig)| {
+        methods.extend(tc.sigs().builtin_entries().filter_map(|(key, sig)| {
             let member = key.as_str().strip_prefix(&prefix)?;
             (sig.associated && is_source_identifier(member))
                 .then(|| (member.to_string(), sig.clone()))
@@ -577,7 +570,7 @@ fn type_member_completions(
     (nominal.is_some() || !items.is_empty()).then_some(items)
 }
 
-/// Resolve a root-scope type head using the checker's lexical import bindings.
+/// Resolve a type head in the viewed file using the checker's lexical import bindings.
 fn type_head_at<'a>(
     source: &'a str,
     tc: &TypeCheckOutput,
@@ -613,32 +606,13 @@ fn direct_type_head_at<'a>(
     let name = trailing_identifier(before)?;
     let prefix = before[..before.len() - name.len()].trim_end();
     let module_qualified = prefix.ends_with('.');
-    let qualified = if let Some(module_prefix) = prefix.strip_suffix('.') {
+    let head = if let Some(module_prefix) = prefix.strip_suffix('.') {
         let binding = trailing_identifier(module_prefix.trim_end())?;
-        let owner = tc
-            .module_import_bindings
-            .get(&(None, 0, binding.to_string()))?;
-        Some(format!("{owner}.{name}"))
+        tc.visible_type_head(&format!("{binding}.{name}"))
     } else {
-        tc.import_type_name_aliases
-            .get(&(None, 0, name.to_string()))
-            .cloned()
+        tc.visible_type_head(name)
     };
-    let direct = tc.defs.lookup_nominal(name);
-    let nominal = if module_qualified {
-        qualified
-            .as_deref()
-            .and_then(|path| tc.defs.lookup_nominal(path))
-    } else {
-        direct
-            .filter(|id| tc.defs.declared_builtin(id.declaration()).is_none())
-            .or_else(|| {
-                qualified
-                    .as_deref()
-                    .and_then(|path| tc.defs.lookup_nominal(path))
-            })
-            .or(direct)
-    };
+    let nominal = head.and_then(|head| head.declaration(&tc.defs));
     Some((name, nominal, module_qualified))
 }
 
@@ -701,10 +675,13 @@ fn try_struct_init_completions(
             (tc.type_defs.get(&id).cloned()?, Some(id))
         }
         Some(_) => return None,
-        None => (
-            method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?,
-            tc.defs.lookup_nominal(type_name),
-        ),
+        None => {
+            let head = tc.visible_type_head(type_name)?;
+            (
+                method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?,
+                head.declaration(&tc.defs),
+            )
+        }
     };
     if type_def.fields.is_empty() {
         return None;
@@ -716,7 +693,7 @@ fn try_struct_init_completions(
         .filter(|(name, _)| {
             nominal.is_none_or(|id| {
                 tc.defs
-                    .inaccessible_record_field(id, name, tc.defs.root_module())
+                    .inaccessible_record_field(id, name, tc.viewed_source())
                     .is_none()
             })
         })
@@ -751,7 +728,8 @@ fn try_enum_variant_completions(
 
     let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
+    let head = tc.visible_type_head(type_name)?;
+    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, head)?;
     if type_def.kind != TypeDefKind::Enum {
         return None;
     }

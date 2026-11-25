@@ -32,7 +32,7 @@ fn extern_borrow_signature_registers_exact_types() {
         "#,
     );
     assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
-    let sig = output.sigs().get("read").expect("extern signature");
+    let sig = output.sigs().test_entry("read").expect("extern signature");
     let borrow_i64 = Ty::Borrow {
         pointee: Box::new(Ty::I64),
     };
@@ -290,7 +290,7 @@ fn injected_ordinary_function_borrow_fails_closed() {
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
-    assert!(output.sigs().get("ordinary").is_none_or(|sig| {
+    assert!(output.sigs().test_entry("ordinary").is_none_or(|sig| {
         sig.params
             .iter()
             .all(|parameter| !matches!(parameter.ty, Ty::Borrow { .. }))
@@ -353,7 +353,7 @@ fn checker_extern_context_does_not_leak_to_ordinary_signature() {
     ));
     assert!(output
         .sigs()
-        .get("ordinary")
+        .test_entry("ordinary")
         .is_none_or(|sig| { !matches!(sig.return_type, Ty::Borrow { .. }) }));
 }
 
@@ -373,7 +373,7 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
     );
     let sig = output
         .sigs()
-        .get("vec_push")
+        .test_entry("vec_push")
         .expect("extern fn must be registered");
     let spec = sig
         .extern_symbol
@@ -540,7 +540,7 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
     );
     let sig = output
         .sigs()
-        .get("unrelated")
+        .test_entry("unrelated")
         .expect("extern fn must be registered");
     assert!(
         sig.extern_symbol.is_none(),
@@ -548,12 +548,8 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
     );
 }
 
-/// `#[extern_symbol("…")]` on an inherent impl method populates the
-/// spec on BOTH the `fn_sigs` entry and the `TypeDef.methods` entry,
-/// so Stage-3 method-call rewrite (which reads from `td.methods`) sees
-/// the same template as Stage-2 ingest.
 #[test]
-fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
+fn extern_symbol_on_impl_method_is_read_through_dispatch() {
     let output = check_source(
         r#"type Holder {
     x: i64;
@@ -572,32 +568,19 @@ impl Holder {
         "well-formed template must not emit diagnostics, got: {:#?}",
         output.errors
     );
+    let receiver = Ty::named_head(output.visible_type_head("Holder").unwrap(), vec![]);
     let sig = output
-        .sigs()
-        .get("Holder::cloned")
-        .expect("impl method must be in fn_sigs");
+        .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("cloned"))
+        .expect("dispatch must select the inherent method");
     let spec = sig
         .extern_symbol
         .as_ref()
-        .expect("Stage 2 must populate extern_symbol on the fn_sigs entry");
+        .expect("selected method carries the extern symbol");
     assert_eq!(spec.template.raw, "hew_holder_clone");
     assert!(
         spec.template.is_monomorphic(),
         "no {{T}} placeholder → monomorphic"
     );
-
-    let td = output
-        .type_def_at_path("Holder")
-        .expect("Holder type must be registered");
-    let method_sig = td
-        .methods
-        .get("cloned")
-        .expect("cloned method must be on TypeDef");
-    let method_spec = method_sig
-        .extern_symbol
-        .as_ref()
-        .expect("Stage 2 must mirror the spec onto TypeDef.methods");
-    assert_eq!(method_spec.template.raw, "hew_holder_clone");
 }
 
 /// A malformed template surfaces as `InvalidExternSymbolTemplate` with
@@ -639,7 +622,7 @@ fn malformed_extern_symbol_template_emits_invalid_template_diagnostic() {
     // unresolved-symbol diagnostic later).
     let sig = output
         .sigs()
-        .get("bad")
+        .test_entry("bad")
         .expect("extern fn must still be registered for downstream resolution");
     assert!(
         sig.extern_symbol.is_none(),

@@ -460,12 +460,6 @@ impl Checker {
             self.current_module_idx = saved_index;
             return;
         }
-        // Module short name "builtins" matches the on-disk file stem and
-        // would be the namespace if anything ever imports `std::builtins`
-        // directly; nothing currently does, so this name is only visible
-        // as the qualified-key prefix on per-method `td.methods` insertions
-        // (none of which fire for primitive targets that lack a
-        // `type_defs` entry).
         self.register_stdlib_hew_items(
             "builtins",
             "std.builtins",
@@ -818,7 +812,8 @@ impl Checker {
         if name.contains('.') {
             self.module_fn_exports.insert(name.to_string());
         }
-        self.builtin_fn_sigs.insert(Symbol::intern(name), sig);
+        let declaration = self.defs.builtin_callable(name);
+        self.fn_sigs.insert(declaration, sig);
         // Record executable runtime authority at builtin-registration time.
         // `fn_sigs` itself intentionally remains an open-set lookup index: it
         // can contain user and imported-source functions.  No call-site may

@@ -102,9 +102,8 @@ impl LowerCtx<'_> {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
                 params: vec![hew_types::CallableParameter::borrowed(
-                    ResolvedTy::named_actor_path(
-                        &self.defs,
-                        hew_types::BuiltinType::ActorHandle.canonical_name(),
+                    ResolvedTy::named_builtin(
+                        hew_types::BuiltinType::ActorHandle,
                         vec![ResolvedTy::Unit],
                     ),
                 )],
@@ -142,9 +141,8 @@ impl LowerCtx<'_> {
                     id,
                     return_ty: ResolvedTy::Unit,
                     params: vec![hew_types::CallableParameter::borrowed(
-                        ResolvedTy::named_actor_path(
-                            &self.defs,
-                            hew_types::BuiltinType::ActorHandle.canonical_name(),
+                        ResolvedTy::named_builtin(
+                            hew_types::BuiltinType::ActorHandle,
                             vec![ResolvedTy::Unit],
                         ),
                     )],

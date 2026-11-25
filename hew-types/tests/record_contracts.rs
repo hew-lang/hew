@@ -1,6 +1,6 @@
 use hew_types::{
     module_registry::ModuleRegistry, BuiltinType, Checker, CloneKind, ResolvedTy, TypeFactContext,
-    TypeFactService,
+    TypeFactService, TypeHead,
 };
 
 fn facts(source: &str) -> TypeFactService {
@@ -12,12 +12,27 @@ fn facts(source: &str) -> TypeFactService {
     TypeFactService::new(output.type_fact_context, output.type_facts)
 }
 
+fn checked_nominal(service: &TypeFactService, name: &str) -> hew_types::NominalId {
+    service
+        .context()
+        .declarations()
+        .keys()
+        .copied()
+        .find(|id| service.defs().path(id.declaration()) == name)
+        .unwrap_or_else(|| panic!("missing checked declaration {name}"))
+}
+
+fn root_type(service: &TypeFactService, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+    let nominal = checked_nominal(service, name);
+    ResolvedTy::named_head(TypeHead::of_declaration(service.defs(), nominal), args)
+}
+
 #[test]
 fn same_spelling_user_record_does_not_select_the_builtin_cursor() {
     let service = facts(
         "type VecIter<T> {\n    tail: T;\n    head: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
-    let user = ResolvedTy::named_path(service.defs(), "VecIter", vec![ResolvedTy::String]);
+    let user = root_type(&service, "VecIter", vec![ResolvedTy::String]);
     let builtin = ResolvedTy::named_builtin(BuiltinType::VecIter, vec![ResolvedTy::String]);
     let (user_instance, fields) = service.record_fields(&user).unwrap();
     let (builtin_instance, _) = service.record_fields(&builtin).unwrap();
@@ -45,13 +60,13 @@ fn record_contract_requires_a_declaration_and_exact_arity() {
     assert!(empty.record_fields(&cursor).is_err());
     let service = facts("enum Item {\n    Empty;\n}\n\n#[opaque]\ntype Handle {\n}\n\nfn main() -> i64 {\n    0\n}\n");
     let mut missing_defs = service.defs().clone();
-    missing_defs.mint_for_test("Missing");
+    let missing = missing_defs.mint_nominal_for_test("Missing");
     for ty in [
         ResolvedTy::named_builtin(BuiltinType::VecIter, vec![]),
-        ResolvedTy::named_path(&missing_defs, "Missing", vec![]),
-        ResolvedTy::named_path(service.defs(), "Item", vec![]),
+        ResolvedTy::named_user(hew_types::NominalHead::new(missing, "Missing"), vec![]),
+        root_type(&service, "Item", vec![]),
         ResolvedTy::named_opaque(
-            hew_types::NominalHead::new(service.defs().lookup_nominal("Handle").unwrap(), "Handle"),
+            hew_types::NominalHead::new(checked_nominal(&service, "Handle"), "Handle"),
             vec![],
         ),
     ] {
@@ -65,8 +80,8 @@ fn record_marker_belongs_to_the_container_declaration() {
     let mut service = facts(
         "#[resource]\ntype Handle {\n    id: i64;\n}\n\ntype Wrapper<T> {\n    value: T;\n}\n\nfn main() -> i64 {\n    0\n}\n",
     );
-    let handle = ResolvedTy::named_path(service.defs(), "Handle", vec![]);
-    let wrapper = ResolvedTy::named_path(service.defs(), "Wrapper", vec![handle.clone()]);
+    let handle = root_type(&service, "Handle", vec![]);
+    let wrapper = root_type(&service, "Wrapper", vec![handle.clone()]);
     assert_eq!(service.require(&handle).unwrap().clone, CloneKind::None);
     assert_eq!(service.require(&wrapper).unwrap().clone, CloneKind::None);
     assert_eq!(
@@ -78,12 +93,15 @@ fn record_marker_belongs_to_the_container_declaration() {
         DeclarationMarker::None
     );
     assert!(service
-        .declaration_marker(&ResolvedTy::named_path(service.defs(), "Wrapper", vec![]))
+        .declaration_marker(&root_type(&service, "Wrapper", vec![]))
         .is_err());
     let mut missing_defs = service.defs().clone();
-    missing_defs.mint_for_test("Missing");
+    let missing = missing_defs.mint_nominal_for_test("Missing");
     assert!(service
-        .declaration_marker(&ResolvedTy::named_path(&missing_defs, "Missing", vec![]))
+        .declaration_marker(&ResolvedTy::named_user(
+            hew_types::NominalHead::new(missing, "Missing"),
+            vec![]
+        ))
         .is_err());
 }
 
@@ -129,7 +147,7 @@ fn main() -> i64 {
 }
 ",
     );
-    let key = ResolvedTy::named_path(service.defs(), "Key", vec![]);
+    let key = root_type(&service, "Key", vec![]);
     let mut methods = Vec::new();
     for capability in [Hash, Eq] {
         let selection: hew_types::ValueMethodSelection =
@@ -141,7 +159,7 @@ fn main() -> i64 {
         };
         assert!(type_args.is_empty());
         methods.push(*method);
-        let plain = ResolvedTy::named_path(service.defs(), "Plain", vec![]);
+        let plain = root_type(&service, "Plain", vec![]);
         let derived = service
             .capability_plan(&plain, capability)
             .unwrap()
@@ -153,7 +171,7 @@ fn main() -> i64 {
     assert_ne!(methods[0], methods[1]);
     assert!(service.require(&key).unwrap().hash);
     assert!(service.require(&key).unwrap().eq);
-    let hash_only = ResolvedTy::named_path(service.defs(), "HashOnly", vec![]);
+    let hash_only = root_type(&service, "HashOnly", vec![]);
     assert!(matches!(
         service
             .capability_plan(&hash_only, Hash)
@@ -196,19 +214,15 @@ fn main() -> i64 {
 }
 ",
     );
-    let generic = ResolvedTy::named_path(
-        service.defs(),
+    let generic = root_type(
+        &service,
         "Key",
         vec![
             ResolvedTy::named_builtin(BuiltinType::Vec, vec![ResolvedTy::Bool]),
             ResolvedTy::I64,
         ],
     );
-    let exact = ResolvedTy::named_path(
-        service.defs(),
-        "Key",
-        vec![ResolvedTy::I64, ResolvedTy::String],
-    );
+    let exact = root_type(&service, "Key", vec![ResolvedTy::I64, ResolvedTy::String]);
     let Some(User {
         method: generic_method,
         type_args,
@@ -249,7 +263,7 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
         ValueMethodPlan::Derived,
     };
     let mut service = facts("type Vec {\n    id: i64;\n}\n\nenum Choice {\n    Empty;\n}\n\nfn main() -> i64 {\n    0\n}\n");
-    let user = ResolvedTy::named_path(service.defs(), "Vec", vec![]);
+    let user = root_type(&service, "Vec", vec![]);
     assert_eq!(
         service
             .capability_plan(&user, Hash)
@@ -271,11 +285,11 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
         );
         assert!(service.require(&ty).unwrap().hash);
     }
-    let choice = ResolvedTy::named_path(service.defs(), "Choice", vec![]);
+    let choice = root_type(&service, "Choice", vec![]);
     assert_eq!(service.capability_plan(&choice, Hash).unwrap(), None);
     assert!(!service.require(&choice).unwrap().hash);
     let mut foreign_defs = service.defs().clone();
-    foreign_defs.mint_for_test("elsewhere.Vec");
+    let foreign = foreign_defs.mint_nominal_for_test("elsewhere.Vec");
     for capability in [Hash, Eq] {
         assert!(service
             .capability_plan(
@@ -287,7 +301,10 @@ fn value_capabilities_refuse_unsupported_and_abstract_receivers() {
             .is_err());
         assert!(service
             .capability_plan(
-                &ResolvedTy::named_path(&foreign_defs, "elsewhere.Vec", vec![]),
+                &ResolvedTy::named_user(
+                    hew_types::NominalHead::new(foreign, "elsewhere.Vec"),
+                    vec![]
+                ),
                 capability
             )
             .is_err());
@@ -317,7 +334,7 @@ fn main() -> i64 {
 }
 ",
     );
-    let key = ResolvedTy::named_path(service.defs(), "Key", vec![]);
+    let key = root_type(&service, "Key", vec![]);
     assert!(matches!(
         service.capability_plan(&key, Hash),
         Err(ClassError::TypeParam { param }) if param.spelling.as_str() == "T"
@@ -362,7 +379,7 @@ fn main() -> i64 {
 }
 ",
     );
-    let key = ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]);
+    let key = root_type(&service, "Key", vec![ResolvedTy::I64]);
     assert_eq!(
         service
             .capability_plan(&key, Hash)
@@ -372,7 +389,7 @@ fn main() -> i64 {
     );
     assert!(service.require(&key).unwrap().hash);
     let opaque = ResolvedTy::named_opaque(
-        hew_types::NominalHead::new(service.defs().lookup_nominal("Handle").unwrap(), "Handle"),
+        hew_types::NominalHead::new(checked_nominal(&service, "Handle"), "Handle"),
         vec![],
     );
     assert_eq!(service.capability_plan(&opaque, Hash).unwrap(), None);
@@ -423,7 +440,7 @@ fn main() -> i64 {
     let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
     assert_eq!(
         service
-            .capability_plan(&ResolvedTy::named_path(service.defs(), "Key", vec![]), Hash)
+            .capability_plan(&root_type(&service, "Key", vec![]), Hash)
             .unwrap()
             .map(|selection| selection.plan().clone()),
         Some(User {
@@ -452,8 +469,8 @@ fn main() -> i64 {
 }
 ",
     );
-    let nested = ResolvedTy::named_path(
-        service.defs(),
+    let nested = root_type(
+        &service,
         "Key",
         vec![ResolvedTy::named_builtin(
             BuiltinType::Vec,
@@ -469,10 +486,7 @@ fn main() -> i64 {
     };
     assert_eq!(type_args, vec![ResolvedTy::I64]);
     assert!(service
-        .capability_plan(
-            &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
-            Hash
-        )
+        .capability_plan(&root_type(&service, "Key", vec![ResolvedTy::I64]), Hash)
         .is_err());
 }
 
@@ -531,7 +545,7 @@ fn main() -> i64 {
 }
 ",
     );
-    let leaf = ResolvedTy::named_path(service.defs(), "Leaf", vec![]);
+    let leaf = root_type(&service, "Leaf", vec![]);
     for capability in [Hash, Eq] {
         assert!(matches!(
             service
@@ -540,7 +554,7 @@ fn main() -> i64 {
                 .map(|selection| selection.plan().clone()),
             Some(User { .. })
         ));
-        let wrapper = ResolvedTy::named_path(service.defs(), "Wrapper", vec![leaf.clone()]);
+        let wrapper = root_type(&service, "Wrapper", vec![leaf.clone()]);
         assert_eq!(
             service
                 .capability_plan(&wrapper, capability)
@@ -552,18 +566,15 @@ fn main() -> i64 {
         assert!(row.hash && row.eq);
         assert_eq!(
             service
-                .capability_plan(
-                    &ResolvedTy::named_path(service.defs(), "Unsupported", vec![]),
-                    capability
-                )
+                .capability_plan(&root_type(&service, "Unsupported", vec![]), capability)
                 .unwrap(),
             None
         );
     }
-    let eq_only = ResolvedTy::named_path(
-        service.defs(),
+    let eq_only = root_type(
+        &service,
         "Wrapper",
-        vec![ResolvedTy::named_path(service.defs(), "EqLeaf", vec![])],
+        vec![root_type(&service, "EqLeaf", vec![])],
     );
     assert_eq!(
         service
@@ -578,7 +589,7 @@ fn main() -> i64 {
     for container in [
         ResolvedTy::Tuple(vec![leaf.clone()]),
         ResolvedTy::named_builtin(BuiltinType::Vec, vec![leaf]),
-        ResolvedTy::named_path(service.defs(), "Choice", vec![]),
+        root_type(&service, "Choice", vec![]),
     ] {
         assert_eq!(
             service
@@ -668,8 +679,8 @@ fn main() -> i64 {
         ret: Box::new(ResolvedTy::I64),
     };
     for (name, capability) in [("Inline", Hash), ("Where", Hash), ("Method", Eq)] {
-        let good = ResolvedTy::named_path(service.defs(), name, vec![ResolvedTy::I64]);
-        let bad = ResolvedTy::named_path(service.defs(), name, vec![non_hash.clone()]);
+        let good = root_type(&service, name, vec![ResolvedTy::I64]);
+        let bad = root_type(&service, name, vec![non_hash.clone()]);
         assert!(matches!(
             service
                 .capability_plan(&good, capability)
@@ -683,10 +694,7 @@ fn main() -> i64 {
     // The immutable context has no general trait solver: a custom bound needs
     // an explicit refusal even when a live checker could establish it.
     assert!(service
-        .capability_plan(
-            &ResolvedTy::named_path(service.defs(), "Custom", vec![ResolvedTy::I64]),
-            Hash
-        )
+        .capability_plan(&root_type(&service, "Custom", vec![ResolvedTy::I64]), Hash)
         .is_err());
 }
 
@@ -709,7 +717,7 @@ fn main() -> i64 {
 }
 ",
     );
-    let ty = ResolvedTy::named_path(service.defs(), "Choice", vec![]);
+    let ty = root_type(&service, "Choice", vec![]);
     assert_eq!(service.capability_plan(&ty, Hash).unwrap(), None);
     assert!(!service.require(&ty).unwrap().hash);
 }
@@ -746,10 +754,7 @@ fn same(a: Key<i64>, b: Key<i64>) -> bool {
     let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
     assert_eq!(
         service
-            .capability_plan(
-                &ResolvedTy::named_path(service.defs(), "Key", vec![ResolvedTy::I64]),
-                Eq
-            )
+            .capability_plan(&root_type(&service, "Key", vec![ResolvedTy::I64]), Eq)
             .unwrap()
             .map(|selection| selection.plan().clone()),
         Some(User {
@@ -767,7 +772,7 @@ impl<T> Hash for Key<T> { fn hash(self) -> i64 { 1 } }
 type Pair { first: Key<i64>; again: Key<i64>; other: Key<string>; }
 fn main() {}",
     );
-    let pair = ResolvedTy::named_path(service.defs(), "Pair", vec![]);
+    let pair = root_type(&service, "Pair", vec![]);
     let selection = service
         .capability_plan(&pair, hew_types::ValueCapability::Hash)
         .unwrap()

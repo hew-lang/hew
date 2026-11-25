@@ -632,7 +632,20 @@ impl Checker {
     /// `key`.
     pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
         let declaration = self.defs.mint_for_test(key);
-        self.insert_fn_sig(key, declaration, sig);
+        self.insert_fn_sig(declaration, sig);
+    }
+
+    pub(super) fn test_method_sig(&mut self, owner: crate::NominalId, name: &str, sig: FnSig) {
+        let declaration = self
+            .defs
+            .mint_for_test(format!("{}::{name}", self.defs.path(owner.declaration())));
+        self.dispatch.insert_generic(
+            self.head_of_declaration(owner),
+            super::dispatch_table::MethodOwner::Inherent,
+            Symbol::intern(name),
+            declaration,
+        );
+        self.insert_fn_sig(declaration, sig);
     }
 
     /// File a hand-built trait under a fresh declaration row spelled `key`.
@@ -646,10 +659,10 @@ impl Checker {
     /// [`Self::test_declaration`]); a path nothing declared is a fixture
     /// nominal no definition answers to.
     pub(super) fn test_named(&self, path: &str, args: Vec<Ty>) -> Ty {
-        let id = self
-            .defs
-            .lookup_nominal(path)
-            .unwrap_or_else(|| crate::NominalId::for_test(path));
+        let id = self.defs.lookup_path(path).map_or_else(
+            || crate::NominalId::for_test(path),
+            crate::NominalId::of_declaration,
+        );
         Ty::named_head(
             crate::TypeHead::Nominal(crate::NominalHead::new(id, path)),
             args,

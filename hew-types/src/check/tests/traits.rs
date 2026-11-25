@@ -323,7 +323,7 @@ fn main() {
 
     let get_sig = output
         .sigs()
-        .get("Box::get")
+        .test_entry("Box::get")
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
@@ -333,7 +333,7 @@ fn main() {
 
     let with_sig = output
         .sigs()
-        .get("Box::with")
+        .test_entry("Box::with")
         .expect("generic trait impl method must retain its signature");
     assert!(
         with_sig.returns_receiver_identity,
@@ -386,7 +386,7 @@ impl<T, U> Pair<T, U> {
     assert!(
         output
             .sigs()
-            .get("Pair::swap_identity")
+            .test_entry("Pair::swap_identity")
             .is_some_and(|sig| !sig.returns_receiver_identity),
         "a changed generic instantiation must fail closed in dispatch metadata"
     );
@@ -1774,7 +1774,13 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
     );
 
     let sig = checker
-        .lookup_named_method_sig("Speaker", &[], "hello")
+        .lookup_named_method_sig(
+            Ty::named_in(&checker.defs, "Speaker", Vec::new())
+                .head()
+                .unwrap(),
+            &[],
+            "hello",
+        )
         .expect("type_defs method should resolve");
     assert_eq!(sig.return_type, Ty::String);
 }
@@ -1842,8 +1848,9 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
             HashMap::new(),
         ),
     );
-    checker.test_fn_sig(
-        "Wrapper::get",
+    checker.test_method_sig(
+        __id,
+        "get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![crate::CallableParameter::borrowed(Ty::I64)],
@@ -2028,8 +2035,9 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
             HashMap::new(),
         ),
     );
-    checker.test_fn_sig(
-        "Wrapper::value",
+    checker.test_method_sig(
+        __id,
+        "value",
         FnSig {
             param_names: vec!["next".to_string()],
             params: vec![crate::CallableParameter::borrowed(Ty::param(
@@ -2041,7 +2049,13 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     );
 
     let sig = checker
-        .lookup_named_method_sig("Wrapper", &[Ty::String], "value")
+        .lookup_named_method_sig(
+            Ty::named_in(&checker.defs, "Wrapper", Vec::new())
+                .head()
+                .unwrap(),
+            &[Ty::String],
+            "value",
+        )
         .expect("fn_sigs fallback should resolve");
     assert_eq!(
         sig.params,
@@ -2155,7 +2169,7 @@ fn main() {
 }
 
 #[test]
-fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
+fn impl_dispatch_preserves_inline_method_bounds() {
     let source = r"
         trait Show {
             fn show(self);
@@ -2185,27 +2199,16 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
         output.errors
     );
 
-    let fn_sig = output
-        .sigs()
-        .get("Wrapper::map")
-        .expect("impl method must populate fn_sigs");
-    let method_sig = output
-        .type_def_at_path("Wrapper")
-        .and_then(|type_def| type_def.methods.get("map"))
-        .expect("impl method must populate type_def.methods");
-
-    for (surface, sig) in [("fn_sigs", fn_sig), ("type_def.methods", method_sig)] {
-        let u = sig
-            .type_params
-            .iter()
-            .find(|parameter| parameter.spelling.as_str() == "U")
-            .expect("map declares U");
-        assert_eq!(
-            sig.bounds.of(u.id).count(),
-            1,
-            "{surface} surface must retain the method-inline `U: Show` bound"
-        );
-    }
+    let receiver = Ty::named_head(output.visible_type_head("Wrapper").unwrap(), vec![]);
+    let sig = output
+        .dispatched_method_sig(&receiver, Symbol::intern("map"))
+        .expect("dispatch must select the impl method");
+    let u = sig
+        .type_params
+        .iter()
+        .find(|parameter| parameter.spelling.as_str() == "U")
+        .expect("map declares U");
+    assert_eq!(sig.bounds.of(u.id).count(), 1);
 }
 
 // -------------------------------------------------------------------------
@@ -2219,7 +2222,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
-    checker.test_fn_sig("Speaker::hello", FnSig::default());
+    checker.test_method_sig(__id, "hello", FnSig::default());
 
     let speaker = checker.test_named("Speaker", vec![]);
     assert!(
@@ -2897,8 +2900,8 @@ fn main() {}
         output.errors
     );
 
-    let good = checker.named_ty_for_key("Good", vec![]);
-    let bad = checker.named_ty_for_key("Bad", vec![]);
+    let good = Ty::named_in(&checker.defs, "Good", vec![]);
+    let bad = Ty::named_in(&checker.defs, "Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,

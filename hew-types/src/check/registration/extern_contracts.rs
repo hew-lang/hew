@@ -105,7 +105,6 @@ impl Checker {
         match ty {
             Ty::Named { head, args, .. } => {
                 let name = head.registry_key();
-                let builtin = head.builtin();
                 // The callable consumes source values, including fields from
                 // peer files assembled into this module. Resolve their registered
                 // declaration rather than substituting the ABI contract's file
@@ -119,11 +118,16 @@ impl Checker {
                     .iter()
                     .map(|arg| self.resolve_extern_signature_nominals(arg))
                     .collect();
-                if builtin.is_some() || head.is_actor() || head.is_param() {
-                    Ty::Named { head: *head, args }
-                } else {
-                    self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)
-                }
+                let selected = match head {
+                    crate::TypeHead::Nominal(_) => resolved
+                        .as_deref()
+                        .and_then(|path| self.lookup_declaration(path))
+                        .map_or(*head, |id| {
+                            self.head_of_declaration(crate::NominalId::of_declaration(id))
+                        }),
+                    _ => *head,
+                };
+                Ty::named_head(selected, args)
             }
             _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),
         }
@@ -373,7 +377,7 @@ impl Checker {
         module_path: &str,
         name: hew_parser::ast::Symbol,
         key: &str,
-    ) {
+    ) -> Option<crate::DefId> {
         let declaration = if let Some(existing) = self.lookup_declaration(key) {
             existing
         } else {
@@ -406,7 +410,7 @@ impl Checker {
                         0..0,
                         format!("extern declaration `{key}` in `{module_path}`: {error}"),
                     ));
-                    return;
+                    return None;
                 }
             }
         };
@@ -417,6 +421,7 @@ impl Checker {
                 Some(module_path.to_string()),
             );
         }
+        Some(declaration)
     }
 
     #[expect(
@@ -570,11 +575,6 @@ impl Checker {
                     .collect();
                 sig.return_type = self.resolve_extern_signature_nominals(&sig.return_type);
             }
-            // Extern declarations use the same canonical owner spelling as
-            // ordinary free functions. Their exact DefId comes from the
-            // enclosing source occurrence inventoried before registration.
-            let key = scoped_module_item_name(self.canonical_fn_owner(), f.name.name.as_str())
-                .unwrap_or_else(|| f.name.to_string());
             let Some(declaration) = self.resolve_extern_contract(
                 block_span,
                 declaration_ordinal,
@@ -585,7 +585,7 @@ impl Checker {
                 continue;
             };
             self.record_fn_sig_inference_holes(declaration, hole_vars);
-            self.insert_fn_sig(&key, declaration, sig);
+            self.insert_fn_sig(declaration, sig);
             if f.is_offload() {
                 self.pending_offloads
                     .push(crate::check::types::PendingOffload {
@@ -606,7 +606,6 @@ impl Checker {
                         declaration,
                         symbol: source_symbol,
                         symbol_template: source_symbol_template,
-                        signature_key: key.clone(),
                         declaring_module: self.current_module.clone(),
                         declaring_file: self.current_module_idx,
                         direct_import_modules: self.current_module_direct_imports.clone(),
@@ -763,7 +762,7 @@ impl Checker {
     /// inherit a lifecycle.
     pub(in crate::check) fn derive_opaque_resource_candidate_graph(
         &self,
-        fn_sigs: crate::check::FnSigView<'_>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(
             &self.source_extern_declarations,
@@ -779,7 +778,7 @@ impl Checker {
     #[cfg(test)]
     pub(in crate::check) fn derive_opaque_resource_candidate_graph_for_contracts(
         &self,
-        fn_sigs: crate::check::FnSigView<'_>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
         contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(

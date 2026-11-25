@@ -338,18 +338,27 @@ impl Checker {
         type_args: &[Ty],
         span: &Span,
     ) {
+        if let Some(nominal) = self.type_def_key(type_name) {
+            self.enforce_nominal_instantiation_bounds(nominal, type_args, span);
+        }
+    }
+
+    pub(super) fn enforce_nominal_instantiation_bounds(
+        &mut self,
+        nominal: crate::NominalId,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
         if type_args.is_empty() {
             return;
         }
-        let Some(type_def) = self.lookup_type_def(type_name) else {
+        let Some(type_def) = self.type_defs.get(&nominal).cloned() else {
             return;
         };
         if type_def.kind == TypeDefKind::Actor {
             self.record_generic_instantiation_site(
                 self.current_function.clone().as_deref(),
-                self.type_def_key(type_name)
-                    .expect("registered generic actor")
-                    .declaration(),
+                nominal.declaration(),
                 type_def
                     .type_params
                     .iter()
@@ -367,7 +376,7 @@ impl Checker {
             .map(|arg| self.subst.resolve(arg))
             .collect();
         let dedup_key = (
-            type_def.name.clone(),
+            nominal,
             resolved_args,
             SpanKey::in_module(span, self.current_module_idx),
         );

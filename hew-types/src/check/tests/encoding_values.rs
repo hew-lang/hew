@@ -107,7 +107,8 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert_eq!(
             lookalike.type_fact_context.declarations()[&lookalike
                 .defs
-                .lookup_nominal(kind.canonical_name())
+                .lookup_path(kind.canonical_name())
+                .map(crate::NominalId::of_declaration)
                 .unwrap()]
                 .builtin,
             None
@@ -204,9 +205,15 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
             value.clone(),
             ResolvedTy::named_builtin(BuiltinType::Option, vec![value]),
         ] {
-            let receiver = ResolvedTy::named_path(
-                service.defs(),
-                &format!("std.encoding.{format}.Holder"),
+            let receiver = ResolvedTy::named_head(
+                crate::TypeHead::of_declaration(
+                    service.defs(),
+                    service
+                        .defs()
+                        .lookup_path(&format!("std.encoding.{format}.Holder"))
+                        .map(crate::NominalId::of_declaration)
+                        .unwrap(),
+                ),
                 vec![argument.clone()],
             );
             let selection = service
@@ -421,7 +428,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     assert_eq!(
         output
             .sigs()
-            .get(&output.import_fn_name_aliases[&(None, 0, "forward".to_string())])
+            .test_entry(&output.import_fn_name_aliases[&(None, 0, "forward".to_string())])
             .expect("signature")
             .return_type,
         Ty::Named {

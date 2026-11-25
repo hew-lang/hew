@@ -755,14 +755,14 @@ fn self_qualified_module_type_keeps_its_full_owner_through_typed_hir() {
     assert!(
         matches!(
             tco.sigs()
-                .get("hew.selfqualtype.read")
+                .test_entry("hew.selfqualtype.read")
                 .expect("checker must retain imported read signature")
                 .params
                 .as_slice(),
             [hew_types::CallableParameter { ty: hew_types::Ty::Named { head, .. }, .. }] if head.spelling() == expected
         ),
         "checker parameter type must be the complete module owner: {:#?}",
-        tco.sigs().get("hew.selfqualtype.read")
+        tco.sigs().test_entry("hew.selfqualtype.read")
     );
 
     let hir = hew_hir::lower_program(

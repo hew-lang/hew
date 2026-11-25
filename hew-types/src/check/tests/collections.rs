@@ -1782,9 +1782,9 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     // evade the cycle guard.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("pkg".to_string());
-    let __id = checker.test_declaration("Wrap");
+    let wrap = checker.test_declaration("Wrap");
     checker.type_defs.insert(
-        __id,
+        wrap,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Wrap".to_string(),
@@ -1812,8 +1812,8 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     checker.type_defs.insert(
         __id,
         checker
-            .type_def_view()
-            .at_path("Wrap")
+            .type_defs
+            .get(&wrap)
             .expect("local fixture definition")
             .clone(),
     );
@@ -3011,7 +3011,8 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
     for (name, expected) in [("Inner", true), ("Outer", true), ("Plain", false)] {
         let id = output
             .defs
-            .lookup_nominal(name)
+            .lookup_path(name)
+            .map(crate::NominalId::of_declaration)
             .expect("source declaration");
         assert_eq!(
             output.handle_bearing_structs.contains(&id),

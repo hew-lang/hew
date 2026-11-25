@@ -69,7 +69,7 @@ fn assert_resolved_return_hole(source: &str, sig_name: &str, expected_parameter:
         output.errors
     );
 
-    let sig = output.sigs().get(sig_name).unwrap_or_else(|| {
+    let sig = output.sigs().test_entry(sig_name).unwrap_or_else(|| {
         panic!(
             "Expected signature for {}, got {:?}",
             sig_name, output.fn_sigs
@@ -1342,7 +1342,7 @@ fn main() {
     assert_expr_type_output_has_no_unresolved_ty_vars(&output);
     let sig = output
         .sigs()
-        .get("id")
+        .test_entry("id")
         .unwrap_or_else(|| panic!("expected function signature for id"));
     assert!(
         sig.params
@@ -1377,7 +1377,7 @@ fn inference_hole_function_return_signature_is_resolved() {
         output.errors
     );
     assert_eq!(
-        output.sigs().get("f").map(|sig| &sig.return_type),
+        output.sigs().test_entry("f").map(|sig| &sig.return_type),
         Some(&hew_types::Ty::Unit)
     );
 }

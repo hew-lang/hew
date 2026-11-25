@@ -915,7 +915,6 @@ impl Checker {
         let owner = self.declare_callable_owner(span, crate::DeclarationKind::Closure);
         let key = self.defs.path(owner).to_string();
         self.insert_fn_sig(
-            &key,
             owner,
             FnSig {
                 type_params: generic_parameters.clone(),
@@ -1531,11 +1530,11 @@ impl Checker {
         let delivery_owner = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
-        if self.reject_sealed_delivery_access(
-            &self.named_ty_for_key(&delivery_owner, Vec::new()),
-            span,
-        ) {
-            return Ty::Error;
+        if let Some(declaration) = self.lookup_declaration(&delivery_owner) {
+            let head = self.head_of_declaration(crate::NominalId::of_declaration(declaration));
+            if self.reject_sealed_delivery_access(&Ty::named_head(head, Vec::new()), span) {
+                return Ty::Error;
+            }
         }
 
         let name = qualified_owned.as_deref().unwrap_or(name);
@@ -1567,7 +1566,12 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
-        if self.named_ty_for_key(name, vec![]).is_timestamp()
+        let nominal = self.type_def_key(name);
+        let head = nominal.map(|id| self.head_of_declaration(id)).or_else(|| {
+            self.resolved_builtin_type(name)
+                .map(crate::TypeHead::Builtin)
+        });
+        if head == Some(crate::TypeHead::Builtin(crate::BuiltinType::Timestamp))
             && !self.checking_canonical_stdlib_source("std.builtins")
         {
             self.report_error(
@@ -1589,10 +1593,8 @@ impl Checker {
             // the exemption to an importer or to a user module with a
             // std-looking spelling.
             || canonical_owner_is_current_source;
-        let is_opaque_handle = !is_declaring_module
-            && self
-                .nominal_head_for_key(name)
-                .is_some_and(|head| self.opaque_type_ids.contains(&head.id));
+        let is_opaque_handle =
+            !is_declaring_module && nominal.is_some_and(|id| self.opaque_type_ids.contains(&id));
         if is_opaque_handle {
             self.report_error(
                 TypeErrorKind::OpaqueDirectConstruct {
@@ -1615,11 +1617,13 @@ impl Checker {
         } else {
             None
         };
-        let td = module_local_name
+        let definition = module_local_name
             .as_deref()
-            .and_then(|qualified| self.lookup_type_def(qualified))
-            .or_else(|| self.lookup_type_def(name));
-        if let Some(td) = td {
+            .and_then(|qualified| self.type_def_key(qualified))
+            .or(nominal)
+            .and_then(|id| Some((id, self.type_defs.get(&id)?.clone())));
+        if let Some((nominal, td)) = definition {
+            let head = self.head_of_declaration(nominal);
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
             // pre-seed the map from them so field checking constrains against the
@@ -1717,8 +1721,7 @@ impl Checker {
                     .iter()
                     .map(|param| type_arg_map[param].clone())
                     .collect();
-                let expected =
-                    self.named_ty_for_key(module_local_name.as_deref().unwrap_or(name), args);
+                let expected = Ty::named_head(head, args);
                 if crate::unify::unify(&mut self.subst, &expected, &base_ty).is_err() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1768,12 +1771,13 @@ impl Checker {
             // whose arguments were inferred from the fields above.
             let result_name = module_local_name.as_deref().unwrap_or(name);
             self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
-            let result = self.named_ty_for_key(result_name, type_args);
+            let result = Ty::named_head(head, type_args);
             self.check_record_init_field_visibility(fields, site.field_labels, &result);
             result
-        } else if let Some((enum_name, variant_fields, enum_type_params)) =
+        } else if let Some((owner, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
+            let enum_name = self.defs.path(owner.declaration()).to_owned();
             if let Some(base) = base {
                 self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &base.1,
                     "enum variant constructors do not support record update syntax".to_string(),
@@ -1885,7 +1889,7 @@ impl Checker {
             // struct-variant brace init on the same TypeDef-bound authority as
             // annotations, tuple variants, and plain struct/record init.
             self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
-            let result = self.named_ty_for_key(&enum_name, type_args);
+            let result = self.variant_nominal_ty(owner, type_args);
             self.record_variant_constructor_plan(&enum_name, variant_name, &result, fields, span);
             result
         } else {
@@ -1923,23 +1927,24 @@ impl Checker {
     /// construction.
     pub(super) fn check_spawn_constructor_args(
         &mut self,
-        actor_name: &str,
+        actor: crate::NominalId,
         args: &[(Ident, Spanned<Expr>)],
         labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
         typed_arguments: &HashMap<usize, Ty>,
     ) {
-        let registered = self.registered_spawn_identity(actor_name);
-        let actor_fields = self.lookup_type_def(actor_name).map(|td| td.fields);
+        let actor_name = self.defs.path(actor.declaration()).to_string();
+        let actor_fields = self.type_defs.get(&actor).map(|td| td.fields.clone());
+        let registered = self.registered_spawn_identity(&actor_name);
         let init_params = self.constructor_signature(&registered).cloned();
         let keys = self.actor_spawn_args.get(&registered).cloned();
-        let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
+        let mut seen = HashSet::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
             let typed = typed_arguments.get(&index);
             let key_span = labels
                 .get(index)
                 .map_or_else(|| as_.clone(), |label| label.span.clone());
-            if seen.contains(&field_name.name) {
+            if !seen.insert(field_name.name) {
                 self.report_error(
                     TypeErrorKind::SpawnArgDuplicate,
                     &key_span,
@@ -1949,7 +1954,6 @@ impl Checker {
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
-            seen.push(field_name.name);
             // A field init initializes has no spawn value (D447): one init
             // body cannot be a first store at one spawn site and a
             // replacement at another.
@@ -1980,7 +1984,7 @@ impl Checker {
                 .filter(|keys| !keys.iter().any(|key| key.name == field_name.name))
             {
                 self.report_unknown_spawn_key(
-                    actor_name,
+                    &actor_name,
                     &registered,
                     *field_name,
                     keys,
@@ -2182,15 +2186,14 @@ impl Checker {
 
     /// Resolve a `spawn` target expression to the registered actor identity.
     ///
-    /// `Ok(Some(identity))` carries the identity key (bare for root/flat
-    /// actors, dotted `{module}.{name}` for module actors); `Ok(None)` is an
+    /// `Ok(Some(identity))` carries the selected declaration. `Ok(None)` is an
     /// unsupported target shape; `Err(())` means a diagnostic was already
     /// emitted and the spawn must type to bare `Ty::Error`.
     pub(super) fn resolve_spawn_target(
         &mut self,
         target: &Spanned<Expr>,
         span: &Span,
-    ) -> Result<Option<String>, ()> {
+    ) -> Result<Option<crate::NominalId>, ()> {
         Ok(match &target.0 {
             // Bare spawn target: resolve local-first to the registered
             // actor identity (the current module's own actor, then a
@@ -2265,11 +2268,15 @@ impl Checker {
                         // is not clobbered by a same-named root/other-module type).
                         // Fail closed before HIR/MIR rather than misroute.
                         let actor_identity = self
-                            .resolve_module_type(module.name.as_str(), field.0.name.as_str())
-                            .filter(|td| {
-                                matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
-                            })
-                            .map(|td| td.name);
+                            .resolve_module_type_declaration(
+                                module.name.as_str(),
+                                field.0.name.as_str(),
+                            )
+                            .filter(|id| {
+                                self.type_defs.get(id).is_some_and(|td| {
+                                    matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
+                                })
+                            });
                         let Some(actor_identity) = actor_identity else {
                             let similar = self
                                 .module_type_exports_for_binding(module.name.as_str())
@@ -2340,15 +2347,17 @@ impl Checker {
         span: &Span,
         typed_arguments: &HashMap<usize, Ty>,
     ) -> Ty {
-        let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
+        let Ok(actor) = self.resolve_spawn_target(target, span) else {
             return Ty::Error;
         };
 
-        if let Some(name) = actor_name {
-            let owner_kind = if self
-                .type_def_at(&name)
-                .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
-            {
+        if let Some(actor) = actor {
+            let name = self.defs.path(actor.declaration()).to_string();
+            let (kind, type_params) = match self.type_defs.get(&actor) {
+                Some(definition) => (definition.kind, definition.type_params.clone()),
+                None => return Ty::Error,
+            };
+            let owner_kind = if kind == TypeDefKind::Supervisor {
                 // Initial construction may await child callbacks and rollback,
                 // independently of any particular child's inferred effects.
                 self.mark_body_suspends("supervisor construction");
@@ -2357,9 +2366,6 @@ impl Checker {
             } else {
                 "actor"
             };
-            let type_params = self
-                .type_def_at(&name)
-                .map_or_else(Vec::new, |definition| definition.type_params.clone());
             let declared_arity = type_params.len();
             let mut resolved_type_args: Vec<Ty> = if type_args.is_empty() {
                 type_params
@@ -2387,7 +2393,7 @@ impl Checker {
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(
-                &name,
+                actor,
                 args,
                 labels,
                 Some(&type_subst),
@@ -2406,18 +2412,13 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
-
-            match self.nominal_head_for_key(&name) {
-                Some(actor) => {
-                    let handle = Ty::actor_handle(actor, resolved_type_args);
-                    // A key naming a state field resolves to that field, so
-                    // a field rename reaches every spawn that names it.
-                    self.record_struct_init_field_resolutions(args, labels, &handle);
-                    handle
-                }
-                None => Ty::Error,
-            }
+            self.enforce_nominal_instantiation_bounds(actor, &resolved_type_args, span);
+            let handle =
+                Ty::actor_handle(crate::NominalHead::new(actor, &name), resolved_type_args);
+            // A key naming a state field resolves to that field, so
+            // a field rename reaches every spawn that names it.
+            self.record_struct_init_field_resolutions(args, labels, &handle);
+            handle
         } else {
             Ty::Error
         }

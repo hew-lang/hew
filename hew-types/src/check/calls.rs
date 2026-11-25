@@ -82,7 +82,7 @@ pub(super) fn variant_owner_spelling(type_name: &str) -> &str {
 }
 
 pub(super) struct VariantConstructor {
-    pub(super) type_name: String,
+    pub(super) owner: crate::NominalId,
     pub(super) expected_params: Vec<Ty>,
     pub(super) type_params: Vec<crate::ParamHead>,
     bare_qualifier: Option<Symbol>,
@@ -114,14 +114,15 @@ impl Checker {
                 })
                 .unwrap_or(type_prefix);
             let lookup = |key: &str| {
-                let td = self.type_def_at(key)?;
+                let owner = self.type_def_key(key)?;
+                let td = self.type_defs.get(&owner)?;
                 let expected_params = match td.variants.get(variant_name)? {
                     VariantDef::Unit => Vec::new(),
                     VariantDef::Tuple(params) => params.clone(),
                     VariantDef::Struct(_) => return None,
                 };
                 Some(VariantConstructor {
-                    type_name: key.to_string(),
+                    owner,
                     expected_params,
                     type_params: td.type_params.clone(),
                     bare_qualifier: None,
@@ -152,7 +153,7 @@ impl Checker {
                 VariantDef::Struct(_) => unreachable!("named payloads use struct construction"),
             };
             Some(VariantConstructor {
-                type_name: self.defs.path(id.declaration()).to_owned(),
+                owner: id,
                 expected_params: params,
                 type_params: td.type_params.clone(),
                 bare_qualifier: Some(spelling),
@@ -163,14 +164,12 @@ impl Checker {
     pub(super) fn expected_constructor_type_args(
         &self,
         expected: &Ty,
-        type_name: &str,
+        owner: crate::NominalId,
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
             Ty::Named { head, args }
-                if self.strict_nominal_identity(head.registry_key())
-                    == self.strict_nominal_identity(type_name)
-                    && args.len() == arity =>
+                if head.declaration(&self.defs) == Some(owner) && args.len() == arity =>
             {
                 Some(args.clone())
             }
@@ -1017,20 +1016,18 @@ impl Checker {
         };
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(func_name.as_str());
         if let Some(VariantConstructor {
-            type_name,
+            owner,
             expected_params,
             type_params,
             ..
         }) = self.lookup_variant_constructor(constructor_name)
         {
+            let type_name = self.defs.path(owner.declaration()).to_owned();
             if contextual_name.is_none() && !func_name.as_str().contains("::") {
                 self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
             }
-            let mut inferred_args = self.expected_constructor_type_args(
-                &resolved_expected,
-                &type_name,
-                type_params.len(),
-            )?;
+            let mut inferred_args =
+                self.expected_constructor_type_args(&resolved_expected, owner, type_params.len())?;
             self.check_arity(args, expected_params.len(), "this function", span);
             {
                 let subst_map: HashMap<crate::ParamHead, Ty> = type_params
@@ -1373,7 +1370,7 @@ impl Checker {
                 return None;
             }
         }
-        self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
+        self.require_unsafe(self.signature_declaration(&key), &key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
         let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
@@ -2072,7 +2069,7 @@ impl Checker {
                                 .as_ref()
                                 .and_then(|ty| match ty {
                                     Ty::Named { head, args } => self.lookup_named_method_sig(
-                                        head.registry_key(),
+                                        *head,
                                         args,
                                         field.0.name.as_str(),
                                     ),
@@ -2121,19 +2118,27 @@ impl Checker {
             return Ty::Error;
         }
 
-        let unsafe_declaration = (!lexical_shadow_of_item)
-            .then(|| {
-                let visible_key =
-                    if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
-                        self.visible_fn_signature_key(*ident)
-                    } else {
-                        self.visible_fn_signature_key(Ident::new(func_name.as_str()))
-                    };
-                visible_key
-                    .and_then(|key| self.fn_sig_keys.get(&key).copied())
-                    .or_else(|| self.scoped_fn_declaration(&func_name, false))
-            })
-            .flatten();
+        let hygienic_declaration = match callee.expr().map(|func| &func.0) {
+            Some(Expr::Ident(ident)) if ident.ctx != hew_parser::ast::SyntaxContext::ROOT => self
+                .named_item_declaration(*ident)
+                .filter(|id| self.fn_sigs.contains_key(id)),
+            _ => None,
+        };
+        let unsafe_declaration = hygienic_declaration.or_else(|| {
+            (!lexical_shadow_of_item)
+                .then(|| {
+                    let visible_key =
+                        if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                            self.visible_fn_signature_key(*ident)
+                        } else {
+                            self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                        };
+                    visible_key
+                        .and_then(|key| self.signature_declaration(&key))
+                        .or_else(|| self.scoped_fn_declaration(&func_name, false))
+                })
+                .flatten()
+        });
         self.require_unsafe(unsafe_declaration, &func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
         if let Some(source_identity) = self
@@ -2161,17 +2166,18 @@ impl Checker {
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some(VariantConstructor {
-            type_name,
+            owner,
             expected_params,
             type_params,
             bare_qualifier,
         }) = constructor_match
         {
+            let type_name = self.defs.path(owner.declaration()).to_owned();
             let member = constructor_name
                 .rsplit("::")
                 .next()
                 .unwrap_or(constructor_name);
-            if self.type_def_at(&type_name).is_some_and(|definition| {
+            if self.type_defs.get(&owner).is_some_and(|definition| {
                 matches!(definition.variants.get(member), Some(VariantDef::Unit))
             }) {
                 self.report_error(
@@ -2258,7 +2264,7 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(owner, resolved_args);
             self.record_construct_call(span);
             return result_ty;
         }
@@ -2517,8 +2523,10 @@ impl Checker {
             }
             .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
-        let has_visible_fn_signature = visible_fn_key.is_some();
-        let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
+        let resolved_fn_name = hygienic_declaration
+            .map(|id| self.defs.path(id).to_string())
+            .or(visible_fn_key.clone())
+            .unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is
         // entered with the caller's execution context and state pointer. Only
         // the actor's own handlers, hooks, `init`, and sibling methods hold
@@ -2548,10 +2556,10 @@ impl Checker {
                 self.require_deferred_fields_initialized_for_call(&resolved_fn_name, span);
             }
         }
-        if let Some(sig) = self
-            .fn_sig(&resolved_fn_name)
+        if let Some(sig) = hygienic_declaration
+            .and_then(|id| self.fn_sigs.get(&id))
+            .or_else(|| visible_fn_key.as_deref().and_then(|key| self.fn_sig(key)))
             .cloned()
-            .filter(|_| has_visible_fn_signature)
         {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
@@ -2604,7 +2612,17 @@ impl Checker {
                 self.resolve_import_use(ident);
             }
             // `assert` takes one optional parameter, the failure message.
-            let assertion = self.call_target_for_signature(&resolved_fn_name)
+            let target = hygienic_declaration
+                .map(|id| {
+                    self.declared_call_target(id)
+                        .unwrap_or_else(|| self.source_call_target(id))
+                })
+                .or_else(|| {
+                    self.scoped_fn_declaration(&func_name, lexical_shadow_of_item)
+                        .and_then(|id| self.declared_call_target(id))
+                })
+                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
+            let assertion = target
                 == CallTarget::Builtin {
                     endpoint: crate::stdlib_catalog_identity::ASSERT.to_string(),
                 };
@@ -2640,9 +2658,9 @@ impl Checker {
                 self.record_unrendered_assertion_operands(args);
             }
             if matches!(
-                self.call_target_for_signature(&resolved_fn_name),
+                &target,
                 CallTarget::Builtin { endpoint }
-                    if crate::stdlib_authority::OverloadGroup::from_key(&endpoint)
+                    if crate::stdlib_authority::OverloadGroup::from_key(endpoint)
                         == Some(crate::stdlib_authority::OverloadGroup::ToString)
             ) {
                 if let Some(value) = args.first().map(CallArg::expr) {
@@ -2661,12 +2679,6 @@ impl Checker {
                 span,
             );
 
-            // The file's own binding is the callee's identity; its spelling
-            // may name a peer file's declaration of the same leaf.
-            let target = self
-                .scoped_fn_declaration(&func_name, lexical_shadow_of_item)
-                .and_then(|declaration| self.declared_call_target(declaration))
-                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
             let target = self.check_actor_call_operand(target, args);
             if matches!(
                 &target,

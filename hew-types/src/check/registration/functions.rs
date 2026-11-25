@@ -311,27 +311,19 @@ impl Checker {
                 if self.reject_protected_prelude_declaration(fd.name.name.as_str(), span) {
                     return;
                 }
-                // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
-                // CANONICALIZED with `fn_sigs` — one key shape per
-                // declaration, so declaration-authority probes never miss on
-                // key misalignment. The stored declaring module stays
-                // `current_module` (None = root): it is the display/provenance
-                // axis, and the legacy root render at publication boundaries
-                // derives from it.
                 let scoped_name = self.named_item_declaration(fd.name).map_or_else(
                     || Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str()),
                     |id| self.defs.path(id).to_string(),
                 );
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
-                    // Root diagnostics render the bare leaf, exactly as the
-                    // declaration is spelled in source.
-                    let display_name = self
-                        .root_owned_fn_leaf(&scoped_name)
-                        .unwrap_or(&scoped_name)
-                        .to_string();
+                    let display_name = if self.current_module.is_none() {
+                        fd.name.name.as_str()
+                    } else {
+                        &scoped_name
+                    };
                     self.errors.push(TypeError::duplicate_definition(
                         span.clone(),
-                        &display_name,
+                        display_name,
                         prev_span.clone(),
                     ));
                 } else {
@@ -386,7 +378,10 @@ impl Checker {
                     .into_iter()
                     .map(Ty::param)
                     .collect();
-                let actor_self = self.named_ty_for_key(&identity, actor_parameters);
+                let actor_self = actor_decl.map_or(Ty::Error, |id| {
+                    let head = self.head_of_declaration(crate::NominalId::of_declaration(id));
+                    Ty::named_head(head, actor_parameters)
+                });
                 let previous_self = self
                     .current_self_type
                     .replace((identity.clone(), actor_self));
@@ -491,11 +486,6 @@ impl Checker {
                                 type_name, tb, trait_ref, method, &sig,
                             );
                         }
-                        // When the receiver is a primitive or compiler-builtin
-                        // generic, `lookup_type_def_mut(type_name)` returns `None` so the
-                        // sig has nowhere to live for later dispatch.  Mirror it onto the
-                        // side table keyed by the canonical receiver kind + trait name so
-                        // method-resolution can find it.
                         if let (Some(canonical), Some(trait_ref)) =
                             (primitive_key.clone(), impl_trait.as_ref())
                         {
@@ -528,7 +518,6 @@ impl Checker {
                                 .cloned()
                                 .collect();
                             for m in defaults {
-                                let method_key = format!("{type_name}::{}", m.name);
                                 let skip =
                                     usize::from(m.params.first().is_some_and(|p| p.is_receiver));
                                 let param_names: Vec<String> = m
@@ -675,13 +664,8 @@ impl Checker {
                                     ..FnSig::default()
                                 };
                                 self.inherit_default_parameters(&mut sig, Some(trait_id), &target);
-                                match default_body {
-                                    Some(declaration) => {
-                                        self.insert_fn_sig(&method_key, declaration, sig.clone());
-                                    }
-                                    None => self.insert_fn_sig_at(&method_key, sig.clone()),
-                                }
                                 if let Some(declaration) = default_body {
+                                    self.insert_fn_sig(declaration, sig.clone());
                                     self.impl_method_binders
                                         .insert(declaration, default_binders);
                                     if let Some((declaring_trait, _)) =
@@ -722,7 +706,6 @@ impl Checker {
                                         sig.clone(),
                                     );
                                 }
-                                self.publish_impl_method_sig(type_name, m.name.name.as_str(), &sig);
                             }
                         }
                     }
@@ -956,14 +939,21 @@ impl Checker {
         }
     }
 
-    /// Register a signature under `name`, filed under `declaration` when the
-    /// caller holds it and otherwise under the declaration `name` spells.
+    /// Register the signature of an inventoried function.
     pub(in crate::check) fn register_fn_sig_with_name(
         &mut self,
         name: &str,
         fd: &FnDecl,
         declaration: Option<crate::DefId>,
     ) {
+        let Some(declaration) = declaration else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &fd.fn_span,
+                format!("internal: function `{name}` has no declaration"),
+            );
+            return;
+        };
         let skip = usize::from(fd.params.first().is_some_and(|p| p.is_receiver));
         // Push the bounds BEFORE resolving the signature so the resolver can
         // validate `T.Bar` projections that appear in param/return types.
@@ -1000,11 +990,10 @@ impl Checker {
             fd,
             declared_return,
             fd.return_type.as_ref().map(|(_, s)| s),
-            declaration,
+            Some(declaration),
         );
 
-        let default_owner =
-            declaration.map_or_else(|| name.to_string(), |id| self.defs.path(id).to_string());
+        let default_owner = self.defs.path(declaration).to_string();
         let param_defaults = self.register_default_parameters(&default_owner, &fd.params, skip);
         let sig = FnSig {
             inferred_return: fd
@@ -1045,28 +1034,9 @@ impl Checker {
             ..FnSig::default()
         };
 
-        // rc1-F1 stage A: mint the fn-sig key from the CANONICAL owning
-        // module — a root free function keys `{root_module}.{name}`,
-        // identical to the key the same declaration mints when its module is
-        // imported. The side registries (`fn_sig_inference_holes`,
-        // `intrinsic_declarations`) are co-minted under this same key.
-        let key = declaration.map_or_else(
-            || {
-                scoped_module_item_name(self.canonical_fn_owner(), name)
-                    .unwrap_or_else(|| name.to_string())
-            },
-            |id| self.defs.path(id).to_string(),
-        );
-        let resolved_declaration = declaration.or_else(|| self.fn_sig_keys.get(&key).copied());
-        match declaration {
-            Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
-            None => self.insert_fn_sig_at(&key, sig),
-        }
-        if let Some(declaration) =
-            resolved_declaration.or_else(|| self.fn_sig_keys.get(&key).copied())
-        {
-            self.record_fn_sig_inference_holes(declaration, hole_vars);
-        }
+        let key = self.defs.path(declaration).to_string();
+        self.insert_fn_sig(declaration, sig);
+        self.record_fn_sig_inference_holes(declaration, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
         // skip the body and wire to the catalog.
@@ -1384,15 +1354,14 @@ impl Checker {
             .collect()
     }
 
-    /// Register an impl method on a type's method table and `fn_sigs`.
+    /// Register an impl method on its declaration and file it for dispatch.
     ///
     /// `impl_type_params` carries the enclosing `impl<T, U, …>` type
     /// parameter names so they are included in the resulting `FnSig`.
     ///
     /// `impl_where_clause` carries the enclosing impl block's where-clause so
     /// that bounds of the form `impl<T> Holder<T> where T: Display` are
-    /// propagated into the method signature — both the `td.methods` entry and
-    /// the `fn_sigs` entry consulted by `type_param_carries_bound`.
+    /// propagated into the method signature consulted by `type_param_carries_bound`.
     ///
     /// **Important**: the caller must have already pushed the impl-level type
     /// params into `self.generic_ctx` so that type resolution sees them.
@@ -1404,7 +1373,7 @@ impl Checker {
         reason = "single-source-of-truth for impl-method registration; \
                   factoring sub-passes would obscure the ordering invariants \
                   the surrounding code relies on (bounds push/pop, \
-                  receiver-skip, double-write of fn_sigs + td.methods, \
+                  receiver-skip, \
                   W3.001 Stage-2 extern_symbol mirror)"
     )]
     pub(in crate::check) fn register_impl_method(
@@ -1580,8 +1549,6 @@ impl Checker {
         // tracked inference variables shared with body checking. Every method
         // table must mirror this carrier rather than re-resolving annotations
         // into unrelated `Ty::Var`s.
-        let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
-            .unwrap_or_else(|| method_key.clone());
         let registered = self
             .fn_sigs
             .get(&declaration_id)
@@ -1623,12 +1590,6 @@ impl Checker {
             params,
             return_type,
             extern_symbol,
-            // Mirror `register_fn_sig_with_name`'s computation so that
-            // `lookup_named_method_sig` (which prefers `td.methods` before
-            // `fn_sigs`) returns a sig with the receiver-mutability flag
-            // set. Without this, the call-site mutable-binding gate at
-            // `methods.rs` (Q297 Stage 1) silently misses every trait impl
-            // method on a user type.
             requires_mutable_receiver: method
                 .params
                 .first()
@@ -1650,7 +1611,7 @@ impl Checker {
         // `Ty::Var` with body checking and every method-table mirror. Rebuilding
         // and reinserting the annotation here would create an unrelated hole
         // that can never be resolved by the method body.
-        self.insert_fn_sig(&registered_key, declaration_id, sig.clone());
+        self.insert_fn_sig(declaration_id, sig.clone());
         if sig.extern_symbol.is_some() {
             let declaring_module = self
                 .registration_origin_module
@@ -1663,11 +1624,6 @@ impl Checker {
             let origin = (declaring_module, trusted_compiled_stdlib);
             self.extern_method_origins.insert(declaration_id, origin);
         }
-        self.publish_impl_method_sig(type_name, method.name.name.as_str(), &sig);
-        // Preserve every exact declaration even when a trait method or concrete
-        // specialisation shares the ordinary receiver/method lookup spelling.
-        let declaration_path = self.defs.path(declaration_id).to_string();
-        self.insert_fn_sig(&declaration_path, declaration_id, sig.clone());
         // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
         // consume its receiver. A borrowing `close(self)` runs the implicit
         // scope-exit release a second time when a caller invokes `close()`
@@ -1730,16 +1686,8 @@ impl Checker {
             impl_type_params.map(Vec::as_slice),
         );
         self.publish_impl_method_declaration_id(&keys, declaration_id);
-        for key in keys.canonical.iter().chain(&keys.mangled) {
-            // Publish the signature under the same module-owned identity as
-            // the declaration, including imported non-generic methods. A previous
-            // concrete-impl registration may already be present; overwriting is
-            // correct because each impl block processes its own concrete args
-            // in sequence.
-            self.insert_fn_sig(key, declaration_id, sig.clone());
-            // Propagate consume-receiver membership to the same key
-            // so HIR dispatch does not lose the move contract.
-            if method.consumes_self {
+        if method.consumes_self {
+            for key in keys.canonical.iter().chain(&keys.mangled) {
                 self.consume_receiver_methods.insert(key.clone());
             }
         }
@@ -1794,20 +1742,6 @@ impl Checker {
             Some(bound) => self
                 .resolve_trait_path(&bound.path)
                 .map(crate::check::dispatch_table::MethodOwner::Trait),
-        }
-    }
-
-    /// Publish one resolved impl-method signature onto the definition of the
-    /// declaration `type_name` names in the current module. Explicit impl
-    /// methods and materialised trait defaults both route through here.
-    pub(super) fn publish_impl_method_sig(
-        &mut self,
-        type_name: &str,
-        method_name: &str,
-        sig: &FnSig,
-    ) {
-        if let Some(td) = self.lookup_type_def_mut(type_name) {
-            td.methods.insert(method_name.to_string(), sig.clone());
         }
     }
 
@@ -1978,17 +1912,13 @@ impl Checker {
             });
         let declared_receiver =
             declared_args.map_or_else(|| receiver.clone(), |args| format!("{receiver}<{args}>"));
-        let trait_identity = match trait_bound {
-            None => "inherent".to_string(),
-            // An impl of a trait no path resolves is reported by the method-set
-            // check; its methods keep keys apart by the written spelling.
-            // TRANSITION(A1c4): WHY impl method keys are still rendered
-            // strings. WHEN impl methods are keyed by their declarations
-            // alone, an unresolved trait mints no key. WHAT: keys by `DefId`.
-            Some(bound) => self.resolve_trait_path(&bound.path).map_or_else(
-                || bound.path.to_string(),
-                |declared| self.defs.path(declared).to_string(),
-            ),
+        // The method-set check diagnoses an unresolved trait. Such an impl
+        // has no owner under which a method declaration can be registered.
+        let trait_identity = match self.impl_method_owner(trait_bound)? {
+            super::dispatch_table::MethodOwner::Inherent => "inherent".to_string(),
+            super::dispatch_table::MethodOwner::Trait(declared) => {
+                self.defs.path(declared).to_string()
+            }
         };
         // A type may implement one generic trait at several arguments
         // (`impl From<A> for E` beside `impl From<B> for E`); the trait
@@ -2030,38 +1960,38 @@ impl Checker {
         let declaration = self.defs.declaration(occurrence).map_or_else(
             || {
                 self.defs
-                    .declare(occurrence, method.name, receiver_declaration, path.clone())
+                    .declare(occurrence, method.name, receiver_declaration, path)
             },
             Ok,
         );
-        if let Ok(declaration) = declaration {
-            if let Some(module) = self.current_declaration_module() {
-                self.scopes.declare_type_parameters(
-                    module,
-                    declaration,
-                    method.fn_span.clone(),
-                    method
-                        .type_params
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|param| param.name),
-                );
-                self.declare_default_body_parameters(module, declaration, method);
+        let declaration = match declaration {
+            Ok(declaration) => declaration,
+            // An embedded stdlib declaration can be revisited through the
+            // module graph. Coherence checking diagnoses authored duplicates.
+            Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
+                established_occurrence,
+                ..
+            }) => {
+                let established = self.defs.declaration(established_occurrence)?;
+                return Some(self.defs.bind_redeclaration(occurrence, established));
             }
-            return Some(declaration);
+            Err(crate::def_table::DeclarationIdentityError::SecondSpelling { .. }) => return None,
+        };
+        if let Some(module) = self.current_declaration_module() {
+            self.scopes.declare_type_parameters(
+                module,
+                declaration,
+                method.fn_span.clone(),
+                method
+                    .type_params
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|param| param.name),
+            );
+            self.declare_default_body_parameters(module, declaration, method);
         }
-        // Impl methods are registered per route, and a shipped module reached
-        // through the compiled-in stdlib pass and through the module graph
-        // presents the same method under two occurrences. The canonical path
-        // already names the receiver, the trait and the method, so an
-        // established row for it is that same method: resolve it rather than
-        // mint a second identity. A genuinely duplicated impl method collides
-        // on this path too, and impl registration reports that.
-        // Publish this occurrence as another route to the established row.
-        let established = self.lookup_declaration(&path)?;
-        let canonical = self.defs.path(established).to_owned();
-        self.defs.bind_redeclaration(occurrence, &canonical)
+        Some(declaration)
     }
 
     /// Rename method-level type parameter names in `ty` from the trait's
@@ -2245,7 +2175,7 @@ impl Checker {
         }
         self.actor_receive_methods.insert(handler);
         self.record_fn_sig_inference_holes(handler, hole_vars);
-        self.insert_fn_sig(&method_name, handler, sig);
+        self.insert_fn_sig(handler, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

@@ -39,8 +39,27 @@ mod pre_registered_data_tests {
 mod canonical_type_publication_tests {
     use super::*;
 
-    fn dog_type(methods: HashMap<String, FnSig>) -> TypeDef {
-        TypeDef {
+    #[test]
+    fn canonical_refresh_preserves_dispatched_methods() {
+        let mut checker = Checker::default();
+        let nominal = checker.test_declaration("greeting.Dog");
+        let head = crate::TypeHead::of_declaration(&checker.defs, nominal);
+        let method = crate::DefId::for_test("greeting.Dog::name");
+        let name = hew_parser::ast::Symbol::intern("name");
+        checker.dispatch.insert_generic(
+            head,
+            crate::check::dispatch_table::MethodOwner::Inherent,
+            name,
+            method,
+        );
+        checker.fn_sigs.insert(
+            method,
+            FnSig {
+                return_type: Ty::String,
+                ..FnSig::default()
+            },
+        );
+        let source = TypeDef {
             kind: TypeDefKind::Struct,
             name: "Dog".to_string(),
             type_params: Vec::new(),
@@ -49,40 +68,21 @@ mod canonical_type_publication_tests {
             field_order: Vec::new(),
             variants: HashMap::new(),
             implicit_variant_fields: HashMap::default(),
-            methods,
+            methods: HashMap::new(),
             doc_comment: None,
             is_indirect: false,
-        }
-    }
-
-    #[test]
-    fn canonical_refresh_preserves_accumulated_methods() {
-        let mut checker = Checker::default();
-        let __id = checker.test_declaration("greeting.Dog");
-        checker.type_defs.insert(
-            __id,
-            dog_type(HashMap::from([
-                ("greet".to_string(), FnSig::default()),
-                ("name".to_string(), FnSig::default()),
-            ])),
-        );
-        let source = dog_type(HashMap::from([(
-            "name".to_string(),
-            FnSig {
-                return_type: Ty::String,
-                ..FnSig::default()
-            },
-        )]));
+        };
 
         checker.register_canonical_type_def("greeting", "Dog", &source);
 
-        let methods = &checker
-            .type_def_view()
-            .at_path("greeting.Dog")
-            .unwrap()
-            .methods;
-        assert!(methods.contains_key("greet"));
-        assert_eq!(methods["name"].return_type, Ty::String);
+        assert!(checker.type_def_view().of(head).is_some());
+        assert_eq!(
+            checker
+                .lookup_named_method_sig(head, &[], name.as_str())
+                .expect("registered method survives canonical publication")
+                .return_type,
+            Ty::String
+        );
     }
 }
 

@@ -101,18 +101,11 @@ type Outer<T> {
 //
 // These tests replace the descoped accept fixtures
 // `iter_next_mut_receiver.hew` (S1-V2) and `iter_var_receiver_drop_once.hew`
-// (S1-V5). End-to-end coverage of those shapes is blocked on pre-existing
-// gaps (`Self`-substitution at the MIR boundary for user trait-impl bodies
-// and `MethodCallNoRewrite` on direct `v.into_iter()` / `it.next()` outside
-// the for-loop desugar). The checker-level invariant — that the
-// `requires_mutable_receiver` flag is populated everywhere the call-site
-// gate reads it from — is exactly what Stage 1 owns, so we pin it here.
+// (S1-V5). Check the receiver flag through the dispatch table, where calls
+// obtain the selected method declaration.
 
 #[test]
-fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
-    // `lookup_named_method_sig` prefers `td.methods` before `fn_sigs`, so
-    // the flag must be set in BOTH tables. Missing either one silently
-    // disables the caller-side mutable-binding gate.
+fn q297_user_iterator_impl_records_mut_receiver_on_selected_declaration() {
     let output = check_source(
         r"type Counter {
     val: i32;
@@ -131,25 +124,11 @@ impl Iterator for Counter {
         "expected clean typecheck, got: {:?}",
         output.errors,
     );
+    let receiver = Ty::named_head(output.visible_type_head("Counter").unwrap(), vec![]);
     let sig = output
-        .sigs()
-        .get("Counter::next")
-        .expect("Counter::next must be registered in fn_sigs");
-    assert!(
-        sig.requires_mutable_receiver,
-        "fn_sigs[Counter::next].requires_mutable_receiver must be true for `var self`",
-    );
-    let td = output
-        .type_def_at_path("Counter")
-        .expect("Counter type must be registered");
-    let method_sig = td
-        .methods
-        .get("next")
-        .expect("Counter::next must be present in td.methods");
-    assert!(
-        method_sig.requires_mutable_receiver,
-        "td.methods[next].requires_mutable_receiver must be true for `var self`",
-    );
+        .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("next"))
+        .expect("dispatch must select the Counter iterator method");
+    assert!(sig.requires_mutable_receiver);
 }
 
 #[test]
@@ -174,7 +153,7 @@ impl Counter {
     );
     let sig = output
         .sigs()
-        .get("Counter::peek")
+        .test_entry("Counter::peek")
         .expect("Counter::peek must be registered");
     assert!(
         !sig.requires_mutable_receiver,
@@ -500,29 +479,12 @@ fn main() {
 
 #[test]
 fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
-    // Stage 1 flipped `Iterator::next` in `std/builtins.hew` to `var self`
-    // and updated the `VecIter` impl in lockstep. Pin the impl-side
-    // registration: `register_builtins_hew_impls` feeds the `impl<T>
-    // Iterator for VecIter<T>` block through the same Pass-2 path that
-    // user impls use, so `td.methods[next]` on `VecIter` must carry the
-    // receiver-mutability flag for `lookup_named_method_sig` to surface
-    // it to the caller-side gate. (The bare trait declaration in
-    // builtins.hew is intentionally not promoted into `fn_sigs` — see
-    // `register_builtins_hew_impls` doc comment — so we pin the
-    // load-bearing impl side rather than the trait side.)
     let output = check_source("");
-    let td = output
-        .type_def_at_path("std.builtins.VecIter")
-        .expect("VecIter must be pre-registered from std/builtins.hew");
-    let next_sig = td
-        .methods
-        .get("next")
-        .expect("VecIter::next must be present in td.methods");
-    assert!(
-        next_sig.requires_mutable_receiver,
-        "VecIter::next must declare `var self` to match the trait after Q297 Stage 1; \
-         td.methods[next].requires_mutable_receiver was false",
-    );
+    let receiver = Ty::named_head(crate::KnownDecl::VecIter.head(), vec![Ty::I32]);
+    let next_sig = output
+        .dispatched_method_sig(&receiver, hew_parser::ast::Symbol::intern("next"))
+        .expect("dispatch must select the VecIter iterator method");
+    assert!(next_sig.requires_mutable_receiver);
 }
 
 #[test]

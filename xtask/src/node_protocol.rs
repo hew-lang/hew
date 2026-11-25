@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hew_types::data_plan::{DataKind, DataPlan};
-use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeFactService};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeFactService, TypeHead};
 
 const SOURCE: &str = "hew-runtime/protocol/node_controls.hew";
 const RUST: &str = "hew-runtime/src/node_protocol_generated.rs";
@@ -42,7 +42,21 @@ pub fn run(args: &[String]) -> crate::Result<()> {
     let service = TypeFactService::new(output.type_fact_context, output.type_facts);
     let mut plans = BTreeMap::new();
     for name in ROOTS {
-        let ty = ResolvedTy::named_path(service.defs(), name, vec![]);
+        let id = service
+            .context()
+            .declarations()
+            .keys()
+            .copied()
+            .find(|id| {
+                service.defs().module(id.declaration()) == service.defs().root_module()
+                    && service.defs().name(id.declaration()).as_str() == *name
+            })
+            .ok_or_else(|| format!("missing protocol declaration {name}"))?;
+        let ty = ResolvedTy::Named {
+            head: TypeHead::of_declaration(service.defs(), id),
+            args: Vec::new(),
+            is_opaque: false,
+        };
         plans.extend(service.data_plans(&ty, false)?.plans);
     }
     let generator = Generator {

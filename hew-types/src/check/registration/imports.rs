@@ -803,13 +803,14 @@ impl Checker {
                             ),
                             ..FnSig::default()
                         };
-                        self.declare_contractless_extern(
+                        if let Some(declaration) = self.declare_contractless_extern(
                             registry_module,
                             &canonical_owner,
                             hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
-                        );
-                        self.insert_fn_sig_at(&func.name, sig);
+                        ) {
+                            self.insert_fn_sig(declaration, sig);
+                        }
                     }
 
                     // Register module and clean names
@@ -855,9 +856,13 @@ impl Checker {
                         let key = format!("{canonical_owner}.{method}");
                         if self.has_fn_sig(&key) {
                             self.module_fn_exports.insert(key);
-                        } else if self.has_fn_sig(c_symbol.as_str()) {
+                        } else if let Some(declaration) = self.signature_declaration(c_symbol) {
                             self.module_fn_exports.insert(key.clone());
-                            self.alias_fn_sig(&key, c_symbol);
+                            self.scopes.declare_item(
+                                self.scopes.namespace_of(registry_module),
+                                Ident::new(method),
+                                super::scope::Binding::Fn(declaration),
+                            );
                             self.declare_contractless_extern(
                                 registry_module,
                                 &canonical_owner,
@@ -879,14 +884,14 @@ impl Checker {
                                     name,
                                 )
                                 .unwrap_or_else(|| name.clone());
-                            let Some(nominal) = self.nominal_head_for_key(&canonical) else {
-                                self.require_declaration_path(
-                                    &canonical,
-                                    import_span.unwrap_or(&(0..0)),
-                                );
+                            let Some(declaration) = self.require_declaration_path(
+                                &canonical,
+                                import_span.unwrap_or(&(0..0)),
+                            ) else {
                                 continue;
                             };
-                            let head = self.head_of_declaration(nominal.id);
+                            let head = self
+                                .head_of_declaration(crate::NominalId::of_declaration(declaration));
                             if is_drop {
                                 self.registry.register_drop_type(head);
                             } else {

@@ -94,7 +94,7 @@ fn dot_completions_for_struct() {
 fn dot_completions_for_builtin_stream() {
     // Use the ordinary editor frontend: collect/lines/chunks are source
     // methods loaded with the prelude, rather than checker builtins.
-    let source = "fn probe(s: Stream<string>) { s.recv(); }";
+    let source = "fn probe(s: Stream<string>, b: Stream<bytes>) { s.recv(); b.recv(); }";
     let uri = "file:///lsp/stream_completion.hew".parse().unwrap();
     let doc = analyze_document(&uri, source, &DashMap::new(), &[]);
     let type_output = doc.type_output.as_ref().expect("checked Stream parameter");
@@ -129,11 +129,24 @@ fn dot_completions_for_builtin_stream() {
         labels.contains(&"collect"),
         "expected method 'collect' in completions, got: {labels:?}"
     );
-    // `lines`, `chunks` and `take` are stream methods on the final path.
+    // The source impl for a byte stream supplies its own adapters.
     assert!(
-        labels.contains(&"lines"),
-        "expected method 'lines' in completions, got: {labels:?}"
+        !labels.contains(&"lines"),
+        "string streams have no lines adapter, got: {labels:?}"
     );
+    let byte_dot = source.find("b.recv").unwrap() + 2;
+    let byte_items = hew_analysis::completions::complete(
+        &doc.source,
+        &doc.parse_result,
+        doc.type_output.as_ref(),
+        byte_dot,
+    );
+    let byte_labels: Vec<&str> = byte_items.iter().map(|item| item.label.as_str()).collect();
+    assert!(
+        byte_labels.contains(&"lines") && byte_labels.contains(&"chunks"),
+        "byte streams should offer lines and chunks, got: {byte_labels:?}"
+    );
+    assert!(!byte_labels.contains(&"collect"));
     let recv_item = items
         .iter()
         .find(|item| item.label == "recv")
@@ -557,6 +570,43 @@ fn checked_imported_record_completion_uses_the_selected_module() {
     let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
     assert!(labels.contains(&"width"), "{labels:?}");
     assert!(!labels.contains(&"colour"), "{labels:?}");
+}
+
+#[test]
+fn focused_file_resolves_shadowed_type_in_its_own_scope() {
+    let main_source = "import other; type Shape { colour: i64; } fn main() { other.build(); }";
+    let other_source =
+        "pub type Shape { width: i64; } pub fn build() -> Shape { Shape { width: 1 } }";
+    let main_uri = make_test_uri("/fake/identity-focus/main.hew");
+    let documents = DashMap::new();
+    documents.insert(
+        make_test_uri("/fake/identity-focus/other.hew"),
+        make_doc(other_source),
+    );
+    let doc = analyze_document(&main_uri, main_source, &documents, &[]);
+    let errors = published_errors(&doc, &main_uri);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut output = doc.type_output.unwrap();
+    let root_shape = output.visible_type_head("Shape").unwrap();
+    assert!(output
+        .types()
+        .of(root_shape)
+        .unwrap()
+        .fields
+        .contains_key("colour"));
+
+    let other = hew_parser::module::ModulePath::new(["other"]);
+    let file = output.file_span_indices.module_base(&other).unwrap();
+    hew_analysis::identity::focus_file(&mut output, file);
+
+    let shape = output.visible_type_head("Shape").unwrap();
+    assert_ne!(shape, root_shape);
+    assert!(output
+        .types()
+        .of(shape)
+        .unwrap()
+        .fields
+        .contains_key("width"));
 }
 
 #[test]

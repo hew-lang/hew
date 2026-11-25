@@ -309,25 +309,6 @@ pub fn lower_program(
     // clash between a qualified key and a root-level function is caught by
     // the duplicate-short-module diagnostic in the frontend before HIR ingest.
     let preferred_modules = preferred_package_module_ids(program);
-    // Bare record/type-decl names declared by more than one module, the
-    // root included. Re-exports are deduplicated through
-    // `preferred_package_module_ids`, so a stdlib module reached through two
-    // paths (`std.net.http.codec` and `std.net.http.codec.request` both surfacing
-    // `codec.Request`) is not counted twice. A name unique to one owner keeps
-    // its bare identity (#2208).
-    ctx.cross_module_colliding_record_names = program
-        .module_graph
-        .as_ref()
-        .into_iter()
-        .flat_map(|mg| mg.modules.values())
-        .flat_map(|module| module.items.iter())
-        .filter_map(|(item, _)| match item {
-            Item::TypeDecl(decl) => Some(decl.name.to_string()),
-            Item::Record(decl) => Some(decl.name.to_string()),
-            _ => None,
-        })
-        .filter(|name| imported_type_name_collides(program, &preferred_modules, name))
-        .collect();
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
@@ -2065,7 +2046,7 @@ pub fn lower_program(
                         // even though HIR/types resolved the cross-module
                         // reference. Mirrors the `Item::Machine` arm above. The
                         // receive-fn bodies resolve names in their checker file scope
-                        // active (see `lower_imported_actor`) so bare same-module
+                        // active so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
                         // Visibility governs what a program may name, not what
@@ -2075,7 +2056,7 @@ pub fn lower_program(
                         Item::Actor(actor) => {
                             check_actor_target_gate(&mut ctx, actor.name, span);
                             let lowered =
-                                ctx.lower_imported_actor(actor, span.clone(), &source_module);
+                                ctx.lower_actor(actor, span.clone(), Some(&source_module));
                             if let Some(lowered) = lowered {
                                 items.push(HirItem::Actor(lowered));
                             }

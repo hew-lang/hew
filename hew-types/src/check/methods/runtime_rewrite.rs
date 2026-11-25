@@ -663,7 +663,7 @@ impl Checker {
                 self.selected_method_sig(receiver_ty, declaration)?
             }
             crate::check::dispatch_table::MethodSelection::Missing => {
-                self.lookup_named_method_sig(receiver_type_name, type_args, method)?
+                self.lookup_named_method_sig(receiver_ty.head()?, type_args, method)?
             }
             crate::check::dispatch_table::MethodSelection::Ambiguous(_) => return None,
         };

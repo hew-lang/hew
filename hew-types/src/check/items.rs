@@ -407,6 +407,7 @@ impl Checker {
     /// Check child construction with the supervisor's retained config in scope.
     /// Store each complete child handle at its source site for HIR to consume.
     fn check_supervisor_init_args(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let owner = self.named_item_declaration(sd.name);
         self.env.push_scope();
 
         // Bind each config param to its resolved type. `resolve_annotation_with_holes`
@@ -429,18 +430,16 @@ impl Checker {
             self.record_local_resolution(param.name, &param.name_span);
         }
 
-        let owner = self
-            .nominal_head_for_key(&self.declaration_identity(sd.name))
-            .map(|head| {
-                let params = self
-                    .type_def_at(&self.declaration_identity(sd.name))
-                    .map_or_else(Vec::new, |td| {
-                        td.type_params.iter().copied().map(Ty::param).collect()
-                    });
-                Ty::actor_handle(head, params)
-            });
         if let Some(owner) = owner {
-            self.record_type(span, &owner);
+            let nominal = crate::NominalId::of_declaration(owner);
+            let params = self.type_defs.get(&nominal).map_or_else(Vec::new, |td| {
+                td.type_params.iter().copied().map(Ty::param).collect()
+            });
+            let handle = Ty::actor_handle(
+                crate::NominalHead::new(nominal, self.defs.path(owner)),
+                params,
+            );
+            self.record_type(span, &handle);
         }
         let order = self
             .supervisor_startup_order
@@ -1105,17 +1104,7 @@ impl Checker {
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
         // This ensures body-checking unification updates the shared type variable.
-        //
-        // For an impl method (`Type::method`) checked inside a module, prefer the
-        // module-local type def's method sig. The bare `fn_sigs["Type::method"]`
-        // key is last-write-wins across every module that declares a same-named
-        // type, so two modules each `impl ServerMethods for Server` would clobber
-        // each other's `accept` return type. The qualified `{short}.Type` def
-        // carries this module's own method, registered from its own impl.
-        let module_local_method = fn_name
-            .split_once("::")
-            .and_then(|(type_name, method)| self.module_local_method_sig(type_name, method));
-        let declared_ret = if let Some(sig) = self.checking_sig().or(module_local_method) {
+        let declared_ret = if let Some(sig) = self.checking_sig() {
             sig.return_type.clone()
         } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()
@@ -1330,16 +1319,17 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = self.declaration_identity(ad.name);
+        let declaration = self.named_item_declaration(ad.name);
         if ad.is_confined {
-            if let Some(id) = self.lookup_declaration(&identity) {
+            if let Some(id) = declaration {
                 self.effect_graph.confined.insert(id);
             }
         }
         let parameters = self.declaration_parameter_heads(ad.name);
-        let actor_ty = self.named_ty_for_key(
-            &identity,
-            parameters.iter().copied().map(Ty::param).collect(),
-        );
+        let actor_ty = declaration.map_or(Ty::Error, |id| {
+            let head = self.head_of_declaration(crate::NominalId::of_declaration(id));
+            Ty::named_head(head, parameters.iter().copied().map(Ty::param).collect())
+        });
         let generic_bindings: HashMap<_, _> = parameters
             .iter()
             .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
@@ -1348,7 +1338,7 @@ impl Checker {
         if has_parameters {
             self.generic_ctx.push(generic_bindings);
             let bounds = self
-                .type_def_at(&identity)
+                .ty_type_def(&actor_ty)
                 .map(|definition| definition.bounds.clone())
                 .unwrap_or_default();
             self.current_type_param_bounds.push(bounds);

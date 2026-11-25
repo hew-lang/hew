@@ -467,24 +467,9 @@ impl LowerCtx<'_> {
                 (kind, ty)
             }
             Expr::RegexLiteral(pattern) => {
-                // A standalone `re"..."` expression. Allocate (or reuse) the
-                // module-level literal-table entry. The checker-assigned type is
-                // `std.text.regex.Pattern`; read it from `expr_types` if present (it is
-                // set by `synthesize_inner` for `Expr::RegexLiteral`), otherwise
-                // fall back to the canonical `Named` form. Using the checker's
-                // resolved type rather than hard-coding keeps capture / generic
-                // resolution consistent with the rest of the pipeline.
-                let checker_key = self.mk_key(&span);
-                let resolved_ty =
-                    if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned) {
-                        ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::named_path(
-                            &self.defs,
-                            "std.text.regex.Pattern",
-                            Vec::new(),
-                        ))
-                    } else {
-                        ResolvedTy::named_path(&self.defs, "std.text.regex.Pattern", Vec::new())
-                    };
+                let Some(resolved_ty) = self.checker_expr_ty(&span, "regex literal") else {
+                    return self.unsupported_expr(span, "unchecked regex literal");
+                };
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
@@ -1430,14 +1415,10 @@ impl LowerCtx<'_> {
                     {
                         let checker_ty = self.checker_expr_ty_if_present(&span);
                         if let Some(ResolvedTy::Named { head, .. }) = checker_ty.as_ref() {
-                            if self
-                                .defs
-                                .lookup_path(head.registry_key())
-                                .is_some_and(|id| {
-                                    self.defs.kind(id)
-                                        == hew_types::DeclarationKind::MachineEventType
-                                })
-                            {
+                            if head.declaration(&self.defs).is_some_and(|id| {
+                                self.defs.kind(id.declaration())
+                                    == hew_types::DeclarationKind::MachineEventType
+                            }) {
                                 if let Some((type_name, variant_idx, HirVariantKind::Unit)) = self
                                     .lookup_variant_ctor(field.0.name.as_str(), checker_ty.as_ref())
                                 {

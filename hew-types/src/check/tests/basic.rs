@@ -167,7 +167,7 @@ fn contextual_variant_keeps_its_resolved_owner() {
     let parsed = hew_parser::parse("enum State { Ready; }");
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let expected = checker.named_ty_for_key("State", vec![]);
+    let expected = Ty::named_in(&checker.defs, "State", vec![]);
     checker
         .published_bare_type_owners
         .entry((None, 0, "State".to_string()))
@@ -871,9 +871,15 @@ fn same(a: Sample, b: Sample) -> bool {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let facts = output
         .type_facts
-        .get(&crate::TypeInstanceKey(ResolvedTy::named_path(
-            &output.defs,
-            "Sample",
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_head(
+            crate::TypeHead::of_declaration(
+                &output.defs,
+                output
+                    .defs
+                    .lookup_path("Sample")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
+            ),
             vec![],
         )))
         .unwrap();
@@ -2167,7 +2173,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     );
     let sig = output
         .sigs()
-        .get("unwrap_or")
+        .test_entry("unwrap_or")
         .expect("unwrap_or signature should be registered");
     assert_eq!(
         sig.params[0].ty,

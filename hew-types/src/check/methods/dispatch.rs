@@ -321,8 +321,12 @@ impl Checker {
                 self.note_import_use_of_expr_head(&receiver.0);
                 return result;
             }
-            let source_member = format!("{}.{method}", head.canonical_type);
-            if !self.has_fn_sig(&source_member) {
+            if self
+                .defs
+                .module_for_path(&head.canonical_type)
+                .and_then(|module| self.fn_in_module(module, Ident::new(method)))
+                .is_none_or(|id| !self.fn_sigs.contains_key(&id))
+            {
                 for arg in args {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
@@ -383,11 +387,15 @@ impl Checker {
             // nested stdlib modules may share both a leaf and a function name.
             let canonical_owner = self.canonical_module_import_owner(*name);
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
+            let declaration = self
+                .defs
+                .module_for_path(&canonical_owner)
+                .and_then(|module| self.fn_in_module(module, Ident::new(method)));
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
                 && (self.module_binding_in_current_file(*name)
                     || self.module_fn_exports.contains(&key)
-                    || self.has_fn_sig(&key));
+                    || declaration.is_some_and(|id| self.fn_sigs.contains_key(&id)));
             if looks_like_module_call {
                 self.record_method_call_receiver_kind(
                     span,
@@ -513,11 +521,13 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                self.require_unsafe(self.signature_declaration(&key), &key, span);
+                self.require_unsafe(declaration, &key, span);
                 // Call and value-position references share the manifest's
                 // canonical member/module capability selection.
                 self.reject_wasm_native_only_module_function(name.name.as_str(), method, span);
-                if let Some(sig) = self.fn_sig(&key).cloned() {
+                if let Some((declaration, sig)) =
+                    declaration.and_then(|id| Some((id, self.fn_sigs.get(&id)?.clone())))
+                {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(
                         &canonical_owner,
@@ -539,7 +549,7 @@ impl Checker {
                             arity_context: "this function".to_string(),
                         },
                         true,
-                        Some(GenericCallee::Function { key: &key }),
+                        Some(GenericCallee::Function { declaration }),
                     );
                     if self.record_generic_wire_codec_rewrite(
                         &key,
@@ -588,11 +598,13 @@ impl Checker {
             let static_sig = if receiver_is_binding {
                 None
             } else {
-                self.fn_sig(&static_key).cloned().or_else(|| {
-                    (canonical_static_owner != name.name.as_str())
-                        .then(|| self.fn_sig(&format!("{name}.{method}")).cloned())
-                        .flatten()
-                })
+                [&canonical_static_owner, name.name.as_str()]
+                    .into_iter()
+                    .find_map(|owner| {
+                        let module = self.defs.module_for_path(owner)?;
+                        let declaration = self.fn_in_module(module, Ident::new(method))?;
+                        self.fn_sigs.get(&declaration).cloned()
+                    })
             };
             if let Some(sig) = static_sig {
                 self.check_arity(args, sig.params.len(), &format!("`{static_key}`"), span);
@@ -1485,6 +1497,7 @@ impl Checker {
                                 },
                                 true,
                                 Some(GenericCallee::Method {
+                                    declaration: None,
                                     type_name: actor_ref_builtin.canonical_name(),
                                     method,
                                     owner_type_args: receiver_args,
@@ -1555,6 +1568,7 @@ impl Checker {
                                 },
                                 true,
                                 Some(GenericCallee::Method {
+                                    declaration: Some(handler),
                                     type_name: &actor_identity,
                                     method,
                                     owner_type_args: actor_type_args,
@@ -1902,6 +1916,7 @@ impl Checker {
                         },
                         true,
                         Some(GenericCallee::Method {
+                            declaration: None,
                             type_name: &canonical_receiver_name,
                             method,
                             owner_type_args: type_args,
@@ -2160,7 +2175,6 @@ impl Checker {
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         if selected_declaration.is_some()
-                            || self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
@@ -2180,7 +2194,10 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .is_some_and(|m| self.has_fn_sig(&format!("{m}::{method}")))
+                                    .is_some_and(|m| {
+                                        self.impl_method_declaration_ids
+                                            .contains_key(&format!("{m}::{method}"))
+                                    })
                             })
                         {
                             // For concrete-specialised impls, use the mangled
@@ -2202,7 +2219,10 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .filter(|m| self.has_fn_sig(&format!("{m}::{method}")))
+                                    .filter(|m| {
+                                        self.impl_method_declaration_ids
+                                            .contains_key(&format!("{m}::{method}"))
+                                    })
                                     .map_or_else(
                                         || method_key.clone(),
                                         |m| format!("{m}::{method}"),
@@ -3038,6 +3058,7 @@ impl Checker {
             },
             true,
             Some(super::types::GenericCallee::Method {
+                declaration: None,
                 type_name: callee,
                 method,
                 owner_type_args: &[],

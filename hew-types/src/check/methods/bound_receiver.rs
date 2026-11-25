@@ -40,6 +40,7 @@ impl Checker {
             },
             true,
             Some(super::super::types::GenericCallee::Method {
+                declaration: Some(declaration),
                 type_name: head.registry_key(),
                 method: "at",
                 owner_type_args: args,

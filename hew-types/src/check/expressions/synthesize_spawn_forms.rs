@@ -40,10 +40,7 @@ impl Checker {
         if root != "self" {
             return false;
         }
-        let Some(function) = self.current_function.as_ref() else {
-            return false;
-        };
-        let Some(signature) = self.fn_sig(function) else {
+        let Some(signature) = self.checking_signature() else {
             return false;
         };
         if !signature.consumes_receiver
@@ -200,7 +197,14 @@ impl Checker {
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(*name) {
-                        if self.has_fn_sig(&qualified_key) {
+                        let owner = self.canonical_module_import_owner(*name);
+                        let declaration = self
+                            .defs
+                            .module_for_path(&owner)
+                            .and_then(|module| self.fn_in_module(module, Ident::new(field)));
+                        if let Some(declaration) =
+                            declaration.filter(|id| self.fn_sigs.contains_key(id))
+                        {
                             self.resolve_import_use(*name);
                             self.reject_wasm_native_only_module_function(
                                 name.name.as_str(),
@@ -209,7 +213,7 @@ impl Checker {
                             );
                             self.record_call_edge(&qualified_key);
                             return self.instantiate_function_value(
-                                &qualified_key,
+                                declaration,
                                 type_args,
                                 span,
                                 None,
@@ -920,6 +924,7 @@ impl Checker {
         );
         self.record_call_edge(&key);
         self.current_function = Some(key);
+        let previous_declaration = self.checking_declaration.replace(owner);
 
         self.env.push_scope();
         let prev_in_generator = self.in_generator;
@@ -1059,16 +1064,14 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.pop_scope_with_cleanup();
 
-        let key = self
-            .current_function
-            .clone()
-            .expect("closure owns its signature");
         let signature = self
-            .fn_sig_mut(&key)
+            .fn_sigs
+            .get_mut(&owner)
             .expect("closure signature was registered");
         signature.params.clone_from(&param_tys);
         signature.return_type = ret_ty.clone();
         self.current_function = previous_function;
+        self.checking_declaration = previous_declaration;
         self.current_type_param_bounds.pop();
         self.generic_ctx.pop();
 

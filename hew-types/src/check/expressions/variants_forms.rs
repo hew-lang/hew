@@ -474,19 +474,6 @@ else needs `impl Display for {rendered}`)"
                         }
                     }
                 }
-                // Also check fn_sigs for qualified constructors
-                if found.is_none() {
-                    if let Some(sig) = self.fn_sig(variant_name) {
-                        if sig.params.is_empty() {
-                            let ret = &sig.return_type;
-                            let matches_type =
-                                ret.type_name().is_some_and(|name| name == type_prefix);
-                            if matches_type {
-                                found = Some(sig.return_type.clone());
-                            }
-                        }
-                    }
-                }
                 // Import-alias fallback: `Geo::Unit` where "Geo" is an alias for
                 // "shapes.Shape".  Resolve through `import_type_name_aliases` and
                 // retry the unit-variant lookup under the canonical qualified name.

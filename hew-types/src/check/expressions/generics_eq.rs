@@ -294,10 +294,16 @@ impl Checker {
         ty: &Ty,
         span: &Span,
     ) {
-        let mut owner = self
-            .current_function
-            .as_ref()
-            .and_then(|key| self.signature_declaration(key));
+        self.record_owned_generic_requirement(self.current_callable_declaration(), kind, ty, span);
+    }
+
+    pub(in crate::check) fn record_owned_generic_requirement(
+        &mut self,
+        mut owner: Option<crate::DefId>,
+        kind: GenericRequirementKind,
+        ty: &Ty,
+        span: &Span,
+    ) {
         if owner.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
             let mentioned_owners = self.generic_obligation_owners(&[ty]);
             if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
@@ -309,7 +315,8 @@ impl Checker {
                     ) {
                         if let Ok(Some(members)) = service.derived_eq_members(&resolved) {
                             for member in members {
-                                self.record_generic_requirement(
+                                self.record_owned_generic_requirement(
+                                    owner,
                                     kind.clone(),
                                     &member.to_ty(),
                                     span,
@@ -363,36 +370,31 @@ impl Checker {
         sig_type_args: &[Ty],
         span: &Span,
     ) {
-        // The one place method identity is joined into a `fn_sigs` key.
-        let (callee_key, owner) = match callee {
-            GenericCallee::Function { key } => (key.to_string(), None),
+        let (declaration, owner_args) = match callee {
+            GenericCallee::Function { declaration } => (Some(declaration), None),
             GenericCallee::Method {
-                type_name,
-                method,
+                declaration,
                 owner_type_args,
-            } => (
-                format!("{type_name}::{method}"),
-                Some((type_name, owner_type_args)),
-            ),
+                ..
+            } => (declaration, Some(owner_type_args)),
         };
-        let Some(declared_params) = self
-            .fn_sig(&callee_key)
-            .map(|sig| sig.type_params.clone())
-            .filter(|params| !params.is_empty())
+        let Some((declaration, signature)) =
+            declaration.and_then(|id| Some((id, self.fn_sigs.get(&id)?)))
         else {
             return;
         };
+        let declared_params = signature.type_params.clone();
+        if declared_params.is_empty() {
+            return;
+        }
         let mut substitution: HashMap<crate::ParamHead, Ty> = HashMap::new();
         if sig_type_params.len() == sig_type_args.len() {
             for (param, arg) in sig_type_params.iter().zip(sig_type_args) {
                 substitution.insert(*param, self.subst.resolve(arg));
             }
         }
-        if let Some((owner_name, owner_args)) = owner {
-            let owner_substitution = if let Some(method) = self
-                .fn_sig(&callee_key)
-                .and_then(|sig| sig.impl_method.as_ref())
-            {
+        if let Some(owner_args) = owner_args {
+            let owner_substitution = if let Some(method) = signature.impl_method.as_ref() {
                 crate::method_resolution::impl_receiver_substitution(
                     &method.receiver_parameters,
                     &method.receiver_args,
@@ -400,7 +402,9 @@ impl Checker {
                 )
                 .unwrap_or_default()
             } else {
-                self.nominal_at_path(owner_name)
+                self.defs
+                    .owner(declaration)
+                    .map(crate::NominalId::of_declaration)
                     .and_then(|id| self.type_defs.get(&id))
                     .into_iter()
                     .flat_map(|owner| {
@@ -440,14 +444,11 @@ impl Checker {
         }
         // Builtin signatures have no source body in this obligation graph.
         // Their bounds and call type arguments were handled above.
-        let Some(declaration) = self
-            .signature_declaration(&callee_key)
-            .filter(|id| !self.defs.is_builtin_callable(*id))
-        else {
+        if self.defs.is_builtin_callable(declaration) {
             return;
-        };
+        }
         self.record_generic_instantiation_site(
-            self.current_function.clone().as_deref(),
+            self.current_callable_declaration(),
             declaration,
             substitution,
             span,
@@ -456,12 +457,11 @@ impl Checker {
 
     pub(in crate::check) fn record_generic_instantiation_site(
         &mut self,
-        enclosing: Option<&str>,
+        enclosing: Option<crate::DefId>,
         callee: crate::DefId,
         substitution: HashMap<crate::ParamHead, Ty>,
         span: &Span,
     ) {
-        let enclosing = enclosing.and_then(|key| self.signature_declaration(key));
         let enclosing =
             if enclosing.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
                 match self

@@ -1095,12 +1095,18 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
-                    if let Some(intrinsic_key) = &fd.intrinsic {
+                    let declaration = self.publish_module_fn_signature(
+                        module_full_path,
+                        fd,
+                        span,
+                        &qualified,
+                        sig,
+                    );
+                    if let (Some(intrinsic_key), Some(declaration)) = (&fd.intrinsic, declaration) {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
                         self.register_intrinsic_declaration(
-                            qualified,
+                            declaration,
                             intrinsic_key,
                             fd.name.name.as_str(),
                             fd,
@@ -1327,12 +1333,12 @@ impl Checker {
         span: &Span,
         key: &str,
         sig: FnSig,
-    ) {
-        let binding = self.defs.module_for_path(module_path).and_then(|module| {
-            self.scopes
-                .item(self.scopes.namespace_of(module), function.name)
-        });
-        if let Some(super::scope::Binding::Fn(declaration)) = binding {
+    ) -> Option<crate::DefId> {
+        let declaration = self
+            .defs
+            .module_for_path(module_path)
+            .and_then(|module| self.fn_in_module(module, function.name));
+        if let Some(declaration) = declaration {
             self.insert_fn_sig(declaration, sig);
         } else {
             self.report_error(
@@ -1341,6 +1347,7 @@ impl Checker {
                 format!("internal: function `{key}` has no declaration"),
             );
         }
+        declaration
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.
@@ -2108,14 +2115,20 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
+                    let declaration = self.publish_module_fn_signature(
+                        module_full_path,
+                        fd,
+                        span,
+                        &qualified,
+                        sig,
+                    );
 
-                    if let Some(intrinsic_key) = &fd.intrinsic {
+                    if let (Some(intrinsic_key), Some(declaration)) = (&fd.intrinsic, declaration) {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
                         self.current_module_idx = declaring_file_idx;
                         self.register_intrinsic_declaration(
-                            qualified.clone(),
+                            declaration,
                             intrinsic_key,
                             fd.name.name.as_str(),
                             fd,
@@ -2173,7 +2186,10 @@ impl Checker {
                 }
                 Item::ExternBlock(eb) => {
                     let has_unregistered_signature = eb.functions.iter().any(|function| {
-                        !self.has_fn_sig(&format!("{module_full_path}.{}", function.name))
+                        self.defs
+                            .module_for_path(module_full_path)
+                            .and_then(|module| self.fn_in_module(module, function.name))
+                            .is_none_or(|id| !self.fn_sigs.contains_key(&id))
                     });
                     if has_unregistered_signature {
                         let saved_importer_module =

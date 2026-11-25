@@ -1573,7 +1573,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(ident) {
+        } else if let Some(declaration) = self.visible_fn_declaration(ident) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -1587,8 +1587,9 @@ impl Checker {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
                 self.resolve_import_use(ident);
             }
-            self.record_call_edge(&fn_sig_key);
-            self.instantiate_function_value(&fn_sig_key, type_args, span, None)
+            let name = self.callable_spelling(declaration).to_string();
+            self.record_call_edge(&name);
+            self.instantiate_function_value(declaration, type_args, span, None)
         } else if self.module_binding_in_current_file(Ident::new(surface_name)) {
             self.report_error(
                 TypeErrorKind::ModuleUsedAsValue,

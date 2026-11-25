@@ -1046,7 +1046,7 @@ impl Checker {
             .attributes
             .iter()
             .any(|attribute| attribute.name.as_str() == "intercept")
-            && self.fn_sig(fn_name).is_some_and(|signature| {
+            && self.checking_signature().is_some_and(|signature| {
                 signature.return_type.contains_interceptor_token()
                     || signature.params.iter().any(|parameter| {
                         parameter.ownership == crate::ParameterOwnership::Consume
@@ -1107,8 +1107,6 @@ impl Checker {
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
         // This ensures body-checking unification updates the shared type variable.
         let declared_ret = if let Some(sig) = self.checking_sig() {
-            sig.return_type.clone()
-        } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()
         } else {
             fd.return_type.as_ref().map_or(Ty::Unit, |annotation| {
@@ -1270,11 +1268,17 @@ impl Checker {
                         intrinsic: None,
                         consumes_self: false,
                     };
-                    let trait_declaration = self
-                        .lookup_declaration(&self.declaration_identity(td.name))
-                        .expect("registered trait owns its default methods");
-                    let qualified =
-                        format!("{}::{}", self.defs.path(trait_declaration), method.name);
+                    let Some(trait_declaration) = self.named_item_declaration(td.name) else {
+                        continue;
+                    };
+                    let Some(declaration) = self.defs.member_of_kind(
+                        trait_declaration,
+                        method.name.name,
+                        crate::DeclarationKind::TraitMethod,
+                    ) else {
+                        continue;
+                    };
+                    let qualified = self.defs.path(declaration).to_string();
 
                     // Bind the trait's own method-set to the abstract `Self`
                     // receiver for the duration of this default-body check.
@@ -1290,8 +1294,8 @@ impl Checker {
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
                     let self_parameter = crate::ParamHead::receiver(trait_declaration);
-                    let prev_sig = self.fn_sig(&qualified).cloned();
-                    if let Some(sig) = self.fn_sig_mut(&qualified) {
+                    let prev_sig = self.fn_sigs.get(&declaration).cloned();
+                    if let Some(sig) = self.fn_sigs.get_mut(&declaration) {
                         if !sig.type_params.contains(&self_parameter) {
                             sig.type_params.push(self_parameter);
                         }
@@ -1299,12 +1303,16 @@ impl Checker {
                             .push(self_parameter.id, TraitRef::bare(trait_declaration));
                     }
 
+                    let previous = self.checking_declaration.replace(declaration);
                     self.check_function_as(&fn_decl, &qualified);
+                    self.checking_declaration = previous;
 
                     // Restore the original sig — the `Self` type-param is an
                     // internal default-body-check artefact and must not persist
                     // into the signature visible to call sites.
-                    if let (Some(original), Some(sig)) = (prev_sig, self.fn_sig_mut(&qualified)) {
+                    if let (Some(original), Some(sig)) =
+                        (prev_sig, self.fn_sigs.get_mut(&declaration))
+                    {
                         *sig = original;
                     }
                 }
@@ -2714,7 +2722,17 @@ impl Checker {
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
-        let declaration = self.lookup_declaration(&qualified_name);
+        let declaration = self
+            .current_actor_type
+            .as_ref()
+            .and_then(Ty::head)
+            .and_then(|head| {
+                self.actor_member(
+                    head,
+                    rf.name.name.as_str(),
+                    crate::DeclarationKind::ActorReceive,
+                )
+            });
         let effect_body = declaration.map(super::effects::EffectBody::Declaration);
         let previous_effect_body =
             std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
@@ -2754,7 +2772,7 @@ impl Checker {
             self.env.set_parameter_consume(p.name, true);
         }
 
-        let declared_ret = if let Some(sig) = self.fn_sig(&qualified_name) {
+        let declared_ret = if let Some(sig) = declaration.and_then(|id| self.fn_sigs.get(&id)) {
             if rf.is_generator {
                 sig.return_type
                     .as_stream()

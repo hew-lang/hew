@@ -953,50 +953,32 @@ impl Checker {
         self.named_item_declaration(declaration.name)
     }
 
-    /// Select a free-function signature in the current source file. Explicit
-    /// imports publish only lexical bindings; their canonical declarations own
-    /// the signatures, leaving ambient builtin signatures intact.
-    pub(super) fn visible_fn_signature_key(&self, name: hew_parser::ast::Ident) -> Option<String> {
-        let ident = name;
+    /// Select the callable a source operand names in the current file.
+    pub(super) fn visible_fn_declaration(&self, ident: Ident) -> Option<crate::DefId> {
         let name = ident.name.as_str();
+        let has_signature = |id: &crate::DefId| self.fn_sigs.contains_key(id);
         if ident.ctx != hew_parser::ast::SyntaxContext::ROOT {
-            let site = self.scope_site()?;
-            let declaration = match self.scopes.value_head(&self.env, site, ident) {
-                Some(scope::Resolution::Def(declaration)) => declaration,
-                None => {
-                    return self
-                        .defs
-                        .lookup_builtin_callable(ident.name)
-                        .is_some()
-                        .then(|| name.to_string())
-                }
-                _ => return None,
+            return match self.scopes.value_head(&self.env, self.scope_site()?, ident) {
+                Some(scope::Resolution::Def(id)) => Some(id).filter(has_signature),
+                None => self
+                    .defs
+                    .lookup_builtin_callable(ident.name)
+                    .filter(has_signature),
+                _ => None,
             };
-            return self
-                .fn_sigs
-                .contains_key(&declaration)
-                .then(|| self.defs.path(declaration).to_string());
+        }
+        if let Some(declaration) = self
+            .scoped_fn_declaration(name, false)
+            .filter(has_signature)
+        {
+            return Some(declaration);
         }
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
-        // The current source scope owns an authored function or extern before
-        // any imported binding with the same spelling. Extern declarations do
-        // not populate fn_def_spans, so that index alone cannot establish this
-        // precedence. Join the exact scoped DefId to its registered signature.
-        if let Some(scope::Binding::Fn(declaration)) =
-            self.current_declaration_module().and_then(|module| {
-                self.scopes.item(
-                    self.scopes.namespace_of(module),
-                    Ident::from_symbol(Symbol::intern(name)),
-                )
-            })
-        {
-            if self.fn_sigs.contains_key(&declaration) {
-                return Some(self.defs.path(declaration).to_string());
-            }
-        }
         for key in [&canonical, name] {
-            if self.fn_def_spans.contains_key(key) && self.has_fn_sig(key) {
-                return Some(key.to_string());
+            if self.fn_def_spans.contains_key(key) {
+                if let Some(declaration) = self.signature_declaration(key).filter(has_signature) {
+                    return Some(declaration);
+                }
             }
         }
         for binding in [&canonical, name] {
@@ -1005,24 +987,26 @@ impl Checker {
                 self.current_module_idx,
                 binding.to_string(),
             )) {
-                return self.has_fn_sig(source).then(|| source.clone());
+                return self.signature_declaration(source).filter(has_signature);
             }
         }
-        // Variant signatures describe members. Their compatibility keys are
-        // shared between files and never introduce a free function.
-        for key in [&canonical, name] {
-            if self.has_fn_sig(key)
-                && !self.signature_declaration(key).is_some_and(|id| {
-                    matches!(
-                        self.defs.kind(id),
+        [&canonical[..], name].iter().find_map(|key| {
+            self.signature_declaration(key).filter(|id| {
+                has_signature(id)
+                    && !matches!(
+                        self.defs.kind(*id),
                         crate::DeclarationKind::Variant | crate::DeclarationKind::MachineState
                     )
-                })
-            {
-                return Some(key.to_string());
-            }
+            })
+        })
+    }
+
+    pub(super) fn callable_spelling(&self, id: crate::DefId) -> &str {
+        if self.defs.is_builtin_callable(id) {
+            self.defs.name(id).as_str()
+        } else {
+            self.defs.path(id)
         }
-        None
     }
 
     /// Record one call edge after canonicalizing both endpoints through the
@@ -4201,12 +4185,7 @@ impl Checker {
                 self.defs.kind(declaration) == crate::DeclarationKind::Function
                     && !self.defs.is_builtin_callable(declaration)
             })
-            .map(|declaration| {
-                (
-                    *declaration,
-                    self.call_target_for_signature(self.defs.path(*declaration)),
-                )
-            })
+            .map(|declaration| (*declaration, self.call_target_for_callable(*declaration)))
             .collect();
         let mut output = TypeCheckOutput {
             file_span_indices: std::sync::Arc::clone(&self.file_span_indices),

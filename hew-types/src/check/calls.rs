@@ -53,7 +53,11 @@ pub(super) struct AppliedCallSignature {
 #[derive(Clone, Copy)]
 enum CallCallee<'a> {
     Expr(&'a Spanned<Expr>),
-    Named { name: &'a str, span: &'a Span },
+    Named {
+        name: &'a str,
+        span: &'a Span,
+        declaration: Option<crate::DefId>,
+    },
 }
 
 impl<'a> CallCallee<'a> {
@@ -625,7 +629,12 @@ impl Checker {
         // for methods and trait-impl methods exactly as they are for free
         // functions — recording at individual dispatch sites is what previously
         // left the method surface unchecked.
-        if let Some(callee) = callee {
+        if let Some(mut callee) = callee {
+            if let GenericCallee::Method { declaration, .. } = &mut callee {
+                if declaration.is_none() {
+                    *declaration = sig.impl_method.as_ref().map(|method| method.declaration);
+                }
+            }
             self.record_generic_application(callee, &sig.type_params, &resolved_type_args, span);
         }
 
@@ -665,6 +674,7 @@ impl Checker {
             CallCallee::Named {
                 name: func_name,
                 span: func_span,
+                declaration: None,
             },
             type_args,
             args,
@@ -1310,9 +1320,11 @@ impl Checker {
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-        if !self.has_fn_sig(&key) {
-            return None;
-        }
+        let declaration = self.fn_in_module(
+            self.defs.module_for_path(&canonical_owner)?,
+            Ident::new(method),
+        )?;
+        let sig = self.fn_sigs.get(&declaration)?.clone();
         if self.module_binding_in_current_file(Ident::new(module_name)) {
             self.resolve_import_use(Ident::new(module_name));
         }
@@ -1355,9 +1367,8 @@ impl Checker {
                 return None;
             }
         }
-        self.require_unsafe(self.signature_declaration(&key), &key, span);
+        self.require_unsafe(Some(declaration), &key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
-        let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
@@ -1371,7 +1382,7 @@ impl Checker {
                 arity_context: "this function".to_string(),
             },
             true,
-            Some(GenericCallee::Function { key: &key }),
+            Some(GenericCallee::Function { declaration }),
         );
         self.record_generic_wire_codec_rewrite(
             &key,
@@ -1395,7 +1406,7 @@ impl Checker {
             });
         self.record_direct_call_target(
             span,
-            rewrite_target.unwrap_or_else(|| self.call_target_for_signature(&key)),
+            rewrite_target.unwrap_or_else(|| self.call_target_for_callable(declaration)),
         );
         Some(applied_sig.return_type)
     }
@@ -1551,49 +1562,23 @@ impl Checker {
         }
     }
 
-    /// Publish the `CallTarget::User` for a source-declared function found in
-    /// `fn_def_spans` under `signature_key`, or `None` when no declaration
-    /// exists under that key.
-    ///
-    /// The identity of the actor whose body is currently being checked.
-    ///
-    /// `check_actor_decl` sets `current_actor_type` to the actor's registration
-    /// identity (bare for a root actor, `{module}.{leaf}` for a module actor) —
-    /// the same string every `{owner}::{member}` registry key is built from.
-    fn current_actor_type_name(&self) -> Option<&str> {
-        match self.current_actor_type.as_ref()? {
-            Ty::Named { head, .. } => Some(head.registry_key()),
-            _ => None,
-        }
+    /// A sibling actor method may be called through its bare source name.
+    fn enclosing_actor_method(&self, name: &str) -> Option<crate::DefId> {
+        let actor = self.current_actor_type.as_ref()?.head()?;
+        let member = self.actor_member(actor, name, crate::DeclarationKind::ActorMethod)?;
+        self.fn_def_spans
+            .contains_key(self.defs.path(member))
+            .then_some(member)
     }
 
-    /// The `{actor}::{name}` signature key for a plain method of the actor
-    /// whose body is being checked, when that actor declares one.
-    fn enclosing_actor_method_key(&self, name: &str) -> Option<String> {
-        let actor = self.current_actor_type_name()?;
-        let key = format!("{actor}::{name}");
-        self.actor_method_owner(&key).map(|_| key)
-    }
-
-    /// The declaring actor when `signature_key` names an actor-body plain `fn`.
-    ///
-    /// The two facts are read off their own authorities: the identity table
-    /// says the declaration is an `ActorMethod` (a `receive fn` is
-    /// `ActorReceive`, an `impl` method is `ImplMethod`), and `fn_def_spans`
-    /// says a callable declaration was published for it (a `#[on(...)]`
-    /// lifecycle hook shares the `ActorMethod` kind but gets no row, because
-    /// the runtime, not Hew code, enters it).
-    fn actor_method_owner(&self, signature_key: &str) -> Option<String> {
-        if self.defs.declaration_kind_by_path(signature_key)
-            != Some(crate::def_table::DeclarationKind::ActorMethod)
+    /// The owning actor of a callable method, excluding runtime lifecycle hooks.
+    fn actor_method_owner(&self, declaration: crate::DefId) -> Option<crate::DefId> {
+        if self.defs.kind(declaration) != crate::DeclarationKind::ActorMethod
+            || !self.fn_def_spans.contains_key(self.defs.path(declaration))
         {
             return None;
         }
-        if !self.fn_def_spans.contains_key(signature_key) {
-            return None;
-        }
-        let (owner, _) = signature_key.rsplit_once("::")?;
-        Some(owner.to_string())
+        self.defs.owner(declaration)
     }
 
     pub(super) fn source_call_target(&self, declaration: crate::DefId) -> CallTarget {
@@ -1610,11 +1595,7 @@ impl Checker {
                 return target.clone();
             }
         }
-        if self
-            .defs
-            .declaration_kind_by_path(self.defs.path(declaration))
-            == Some(crate::DeclarationKind::Record)
-        {
+        if self.defs.kind(declaration) == crate::DeclarationKind::Record {
             CallTarget::RecordConstructor(declaration)
         } else {
             CallTarget::User(declaration)
@@ -1670,13 +1651,28 @@ impl Checker {
     fn associated_runtime_target_for_signature(
         &self,
         signature_key: &str,
+        sig: &FnSig,
     ) -> Option<crate::RuntimeCallFamily> {
-        let sig = self.fn_sig(signature_key).filter(|sig| sig.associated)?;
+        if !sig.associated {
+            return None;
+        }
         let spec = sig.extern_symbol.as_ref()?;
         self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
     }
 
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
+        self.classify_callable(signature_key, self.signature_declaration(signature_key))
+    }
+
+    pub(super) fn call_target_for_callable(&self, declaration: crate::DefId) -> CallTarget {
+        self.classify_callable(self.callable_spelling(declaration), Some(declaration))
+    }
+
+    pub(super) fn classify_callable(
+        &self,
+        signature_key: &str,
+        declaration: Option<crate::DefId>,
+    ) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
         // declaration identity is semantic authority, while the validated ABI
@@ -1687,9 +1683,8 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        if let Some(target) = self
-            .lookup_declaration(signature_key)
-            .and_then(|declaration| self.declared_call_target(declaration))
+        if let Some(target) =
+            declaration.and_then(|declaration| self.declared_call_target(declaration))
         {
             return target;
         }
@@ -1699,16 +1694,13 @@ impl Checker {
         // Associated runtime methods use the same checked declaration and
         // provenance contract as receiver methods. No synthetic callee spelling
         // is needed merely because a method has no receiver.
-        if let Some(family) = self.associated_runtime_target_for_signature(signature_key) {
-            return CallTarget::Runtime(family);
-        }
-        // Ordinary associated methods retain their selected source identity.
-        if let Some(method) = self
-            .fn_sig(signature_key)
-            .filter(|sig| sig.associated)
-            .and_then(|sig| sig.impl_method.as_ref())
-        {
-            return CallTarget::ImplMethod(method.declaration);
+        if let Some(sig) = declaration.and_then(|id| self.fn_sigs.get(&id)) {
+            if let Some(family) = self.associated_runtime_target_for_signature(signature_key, sig) {
+                return CallTarget::Runtime(family);
+            }
+            if let Some(method) = sig.impl_method.as_ref() {
+                return CallTarget::ImplMethod(method.declaration);
+            }
         }
         if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
             return CallTarget::ImplMethod(*declaration);
@@ -1849,7 +1841,7 @@ impl Checker {
         if contract.is_variadic {
             return None;
         }
-        let signature = self.fn_sig(self.defs.path(declaration))?;
+        let signature = self.fn_sigs.get(&declaration)?;
         if !signature.type_params.is_empty() {
             return None;
         }
@@ -1931,6 +1923,7 @@ impl Checker {
         &mut self,
         func_name: &str,
         func_span: &Span,
+        declaration: Option<crate::DefId>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
@@ -1939,6 +1932,7 @@ impl Checker {
             CallCallee::Named {
                 name: func_name,
                 span: func_span,
+                declaration,
             },
             type_args,
             args,
@@ -2025,7 +2019,7 @@ impl Checker {
         let lexical_shadow_of_item = callee.expr().is_some_and(|func| {
             matches!(&func.0, Expr::Ident(name)
                 if self.env.lookup_ref_with_depth(*name).is_some_and(|(depth, _)| depth > 0)
-                    && self.visible_fn_signature_key(*name).is_some())
+                    && self.visible_fn_declaration(*name).is_some())
         });
         let func_name = match callee {
             CallCallee::Named { name, .. } => name.to_string(),
@@ -2109,18 +2103,20 @@ impl Checker {
                 .filter(|id| self.fn_sigs.contains_key(id)),
             _ => None,
         };
-        let unsafe_declaration = hygienic_declaration.or_else(|| {
+        let resolved_declaration = match callee {
+            CallCallee::Named { declaration, .. } => declaration,
+            CallCallee::Expr(_) => hygienic_declaration,
+        };
+        let unsafe_declaration = resolved_declaration.or_else(|| {
             (!lexical_shadow_of_item)
                 .then(|| {
                     let visible_key =
                         if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
-                            self.visible_fn_signature_key(*ident)
+                            self.visible_fn_declaration(*ident)
                         } else {
-                            self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                            self.visible_fn_declaration(Ident::new(func_name.as_str()))
                         };
-                    visible_key
-                        .and_then(|key| self.signature_declaration(&key))
-                        .or_else(|| self.scoped_fn_declaration(&func_name, false))
+                    visible_key.or_else(|| self.scoped_fn_declaration(&func_name, false))
                 })
                 .flatten()
         });
@@ -2497,32 +2493,39 @@ impl Checker {
 
         // Prefer a declaration or an exact file import, then an enclosing
         // actor helper. A signature published by another file is not a binding.
-        let visible_fn_key = if lexical_shadow_of_item {
+        let visible_declaration = if lexical_shadow_of_item {
             None
         } else {
             if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
-                self.visible_fn_signature_key(*ident)
+                self.visible_fn_declaration(*ident)
             } else {
-                self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                self.visible_fn_declaration(Ident::new(func_name.as_str()))
             }
-            .or_else(|| self.enclosing_actor_method_key(&func_name))
+            .or_else(|| self.enclosing_actor_method(&func_name))
         };
-        let resolved_fn_name = hygienic_declaration
-            .map(|id| self.defs.path(id).to_string())
-            .or(visible_fn_key.clone())
-            .unwrap_or_else(|| func_name.clone());
+        let declaration = resolved_declaration.or(visible_declaration);
+        let resolved_fn_name = declaration.map_or_else(
+            || func_name.clone(),
+            |id| self.callable_spelling(id).to_string(),
+        );
         // An actor method reads and writes the actor's own state, so it is
         // entered with the caller's execution context and state pointer. Only
         // the actor's own handlers, hooks, `init`, and sibling methods hold
         // those; from anywhere else the mailbox is the surface. Refuse the
         // qualified spelling here rather than letting it type-check and reach
         // HIR with a target no call site can supply.
-        if let Some(owner) = self.actor_method_owner(&resolved_fn_name) {
-            if self.current_actor_type_name() != Some(owner.as_str()) {
-                let leaf = resolved_fn_name
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&resolved_fn_name);
+        if let Some(owner) = declaration.and_then(|id| self.actor_method_owner(id)) {
+            let current_actor = self
+                .current_actor_type
+                .as_ref()
+                .and_then(Ty::head)
+                .and_then(crate::TypeHead::nominal)
+                .map(crate::NominalId::declaration);
+            if current_actor != Some(owner) {
+                let leaf = declaration
+                    .map(|id| self.defs.name(id))
+                    .expect("selected method has a declaration");
+                let owner = self.defs.path(owner);
                 self.report_error(
                     TypeErrorKind::ActorMethodOutsideActor,
                     span,
@@ -2540,10 +2543,8 @@ impl Checker {
                 self.require_deferred_fields_initialized_for_call(&resolved_fn_name, span);
             }
         }
-        if let Some(sig) = hygienic_declaration
-            .and_then(|id| self.fn_sigs.get(&id))
-            .or_else(|| visible_fn_key.as_deref().and_then(|key| self.fn_sig(key)))
-            .cloned()
+        if let Some((declaration, sig)) =
+            declaration.and_then(|id| Some((id, self.fn_sigs.get(&id)?.clone())))
         {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
@@ -2605,7 +2606,7 @@ impl Checker {
                     self.scoped_fn_declaration(&func_name, lexical_shadow_of_item)
                         .and_then(|id| self.declared_call_target(id))
                 })
-                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
+                .unwrap_or_else(|| self.classify_callable(&resolved_fn_name, Some(declaration)));
             let assertion = target
                 == CallTarget::Builtin {
                     endpoint: crate::stdlib_catalog_identity::ASSERT.to_string(),
@@ -2634,9 +2635,7 @@ impl Checker {
                 // monomorphised symbol; skipping these sites starved that
                 // pipeline and tripped the NYI function-call lowering arm.
                 true,
-                Some(GenericCallee::Function {
-                    key: &resolved_fn_name,
-                }),
+                Some(GenericCallee::Function { declaration }),
             );
             if assertion {
                 self.record_unrendered_assertion_operands(args);
@@ -2707,7 +2706,7 @@ impl Checker {
                     Expr::FieldAccess { object, .. }
                         if matches!(object.0, Expr::Ident(_))
                 )
-            }) || self.actor_method_owner(&resolved_fn_name).is_some()
+            }) || self.actor_method_owner(declaration).is_some()
             {
                 self.record_method_call_rewrite(
                     span,
@@ -2986,8 +2985,8 @@ impl Checker {
     /// produce, so a hit means the programmer declared the name and the
     /// builtin of that spelling does not apply.
     fn declares_function(&self, name: &str) -> bool {
-        self.visible_fn_signature_key(Ident::new(name))
-            .is_some_and(|key| self.fn_def_spans.contains_key(&key))
+        self.visible_fn_declaration(Ident::new(name))
+            .is_some_and(|id| self.fn_def_spans.contains_key(self.defs.path(id)))
     }
 
     /// Reject a bare function binding published by more than one imported
@@ -3054,7 +3053,7 @@ impl Checker {
                     arity_context: "this function".into(),
                 },
                 true,
-                owner.as_deref().map(|key| GenericCallee::Function { key }),
+                owner.map(|declaration| GenericCallee::Function { declaration }),
             );
             self.reject_interceptor_return(&applied.return_type, span);
             self.check_callable_receiver(func_ty, func);

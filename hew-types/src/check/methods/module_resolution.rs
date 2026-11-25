@@ -210,6 +210,18 @@ impl Checker {
             .map(crate::NominalId::of_declaration)
     }
 
+    /// Resolve a free function in a module's item namespace.
+    pub(in crate::check) fn fn_in_module(
+        &self,
+        module: crate::ModuleId,
+        name: Ident,
+    ) -> Option<crate::DefId> {
+        match self.scopes.item(self.scopes.namespace_of(module), name)? {
+            scope::Binding::Fn(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
         crate::check::FnSigView::new(
@@ -220,14 +232,6 @@ impl Checker {
         )
     }
 
-    /// The signature a key spells.
-    ///
-    /// TRANSITION(A1 commit 4): the remaining callers pass rendered names
-    /// instead of the callable declaration.
-    pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
-        self.fn_sigs.get(&self.signature_declaration(key)?)
-    }
-
     pub(in crate::check) fn signature_declaration(&self, key: &str) -> Option<crate::DefId> {
         self.lookup_declaration(key)
             .filter(|id| self.fn_sigs.contains_key(id))
@@ -235,29 +239,12 @@ impl Checker {
             .or_else(|| {
                 let (module, name) = key.rsplit_once('.')?;
                 let module = self.defs.module_for_path(module)?;
-                match self
-                    .scopes
-                    .item(self.scopes.namespace_of(module), Ident::new(name))?
-                {
-                    scope::Binding::Fn(declaration) => Some(declaration),
-                    _ => None,
-                }
+                self.fn_in_module(module, Ident::new(name))
             })
             .or_else(|| match self.scopes.prelude_binding(Symbol::intern(key)) {
                 Some(scope::Binding::Fn(declaration)) => Some(declaration),
                 _ => self.defs.lookup_builtin_callable(Symbol::intern(key)),
             })
-    }
-
-    /// Whether a key spells a signature.
-    pub(in crate::check) fn has_fn_sig(&self, key: &str) -> bool {
-        self.fn_sig(key).is_some()
-    }
-
-    /// The signature a key spells, mutably.
-    pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
-        let declaration = self.signature_declaration(key)?;
-        self.fn_sigs.get_mut(&declaration)
     }
 
     /// File the signature on its declaration.

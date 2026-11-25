@@ -644,6 +644,14 @@ impl Checker {
     /// `key`.
     pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
         let declaration = self.defs.mint_for_test(key);
+        if let Some((owner, name)) = key.rsplit_once('.') {
+            let module = self.defs.mint_module(owner, &[]);
+            self.scopes.declare_item(
+                module,
+                Ident::new(name),
+                super::scope::Binding::Fn(declaration),
+            );
+        }
         self.insert_fn_sig(declaration, sig);
     }
 

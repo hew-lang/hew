@@ -166,9 +166,9 @@ impl Checker {
                 {
                     (surface.to_string(), None, Some(trait_id))
                 } else {
-                    let canonical = self
-                        .has_fn_sig(&format!("{surface}::{member}"))
-                        .then(|| surface.to_string())?;
+                    self.defs
+                        .lookup_builtin_callable(Symbol::intern(&format!("{surface}::{member}")))?;
+                    let canonical = surface.to_string();
                     let builtin = self.resolved_builtin_type(&canonical);
                     (canonical, builtin.map(crate::TypeHead::Builtin), None)
                 }
@@ -324,8 +324,7 @@ impl Checker {
         if !self.fn_sigs.get(&declaration)?.associated {
             return None;
         }
-        let key = self.defs.path(declaration).to_string();
-        Some(self.instantiate_function_value(&key, method_args, span, owner_args.as_deref()))
+        Some(self.instantiate_function_value(declaration, method_args, span, owner_args.as_deref()))
     }
 
     fn dispatch_declared_variant_member(
@@ -372,6 +371,7 @@ impl Checker {
                         self.check_call_named(
                             &constructor_name,
                             &head.span,
+                            None,
                             head.type_args.as_deref(),
                             args,
                             span,
@@ -559,16 +559,19 @@ impl Checker {
         // `Node::shutdown`; its impl owns the call. Compiler builtin types
         // retain their runtime methods even when std/builtins provides source
         // signatures for those operations.
-        let checker_member = ((head
+        let declaration = head
             .receiver_head
-            .and_then(crate::TypeHead::builtin)
-            .is_some()
-            || !self
-                .impl_method_declaration_ids
-                .contains_key(internal_member))
-            && (self.has_fn_sig(internal_member) || is_vec_from))
-            .then_some(internal_member.to_string());
-        if let Some(checker_member) = checker_member {
+            .and_then(|head| {
+                let (_, member) = internal_member.rsplit_once("::")?;
+                self.actor_member(head, member, crate::DeclarationKind::ActorMethod)
+                    .filter(|id| self.fn_sigs.contains_key(id))
+            })
+            .or_else(|| {
+                self.defs
+                    .lookup_builtin_callable(Symbol::intern(internal_member))
+            });
+        if declaration.is_some() || is_vec_from {
+            let checker_member = internal_member.to_string();
             if let Some(result) = expected.and_then(|expected| {
                 self.check_call_against_expected_constructor_named(
                     &checker_member,
@@ -585,6 +588,7 @@ impl Checker {
             let result = self.check_call_named(
                 &checker_member,
                 &head.span,
+                declaration,
                 head.type_args.as_deref(),
                 args,
                 span,
@@ -654,9 +658,11 @@ impl Checker {
 
         let receiver = head.receiver_type(Vec::new());
         let source_method = match self.select_method(&receiver, method) {
-            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
-                self.fn_sigs.get(&declaration).cloned()
-            }
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => self
+                .fn_sigs
+                .get(&declaration)
+                .cloned()
+                .map(|sig| (Some(declaration), sig)),
             crate::check::dispatch_table::MethodSelection::Ambiguous(traits) => {
                 if let Some(result) =
                     self.check_concrete_from_call(&receiver, method, &traits, args, span)
@@ -672,17 +678,24 @@ impl Checker {
             }
             crate::check::dispatch_table::MethodSelection::Missing => None,
         };
-        let type_def = self.ty_type_def(&receiver).cloned()?;
-        let raw_sig = source_method.or_else(|| type_def.methods.get(method).cloned())?;
+        let type_def = self.ty_type_def(&receiver).cloned();
+        let (declaration, raw_sig) = source_method.or_else(|| {
+            let sig = type_def.as_ref()?.methods.get(method)?.clone();
+            let declaration = sig.impl_method.as_ref().map(|method| method.declaration);
+            Some((declaration, sig))
+        })?;
+        let type_params = type_def
+            .as_ref()
+            .map_or(&[][..], |td| td.type_params.as_slice());
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
-            if type_args.len() != type_def.type_params.len() {
+            if type_args.len() != type_params.len() {
                 self.report_error(
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
                         "type `{}` has {} type parameter(s) but {} type argument(s) were supplied",
                         head.canonical_type,
-                        type_def.type_params.len(),
+                        type_params.len(),
                         type_args.len()
                     ),
                 );
@@ -692,7 +705,7 @@ impl Checker {
                 .map(|type_arg| self.resolve_type_expr(type_arg))
                 .collect::<Vec<_>>();
             (
-                instantiate_stdlib_method_sig(&raw_sig, &type_def.type_params, &owner_args),
+                instantiate_stdlib_method_sig(&raw_sig, type_params, &owner_args),
                 owner_args,
             )
         } else {
@@ -709,6 +722,7 @@ impl Checker {
             },
             true,
             Some(GenericCallee::Method {
+                declaration,
                 type_name: &head.canonical_type,
                 method,
                 owner_type_args: &explicit_owner_args,
@@ -717,25 +731,18 @@ impl Checker {
         if !explicit_owner_args.is_empty() {
             self.record_concrete_call_type_args(span, &explicit_owner_args);
         }
-        let declaration = self
-            .impl_method_declaration_ids
-            .get(&internal_member)
-            .copied()
-            .map_or_else(
-                || CallTarget::Unsupported {
-                    reason: format!(
-                        "associated function `{}.{method}` has no registered declaration identity",
-                        head.canonical_type
-                    ),
-                },
-                // Static calls through nominal heads retain the same declared
-                // runtime/implementation selection as direct builtin calls.
-                |_| self.call_target_for_signature(&internal_member),
-            );
+        let target = if let Some(id) = declaration {
+            self.classify_callable(&internal_member, Some(id))
+        } else {
+            CallTarget::Unsupported {
+                reason: format!("associated function `{internal_member}` has no registered declaration identity"),
+            }
+        };
+        self.record_direct_call_target(span, target.clone());
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                target: declaration,
+                target,
                 c_symbol: internal_member,
             },
         );

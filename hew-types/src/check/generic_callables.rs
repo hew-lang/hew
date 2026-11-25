@@ -190,12 +190,14 @@ impl Checker {
             }
             *requirements = retained;
         }
-        let previous = self.current_function.clone();
         for (declaration, requirement) in affected {
-            self.current_function = declaration.map(|id| self.defs.path(id).to_string());
-            self.record_generic_requirement(requirement.kind, &requirement.ty, &requirement.span);
+            self.record_owned_generic_requirement(
+                declaration,
+                requirement.kind,
+                &requirement.ty,
+                &requirement.span,
+            );
         }
-        self.current_function = previous;
         for site in std::mem::take(&mut self.generic_fn_instantiation_sites) {
             let substitution: HashMap<_, _> = site
                 .substitution
@@ -207,9 +209,8 @@ impl Checker {
                     .values()
                     .any(|ty| Self::ty_mentions_type_params(ty, parameters))
             {
-                let caller = site.caller.map(|id| self.defs.path(id).to_string());
                 self.record_generic_instantiation_site(
-                    caller.as_deref(),
+                    site.caller,
                     site.callee,
                     substitution,
                     &site.span,
@@ -257,9 +258,8 @@ impl Checker {
                 )
                 .collect();
             self.record_generic_instantiation_site(
-                self.current_function.clone().as_deref(),
-                self.signature_declaration(&owner)
-                    .expect("generic callable owner has a declaration"),
+                self.current_callable_declaration(),
+                owner,
                 substitution,
                 span,
             );
@@ -440,14 +440,12 @@ impl Checker {
             .collect()
     }
 
-    pub(super) fn generic_callable_owner(&self, ty: &Ty) -> Option<String> {
+    pub(super) fn generic_callable_owner(&self, ty: &Ty) -> Option<crate::DefId> {
         let Ty::GenericCallable { parameters, .. } = ty else {
             return None;
         };
         let owner = parameters.first()?.parameter.id.declaration_owner()?;
-        self.fn_sigs
-            .contains_key(&owner)
-            .then(|| self.defs.path(owner).to_string())
+        self.fn_sigs.contains_key(&owner).then_some(owner)
     }
 
     pub(super) fn record_generic_callable_coercion(
@@ -482,9 +480,8 @@ impl Checker {
             .map(|(source, target)| (source.parameter, Ty::param(target.parameter)))
             .collect();
         self.record_generic_instantiation_site(
-            Some(&destination),
-            self.signature_declaration(&implementation)
-                .expect("generic callable implementation has a declaration"),
+            Some(destination),
+            implementation,
             substitution,
             span,
         );

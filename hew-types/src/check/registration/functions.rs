@@ -1035,14 +1035,13 @@ impl Checker {
             ..FnSig::default()
         };
 
-        let key = self.defs.path(declaration).to_string();
         self.insert_fn_sig(declaration, sig);
         self.record_fn_sig_inference_holes(declaration, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
         // skip the body and wire to the catalog.
         if let Some(intrinsic_key) = &fd.intrinsic {
-            self.register_intrinsic_declaration(key, intrinsic_key, name, fd);
+            self.register_intrinsic_declaration(declaration, intrinsic_key, name, fd);
         }
     }
 
@@ -1051,10 +1050,11 @@ impl Checker {
     /// catalogue validation in HIR.
     pub(super) fn validate_intrinsic_signature(
         &mut self,
-        key: &str,
+        declaration: crate::DefId,
         intrinsic_key: &str,
         fd: &FnDecl,
     ) -> bool {
+        let key = self.defs.path(declaration);
         let Some(family) =
             crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(intrinsic_key)
         else {
@@ -1063,7 +1063,7 @@ impl Checker {
         let Some(contract) = family.semantic_contract() else {
             return true;
         };
-        let signature_matches = self.fn_sig(key).is_some_and(|signature| {
+        let signature_matches = self.fn_sigs.get(&declaration).is_some_and(|signature| {
             let resolve = |ty: &Ty| {
                 crate::ResolvedTy::from_ty(ty).map(|ty| {
                     super::restore_member_opacity(ty, &self.defs, &|name| {
@@ -1154,11 +1154,12 @@ impl Checker {
     /// it cannot become a live intrinsic dispatch target.
     pub(super) fn register_intrinsic_declaration(
         &mut self,
-        key: String,
+        declaration: crate::DefId,
         intrinsic_key: &str,
         name: &str,
         fd: &FnDecl,
     ) {
+        let key = self.defs.path(declaration).to_string();
         // Shape axis (b): a key containing `::` is a method (e.g. `"Type::method"`).
         // Impl methods, actor methods, and trait-impl methods all reach here with
         // such a key via `register_fn_sig_with_name`.  Methods are never valid
@@ -1210,7 +1211,7 @@ impl Checker {
                 .as_ref()
                 .is_some_and(|module| self.canonical_std_module_sources.contains(module))
         {
-            if !self.validate_intrinsic_signature(&key, intrinsic_key, fd) {
+            if !self.validate_intrinsic_signature(declaration, intrinsic_key, fd) {
                 return;
             }
             self.intrinsic_declarations

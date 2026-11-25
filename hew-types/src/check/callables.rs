@@ -61,14 +61,15 @@ impl Checker {
     /// from the destination type or a later invocation of the local binding.
     pub(super) fn instantiate_function_value(
         &mut self,
-        signature_key: &str,
+        declaration: crate::DefId,
         type_args: Option<&[Spanned<hew_parser::ast::TypeExpr>]>,
         span: &Span,
         receiver_args: Option<&[Ty]>,
     ) -> Ty {
+        let signature_key = self.callable_spelling(declaration).to_string();
         // A facade codec is a compiler operation selected per call site by
         // its value type; it has no body to take the address of.
-        if self.codec_intrinsic(signature_key).is_some() {
+        if self.codec_intrinsic(&signature_key).is_some() {
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -80,12 +81,8 @@ impl Checker {
         // Reifying an extern as a callable performs the same authority check
         // as invoking it. An unsafe block may wrap that checked operation in
         // an ordinary callable, as an authored closure can.
-        self.require_unsafe(
-            self.signature_declaration(signature_key),
-            signature_key,
-            span,
-        );
-        let target = self.call_target_for_signature(signature_key);
+        self.require_unsafe(Some(declaration), &signature_key, span);
+        let target = self.call_target_for_callable(declaration);
         let lifecycle = match &target {
             super::CallTarget::Builtin { endpoint } => {
                 crate::actor_delivery::ActorDeliveryCall::lifecycle_builtin(endpoint)
@@ -93,7 +90,8 @@ impl Checker {
             _ => None,
         };
         let mut sig = self
-            .fn_sig(signature_key)
+            .fn_sigs
+            .get(&declaration)
             .cloned()
             .unwrap_or_else(|| panic!("function value `{signature_key}` has a signature"));
         // Structural actor builtins prove their operand after contextual
@@ -117,7 +115,7 @@ impl Checker {
         }
         let declaration_params = sig.type_params.clone();
         let Some((sig, mut arguments)) =
-            self.instantiate_function_value_receiver(sig, receiver_args, signature_key, span)
+            self.instantiate_function_value_receiver(sig, receiver_args, &signature_key, span)
         else {
             return Ty::Error;
         };
@@ -134,7 +132,7 @@ impl Checker {
         self.enforce_signature_bounds(&sig, &method_arguments, span);
         arguments.extend(method_arguments);
         self.record_generic_application(
-            super::types::GenericCallee::Function { key: signature_key },
+            super::types::GenericCallee::Function { declaration },
             &declaration_params,
             &arguments,
             span,
@@ -273,9 +271,7 @@ impl Checker {
             return;
         }
         let parameters = self
-            .current_function
-            .as_ref()
-            .and_then(|owner| self.fn_sig(owner))
+            .checking_signature()
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
         if Self::ty_mentions_type_params(ty, &parameters) || ty.has_inference_var() {
             self.record_generic_requirement(

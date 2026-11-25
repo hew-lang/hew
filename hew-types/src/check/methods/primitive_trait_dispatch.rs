@@ -141,6 +141,7 @@ impl Checker {
             },
             true,
             Some(GenericCallee::Method {
+                declaration: None,
                 type_name: &canonical,
                 method,
                 owner_type_args: receiver_type_args,
@@ -172,7 +173,10 @@ impl Checker {
                 resolved_args
                     .as_ref()
                     .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical, args))
-                    .filter(|m| self.has_fn_sig(&format!("{m}::{method}")))
+                    .filter(|m| {
+                        self.impl_method_declaration_ids
+                            .contains_key(&format!("{m}::{method}"))
+                    })
                     .map_or_else(|| method_key.clone(), |m| format!("{m}::{method}"))
             }
         } else {
@@ -198,7 +202,7 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
-        if self.has_fn_sig(&method_key) || self.has_fn_sig(&c_symbol) {
+        if matches!(target, CallTarget::ImplMethod(_)) {
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
@@ -596,6 +600,7 @@ impl Checker {
             },
             true,
             Some(GenericCallee::Method {
+                declaration: None,
                 type_name: &canonical,
                 method: method_name,
                 owner_type_args: &[],

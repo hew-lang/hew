@@ -2642,16 +2642,11 @@ pub(super) struct GenericFnInstantiationSite {
     pub(super) source_module: Option<String>,
 }
 
-/// Identity of the callee at a generic application site.
-///
-/// Deliberately carries the PARTS of a method identity rather than a formatted
-/// key: `record_generic_application` is the one place that joins nominal and
-/// method into a `fn_sigs` key, so the string form of method identity is
-/// constructed once instead of at every dispatch site.
+/// Selected callable and receiver arguments at a generic application site.
 #[derive(Clone, Copy)]
 pub(super) enum GenericCallee<'a> {
-    /// A free or module-qualified function, already keyed by its `fn_sigs` name.
-    Function { key: &'a str },
+    /// A free or module-qualified function.
+    Function { declaration: crate::DefId },
     /// A method. `owner_type_args` are the receiver's type arguments, needed
     /// because `lookup_named_method_sig` instantiates the impl-level parameters
     /// into the signature and drops them from `sig.type_params` before the
@@ -2659,6 +2654,7 @@ pub(super) enum GenericCallee<'a> {
     /// the signature-level instantiation is EMPTY and the only record of
     /// `T = HashMap<string, i64>` is the receiver.
     Method {
+        declaration: Option<crate::DefId>,
         type_name: &'a str,
         method: &'a str,
         owner_type_args: &'a [Ty],

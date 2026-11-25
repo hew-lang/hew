@@ -2165,9 +2165,11 @@ impl Checker {
                     // re-declare a runtime symbol, so binding the further
                     // occurrence is what keeps their declarations resolvable.
                     Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
+                        established_occurrence,
                         ..
                     }) if kind == Kind::ExternFunction => {
-                        self.defs.bind_redeclaration(occurrence, &path);
+                        let established = self.defs.declaration(established_occurrence)?;
+                        self.defs.bind_redeclaration(occurrence, established);
                         None
                     }
                     Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {

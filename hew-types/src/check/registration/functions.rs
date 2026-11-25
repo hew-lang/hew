@@ -1909,17 +1909,13 @@ impl Checker {
             });
         let declared_receiver =
             declared_args.map_or_else(|| receiver.clone(), |args| format!("{receiver}<{args}>"));
-        let trait_identity = match trait_bound {
-            None => "inherent".to_string(),
-            // An impl of a trait no path resolves is reported by the method-set
-            // check; its methods keep keys apart by the written spelling.
-            // TRANSITION(A1c4): WHY impl method keys are still rendered
-            // strings. WHEN impl methods are keyed by their declarations
-            // alone, an unresolved trait mints no key. WHAT: keys by `DefId`.
-            Some(bound) => self.resolve_trait_path(&bound.path).map_or_else(
-                || bound.path.to_string(),
-                |declared| self.defs.path(declared).to_string(),
-            ),
+        // The method-set check diagnoses an unresolved trait. Such an impl
+        // has no owner under which a method declaration can be registered.
+        let trait_identity = match self.impl_method_owner(trait_bound)? {
+            super::dispatch_table::MethodOwner::Inherent => "inherent".to_string(),
+            super::dispatch_table::MethodOwner::Trait(declared) => {
+                self.defs.path(declared).to_string()
+            }
         };
         // A type may implement one generic trait at several arguments
         // (`impl From<A> for E` beside `impl From<B> for E`); the trait
@@ -1961,38 +1957,38 @@ impl Checker {
         let declaration = self.defs.declaration(occurrence).map_or_else(
             || {
                 self.defs
-                    .declare(occurrence, method.name, receiver_declaration, path.clone())
+                    .declare(occurrence, method.name, receiver_declaration, path)
             },
             Ok,
         );
-        if let Ok(declaration) = declaration {
-            if let Some(module) = self.current_declaration_module() {
-                self.scopes.declare_type_parameters(
-                    module,
-                    declaration,
-                    method.fn_span.clone(),
-                    method
-                        .type_params
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|param| param.name),
-                );
-                self.declare_default_body_parameters(module, declaration, method);
+        let declaration = match declaration {
+            Ok(declaration) => declaration,
+            // An embedded stdlib declaration can be revisited through the
+            // module graph. Coherence checking diagnoses authored duplicates.
+            Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
+                established_occurrence,
+                ..
+            }) => {
+                let established = self.defs.declaration(established_occurrence)?;
+                return Some(self.defs.bind_redeclaration(occurrence, established));
             }
-            return Some(declaration);
+            Err(crate::def_table::DeclarationIdentityError::SecondSpelling { .. }) => return None,
+        };
+        if let Some(module) = self.current_declaration_module() {
+            self.scopes.declare_type_parameters(
+                module,
+                declaration,
+                method.fn_span.clone(),
+                method
+                    .type_params
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|param| param.name),
+            );
+            self.declare_default_body_parameters(module, declaration, method);
         }
-        // Impl methods are registered per route, and a shipped module reached
-        // through the compiled-in stdlib pass and through the module graph
-        // presents the same method under two occurrences. The canonical path
-        // already names the receiver, the trait and the method, so an
-        // established row for it is that same method: resolve it rather than
-        // mint a second identity. A genuinely duplicated impl method collides
-        // on this path too, and impl registration reports that.
-        // Publish this occurrence as another route to the established row.
-        let established = self.lookup_declaration(&path)?;
-        let canonical = self.defs.path(established).to_owned();
-        self.defs.bind_redeclaration(occurrence, &canonical)
+        Some(declaration)
     }
 
     /// Rename method-level type parameter names in `ty` from the trait's

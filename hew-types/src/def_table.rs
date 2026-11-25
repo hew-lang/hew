@@ -1503,26 +1503,14 @@ impl DefTable {
             })
     }
 
-    /// Bind a FURTHER occurrence to the declaration already established under
-    /// `canonical_path`.
-    ///
-    /// [`Self::declare`] refuses two occurrences claiming one path because
-    /// that would equate two declarations. An `extern "C"` symbol is the one
-    /// place where they ARE one: the linker binds every call to a single
-    /// implementation, peer files of one directory module routinely
-    /// re-declare a runtime symbol, and the checker keys every declaration of
-    /// it by the same fn-sig path — so the extern table resolves the
-    /// redeclaration against the established ABI contract rather than minting
-    /// a second one. Binding never creates a path or a declaration: it
-    /// answers `None` when nothing owns `canonical_path`, and it leaves an
-    /// occurrence that already resolves untouched.
+    /// Bind another occurrence to a declaration the checker has identified
+    /// as the same source declaration or extern contract.
     pub(crate) fn bind_redeclaration(
         &mut self,
         occurrence: DeclarationOccurrence,
-        canonical_path: &str,
-    ) -> Option<DefId> {
-        let established = *self.by_path.get(canonical_path)?;
-        Some(*self.by_occurrence.entry(occurrence).or_insert(established))
+        established: DefId,
+    ) -> DefId {
+        *self.by_occurrence.entry(occurrence).or_insert(established)
     }
 
     /// Mint the body identity of a trait default materialized for one

@@ -809,7 +809,7 @@ impl Checker {
                             hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
                         ) {
-                            self.insert_fn_sig(&func.name, declaration, sig);
+                            self.insert_fn_sig(declaration, sig);
                         }
                     }
 

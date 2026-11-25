@@ -1265,7 +1265,7 @@ impl Checker {
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
-                self.insert_fn_sig(&declaration_name, declaration, signature);
+                self.insert_fn_sig(declaration, signature);
             }
         }
 

@@ -108,7 +108,7 @@ impl Checker {
             .ok()?
             .impl_receiver_instance()?
             .head;
-        let instance = ResolvedTy::from_ty(&resolved)
+        let instance = ResolvedTy::from_ty(&resolved.materialize_literal_defaults())
             .ok()
             .and_then(|ty| ty.impl_receiver_instance());
         Some((head, instance))

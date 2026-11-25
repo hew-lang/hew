@@ -515,7 +515,6 @@ impl Checker {
                                 .cloned()
                                 .collect();
                             for m in defaults {
-                                let method_key = format!("{type_name}::{}", m.name);
                                 let skip =
                                     usize::from(m.params.first().is_some_and(|p| p.is_receiver));
                                 let param_names: Vec<String> = m
@@ -663,7 +662,7 @@ impl Checker {
                                 };
                                 self.inherit_default_parameters(&mut sig, Some(trait_id), &target);
                                 if let Some(declaration) = default_body {
-                                    self.insert_fn_sig(&method_key, declaration, sig.clone());
+                                    self.insert_fn_sig(declaration, sig.clone());
                                     self.impl_method_binders
                                         .insert(declaration, default_binders);
                                     if let Some((declaring_trait, _)) =
@@ -1033,7 +1032,7 @@ impl Checker {
         };
 
         let key = self.defs.path(declaration).to_string();
-        self.insert_fn_sig(&key, declaration, sig);
+        self.insert_fn_sig(declaration, sig);
         self.record_fn_sig_inference_holes(declaration, hole_vars);
         // If the declaration carries `#[intrinsic("name")]`, validate its
         // placement and (if accepted) record the mapping so HIR lowering can
@@ -1547,8 +1546,6 @@ impl Checker {
         // tracked inference variables shared with body checking. Every method
         // table must mirror this carrier rather than re-resolving annotations
         // into unrelated `Ty::Var`s.
-        let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
-            .unwrap_or_else(|| method_key.clone());
         let registered = self
             .fn_sigs
             .get(&declaration_id)
@@ -1611,7 +1608,7 @@ impl Checker {
         // `Ty::Var` with body checking and every method-table mirror. Rebuilding
         // and reinserting the annotation here would create an unrelated hole
         // that can never be resolved by the method body.
-        self.insert_fn_sig(&registered_key, declaration_id, sig.clone());
+        self.insert_fn_sig(declaration_id, sig.clone());
         if sig.extern_symbol.is_some() {
             let declaring_module = self
                 .registration_origin_module
@@ -1624,10 +1621,6 @@ impl Checker {
             let origin = (declaring_module, trusted_compiled_stdlib);
             self.extern_method_origins.insert(declaration_id, origin);
         }
-        // Preserve every exact declaration even when a trait method or concrete
-        // specialisation shares the ordinary receiver/method lookup spelling.
-        let declaration_path = self.defs.path(declaration_id).to_string();
-        self.insert_fn_sig(&declaration_path, declaration_id, sig.clone());
         // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
         // consume its receiver. A borrowing `close(self)` runs the implicit
         // scope-exit release a second time when a caller invokes `close()`
@@ -1690,16 +1683,8 @@ impl Checker {
             impl_type_params.map(Vec::as_slice),
         );
         self.publish_impl_method_declaration_id(&keys, declaration_id);
-        for key in keys.canonical.iter().chain(&keys.mangled) {
-            // Publish the signature under the same module-owned identity as
-            // the declaration, including imported non-generic methods. A previous
-            // concrete-impl registration may already be present; overwriting is
-            // correct because each impl block processes its own concrete args
-            // in sequence.
-            self.insert_fn_sig(key, declaration_id, sig.clone());
-            // Propagate consume-receiver membership to the same key
-            // so HIR dispatch does not lose the move contract.
-            if method.consumes_self {
+        if method.consumes_self {
+            for key in keys.canonical.iter().chain(&keys.mangled) {
                 self.consume_receiver_methods.insert(key.clone());
             }
         }
@@ -2191,7 +2176,7 @@ impl Checker {
         }
         self.actor_receive_methods.insert(handler);
         self.record_fn_sig_inference_holes(handler, hole_vars);
-        self.insert_fn_sig(&method_name, handler, sig);
+        self.insert_fn_sig(handler, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

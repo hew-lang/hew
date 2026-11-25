@@ -237,20 +237,21 @@ impl Checker {
 
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
-        crate::check::FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys)
+        crate::check::FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids)
     }
 
     /// The signature a key spells.
     ///
-    /// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): the remaining callers pass rendered names
+    /// instead of the callable declaration.
     pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
         self.fn_sigs.get(&self.signature_declaration(key)?)
     }
 
     pub(in crate::check) fn signature_declaration(&self, key: &str) -> Option<crate::DefId> {
-        self.fn_sig_keys
-            .get(key)
-            .copied()
+        self.lookup_declaration(key)
+            .filter(|id| self.fn_sigs.contains_key(id))
+            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
             .or_else(|| {
                 let (module, name) = key.rsplit_once('.')?;
                 let module = self.defs.module_for_path(module)?;
@@ -279,14 +280,8 @@ impl Checker {
         self.fn_sigs.get_mut(&declaration)
     }
 
-    /// File `sig` under `declaration`, reachable by `key`.
-    pub(in crate::check) fn insert_fn_sig(
-        &mut self,
-        key: &str,
-        declaration: crate::DefId,
-        sig: FnSig,
-    ) {
-        self.fn_sig_keys.insert(key.to_string(), declaration);
+    /// File the signature on its declaration.
+    pub(in crate::check) fn insert_fn_sig(&mut self, declaration: crate::DefId, sig: FnSig) {
         self.fn_sigs.insert(declaration, sig);
     }
 
@@ -299,7 +294,7 @@ impl Checker {
         sig: FnSig,
     ) {
         if let Some(member) = self.defs.member_of_kind(owner, name, kind) {
-            self.insert_fn_sig(name.as_str(), member, sig);
+            self.insert_fn_sig(member, sig);
         } else {
             self.errors.push(crate::error::TypeError::new(
                 crate::error::TypeErrorKind::InvalidOperation,

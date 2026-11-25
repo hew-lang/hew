@@ -373,7 +373,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: fn_sig_parts.0,
-            fn_sig_keys: fn_sig_parts.1,
+            defs: fn_sig_parts.1,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),

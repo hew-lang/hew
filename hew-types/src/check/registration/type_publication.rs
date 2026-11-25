@@ -1310,7 +1310,7 @@ impl Checker {
                 .item(self.scopes.namespace_of(module), function.name)
         });
         if let Some(super::scope::Binding::Fn(declaration)) = binding {
-            self.insert_fn_sig(key, declaration, sig);
+            self.insert_fn_sig(declaration, sig);
         } else {
             self.report_error(
                 TypeErrorKind::InvalidOperation,

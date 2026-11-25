@@ -42,7 +42,7 @@ pub(crate) fn collect_method_sigs_for_receiver(
         ..
     } = receiver_ty
     else {
-        return method_resolution::collect_method_sigs_for_receiver(
+        let mut methods = method_resolution::collect_method_sigs_for_receiver(
             &tc.defs,
             &tc.type_defs,
             tc.sigs(),
@@ -50,8 +50,23 @@ pub(crate) fn collect_method_sigs_for_receiver(
         )
         .into_iter()
         .filter(|(_, sig)| method_visible_from_root(tc, sig))
-        .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
-        .collect();
+        .collect::<std::collections::HashMap<_, _>>();
+        if let Some(receiver) = hew_types::ResolvedTy::from_ty(receiver_ty)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance())
+        {
+            for (name, _, _) in tc.dispatch.methods_of(receiver.head) {
+                if let Some(sig) = tc.dispatched_method_sig(receiver_ty, name) {
+                    if method_visible_from_root(tc, &sig) {
+                        methods.insert(name.to_string(), sig);
+                    }
+                }
+            }
+        }
+        return methods
+            .into_iter()
+            .map(|(name, sig)| (name, instantiate_receiver_projections(tc, sig)))
+            .collect();
     };
     let mut declared: HashSet<String> = tc
         .dispatch
@@ -98,7 +113,16 @@ pub(crate) fn lookup_method_sig(
             return None;
         }
     }
-    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
+    tc.dispatched_method_sig(receiver_ty, Symbol::intern(method))
+        .or_else(|| {
+            method_resolution::lookup_method_sig(
+                &tc.defs,
+                &tc.type_defs,
+                tc.sigs(),
+                receiver_ty,
+                method,
+            )
+        })
         .filter(|sig| method_visible_from_root(tc, sig))
         .map(|sig| instantiate_receiver_projections(tc, sig))
 }

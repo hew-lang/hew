@@ -103,24 +103,19 @@ pub fn complete(
                 });
             }
         }
-        // Signature lookup keys include method linkage names and canonical
-        // module paths. They are not necessarily names in this source scope.
-        // Resolve file-backed root functions by declaration owner, even when
-        // their signature key includes the root module's canonical path.
-        for (name, id) in &tc.fn_sig_keys {
-            let leaf = name.rsplit('.').next().unwrap_or(name);
+        for (&id, sig) in &tc.fn_sigs {
+            let leaf = tc.defs.name(id).as_str();
             if is_source_identifier(leaf)
                 && tc.root_value_bindings.contains(leaf)
-                && (name == leaf || tc.defs.module(*id) == tc.defs.root_module())
+                && tc.defs.ident(id).ctx == hew_parser::ast::SyntaxContext::ROOT
+                && tc.defs.module(id) == tc.defs.root_module()
                 && matches!(
-                    tc.defs.kind(*id),
+                    tc.defs.kind(id),
                     hew_types::DeclarationKind::Function
                         | hew_types::DeclarationKind::ExternFunction
                 )
             {
-                if let Some(sig) = tc.sigs().of(*id) {
-                    items.push(fn_sig_completion(leaf, sig));
-                }
+                items.push(fn_sig_completion(leaf, sig));
             }
         }
         items.extend(imported_function_completions(tc));
@@ -409,16 +404,15 @@ fn module_member_completions(
     };
 
     let mut items = Vec::new();
-    for (key, id) in &tc.fn_sig_keys {
-        if let Some(leaf) = direct_leaf(key).filter(|leaf| is_source_identifier(leaf)) {
+    for (&id, sig) in &tc.fn_sigs {
+        if let Some(leaf) = direct_leaf(tc.defs.path(id)).filter(|leaf| is_source_identifier(leaf))
+        {
             if matches!(
-                tc.defs.kind(*id),
+                tc.defs.kind(id),
                 hew_types::DeclarationKind::Function | hew_types::DeclarationKind::ExternFunction
-            ) && visible_from_root(tc, *id)
+            ) && visible_from_root(tc, id)
             {
-                if let Some(sig) = tc.sigs().of(*id) {
-                    items.push(fn_sig_completion(&leaf, sig));
-                }
+                items.push(fn_sig_completion(&leaf, sig));
             }
         }
     }

@@ -1133,14 +1133,22 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // State constructors must be registered in fn_sigs so that transition bodies
     // that reference bare state names can resolve them.
-    assert!(
-        output.sigs().contains("Red"),
-        "unit state 'Red' constructor must be registered in fn_sigs for the import path"
-    );
-    assert!(
-        output.sigs().contains("Green"),
-        "unit state 'Green' constructor must be registered in fn_sigs for the import path"
-    );
+    let machine = output.defs.lookup_path("lights.Traffic").unwrap();
+    let receiver = Ty::named_in(&output.defs, "lights.Traffic", vec![]);
+    for state in ["Red", "Green"] {
+        let constructor = output
+            .defs
+            .member_of_kind(
+                machine,
+                hew_parser::ast::Symbol::intern(state),
+                hew_types::DeclarationKind::MachineState,
+            )
+            .unwrap();
+        assert_eq!(
+            output.fn_sigs[&constructor].return_type, receiver,
+            "an imported state constructor must return the exact machine identity"
+        );
+    }
 
     // Machine TypeDef must be populated with state variants
     assert!(
@@ -1161,12 +1169,6 @@ fn imported_machine_unit_state_constructor_resolves() {
     assert!(
         output.type_def_at_path("lights.Traffic.Event").is_some(),
         "imported event registration must preserve its exact source owner"
-    );
-    let receiver = Ty::named_in(&output.defs, "lights.Traffic", vec![]);
-    assert_eq!(
-        output.sigs()["Red"].return_type,
-        receiver,
-        "an imported state constructor must return the exact machine identity"
     );
     let step = output
         .dispatched_method_sig(&receiver, Symbol::intern("step"))
@@ -1446,14 +1448,18 @@ fn two_modules_with_different_machines_no_collision() {
         output.type_def_at_path("mod_b.Beta").is_some(),
         "Beta must be registered"
     );
-    assert!(
-        output.sigs().contains("Off"),
-        "Alpha::Off constructor must be registered"
-    );
-    assert!(
-        output.sigs().contains("Idle"),
-        "Beta::Idle constructor must be registered"
-    );
+    for (machine, state) in [("mod_a.Alpha", "Off"), ("mod_b.Beta", "Idle")] {
+        let owner = output.defs.lookup_path(machine).unwrap();
+        let constructor = output
+            .defs
+            .member_of_kind(
+                owner,
+                hew_parser::ast::Symbol::intern(state),
+                hew_types::DeclarationKind::MachineState,
+            )
+            .unwrap();
+        assert!(output.fn_sigs.contains_key(&constructor));
+    }
 }
 
 /// Gate program: a machine declaring `<T: Resource>` parses and

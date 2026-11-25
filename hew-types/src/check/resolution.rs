@@ -3187,9 +3187,7 @@ impl Checker {
                         callable: Box::new(callable),
                     };
                     if let Some(owner) = parameters[0].id.declaration_owner() {
-                        let key = self.defs.path(owner).to_string();
                         self.insert_fn_sig(
-                            &key,
                             owner,
                             Self::generic_callable_signature(&scheme)
                                 .expect("quantified callable signature"),

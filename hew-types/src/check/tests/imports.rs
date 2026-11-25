@@ -2950,8 +2950,13 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         )])),
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
+    let wrap = output.defs.lookup_path("Wrap").unwrap();
+    let has = output
+        .defs
+        .member_of_kind(wrap, Symbol::intern("Has"), crate::DeclarationKind::Variant)
+        .unwrap();
     assert_eq!(
-        output.sigs().get("Has").map(|sig| sig
+        output.fn_sigs.get(&has).map(|sig| sig
             .params
             .iter()
             .map(|parameter| parameter.ty.clone())
@@ -2961,7 +2966,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
             "myapp.mod_a.Payload",
             vec![]
         )]),
-        "the variant constructor `Has` must be re-keyed to take `myapp.mod_a.Payload`"
+        "the variant constructor `Has` must take `myapp.mod_a.Payload`"
     );
 }
 

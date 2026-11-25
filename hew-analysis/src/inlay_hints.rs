@@ -1173,8 +1173,6 @@ fn main() -> i64 {
             Item::Impl(implementation) => &implementation.methods[0],
             other => panic!("expected impl item, got {other:?}"),
         };
-        // Signatures are checker-owned identities; the legacy spelling index
-        // is deliberately absent, as it will be after that mirror is deleted.
         let mut selected = 0;
         for (id, signature) in &mut output.fn_sigs {
             let Some(site) = output.defs.site(*id) else {
@@ -1189,7 +1187,6 @@ fn main() -> i64 {
             }
         }
         assert_eq!(selected, 2, "both impl methods need declaration identities");
-        output.fn_sig_keys.clear();
         let hints = build_inlay_hints(source, &parsed, &output);
         let a_offset = find_named_return_hint_offset(source, &method(1).fn_span).unwrap();
         let b_offset = find_named_return_hint_offset(source, &method(3).fn_span).unwrap();

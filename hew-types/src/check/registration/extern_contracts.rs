@@ -571,11 +571,6 @@ impl Checker {
                     .collect();
                 sig.return_type = self.resolve_extern_signature_nominals(&sig.return_type);
             }
-            // Extern declarations use the same canonical owner spelling as
-            // ordinary free functions. Their exact DefId comes from the
-            // enclosing source occurrence inventoried before registration.
-            let key = scoped_module_item_name(self.canonical_fn_owner(), f.name.name.as_str())
-                .unwrap_or_else(|| f.name.to_string());
             let Some(declaration) = self.resolve_extern_contract(
                 block_span,
                 declaration_ordinal,
@@ -586,7 +581,7 @@ impl Checker {
                 continue;
             };
             self.record_fn_sig_inference_holes(declaration, hole_vars);
-            self.insert_fn_sig(&key, declaration, sig);
+            self.insert_fn_sig(declaration, sig);
             if f.is_offload() {
                 self.pending_offloads
                     .push(crate::check::types::PendingOffload {

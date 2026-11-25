@@ -717,14 +717,6 @@ pub struct TypeCheckOutput {
     pub fn_sigs: HashMap<crate::DefId, FnSig>,
     /// Source-declared methods by receiver declaration and owner.
     pub dispatch: super::dispatch_table::DispatchTable,
-    /// The signature keys the checker's callers spell, each naming one
-    /// declaration of `fn_sigs`.
-    ///
-    /// TRANSITION(A1 commit 4): WHY callers still spell `Type::method` and
-    /// `{module}.{name}` keys. WHEN call resolution goes through `Scope` and
-    /// the dispatch table, callers hold the id and this index is deleted.
-    /// WHAT: every caller reads `fn_sigs` by the `DefId` it resolved.
-    pub fn_sig_keys: HashMap<String, crate::DefId>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
@@ -1789,7 +1781,7 @@ impl TypeCheckOutput {
     /// The function signatures, read by the keys callers spell.
     #[must_use]
     pub fn sigs(&self) -> FnSigView<'_> {
-        FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys)
+        FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids)
     }
 
     /// Record an expression's checker type, keeping the `Ty`-typed
@@ -2770,7 +2762,7 @@ impl<'a> TypeDefView<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct FnSigView<'a> {
     pub sigs: &'a HashMap<crate::DefId, FnSig>,
-    pub keys: &'a HashMap<String, crate::DefId>,
+    impl_names: &'a HashMap<String, crate::DefId>,
     defs: &'a crate::DefTable,
 }
 
@@ -2779,9 +2771,13 @@ impl<'a> FnSigView<'a> {
     pub fn new(
         defs: &'a crate::DefTable,
         sigs: &'a HashMap<crate::DefId, FnSig>,
-        keys: &'a HashMap<String, crate::DefId>,
+        impl_names: &'a HashMap<String, crate::DefId>,
     ) -> Self {
-        Self { sigs, keys, defs }
+        Self {
+            sigs,
+            impl_names,
+            defs,
+        }
     }
 
     /// The signature of a declaration.
@@ -2792,12 +2788,14 @@ impl<'a> FnSigView<'a> {
 
     /// The signature a key spells: a declaration's key, else a builtin name.
     ///
-    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): callers holding rendered names still resolve
+    /// them before accessing the declaration's signature.
     #[must_use]
     pub fn get(self, key: &str) -> Option<&'a FnSig> {
-        self.keys
-            .get(key)
-            .and_then(|id| self.sigs.get(id))
+        self.defs
+            .lookup_path(key)
+            .and_then(|id| self.of(id))
+            .or_else(|| self.impl_names.get(key).and_then(|id| self.of(*id)))
             .or_else(|| self.of(self.defs.lookup_builtin_callable(Symbol::intern(key))?))
     }
 
@@ -2808,9 +2806,15 @@ impl<'a> FnSigView<'a> {
 
     /// Every spelled key with its signature.
     pub fn entries(self) -> impl Iterator<Item = (&'a str, &'a FnSig)> + 'a {
-        self.keys
+        self.sigs
             .iter()
-            .filter_map(move |(key, id)| Some((key.as_str(), self.sigs.get(id)?)))
+            .filter(move |(id, _)| !self.defs.is_builtin_callable(**id))
+            .map(move |(id, sig)| (self.defs.path(*id), sig))
+            .chain(
+                self.impl_names
+                    .iter()
+                    .filter_map(move |(name, id)| Some((name.as_str(), self.of(*id)?))),
+            )
             .chain(
                 self.builtin_entries()
                     .map(|(name, sig)| (name.as_str(), sig)),
@@ -2847,7 +2851,6 @@ impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
 #[derive(Debug, Default)]
 pub struct FnSigFixture {
     sigs: HashMap<crate::DefId, FnSig>,
-    keys: HashMap<String, crate::DefId>,
     defs: crate::DefTable,
 }
 
@@ -2857,8 +2860,7 @@ impl FnSigFixture {
     pub fn new(sigs: impl IntoIterator<Item = (String, FnSig)>) -> Self {
         let mut fixture = Self::default();
         for (key, sig) in sigs {
-            let declaration = crate::DefId::for_test(&key);
-            fixture.keys.insert(key, declaration);
+            let declaration = fixture.defs.mint_for_test(key);
             fixture.sigs.insert(declaration, sig);
         }
         fixture
@@ -2866,14 +2868,21 @@ impl FnSigFixture {
 
     #[must_use]
     pub fn view(&self) -> FnSigView<'_> {
-        FnSigView::new(&self.defs, &self.sigs, &self.keys)
+        static NO_IMPL_NAMES: std::sync::LazyLock<HashMap<String, crate::DefId>> =
+            std::sync::LazyLock::new(HashMap::new);
+        FnSigView::new(&self.defs, &self.sigs, &NO_IMPL_NAMES)
     }
 
     /// The signature tables of a hand-built
     /// [`TypeCheckOutput`].
     #[must_use]
-    pub fn into_parts(self) -> (HashMap<crate::DefId, FnSig>, HashMap<String, crate::DefId>) {
-        (self.sigs, self.keys)
+    pub fn into_parts(
+        self,
+    ) -> (
+        HashMap<crate::DefId, FnSig>,
+        std::sync::Arc<crate::DefTable>,
+    ) {
+        (self.sigs, std::sync::Arc::new(self.defs))
     }
 }
 
@@ -3655,8 +3664,6 @@ pub struct Checker {
     pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Function signatures keyed by declaration identity.
     pub(super) fn_sigs: HashMap<crate::DefId, FnSig>,
-    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
-    pub(super) fn_sig_keys: HashMap<String, crate::DefId>,
     /// Closed runtime call families published by compiler builtin
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
@@ -4708,7 +4715,6 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
-            fn_sig_keys: HashMap::new(),
             builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),

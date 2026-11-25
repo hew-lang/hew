@@ -915,7 +915,6 @@ impl Checker {
         let owner = self.declare_callable_owner(span, crate::DeclarationKind::Closure);
         let key = self.defs.path(owner).to_string();
         self.insert_fn_sig(
-            &key,
             owner,
             FnSig {
                 type_params: generic_parameters.clone(),

@@ -297,8 +297,7 @@ impl Checker {
         let mut owner = self
             .current_function
             .as_ref()
-            .and_then(|key| self.fn_sig_keys.get(key))
-            .copied();
+            .and_then(|key| self.signature_declaration(key));
         if owner.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
             let mentioned_owners = self.generic_obligation_owners(&[ty]);
             if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
@@ -440,7 +439,10 @@ impl Checker {
         }
         // Builtin signatures have no source body in this obligation graph.
         // Their bounds and call type arguments were handled above.
-        let Some(&declaration) = self.fn_sig_keys.get(&callee_key) else {
+        let Some(declaration) = self
+            .signature_declaration(&callee_key)
+            .filter(|id| !self.defs.is_builtin_callable(*id))
+        else {
             return;
         };
         self.record_generic_instantiation_site(
@@ -458,7 +460,7 @@ impl Checker {
         substitution: HashMap<crate::ParamHead, Ty>,
         span: &Span,
     ) {
-        let enclosing = enclosing.and_then(|key| self.fn_sig_keys.get(key)).copied();
+        let enclosing = enclosing.and_then(|key| self.signature_declaration(key));
         let enclosing =
             if enclosing.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
                 match self

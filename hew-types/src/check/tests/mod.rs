@@ -632,7 +632,7 @@ impl Checker {
     /// `key`.
     pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
         let declaration = self.defs.mint_for_test(key);
-        self.insert_fn_sig(key, declaration, sig);
+        self.insert_fn_sig(declaration, sig);
     }
 
     /// File a hand-built trait under a fresh declaration row spelled `key`.

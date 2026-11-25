@@ -973,9 +973,9 @@ impl Checker {
                 _ => return None,
             };
             return self
-                .fn_sig_keys
-                .iter()
-                .find_map(|(key, id)| (*id == declaration).then(|| key.clone()));
+                .fn_sigs
+                .contains_key(&declaration)
+                .then(|| self.defs.path(declaration).to_string());
         }
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
         // The current source scope owns an authored function or extern before
@@ -990,10 +990,8 @@ impl Checker {
                 )
             })
         {
-            for key in [&canonical, name] {
-                if self.fn_sig_keys.get(key) == Some(&declaration) {
-                    return Some(key.to_string());
-                }
+            if self.fn_sigs.contains_key(&declaration) {
+                return Some(self.defs.path(declaration).to_string());
             }
         }
         for key in [&canonical, name] {
@@ -1014,9 +1012,9 @@ impl Checker {
         // shared between files and never introduce a free function.
         for key in [&canonical, name] {
             if self.has_fn_sig(key)
-                && !self.fn_sig_keys.get(key).is_some_and(|id| {
+                && !self.signature_declaration(key).is_some_and(|id| {
                     matches!(
-                        self.defs.kind(*id),
+                        self.defs.kind(id),
                         crate::DeclarationKind::Variant | crate::DeclarationKind::MachineState
                     )
                 })
@@ -3137,7 +3135,6 @@ impl Checker {
             stack_hints: self.stack_hints.clone(),
             type_defs: self.type_defs.clone(),
             fn_sigs: self.fn_sigs.clone(),
-            fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_call_targets: self.builtin_call_targets.clone(),
             import_fn_name_aliases: self.import_fn_name_aliases.clone(),
             published_bare_function_owners: self.published_bare_function_owners.clone(),
@@ -3468,7 +3465,7 @@ impl Checker {
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
             &self.defs,
-            FnSigView::new(&self.defs, &self.fn_sigs, &self.fn_sig_keys),
+            FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids),
             |ty| self.normalize_for_use(ty),
         );
         self.register_actor_intercept_types(program);
@@ -4295,7 +4292,6 @@ impl Checker {
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             dispatch,
-            fn_sig_keys: self.fn_sig_keys.clone(),
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             source_function_targets,
             imported_impl_body_facts,

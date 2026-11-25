@@ -39,8 +39,7 @@ impl Checker {
         expected_args: &[Ty],
         expected: &Ty,
     ) -> Option<Ty> {
-        let expected_enum_name = expected_head.registry_key();
-        let td = self.lookup_type_def(expected_enum_name)?;
+        let td = self.head_type_def(expected_head)?;
         let VariantDef::Struct(variant_fields) = td.variants.get(variant_name).cloned()? else {
             return None;
         };
@@ -97,7 +96,7 @@ impl Checker {
         let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
         for (index, (declared, _)) in variant_fields.iter().enumerate() {
             if !provided.contains(declared.as_str())
-                && !self.is_implicit_variant_field(expected_enum_name, variant_name, index)
+                && !self.is_implicit_variant_field(expected_head, variant_name, index)
             {
                 self.report_error(
                     TypeErrorKind::UndefinedField,
@@ -121,14 +120,8 @@ impl Checker {
         // identical motivation to the plain-struct coercion arm; the enum name
         // carrier IS the machine name when the expected type is a machine
         // instantiation (`var m: Holder<File> = Holder::Active { … }`).
-        self.enforce_type_def_instantiation_bounds(expected_enum_name, &resolved_args, span);
-        self.record_variant_constructor_plan(
-            expected_enum_name,
-            variant_name,
-            expected,
-            fields,
-            span,
-        );
+        self.enforce_head_instantiation_bounds(expected_head, &resolved_args, span);
+        self.record_variant_constructor_plan(variant_name, expected, fields, span);
         self.record_type(span, expected);
         Some(expected.clone())
     }
@@ -677,7 +670,7 @@ impl Checker {
                     return Ty::Error;
                 };
                 let Some(variant) =
-                    self.context_variant_definition(&owner, context.name.name.as_str())
+                    self.context_variant_definition(expected, context.name.name.as_str())
                 else {
                     self.report_error(
                         TypeErrorKind::PathMemberNotFound,
@@ -695,9 +688,11 @@ impl Checker {
                 );
                 let shape_matches = shape_matches
                     || (context.record.is_none()
-                        && self.type_def_at(&owner).is_some_and(|td| {
-                            Self::variant_is_source_unit(td, context.name.name.as_str())
-                        }));
+                        && self
+                            .ty_type_def(&self.subst.resolve(expected))
+                            .is_some_and(|td| {
+                                Self::variant_is_source_unit(td, context.name.name.as_str())
+                            }));
                 if !shape_matches {
                     self.report_error(
                         TypeErrorKind::PathKindMismatch,
@@ -793,11 +788,7 @@ impl Checker {
                         args: expected_args,
                     } = expected
                     {
-                        self.enforce_type_def_instantiation_bounds(
-                            expected_head.registry_key(),
-                            expected_args,
-                            span,
-                        );
+                        self.enforce_head_instantiation_bounds(*expected_head, expected_args, span);
                         self.record_type(span, expected);
                         expected.clone()
                     } else {
@@ -1429,7 +1420,7 @@ impl Checker {
                         }
                     } else {
                         let kind_label = self
-                            .lookup_type_def(name)
+                            .head_type_def(*expected_head)
                             .map_or("type", |type_def| value_type_kind_label(type_def.kind));
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -1443,7 +1434,7 @@ impl Checker {
                     }
                 }
 
-                if let Some(td) = self.lookup_type_def(name) {
+                if let Some(td) = self.head_type_def(*expected_head).cloned() {
                     if td.type_params.len() == expected_args.len() && !expected_args.is_empty() {
                         // Pre-seed type arg map from the expected type
                         let mut type_arg_map: HashMap<crate::ParamHead, Ty> = td
@@ -1524,7 +1515,11 @@ impl Checker {
                         // vector built from the coercion is the substitution
                         // the user is committing to. Route through the
                         // canonical helper; bound-free names short-circuit.
-                        self.enforce_type_def_instantiation_bounds(name, &resolved_args, span);
+                        self.enforce_head_instantiation_bounds(
+                            *expected_head,
+                            &resolved_args,
+                            span,
+                        );
                         self.check_record_init_field_visibility(fields, field_labels, expected);
                         self.record_struct_init_field_resolutions(fields, field_labels, expected);
                         self.record_type(span, expected);
@@ -1763,7 +1758,7 @@ impl Checker {
                     .filter(|(prefix, _)| !prefix.contains('.'))
                     .filter(|_| self.variant_surface_owner_matches(name.name.as_str(), expected))
                     .map(|(_, variant)| variant.to_string());
-                let expected_type_def = self.lookup_type_def(expected_type_name);
+                let expected_type_def = self.head_type_def(*expected_type_head);
                 let is_unit_variant = expected_type_def
                     .as_ref()
                     .and_then(|td| {
@@ -1792,8 +1787,8 @@ impl Checker {
                             span,
                         );
                     }
-                    self.enforce_type_def_instantiation_bounds(
-                        expected_type_name,
+                    self.enforce_head_instantiation_bounds(
+                        *expected_type_head,
                         expected_args,
                         span,
                     );

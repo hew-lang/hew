@@ -322,27 +322,18 @@ impl Checker {
         bounds.map_types(|ty| ty.substitute_type_params_parallel(&subst_map))
     }
 
-    /// Canonical declaration-bound enforcement for nominal generic types.
-    ///
-    /// `TypeDef.bounds` is the checker authority for bounds declared on
-    /// nominal declarations (`type` / `record` / `enum` / actor / machine).
-    /// Every checker path that builds a `Ty::Named` from a user-authored
-    /// nominal with substituted type arguments routes here: annotations,
-    /// returns, imports, struct init, tuple-record constructors, enum
-    /// variant constructors and machine instantiations. Names without a
-    /// registered `TypeDef`, monomorphic names, and declarations without
-    /// bounds are no-ops.
-    pub(super) fn enforce_type_def_instantiation_bounds(
+    pub(super) fn enforce_head_instantiation_bounds(
         &mut self,
-        type_name: &str,
+        head: crate::TypeHead,
         type_args: &[Ty],
         span: &Span,
     ) {
-        if let Some(nominal) = self.type_def_key(type_name) {
+        if let Some(nominal) = head.declaration(&self.defs) {
             self.enforce_nominal_instantiation_bounds(nominal, type_args, span);
         }
     }
 
+    /// Enforce the bounds of this nominal declaration on its inferred arguments.
     pub(super) fn enforce_nominal_instantiation_bounds(
         &mut self,
         nominal: crate::NominalId,

@@ -23,8 +23,10 @@ impl Checker {
             super::Item::Actor(declaration) => declaration.name,
             _ => return,
         };
-        let identity = self.declaration_identity(name);
-        let contains = self.type_def_at(&identity).is_some_and(|definition| {
+        let definition = self
+            .named_item_declaration(name)
+            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)));
+        let contains = definition.is_some_and(|definition| {
             Self::structural_member_types_for_type(definition)
                 .iter()
                 .any(|ty| self.normalize_for_use(ty).contains_interceptor_token())

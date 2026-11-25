@@ -377,34 +377,6 @@ impl Checker {
         }
     }
 
-    fn machine_event_type_outside_transition(&self, ty: &Ty) -> Option<String> {
-        let type_name = ty.type_name()?;
-        let machine_name = type_name.strip_suffix(".Event")?;
-        if !self
-            .type_def_at(machine_name)
-            .is_some_and(|td| td.kind == TypeDefKind::Machine)
-        {
-            return None;
-        }
-        Some(type_name.to_string())
-    }
-
-    fn reject_machine_event_pattern_outside_transition(&mut self, ty: &Ty, span: &Span) -> bool {
-        let Some(event_type_name) = self.machine_event_type_outside_transition(ty) else {
-            return false;
-        };
-        // Slice 3 exposes companion event nominals for construction and `.step()`;
-        // general event-enum matching is reserved for transition-body lowering.
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "matching machine event enum `{event_type_name}` outside a transition body is not supported"
-            ),
-        );
-        true
-    }
-
     /// The diagnostic for an or-pattern alternative that binds different names,
     /// types or mutability from the first alternative.
     fn or_pattern_mismatch(
@@ -992,9 +964,6 @@ impl Checker {
             _ => None,
         };
         if let Some((path, payload)) = qualified_path {
-            if self.reject_machine_event_pattern_outside_transition(ty, span) {
-                return;
-            }
             match payload.as_ref() {
                 None => {
                     if self.resolve_variant_path_match(path, ty).is_none()
@@ -1078,9 +1047,6 @@ impl Checker {
                         self.bind_pattern(&pattern.0, &Ty::Error, is_mutable, &pattern.1);
                     }
                 }
-                return;
-            }
-            if self.reject_machine_event_pattern_outside_transition(ty, span) {
                 return;
             }
             match context.payload.as_ref() {
@@ -1206,7 +1172,7 @@ impl Checker {
                     return;
                 }
                 // Determine if this identifier names a constructor (unit variant) so we
-                // can gate `reject_machine_event_pattern_outside_transition`.  Use scope
+                // can resolve the constructor. Use scope
                 // resolution rather than the old uppercase-first casing heuristic (#2116):
                 // a bare name is a constructor only if `resolve_variant_match` returns a
                 // match; otherwise it is a plain binding regardless of case.
@@ -1234,14 +1200,7 @@ impl Checker {
                     if !name.name.as_str().contains("::") {
                         self.report_bare_variant_pattern(name.name.as_str(), span);
                     }
-                    // A unit-variant constructor pattern introduces no binding. Gate the
-                    // machine-event rejection for its side effect, then return WITHOUT
-                    // defining a name: a constructor is not a binder, so the env must not
-                    // record one. This keeps the env an authoritative record of real
-                    // binders, which the or-pattern arm diffs to check binding
-                    // consistency (a constructor branch like `Red | Green` correctly
-                    // binds nothing on both sides).
-                    self.reject_machine_event_pattern_outside_transition(ty, span);
+                    // A constructor pattern introduces no binding.
                     return;
                 }
                 if let Some((root, path)) = scrutinee_place {
@@ -1275,9 +1234,6 @@ impl Checker {
                 {
                     return;
                 }
-                if self.reject_machine_event_pattern_outside_transition(ty, span) {
-                    return;
-                }
                 // Look up variant in enum definition
                 if let Some(payload_tys) = self.lookup_variant_types(name, ty, patterns.len()) {
                     if !name.contains("::") {
@@ -1290,14 +1246,13 @@ impl Checker {
                     match ty {
                         Ty::Named { head, .. } => {
                             let type_name = head.registry_key();
-                            let container_kind =
-                                self.lookup_type_def(type_name).map_or("enum", |td| {
-                                    if td.kind == TypeDefKind::Machine {
-                                        "machine"
-                                    } else {
-                                        "enum"
-                                    }
-                                });
+                            let container_kind = self.head_type_def(*head).map_or("enum", |td| {
+                                if td.kind == TypeDefKind::Machine {
+                                    "machine"
+                                } else {
+                                    "enum"
+                                }
+                            });
                             self.report_error(
                                 TypeErrorKind::Mismatch {
                                     expected: type_name.to_string(),
@@ -1335,9 +1290,6 @@ impl Checker {
                     .canonicalize_source_lifecycle_value_path(name, span)
                     .is_err()
                 {
-                    return;
-                }
-                if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }
                 if !self.variant_surface_owner_matches(name, ty) {

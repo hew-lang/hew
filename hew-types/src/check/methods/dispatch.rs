@@ -1960,7 +1960,7 @@ impl Checker {
                     // R-value and immutable-binding receivers are rejected here
                     // with a typed diagnostic.
                     if self
-                        .type_def_at(name)
+                        .head_type_def(*head)
                         .is_some_and(|td| td.kind == TypeDefKind::Machine)
                     {
                         match method {

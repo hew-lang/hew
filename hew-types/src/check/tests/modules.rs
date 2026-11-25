@@ -33,7 +33,7 @@ pub fn total(value: Count) -> Total {
 fn root_enum_shadows_generated_delivery_type_member() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Delivery".to_string());
-    let __id = checker.test_declaration("Delivery");
+    let __id = checker.test_root_nominal("Delivery");
     checker.type_defs.insert(
         __id,
         TypeDef {

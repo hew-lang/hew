@@ -316,7 +316,8 @@ impl Checker {
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let bounds = self
-            .type_def_at(sd.name.name.as_str())
+            .named_item_declaration(sd.name)
+            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
             .map(|definition| definition.bounds.clone())
             .unwrap_or_default();
         self.current_type_param_bounds.push(bounds);
@@ -366,8 +367,9 @@ impl Checker {
         } else {
             child.span.clone()
         };
-        let identity = self.resolve_supervisor_child_type(&child.actor_type);
-        let definition = identity.as_ref().and_then(|name| self.type_def_at(name));
+        let declaration = self.resolve_supervisor_child_type(&child.actor_type);
+        let identity = declaration.map(|id| self.defs.path(id.declaration()).to_string());
+        let definition = declaration.and_then(|id| self.type_defs.get(&id));
         if definition.is_some_and(|definition| {
             matches!(
                 definition.kind,

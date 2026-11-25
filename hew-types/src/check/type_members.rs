@@ -10,7 +10,6 @@ use crate::method_resolution::instantiate_stdlib_method_sig;
 pub(super) struct ResolvedDottedTypeHead {
     pub(super) canonical_type: String,
     receiver_head: Option<crate::TypeHead>,
-    builtin: Option<crate::BuiltinType>,
     trait_id: Option<crate::DefId>,
     type_args: Option<Vec<Spanned<TypeExpr>>>,
     span: Span,
@@ -49,7 +48,6 @@ impl ResolvedDottedTypeHead {
         Self {
             canonical_type: checker.defs.path(event.declaration()).to_owned(),
             receiver_head: Some(checker.head_of_declaration(event)),
-            builtin: None,
             trait_id: None,
             type_args,
             span: target.1.clone(),
@@ -107,7 +105,6 @@ impl Checker {
         let head = ResolvedDottedTypeHead {
             canonical_type: name.to_string(),
             receiver_head: Some(head),
-            builtin: Some(builtin),
             trait_id: None,
             type_args: None,
             span: span.clone(),
@@ -136,34 +133,33 @@ impl Checker {
             _ => (head, None),
         };
 
-        let (canonical_type, builtin, trait_id) = match &target.0 {
+        let (canonical_type, receiver_head, trait_id) = match &target.0 {
             Expr::Ident(surface) => {
                 if self.env.lookup_ref(*surface).is_some()
                     || self.module_binding_in_current_file(*surface)
                 {
                     return None;
                 }
-                if let Some(canonical) = self
-                    .named_item_declaration(*surface)
-                    .map(|id| self.defs.path(id).to_string())
-                    .or_else(|| self.source_nominal_declaration(surface.name.as_str()))
+                let nominal = self
+                    .nominal_in_scope(*surface)
                     .or_else(|| {
-                        self.resolve_nominal_declaration(
-                            NominalOrigin::Lexical,
-                            surface.name.as_str(),
-                        )
+                        let canonical = self.source_nominal_declaration(surface.name.as_str())?;
+                        self.nominal_at_path(&canonical)
                     })
-                    .filter(|identity| {
-                        self.lookup_type_def(identity).is_some()
-                            || self.resolved_builtin_type(identity).is_some()
-                    })
-                    .or_else(|| {
-                        self.resolved_builtin_type(surface.name.as_str())
-                            .map(|_| surface.to_string())
-                    })
-                {
-                    let builtin = self.resolved_builtin_type(&canonical);
-                    (canonical, builtin, None)
+                    .filter(|id| self.type_defs.contains_key(id));
+                if let Some(id) = nominal {
+                    let head = self.head_of_declaration(id);
+                    (
+                        self.defs.path(id.declaration()).to_string(),
+                        Some(head),
+                        None,
+                    )
+                } else if let Some(builtin) = self.resolved_builtin_type(surface.name.as_str()) {
+                    (
+                        surface.to_string(),
+                        Some(crate::TypeHead::Builtin(builtin)),
+                        None,
+                    )
                 } else if let Some(trait_id) = self
                     .resolve_trait_path(&hew_parser::ast::Path::single(*surface, target.1.clone()))
                     .filter(|id| self.trait_info(*id).is_some())
@@ -174,7 +170,7 @@ impl Checker {
                         .has_fn_sig(&format!("{surface}::{member}"))
                         .then(|| surface.to_string())?;
                     let builtin = self.resolved_builtin_type(&canonical);
-                    (canonical, builtin, None)
+                    (canonical, builtin.map(crate::TypeHead::Builtin), None)
                 }
             }
             Expr::FieldAccess { object, field } => {
@@ -199,33 +195,29 @@ impl Checker {
                     return Some(ResolvedDottedTypeHead {
                         canonical_type: trait_path.to_string(),
                         receiver_head: None,
-                        builtin: None,
                         trait_id: Some(trait_id),
                         type_args,
                         span: target.1.clone(),
                     });
                 }
-                self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
+                let id = self.resolve_module_type_declaration(
+                    module_short.name.as_str(),
+                    field.0.name.as_str(),
+                )?;
                 self.resolve_import_use(*module_short);
-                let canonical = format!(
-                    "{}.{}",
-                    self.canonical_module_import_owner(*module_short),
-                    field.0
-                );
-                let builtin = self.resolved_builtin_type(&canonical);
-                (canonical, builtin, None)
+                let head = self.head_of_declaration(id);
+                (
+                    self.defs.path(id.declaration()).to_string(),
+                    Some(head),
+                    None,
+                )
             }
             _ => return None,
         };
 
-        let receiver_head = self
-            .type_def_key(&canonical_type)
-            .map(|id| self.head_of_declaration(id))
-            .or_else(|| builtin.map(crate::TypeHead::Builtin));
         Some(ResolvedDottedTypeHead {
             canonical_type,
             receiver_head,
-            builtin,
             trait_id,
             type_args,
             span: target.1.clone(),
@@ -244,10 +236,9 @@ impl Checker {
             return None;
         }
         let machine = match &object.0 {
-            Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => self
-                .named_item_declaration(*name)
-                .map(crate::NominalId::of_declaration)
-                .or_else(|| self.type_def_key(name.name.as_str())),
+            Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => {
+                self.nominal_in_scope(*name)
+            }
             Expr::FieldAccess {
                 object,
                 field: machine,
@@ -426,7 +417,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let builtin = head.builtin?;
+        let builtin = head.receiver_head?.builtin()?;
         let (index, variant) = builtin
             .generic_enum()?
             .variants
@@ -568,7 +559,10 @@ impl Checker {
         // `Node::shutdown`; its impl owns the call. Compiler builtin types
         // retain their runtime methods even when std/builtins provides source
         // signatures for those operations.
-        let checker_member = ((head.builtin.is_some()
+        let checker_member = ((head
+            .receiver_head
+            .and_then(crate::TypeHead::builtin)
+            .is_some()
             || !self
                 .impl_method_declaration_ids
                 .contains_key(internal_member))

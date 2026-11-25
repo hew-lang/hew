@@ -183,26 +183,6 @@ impl Checker {
         }
     }
 
-    /// The declaration a registry key spells: the current module's
-    /// declaration of a bare key, its exact declared path, then the key with a
-    /// module prefix stripped.
-    ///
-    /// TRANSITION(A1 commit 3): deleted when every caller holds the head or
-    /// id `Scope::resolve` returned instead of a key.
-    pub(in crate::check) fn type_def_key(&self, key: &str) -> Option<crate::NominalId> {
-        let declared = |path: &str| {
-            self.lookup_declaration(path)
-                .map(crate::NominalId::from_minted_declaration)
-                .filter(|id| self.type_defs.contains_key(id))
-        };
-        (!key.contains('.'))
-            .then(|| self.current_module_identity())
-            .flatten()
-            .and_then(|owner| declared(&format!("{owner}.{key}")))
-            .or_else(|| declared(key))
-            .or_else(|| self.strip_module_prefix(key).and_then(declared))
-    }
-
     /// Resolve a type item in its declaring namespace without consulting
     /// imports or the prelude.
     pub(in crate::check) fn nominal_in_module(
@@ -228,11 +208,6 @@ impl Checker {
                 crate::DeclarationKind::MachineEventType,
             )
             .map(crate::NominalId::of_declaration)
-    }
-
-    /// The definition a registry key spells (see [`Self::type_def_key`]).
-    pub(in crate::check) fn type_def_at(&self, key: &str) -> Option<&TypeDef> {
-        self.type_defs.get(&self.type_def_key(key)?)
     }
 
     /// This compilation's function signatures.
@@ -349,11 +324,6 @@ impl Checker {
             .map(|bound| bound.trait_id)
     }
 
-    /// Look up a type definition by registry key.
-    pub(in crate::check) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
-        self.type_def_at(name).cloned()
-    }
-
     /// Publish a checked definition on its minted declaration.
     pub(in crate::check) fn file_type_def(&mut self, id: crate::NominalId, def: TypeDef) {
         self.type_defs.insert(id, def);
@@ -396,8 +366,8 @@ impl Checker {
         if !exports.contains(type_name) {
             return None;
         }
-        let qualified = format!("{resolved_module}.{type_name}");
-        self.type_def_key(&qualified)
+        let module = self.defs.module_for_path(resolved_module)?;
+        self.nominal_in_module(module, Ident::new(type_name))
     }
 
     /// Return the exact source owner's exported type set for a lexical module
@@ -418,14 +388,11 @@ impl Checker {
         self.module_type_exports.get(owner)
     }
 
-    /// Canonicalize a supervisor child's user-spelled `actor_type` to the
-    /// registered actor identity.
-    ///
-    /// Resolve a child through the same declaration scope as its actor type.
+    /// Resolve a supervisor child through the declaration scope of its actor type.
     pub(in crate::check) fn resolve_supervisor_child_type(
         &mut self,
         path: &hew_parser::ast::Path,
-    ) -> Option<String> {
+    ) -> Option<crate::NominalId> {
         let super::super::scope::Resolution::Nominal(owner) = self.resolve_type_path(path)? else {
             return None;
         };
@@ -435,7 +402,7 @@ impl Checker {
                 return None;
             }
         }
-        Some(self.defs.path(owner.declaration()).to_string())
+        Some(owner)
     }
 
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on

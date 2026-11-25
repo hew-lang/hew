@@ -628,6 +628,18 @@ impl Checker {
         crate::NominalId::from_minted_declaration(self.defs.mint_for_test(path))
     }
 
+    /// Bind a fixture nominal as a root declaration.
+    pub(super) fn test_root_nominal(&mut self, name: &str) -> crate::NominalId {
+        let root = self
+            .defs
+            .root_module()
+            .unwrap_or_else(|| self.defs.mint_synthetic_root());
+        let nominal = self.test_declaration(name);
+        self.scopes
+            .declare_item(root, Ident::new(name), super::scope::Binding::Type(nominal));
+        nominal
+    }
+
     /// File a hand-built signature under a fresh declaration row spelled
     /// `key`.
     pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {

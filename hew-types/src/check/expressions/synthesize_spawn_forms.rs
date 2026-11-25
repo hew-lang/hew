@@ -167,7 +167,7 @@ impl Checker {
         if let Expr::Ident(name) = &object.0 {
             if let Some(pos) = field.find("::") {
                 let receiver_is_binding = self.env.lookup_ref(*name).is_some();
-                let receiver_is_known_type = self.type_def_at(name.name.as_str());
+                let receiver_is_known_type = self.nominal_in_scope(*name);
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let type_name = &field[..pos];
                     let variant_name = &field[pos + 2..];
@@ -185,7 +185,7 @@ impl Checker {
         if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
                 let receiver_is_binding = self.env.lookup_ref(*name).is_some();
-                let receiver_is_known_type = self.type_def_at(name.name.as_str());
+                let receiver_is_known_type = self.nominal_in_scope(*name);
                 if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let lexical_key = format!("{name}.{field}");
                     let qualified_key = self
@@ -350,11 +350,7 @@ impl Checker {
                                 .collect();
                             let child_ty = template.substitute_type_params_parallel(&substitution);
                             if let Ty::Named { head, args } = &child_ty {
-                                self.enforce_type_def_instantiation_bounds(
-                                    head.registry_key(),
-                                    args,
-                                    span,
-                                );
+                                self.enforce_head_instantiation_bounds(*head, args, span);
                             }
                             self.supervisor_child_slots.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
@@ -403,7 +399,7 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                if let Some(td) = self.lookup_type_def(name) {
+                if let Some(td) = self.head_type_def(*head).cloned() {
                     if let Some(field_ty) = td.fields.get(field) {
                         // Substitute generic type params with concrete args in
                         // parallel so a swap instantiation like `Pair<B, A>` does
@@ -1311,7 +1307,8 @@ impl Checker {
                         })
                         .and_then(|event| {
                             let path = self.defs.path(event);
-                            self.lookup_type_def(path)
+                            self.type_defs
+                                .get(&crate::NominalId::of_declaration(event))
                                 .filter(|type_def| {
                                     matches!(
                                         type_def.variants.get(*variant),
@@ -1342,7 +1339,8 @@ impl Checker {
                         })
                         .and_then(|event| {
                             let path = self.defs.path(event);
-                            self.lookup_type_def(path)
+                            self.type_defs
+                                .get(&crate::NominalId::of_declaration(event))
                                 .filter(|type_def| {
                                     matches!(
                                         type_def.variants.get(*variant),
@@ -1358,7 +1356,9 @@ impl Checker {
                 {
                     self.source_nominal_declaration(surface_type)
                         .and_then(|canonical_type| {
-                            self.lookup_type_def(&canonical_type)
+                            let id = self.nominal_at_path(&canonical_type)?;
+                            self.type_defs
+                                .get(&id)
                                 .filter(|type_def| {
                                     matches!(
                                         type_def.variants.get(*variant),
@@ -1538,9 +1538,16 @@ impl Checker {
         }
 
         let name = qualified_owned.as_deref().unwrap_or(name);
-        if self
-            .lookup_type_def(name)
-            .is_some_and(|definition| definition.kind == TypeDefKind::Enum)
+        let nominal = match resolution {
+            Some(scope::Resolution::Nominal(id)) => Some(id),
+            _ => self
+                .nominal_in_scope(Ident::new(name))
+                .or_else(|| self.nominal_at_path(name)),
+        };
+        let definition = nominal.and_then(|id| Some((id, self.type_defs.get(&id)?.clone())));
+        if definition
+            .as_ref()
+            .is_some_and(|(_, definition)| definition.kind == TypeDefKind::Enum)
         {
             self.report_error(
                 TypeErrorKind::TypeUsedAsValue,
@@ -1566,7 +1573,6 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
-        let nominal = self.type_def_key(name);
         let head = nominal.map(|id| self.head_of_declaration(id)).or_else(|| {
             self.resolved_builtin_type(name)
                 .map(crate::TypeHead::Builtin)
@@ -1609,19 +1615,6 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let module_local_name = if is_bare_constructor {
-            self.current_module_identity().and_then(|owner| {
-                let qualified = format!("{owner}.{unqualified}");
-                self.type_def_at(&qualified).map(|_| qualified)
-            })
-        } else {
-            None
-        };
-        let definition = module_local_name
-            .as_deref()
-            .and_then(|qualified| self.type_def_key(qualified))
-            .or(nominal)
-            .and_then(|id| Some((id, self.type_defs.get(&id)?.clone())));
         if let Some((nominal, td)) = definition {
             let head = self.head_of_declaration(nominal);
             // Track inferred type arguments for generic structs.
@@ -1769,15 +1762,13 @@ impl Checker {
             // The helper short-circuits cleanly for bound-free names and
             // enforces the TypeDef-owned bound map for every generic nominal
             // whose arguments were inferred from the fields above.
-            let result_name = module_local_name.as_deref().unwrap_or(name);
-            self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
+            self.enforce_nominal_instantiation_bounds(nominal, &type_args, span);
             let result = Ty::named_head(head, type_args);
             self.check_record_init_field_visibility(fields, site.field_labels, &result);
             result
         } else if let Some((owner, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
-            let enum_name = self.defs.path(owner.declaration()).to_owned();
             if let Some(base) = base {
                 self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &base.1,
                     "enum variant constructors do not support record update syntax".to_string(),
@@ -1862,7 +1853,11 @@ impl Checker {
             let variant_name = name.rsplit("::").next().unwrap_or(name);
             for (index, (declared, _)) in variant_fields.iter().enumerate() {
                 if !provided.contains(declared.as_str())
-                    && !self.is_implicit_variant_field(&enum_name, variant_name, index)
+                    && !self.is_implicit_variant_field(
+                        self.head_of_declaration(owner),
+                        variant_name,
+                        index,
+                    )
                 {
                     self.report_error(
                         TypeErrorKind::UndefinedField,
@@ -1888,9 +1883,9 @@ impl Checker {
             // parameters via the canonical nominal helper. This keeps
             // struct-variant brace init on the same TypeDef-bound authority as
             // annotations, tuple variants, and plain struct/record init.
-            self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
+            self.enforce_nominal_instantiation_bounds(owner, &type_args, span);
             let result = self.variant_nominal_ty(owner, type_args);
-            self.record_variant_constructor_plan(&enum_name, variant_name, &result, fields, span);
+            self.record_variant_constructor_plan(variant_name, &result, fields, span);
             result
         } else {
             let similar = crate::error::find_similar(
@@ -1935,7 +1930,7 @@ impl Checker {
     ) {
         let actor_name = self.defs.path(actor.declaration()).to_string();
         let actor_fields = self.type_defs.get(&actor).map(|td| td.fields.clone());
-        let registered = self.registered_spawn_identity(&actor_name);
+        let registered = self.registered_spawn_identity(actor);
         let init_params = self.constructor_signature(&registered).cloned();
         let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen = HashSet::with_capacity(args.len());
@@ -2048,13 +2043,13 @@ impl Checker {
     /// defaults as their existing, separate construction inputs.
     fn bind_spawn_arguments(
         &mut self,
-        name: &str,
+        actor: crate::NominalId,
         args: &[(Ident, Spanned<Expr>)],
         resolved_type_args: &[Ty],
         type_subst: &HashMap<crate::ParamHead, Ty>,
         span: &Span,
     ) {
-        let registered = self.registered_spawn_identity(name);
+        let registered = self.registered_spawn_identity(actor);
         let owner_kind = if self.supervisor_children.contains_key(&registered) {
             "supervisor"
         } else {
@@ -2111,7 +2106,7 @@ impl Checker {
                             TypeErrorKind::MissingActorSpawnArgument,
                             span,
                             format!(
-                                "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
+                                "missing {noun} `{}` in spawn of {owner_kind} `{registered}`",
                                 key.name.as_str()
                             ),
                         );
@@ -2127,9 +2122,9 @@ impl Checker {
     /// The identity a spawn target's declaration was registered under. A
     /// file-imported actor answers to its bare name at the spawn site but is
     /// registered under its file's module identity.
-    fn registered_spawn_identity(&self, actor_name: &str) -> String {
-        self.type_def_at(actor_name).map_or_else(
-            || actor_name.to_string(),
+    fn registered_spawn_identity(&self, actor: crate::NominalId) -> String {
+        self.type_defs.get(&actor).map_or_else(
+            || self.defs.path(actor.declaration()).to_string(),
             |definition| definition.name.clone(),
         )
     }
@@ -2218,7 +2213,7 @@ impl Checker {
                     // A type that is not an actor or supervisor cannot be
                     // spawned.
                     super::types::BareActorResolution::Unknown
-                        if self.type_def_at(name.name.as_str()).is_some() =>
+                        if self.nominal_in_scope(*name).is_some() =>
                     {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -2399,7 +2394,7 @@ impl Checker {
                 Some(&type_subst),
                 typed_arguments,
             );
-            self.bind_spawn_arguments(&name, args, &resolved_type_args, &type_subst, span);
+            self.bind_spawn_arguments(actor, args, &resolved_type_args, &type_subst, span);
             resolved_type_args = resolved_type_args
                 .iter()
                 .map(|argument| self.subst.resolve(argument))

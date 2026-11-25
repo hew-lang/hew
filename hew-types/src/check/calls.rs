@@ -97,24 +97,7 @@ impl Checker {
             // the bare lexical prefix (`Parcel::Filled`), but the declaration
             // is keyed under its full owner (`left.render.Parcel`). Resolve
             // that owner before consulting the compatibility bare entry.
-            let canonical_owner_key = self.canonical_nominal_name(type_prefix);
-            let local_owner_key = (!type_prefix.contains('.'))
-                .then(|| {
-                    self.current_module_identity()
-                        .map(|owner| format!("{owner}.{type_prefix}"))
-                })
-                .flatten();
-            let direct_key = canonical_owner_key
-                .as_deref()
-                .filter(|key| self.type_def_at(key).is_some())
-                .or_else(|| {
-                    local_owner_key
-                        .as_deref()
-                        .filter(|key| self.type_def_at(key).is_some())
-                })
-                .unwrap_or(type_prefix);
-            let lookup = |key: &str| {
-                let owner = self.type_def_key(key)?;
+            let lookup = |owner: crate::NominalId| {
                 let td = self.type_defs.get(&owner)?;
                 let expected_params = match td.variants.get(variant_name)? {
                     VariantDef::Unit => Vec::new(),
@@ -128,14 +111,21 @@ impl Checker {
                     bare_qualifier: None,
                 })
             };
-            lookup(direct_key).or_else(|| {
-                let canonical = self.import_type_name_aliases.get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    type_prefix.to_string(),
-                ))?;
-                lookup(canonical)
-            })
+            self.nominal_in_scope(Ident::new(type_prefix))
+                .or_else(|| self.nominal_at_path(type_prefix))
+                .or_else(|| {
+                    let canonical = self.canonical_nominal_name(type_prefix)?;
+                    self.nominal_at_path(&canonical)
+                })
+                .and_then(lookup)
+                .or_else(|| {
+                    let canonical = self.import_type_name_aliases.get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        type_prefix.to_string(),
+                    ))?;
+                    self.nominal_at_path(canonical).and_then(lookup)
+                })
         } else {
             if self.scope_site().is_some_and(|site| {
                 self.scopes
@@ -761,10 +751,7 @@ impl Checker {
 
         if let Some(context_ident) = contextual_name {
             let context_name = context_ident.name.as_str();
-            let owner = func_name
-                .rsplit_once("::")
-                .map_or(func_name.as_str(), |(owner, _)| owner);
-            match self.context_variant_definition(owner, context_name) {
+            match self.context_variant_definition(&resolved_expected, context_name) {
                 Some(VariantDef::Tuple(_)) => {}
                 Some(_) => {
                     for arg in args {
@@ -863,8 +850,7 @@ impl Checker {
             else {
                 return None;
             };
-            let expected_name = head.registry_key();
-            if expected_name != name || expected_args.len() != arity {
+            if *head != crate::TypeHead::Builtin(builtin) || expected_args.len() != arity {
                 return None;
             }
             let resolved_args: Vec<Ty> = expected_args
@@ -921,8 +907,8 @@ impl Checker {
                 else {
                     return None;
                 };
-                let name = head.registry_key();
-                if name != "Vec" || vec_args.len() != 1 {
+                if *head != crate::TypeHead::Builtin(crate::BuiltinType::Vec) || vec_args.len() != 1
+                {
                     return None;
                 }
                 self.subst.resolve(&vec_args[0])
@@ -1022,7 +1008,6 @@ impl Checker {
             ..
         }) = self.lookup_variant_constructor(constructor_name)
         {
-            let type_name = self.defs.path(owner.declaration()).to_owned();
             if contextual_name.is_none() && !func_name.as_str().contains("::") {
                 self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
             }
@@ -1048,7 +1033,7 @@ impl Checker {
                 .drain(..)
                 .map(|ty| self.subst.resolve(&ty))
                 .collect();
-            self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
+            self.enforce_nominal_instantiation_bounds(owner, &resolved_args, span);
             let result_ty = Self::variant_nominal_from_expected(&resolved_expected, resolved_args)
                 .expect("constructor expected-type match requires a named nominal");
             self.record_construct_call(span);
@@ -2172,7 +2157,6 @@ impl Checker {
             bare_qualifier,
         }) = constructor_match
         {
-            let type_name = self.defs.path(owner.declaration()).to_owned();
             let member = constructor_name
                 .rsplit("::")
                 .next()
@@ -2263,7 +2247,7 @@ impl Checker {
                 .iter()
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
-            self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
+            self.enforce_nominal_instantiation_bounds(owner, &resolved_args, span);
             let result_ty = self.variant_nominal_ty(owner, resolved_args);
             self.record_construct_call(span);
             return result_ty;

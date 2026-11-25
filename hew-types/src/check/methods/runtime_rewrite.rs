@@ -1038,13 +1038,4 @@ impl Checker {
             _ => {}
         }
     }
-
-    pub(in crate::check) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
-        let dot = name.find('.')?;
-        if self.module_binding_in_current_file(Ident::new(&name[..dot])) {
-            Some(&name[dot + 1..])
-        } else {
-            None
-        }
-    }
 }

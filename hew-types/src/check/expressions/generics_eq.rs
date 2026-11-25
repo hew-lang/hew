@@ -400,7 +400,8 @@ impl Checker {
                 )
                 .unwrap_or_default()
             } else {
-                self.type_def_at(owner_name)
+                self.nominal_at_path(owner_name)
+                    .and_then(|id| self.type_defs.get(&id))
                     .into_iter()
                     .flat_map(|owner| {
                         owner

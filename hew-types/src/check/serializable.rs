@@ -117,17 +117,13 @@ impl Checker {
         if td.resource_marker != hew_parser::ast::ResourceMarker::None || td.is_opaque {
             return;
         }
-        let identity = self.current_module_identity().map_or_else(
-            || td.name.to_string(),
-            |module| format!("{module}.{}", td.name),
-        );
         let Some(declaration) = self
-            .lookup_declaration(&identity)
+            .type_declaration_identity(td)
             .map(crate::NominalId::of_declaration)
         else {
             return;
         };
-        let Some(type_def) = self.type_def_at(td.name.name.as_str()).cloned() else {
+        let Some(type_def) = self.type_defs.get(&declaration).cloned() else {
             return;
         };
         let case = td.serial_case;

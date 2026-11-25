@@ -355,7 +355,8 @@ impl Checker {
                 let module_identity = self.current_module.clone();
                 let identity = self.declaration_identity(ad.name);
                 let local_actor_needs_restore = self
-                    .type_def_at(&identity)
+                    .nominal_in_scope(ad.name)
+                    .and_then(|id| self.type_defs.get(&id))
                     .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
                 if module_identity.is_some() || local_actor_needs_restore {
                     self.register_actor_decl_as(ad, &identity);
@@ -1883,9 +1884,10 @@ impl Checker {
     ) -> Option<crate::DefId> {
         // The receiver and trait are named by their declarations, so every
         // registration route of one impl method reaches one row.
-        let declared_type = self
-            .type_def_key(type_name)
-            .map(|id| self.defs.path(id.declaration()).to_string());
+        let receiver_id = self
+            .nominal_in_scope(Ident::new(type_name))
+            .or_else(|| self.nominal_at_path(type_name));
+        let declared_type = receiver_id.map(|id| self.defs.path(id.declaration()).to_string());
         let receiver = if let Some(declared) = declared_type {
             declared
         } else if type_name.contains('.') {
@@ -1935,7 +1937,7 @@ impl Checker {
             });
         // A foreign receiver's owner does not identify the source impl;
         // in particular, a user override must not reuse its prelude method.
-        let receiver_declaration = self.lookup_declaration(&receiver);
+        let receiver_declaration = receiver_id.map(crate::NominalId::declaration);
         let source_owner = self.current_declaration_module().filter(|source| {
             receiver_declaration
                 .and_then(|receiver| self.defs.module(receiver))

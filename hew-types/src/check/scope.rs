@@ -712,6 +712,17 @@ impl Scopes {
             .map(|(resolution, _)| resolution)
     }
 
+    /// Resolve a type identifier without publishing a use.
+    pub(super) fn type_head(
+        &self,
+        env: &TypeEnv,
+        site: ScopeSite,
+        head: Ident,
+    ) -> Option<Resolution> {
+        self.resolve_head(env, site, Namespace::Type, head, &(0..0))
+            .map(|(resolution, _)| resolution)
+    }
+
     /// Take the resolution table for publication.
     pub fn take_resolutions(&mut self) -> HashMap<SpanKey, Resolution> {
         std::mem::take(&mut self.resolutions)

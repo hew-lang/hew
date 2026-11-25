@@ -407,23 +407,36 @@ impl Checker {
     /// Check a module-qualified spelling against the declarations of that
     /// namespace. Machine event types are members of their machine.
     pub(super) fn is_registered_nominal_path(&self, path: &str) -> bool {
+        self.nominal_at_path(path)
+            .is_some_and(|id| self.type_defs.contains_key(&id))
+    }
+
+    /// Resolve an owner-qualified spelling in the inventoried module namespace.
+    /// A bare path names an item of the root unit.
+    pub(super) fn nominal_at_path(&self, path: &str) -> Option<crate::NominalId> {
         let mut prefixes = path.rmatch_indices('.');
         let qualified = prefixes.find_map(|(separator, _)| {
             let module = self.defs.module_for_path(&path[..separator])?;
             Some((module, &path[separator + 1..]))
         });
-        let Some((module, name)) =
-            qualified.or_else(|| self.defs.root_module().map(|root| (root, path)))
-        else {
-            return false;
-        };
-        let nominal = if let Some(machine) = name.strip_suffix(".Event") {
+        let (module, name) =
+            qualified.or_else(|| self.defs.root_module().map(|root| (root, path)))?;
+        if let Some(machine) = name.strip_suffix(".Event") {
             self.nominal_in_module(module, Ident::new(machine))
                 .and_then(|id| self.machine_event(id))
         } else {
             self.nominal_in_module(module, Ident::new(name))
-        };
-        nominal.is_some_and(|id| self.type_defs.contains_key(&id))
+        }
+    }
+
+    /// Resolve a bare nominal in the current file, including selected imports.
+    pub(super) fn nominal_in_scope(&self, name: Ident) -> Option<crate::NominalId> {
+        let site = self.scope_site()?;
+        match self.scopes.type_head(&self.env, site, name)? {
+            scope::Resolution::Nominal(id) => Some(id),
+            scope::Resolution::Builtin(builtin) => self.defs.builtin_declaration(builtin),
+            _ => None,
+        }
     }
 
     /// The owner-qualified canonical identity a `Ty::Named` NAME denotes, for
@@ -2413,7 +2426,7 @@ impl Checker {
             }
             Ty::Named { head, args } => {
                 if !args.is_empty() {
-                    self.enforce_type_def_instantiation_bounds(head.registry_key(), args, span);
+                    self.enforce_head_instantiation_bounds(*head, args, span);
                     for arg in args {
                         self.enforce_type_def_bounds_recursive(arg, span);
                     }
@@ -2516,7 +2529,7 @@ impl Checker {
             return Some(Ty::named_head(self.head_of_declaration(id), args.to_vec()));
         }
         let qualified = self.published_bare_type_qualified(name)?;
-        let id = self.type_def_key(&qualified)?;
+        let id = self.nominal_at_path(&qualified)?;
         Some(Ty::named_head(self.head_of_declaration(id), args.to_vec()))
     }
 

@@ -2477,7 +2477,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
         "value".to_string(),
         Ty::param(crate::ParamHead::for_test("T")),
     );
-    let __id = checker.test_declaration("Wrapper");
+    let __id = checker.test_root_nominal("Wrapper");
     checker.type_defs.insert(
         __id,
         TypeDef {

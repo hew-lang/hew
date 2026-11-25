@@ -157,7 +157,7 @@ impl Checker {
             self.current_module_idx,
             name.to_string(),
         )) {
-            if self.type_def_at(identity).is_some()
+            if self.is_registered_nominal_path(identity)
                 || self.known_types.contains(identity)
                 || crate::lookup_source_owned_lifecycle_type(identity).is_some()
             {

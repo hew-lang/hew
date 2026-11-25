@@ -748,7 +748,7 @@ impl Checker {
                 // it fires loudly in debug/test/CI and is compiled out of
                 // release, mirroring the W4.047 totality net above.
                 Err(crate::value_class::ClassError::UnknownDeclaration { name })
-                    if self.type_def_exact(&name).is_some() =>
+                    if self.is_registered_nominal_path(&name) =>
                 {
                     debug_assert!(
                         false,

@@ -203,14 +203,31 @@ impl Checker {
             .or_else(|| self.strip_module_prefix(key).and_then(declared))
     }
 
-    /// The definition filed under an exact declaration path.
-    ///
-    /// TRANSITION(A1 commit 3): see [`Self::type_def_key`].
-    pub(in crate::check) fn type_def_exact(&self, path: &str) -> Option<&TypeDef> {
-        self.type_defs
-            .get(&crate::NominalId::from_minted_declaration(
-                self.lookup_declaration(path)?,
-            ))
+    /// Resolve a type item in its declaring namespace without consulting
+    /// imports or the prelude.
+    pub(in crate::check) fn nominal_in_module(
+        &self,
+        module: crate::ModuleId,
+        ident: Ident,
+    ) -> Option<crate::NominalId> {
+        match self.scopes.item(self.scopes.namespace_of(module), ident)? {
+            scope::Binding::Type(id) | scope::Binding::Actor(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The event type declared by a particular machine.
+    pub(in crate::check) fn machine_event(
+        &self,
+        machine: crate::NominalId,
+    ) -> Option<crate::NominalId> {
+        self.defs
+            .member_of_kind(
+                machine.declaration(),
+                hew_parser::ast::sym::EVENT,
+                crate::DeclarationKind::MachineEventType,
+            )
+            .map(crate::NominalId::of_declaration)
     }
 
     /// The definition a registry key spells (see [`Self::type_def_key`]).

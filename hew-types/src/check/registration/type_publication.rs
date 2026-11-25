@@ -1227,16 +1227,11 @@ impl Checker {
                 .unwrap_or(fallback_file);
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            td.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, td.name));
+                    self.refresh_type_after_impls(module_full_path, td.name.name.as_str(), nominal);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -1252,26 +1247,13 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}.Event", md.name);
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            md.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            &event_name,
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, md.name));
+                    self.refresh_type_after_impls(module_full_path, md.name.name.as_str(), nominal);
+                    let event = nominal.and_then(|id| self.machine_event(id));
+                    self.refresh_type_after_impls(module_full_path, &event_name, event);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -2232,16 +2214,11 @@ impl Checker {
         for (item, _) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            td.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, td.name));
+                    self.refresh_type_after_impls(module_full_path, td.name.name.as_str(), nominal);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -2250,26 +2227,13 @@ impl Checker {
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
                     let event_name = format!("{}.Event", md.name);
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            md.name.name.as_str(),
-                            &source_def,
-                        );
-                    }
-                    if let Some(source_def) = self
-                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
-                        .cloned()
-                    {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            &event_name,
-                            &source_def,
-                        );
-                    }
+                    let nominal = self
+                        .defs
+                        .module_for_path(module_full_path)
+                        .and_then(|module| self.nominal_in_module(module, md.name));
+                    self.refresh_type_after_impls(module_full_path, md.name.name.as_str(), nominal);
+                    let event = nominal.and_then(|id| self.machine_event(id));
+                    self.refresh_type_after_impls(module_full_path, &event_name, event);
                     self.retire_imported_type_keys(
                         module_short,
                         module_full_path,
@@ -2386,9 +2350,32 @@ impl Checker {
         };
         let nominal = crate::NominalId::of_declaration(declaration);
         self.file_type_def(nominal, source_def.clone());
+        self.publish_type_metadata(nominal, name, qualified, source_def);
+    }
+
+    fn refresh_type_after_impls(
+        &mut self,
+        module: &str,
+        name: &str,
+        nominal: Option<crate::NominalId>,
+    ) {
+        if let Some(id) = nominal {
+            if let Some(definition) = self.type_defs.get(&id).cloned() {
+                self.publish_type_metadata(id, name, format!("{module}.{name}"), &definition);
+            }
+        }
+    }
+
+    fn publish_type_metadata(
+        &mut self,
+        nominal: crate::NominalId,
+        name: &str,
+        qualified: String,
+        source_def: &TypeDef,
+    ) {
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
-                self.type_def_spans.insert(qualified.clone(), span);
+                self.type_def_spans.insert(qualified, span);
             }
         }
         // The full owner is marker authority too. Never copy marker rows from
@@ -2400,7 +2387,7 @@ impl Checker {
             Self::structural_member_types_for_type(source_def)
         } else if source_def.kind == TypeDefKind::Record && source_def.fields.is_empty() {
             self.fn_sigs
-                .get(&declaration)
+                .get(&nominal.declaration())
                 .map_or_else(Vec::new, |signature| {
                     signature
                         .params

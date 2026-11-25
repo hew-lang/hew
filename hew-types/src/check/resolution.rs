@@ -332,7 +332,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
+                if self.is_registered_nominal_path(&local) || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -358,7 +358,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
+                if self.is_registered_nominal_path(&local) || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -400,7 +400,30 @@ impl Checker {
         // the binding `U` records `m.T`, so a bare `U` binds to `m.T` — never a
         // reconstructed `m.U` that would name the wrong (or a non-existent) type.
         let qualified = identities.iter().next()?;
-        self.type_def_exact(qualified).map(|_| qualified.clone())
+        self.is_registered_nominal_path(qualified)
+            .then(|| qualified.clone())
+    }
+
+    /// Check a module-qualified spelling against the declarations of that
+    /// namespace. Machine event types are members of their machine.
+    pub(super) fn is_registered_nominal_path(&self, path: &str) -> bool {
+        let mut prefixes = path.rmatch_indices('.');
+        let qualified = prefixes.find_map(|(separator, _)| {
+            let module = self.defs.module_for_path(&path[..separator])?;
+            Some((module, &path[separator + 1..]))
+        });
+        let Some((module, name)) =
+            qualified.or_else(|| self.defs.root_module().map(|root| (root, path)))
+        else {
+            return false;
+        };
+        let nominal = if let Some(machine) = name.strip_suffix(".Event") {
+            self.nominal_in_module(module, Ident::new(machine))
+                .and_then(|id| self.machine_event(id))
+        } else {
+            self.nominal_in_module(module, Ident::new(name))
+        };
+        nominal.is_some_and(|id| self.type_defs.contains_key(&id))
     }
 
     /// The owner-qualified canonical identity a `Ty::Named` NAME denotes, for
@@ -437,7 +460,7 @@ impl Checker {
                 surface_owner.to_string(),
             )) {
                 let canonical = format!("{canonical_owner}.{short}");
-                if self.type_def_exact(&canonical).is_some()
+                if self.is_registered_nominal_path(&canonical)
                     || self.known_types.contains(&canonical)
                     || self.canonical_std_module_sources.contains(canonical_owner)
                 {
@@ -472,7 +495,8 @@ impl Checker {
         if self.local_type_defs.contains(name) {
             let module = self.current_module.as_deref()?;
             let qualified = format!("{module}.{name}");
-            if self.type_def_exact(&qualified).is_some() || self.known_types.contains(&qualified) {
+            if self.is_registered_nominal_path(&qualified) || self.known_types.contains(&qualified)
+            {
                 return Some(qualified);
             }
             // Lexical declaration authority blocks every foreign owner, but
@@ -485,7 +509,7 @@ impl Checker {
         if self.source_type_defs.contains(name) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.type_def_exact(&qualified).is_some()
+                if self.is_registered_nominal_path(&qualified)
                     || self.known_types.contains(&qualified)
                 {
                     return Some(qualified);
@@ -591,7 +615,7 @@ impl Checker {
                 if let Some(owner) = self.current_module_identity() {
                     let local = format!("{owner}.{dotted}");
                     if local == expected
-                        && (self.type_def_exact(&local).is_some()
+                        && (self.is_registered_nominal_path(&local)
                             || self.known_types.contains(&local))
                     {
                         return local;
@@ -618,10 +642,6 @@ impl Checker {
 
         if let Some(canonical) = self.canonical_nominal_name(&dotted) {
             return canonical;
-        }
-
-        if self.type_def_exact(&dotted).is_some() || self.known_types.contains(&dotted) {
-            return dotted;
         }
 
         dotted
@@ -787,7 +807,7 @@ impl Checker {
     fn canonical_current_module_qualified_type_name(&self, name: &str) -> Option<String> {
         let canonical =
             crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
-        (self.type_def_exact(&canonical).is_some()
+        (self.is_registered_nominal_path(&canonical)
             || self.known_types.contains(&canonical)
             || self
                 .lookup_declaration(&canonical)
@@ -2495,7 +2515,7 @@ impl Checker {
                 || name.to_string(),
                 |module| {
                     let qualified = format!("{module}.{name}");
-                    if self.type_def_exact(&qualified).is_some() {
+                    if self.is_registered_nominal_path(&qualified) {
                         qualified
                     } else {
                         name.to_string()

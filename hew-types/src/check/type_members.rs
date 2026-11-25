@@ -550,15 +550,20 @@ impl Checker {
         expected: Option<&Ty>,
         span: &Span,
     ) -> Option<Ty> {
-        let is_vec_from = crate::has_builtin_associated_item_identity(
-            internal_member,
-            crate::BuiltinType::Vec,
-            "from",
-        );
         // A declared user type may use a runtime spelling such as
         // `Node::shutdown`; its impl owns the call. Compiler builtin types
         // retain their runtime methods even when std/builtins provides source
-        // signatures for those operations.
+        // signatures for those operations. Runtime namespaces like `Node`
+        // have no type head.
+        let allows_builtin = head
+            .receiver_head
+            .is_none_or(|head| head.builtin().is_some());
+        let is_vec_from = allows_builtin
+            && crate::has_builtin_associated_item_identity(
+                internal_member,
+                crate::BuiltinType::Vec,
+                "from",
+            );
         let declaration = head
             .receiver_head
             .and_then(|head| {
@@ -567,8 +572,12 @@ impl Checker {
                     .filter(|id| self.fn_sigs.contains_key(id))
             })
             .or_else(|| {
-                self.defs
-                    .lookup_builtin_callable(Symbol::intern(internal_member))
+                allows_builtin
+                    .then(|| {
+                        self.defs
+                            .lookup_builtin_callable(Symbol::intern(internal_member))
+                    })
+                    .flatten()
             });
         if declaration.is_some() || is_vec_from {
             let checker_member = internal_member.to_string();

@@ -1292,6 +1292,49 @@ impl Checker {
         }
     }
 
+    /// Check a positional record constructor in the selected module namespace.
+    /// Its signature lives on the record declaration.
+    pub(super) fn try_check_module_record_constructor(
+        &mut self,
+        module: crate::ModuleId,
+        member: Ident,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let declaration = self.nominal_in_module(module, member)?.declaration();
+        if self.defs.kind(declaration) != crate::DeclarationKind::Record {
+            return None;
+        }
+        let sig = self.fn_sigs.get(&declaration)?.clone();
+        if !self.check_declaration_visible(declaration, span) {
+            self.synthesize_call_arguments(args);
+            return Some(Ty::Error);
+        }
+        let applied = self.apply_instantiated_call_signature_with_assoc(
+            &sig,
+            type_args,
+            args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("constructor `{member}`"),
+            },
+            true,
+            Some(GenericCallee::Function { declaration }),
+        );
+        self.record_construct_call(span);
+        let target = CallTarget::RecordConstructor(declaration);
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: target.clone(),
+                c_symbol: self.defs.path(declaration).to_string(),
+            },
+        );
+        self.record_direct_call_target(span, target);
+        Some(applied.return_type)
+    }
+
     /// Resolve a namespaced module-qualified call `module::fn(args)` against an
     /// imported module's free functions, mirroring the dot-form dispatch in
     /// `check_method_call`.
@@ -1320,10 +1363,14 @@ impl Checker {
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(Ident::new(module_name));
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-        let declaration = self.fn_in_module(
-            self.defs.module_for_path(&canonical_owner)?,
-            Ident::new(method),
-        )?;
+        let module = self.defs.module_for_path(&canonical_owner)?;
+        let member = Ident::new(method);
+        let Some(declaration) = self.fn_in_module(module, member) else {
+            let result =
+                self.try_check_module_record_constructor(module, member, type_args, args, span)?;
+            self.resolve_import_use(Ident::new(module_name));
+            return Some(result);
+        };
         let sig = self.fn_sigs.get(&declaration)?.clone();
         if self.module_binding_in_current_file(Ident::new(module_name)) {
             self.resolve_import_use(Ident::new(module_name));

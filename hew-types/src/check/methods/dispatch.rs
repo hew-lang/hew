@@ -387,10 +387,9 @@ impl Checker {
             // nested stdlib modules may share both a leaf and a function name.
             let canonical_owner = self.canonical_module_import_owner(*name);
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-            let declaration = self
-                .defs
-                .module_for_path(&canonical_owner)
-                .and_then(|module| self.fn_in_module(module, Ident::new(method)));
+            let module = self.defs.module_for_path(&canonical_owner);
+            let member = Ident::new(method);
+            let declaration = module.and_then(|module| self.fn_in_module(module, member));
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
                 && (self.module_binding_in_current_file(*name)
@@ -405,6 +404,19 @@ impl Checker {
                 );
                 if self.module_binding_in_current_file(*name) {
                     self.resolve_import_use(*name);
+                    if let Some(result) =
+                        module.filter(|_| declaration.is_none()).and_then(|module| {
+                            self.try_check_module_record_constructor(
+                                module,
+                                member,
+                                explicit_type_args,
+                                args,
+                                span,
+                            )
+                        })
+                    {
+                        return result;
+                    }
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
                 // method contains "::" → treat as a qualified variant constructor rather than a

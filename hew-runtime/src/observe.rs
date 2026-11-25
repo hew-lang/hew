@@ -1020,29 +1020,13 @@ mod native {
             SHARDS_IN_USE.load(Ordering::Relaxed)
         }
 
-        #[inline]
-        fn shard_add_owned_or_shared(
-            shard: usize,
-            counter: &std::sync::atomic::AtomicU64,
-            value: u64,
-        ) {
-            if shard != 0 {
-                // Only this worker writes its shard, so a plain load + store
-                // avoids an atomic RMW on every allocation when Observe is on.
-                let prev = counter.load(Ordering::Relaxed);
-                counter.store(prev.wrapping_add(value), Ordering::Relaxed);
-            } else {
-                counter.fetch_add(value, Ordering::Relaxed);
-            }
-        }
-
         #[cold]
         #[inline(never)]
         fn record_heap_alloc_slow(size: u64) {
             let shard = current_shard();
             let counters = &HEAP_COUNTERS[shard];
-            shard_add_owned_or_shared(shard, &counters.allocations, 1);
-            shard_add_owned_or_shared(shard, &counters.allocated, size);
+            counters.allocations.fetch_add(1, Ordering::Relaxed);
+            counters.allocated.fetch_add(size, Ordering::Relaxed);
         }
 
         #[cold]
@@ -1050,8 +1034,8 @@ mod native {
         fn record_heap_free_slow(size: u64) {
             let shard = current_shard();
             let counters = &HEAP_COUNTERS[shard];
-            shard_add_owned_or_shared(shard, &counters.frees, 1);
-            shard_add_owned_or_shared(shard, &counters.freed, size);
+            counters.frees.fetch_add(1, Ordering::Relaxed);
+            counters.freed.fetch_add(size, Ordering::Relaxed);
         }
 
         #[inline]

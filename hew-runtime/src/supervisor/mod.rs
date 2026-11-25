@@ -2988,3 +2988,140 @@ pub use pool::*;
 pub(crate) use restart::*;
 pub use role::*;
 pub(crate) use teardown::*;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod live_slot_loom_proofs {
+    use loom::sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering};
+    use loom::sync::Arc;
+
+    /// Exact Loom mirror of [`super::LiveChildSlot`]'s seqlock protocol.
+    struct LoomLiveSlot {
+        seq: AtomicUsize,
+        actor_ptr: AtomicUsize,
+        actor_id: AtomicU64,
+        spawn_serial: AtomicU64,
+        local_pid_id: AtomicUsize,
+    }
+
+    impl LoomLiveSlot {
+        fn new() -> Self {
+            Self {
+                seq: AtomicUsize::new(0),
+                actor_ptr: AtomicUsize::new(0),
+                actor_id: AtomicU64::new(0),
+                spawn_serial: AtomicU64::new(0),
+                local_pid_id: AtomicUsize::new(0),
+            }
+        }
+
+        fn publish(&self, ptr: usize, id: u64, serial: u64, pid: usize) {
+            let seq = self.seq.load(Ordering::Relaxed);
+            self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+            fence(Ordering::Release);
+            self.actor_ptr.store(ptr, Ordering::Relaxed);
+            self.actor_id.store(id, Ordering::Relaxed);
+            self.spawn_serial.store(serial, Ordering::Relaxed);
+            self.local_pid_id.store(pid, Ordering::Relaxed);
+            self.seq.store(seq.wrapping_add(2), Ordering::Release);
+        }
+
+        fn try_load(&self) -> Option<(usize, u64, u64, usize)> {
+            let s1 = self.seq.load(Ordering::Acquire);
+            if s1 & 1 != 0 {
+                return None;
+            }
+            let ptr = self.actor_ptr.load(Ordering::Relaxed);
+            let id = self.actor_id.load(Ordering::Relaxed);
+            let serial = self.spawn_serial.load(Ordering::Relaxed);
+            let pid = self.local_pid_id.load(Ordering::Relaxed);
+            fence(Ordering::Acquire);
+            let s2 = self.seq.load(Ordering::Relaxed);
+            if s1 != s2 || ptr == 0 {
+                return None;
+            }
+            Some((ptr, id, serial, pid))
+        }
+    }
+
+    #[test]
+    fn loom_live_slot_seqlock_never_observes_torn_incarnation() {
+        const INCARNATION_A: (usize, u64, u64, usize) = (0x1000, 11, 101, 1);
+        const INCARNATION_B: (usize, u64, u64, usize) = (0x2000, 22, 202, 2);
+
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.check(|| {
+            let slot = Arc::new(LoomLiveSlot::new());
+            slot.publish(
+                INCARNATION_A.0,
+                INCARNATION_A.1,
+                INCARNATION_A.2,
+                INCARNATION_A.3,
+            );
+
+            let writer_slot = Arc::clone(&slot);
+            let writer = loom::thread::spawn(move || {
+                writer_slot.publish(0, 0, 0, 0);
+                writer_slot.publish(
+                    INCARNATION_B.0,
+                    INCARNATION_B.1,
+                    INCARNATION_B.2,
+                    INCARNATION_B.3,
+                );
+            });
+
+            if let Some(snap) = slot.try_load() {
+                assert!(
+                    snap == INCARNATION_A || snap == INCARNATION_B,
+                    "seqlock reader observed torn incarnation: {snap:?}"
+                );
+            }
+
+            writer.join().expect("writer thread");
+            assert_eq!(slot.try_load(), Some(INCARNATION_B));
+        });
+    }
+
+    #[test]
+    fn loom_remove_child_swap_and_count_linearizes_for_concurrent_reader() {
+        const CHILD_A: (usize, u64, u64, usize) = (0x1000, 11, 101, 1);
+        const CHILD_B: (usize, u64, u64, usize) = (0x2000, 22, 202, 2);
+
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.check(|| {
+            let slot0 = Arc::new(LoomLiveSlot::new());
+            let slot1 = Arc::new(LoomLiveSlot::new());
+            let count = Arc::new(AtomicUsize::new(2));
+            slot0.publish(CHILD_A.0, CHILD_A.1, CHILD_A.2, CHILD_A.3);
+            slot1.publish(CHILD_B.0, CHILD_B.1, CHILD_B.2, CHILD_B.3);
+
+            let w_slot0 = Arc::clone(&slot0);
+            let w_slot1 = Arc::clone(&slot1);
+            let w_count = Arc::clone(&count);
+            let writer = loom::thread::spawn(move || {
+                // Exact `hew_supervisor_remove_child(0)` publication order:
+                // publish swapped slot 0, clear old last slot 1, then shrink count.
+                w_slot0.publish(CHILD_B.0, CHILD_B.1, CHILD_B.2, CHILD_B.3);
+                w_slot1.publish(0, 0, 0, 0);
+                w_count.store(1, Ordering::Release);
+            });
+
+            let observed_count = count.load(Ordering::Acquire);
+            if observed_count == 1 {
+                if let Some(snap0) = slot0.try_load() {
+                    assert_eq!(
+                        snap0, CHILD_B,
+                        "reader observing shrunken count must not see removed child A"
+                    );
+                }
+                assert!(
+                    slot1.try_load().is_none(),
+                    "reader observing shrunken count must not see retired tail slot"
+                );
+            }
+
+            writer.join().expect("writer thread");
+        });
+    }
+}

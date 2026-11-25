@@ -347,6 +347,7 @@ mod symtab_cache {
         {
             return;
         }
+        fence(Ordering::Release);
         slot.base.store(base, Ordering::Relaxed);
         slot.pc.store(pc, Ordering::Relaxed);
         slot.index.store(index, Ordering::Relaxed);

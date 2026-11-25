@@ -691,15 +691,17 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
         let child = s.children.swap_remove(idx);
         let removed_spec = s.child_specs.swap_remove(idx);
         s.child_count -= 1;
-        // SAFETY: `roster` is held and `sup` is live.
+        // SAFETY: `roster` is held and `sup` is live. Publish the post-swap
+        // slots before shrinking `child_count_atomic` so any reader observing
+        // the smaller count with `Acquire` cannot read the removed child.
         unsafe {
-            (*sup)
-                .child_count_atomic
-                .store(s.child_count, Ordering::Release);
-            (*sup).live_slots.publish(previous_last, ptr::null_mut());
             if idx < s.child_count {
                 (*sup).live_slots.publish(idx, s.children[idx]);
             }
+            (*sup).live_slots.publish(previous_last, ptr::null_mut());
+            (*sup)
+                .child_count_atomic
+                .store(s.child_count, Ordering::Release);
         }
 
         // Static-backed pool membership names child roster indices. Apply the

@@ -573,11 +573,7 @@ impl Checker {
                         }
                     }
                 }
-                Stmt::Return(Some((expr, es)))
-                | Stmt::Break {
-                    value: Some((expr, es)),
-                    ..
-                } => {
+                Stmt::Return(Some((expr, es))) => {
                     self.check_expr_is_rc_param_return(expr, es, scopes);
                 }
                 Stmt::Expression((

@@ -669,10 +669,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
                 self.pop_scope();
             }
-            Stmt::Break {
-                value: Some(value), ..
-            }
-            | Stmt::Return(Some(value)) => {
+            Stmt::Return(Some(value)) => {
                 self.walk_expr(&value.0, &value.1, body);
             }
             Stmt::Defer { body: expr, .. } => {
@@ -681,7 +678,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Stmt::Expression(expr) => {
                 self.walk_expr(&expr.0, &expr.1, body);
             }
-            Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
+            Stmt::Return(None) | Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
 

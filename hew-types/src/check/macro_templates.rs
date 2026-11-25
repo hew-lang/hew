@@ -700,12 +700,12 @@ impl TemplateNames<'_> {
                 self.block(body)?;
                 self.pop();
             }
-            Stmt::Break { value, .. } | Stmt::Return(value) => {
+            Stmt::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value)?;
                 }
             }
-            Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Defer { body, .. } => self.expr(body)?,
             Stmt::Expression(expression) => self.expr(expression)?,
         }

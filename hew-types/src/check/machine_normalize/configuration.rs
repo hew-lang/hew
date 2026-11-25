@@ -287,10 +287,7 @@ impl Builder {
             }
         }
         if !reactions.is_empty() {
-            reactions.push(self.stmt(Stmt::Break {
-                label: None,
-                value: None,
-            }));
+            reactions.push(self.stmt(Stmt::Break { label: None }));
             shell.stmts.push(self.stmt(Stmt::Loop {
                 label: None,
                 body: Block {

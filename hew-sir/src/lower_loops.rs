@@ -47,7 +47,6 @@ impl Builder<'_, '_> {
         &mut self,
         continuing: bool,
         label: Option<&str>,
-        value: Option<&HirExpr>,
     ) -> Result<(), SirLoweringError> {
         let index = self
             .loops
@@ -61,14 +60,6 @@ impl Builder<'_, '_> {
                 SirLoweringError::from("break/continue has no enclosing loop target".to_string())
             })?;
         self.check_deferred_loop_exit(index)?;
-        // HIR can still contain an operand from a non-parser producer. Preserve
-        // its effects and ordinary temporary cleanup without returning a value.
-        if let Some(value) = value {
-            self.lower_discarded_expr(value)?;
-            if !self.is_open() {
-                return Ok(());
-            }
-        }
         let scope = self.loops[index].clone().unwrap();
         let target = if continuing { scope.header } else { scope.exit };
         let edge = self.loop_edge(&scope, target)?;

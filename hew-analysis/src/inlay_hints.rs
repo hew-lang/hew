@@ -336,11 +336,6 @@ fn collect_inlay_hints_from_stmt(
             collect_inlay_hints_from_expr(source, &target.0, tc, hints);
             collect_inlay_hints_from_expr(source, &value.0, tc, hints);
         }
-        Stmt::Break {
-            value: Some(value), ..
-        } => {
-            collect_inlay_hints_from_expr(source, &value.0, tc, hints);
-        }
         Stmt::Return(Some(val)) => {
             collect_inlay_hints_from_expr(source, &val.0, tc, hints);
         }

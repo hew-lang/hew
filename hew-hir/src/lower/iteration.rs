@@ -808,10 +808,7 @@ impl LowerCtx<'_> {
             span.clone(),
         );
         let none_body = self.make_expr(
-            HirExprKind::Break {
-                label: None,
-                value: None,
-            },
+            HirExprKind::Break { label: None },
             ResolvedTy::Unit,
             IntentKind::Read,
             span.clone(),

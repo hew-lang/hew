@@ -1302,7 +1302,7 @@ impl HirExprKind {
                     take(step, pending);
                 }
             }
-            Self::Yield { value, .. } | Self::Break { value, .. } | Self::Return { value, .. } => {
+            Self::Yield { value, .. } | Self::Return { value, .. } => {
                 optional(value, pending);
             }
             Self::Block(body)
@@ -1372,6 +1372,7 @@ impl HirExprKind {
             | Self::BindingRef { .. }
             | Self::ContextReader { .. }
             | Self::ActorSelf
+            | Self::Break { .. }
             | Self::Continue { .. }
             | Self::Unsupported(_) => {}
         }
@@ -2294,25 +2295,9 @@ pub enum HirExprKind {
         /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
         arms: Vec<HirMatchArm>,
     },
-    /// `break;` / `break @label;` / `break <value>;` — early exit from the
-    /// innermost enclosing loop, or from the nearest enclosing loop carrying
-    /// the requested label.
-    ///
-    /// The expression type is always `Unit`; `break` never produces a value
-    /// in the surrounding expression position (loop-as-expression value
-    /// return is out of scope for v0.5).
-    ///
-    /// Labeled forms carry `label: Some(name)` to MIR. The type checker rejects
-    /// unknown labels; MIR keeps a defense-in-depth diagnostic if malformed HIR
-    /// reaches it.
-    ///
-    /// `value` carries the operand of `break <value>` so MIR can lower it for
-    /// its side effects (and move-checker correctness) before emitting the
-    /// jump; the produced Place is discarded — loop-value semantics are a
-    /// follow-up.
+    /// Early exit from the innermost loop or the enclosing loop with the given label.
     Break {
         label: Option<String>,
-        value: Option<Box<HirExpr>>,
     },
     /// `return [expr]` in expression position — a divergent (`Never`-typed)
     /// early exit from the enclosing function. Sibling of `Break`: a Never-typed

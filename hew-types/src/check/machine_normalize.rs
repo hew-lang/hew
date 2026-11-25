@@ -2302,12 +2302,7 @@ impl Builder {
                 Stmt::Loop { body, .. } => {
                     *body = self.rewrite_block(body, machine, state, event)?;
                 }
-                Stmt::Break { value, .. } => {
-                    if let Some(value) = value {
-                        *value = self.rewrite(value, machine, state, event)?;
-                    }
-                }
-                Stmt::Continue { .. } => {}
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
                 _ => {
                     return Err(
                         self.error("this statement is not admitted in the pure machine evaluator")

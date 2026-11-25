@@ -395,13 +395,7 @@ impl<'a> Control<'a> {
                 }
                 self.loop_block(label, body, span)?;
             }
-            Stmt::Break { label, value } => {
-                self.loop_jump(label, span)?;
-                if let Some(value) = value {
-                    self.expr(value)?;
-                }
-            }
-            Stmt::Continue { label } => self.loop_jump(label, span)?,
+            Stmt::Break { label } | Stmt::Continue { label } => self.loop_jump(label, span)?,
             Stmt::Return(value) => {
                 self.return_jump(span)?;
                 if let Some(value) = value {

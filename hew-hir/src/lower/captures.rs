@@ -61,6 +61,7 @@ fn collect_general_closure_captures_walk_inner(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::Break { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -129,9 +130,7 @@ fn collect_general_closure_captures_walk_inner(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
         }
-        HirExprKind::Yield { value, .. }
-        | HirExprKind::Break { value, .. }
-        | HirExprKind::Return { value, .. } => {
+        HirExprKind::Yield { value, .. } | HirExprKind::Return { value, .. } => {
             if let Some(value) = value {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }

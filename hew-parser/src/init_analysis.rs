@@ -66,7 +66,7 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<Symbol>) {
                 block_targets(else_block, names);
             }
         }
-        Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => {
+        Stmt::Var { value, .. } | Stmt::Return(value) => {
             if let Some(value) = value {
                 expr_targets(&value.0, names);
             }
@@ -122,7 +122,7 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<Symbol>) {
         }
         Stmt::Defer { body: expr, .. } => expr_targets(&expr.0, names),
         Stmt::Expression(expr) => expr_targets(&expr.0, names),
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 

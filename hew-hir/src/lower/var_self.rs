@@ -457,7 +457,7 @@ impl LowerCtx<'_> {
                     span,
                 )));
             }
-            HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+            HirExprKind::Yield { value, .. } => {
                 if let Some(value) = value {
                     self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
                 }
@@ -473,6 +473,7 @@ impl LowerCtx<'_> {
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::BindingRef { .. }
             | HirExprKind::ContextReader { .. }
+            | HirExprKind::Break { .. }
             | HirExprKind::Continue { .. }
             | HirExprKind::ActorSelf
             | HirExprKind::MachineVariantCtor { payload: None, .. }

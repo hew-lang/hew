@@ -863,7 +863,6 @@ pub enum Stmt {
     },
     Break {
         label: Option<Ident>,
-        value: Option<Spanned<Expr>>,
     },
     Continue {
         label: Option<Ident>,

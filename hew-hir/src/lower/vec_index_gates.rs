@@ -106,9 +106,6 @@ pub(super) fn scan_stmt_for_vec_index_gate(
         Stmt::Defer { body: e, .. } => {
             scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
         }
-        Stmt::Break { value: Some(v), .. } => {
-            scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
-        }
         Stmt::WhileLet {
             conditions, body, ..
         } => {
@@ -163,7 +160,7 @@ pub(super) fn scan_stmt_for_vec_index_gate(
             scan_expr_for_vec_index_gate(condition, expr_types, diagnostics);
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
         }
-        // Stmt::Break (no value), Stmt::Continue, Stmt::Return(None), and
+        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and
         // any other leaf statements carry no sub-expression to scan.
         _ => {}
     }

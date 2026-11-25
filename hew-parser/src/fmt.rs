@@ -3711,10 +3711,10 @@ impl<'a> Formatter<'a> {
             Stmt::Assign { target, value, .. } => {
                 Self::can_format_expr_inline(&target.0) && Self::can_format_expr_inline(&value.0)
             }
-            Stmt::Break { value, .. } | Stmt::Return(value) => value
+            Stmt::Return(value) => value
                 .as_ref()
                 .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
-            Stmt::Continue { .. } => true,
+            Stmt::Break { .. } | Stmt::Continue { .. } => true,
             Stmt::Defer { body: expr, .. } => Self::can_format_expr_inline(&expr.0),
             Stmt::Expression(expr) => Self::can_format_expr_inline(&expr.0),
             Stmt::If { .. }
@@ -3997,15 +3997,11 @@ impl<'a> Formatter<'a> {
                 }
                 self.format_expr(value);
             }
-            Stmt::Break { label, value } => {
+            Stmt::Break { label } => {
                 self.write("break");
                 if let Some(label) = label {
                     self.write(" @");
                     self.write_ident(*label);
-                }
-                if let Some(expr) = value {
-                    self.write(" ");
-                    self.format_expr(expr);
                 }
             }
             Stmt::Continue { label } => {
@@ -4231,16 +4227,12 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
                 self.newline();
             }
-            Stmt::Break { label, value } => {
+            Stmt::Break { label } => {
                 self.write_indent();
                 self.write("break");
                 if let Some(label) = label {
                     self.write(" @");
                     self.write_ident(*label);
-                }
-                if let Some(val) = value {
-                    self.write(" ");
-                    self.format_expr(val);
                 }
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
@@ -4818,7 +4810,7 @@ impl<'a> Formatter<'a> {
                 // `=> break` desugars to a one-statement block; the source
                 // wrote the keyword alone, so print it that way.
                 match block.stmts.first().map(|(stmt, _)| stmt) {
-                    Some(Stmt::Break { label, .. }) => {
+                    Some(Stmt::Break { label }) => {
                         self.write("break");
                         if let Some(label) = label {
                             self.write(" @");

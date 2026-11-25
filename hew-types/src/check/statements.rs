@@ -2335,7 +2335,7 @@ impl Checker {
                 }
                 self.pop_scope_with_cleanup();
             }
-            Stmt::Break { label, value } => {
+            Stmt::Break { label } => {
                 if self.reject_deferred_loop_exit(label.map(|ident| ident.name.as_str()), span) {
                     return;
                 }
@@ -2357,9 +2357,6 @@ impl Checker {
                             format!("unknown loop label `@{lbl}`"),
                         ));
                     }
-                }
-                if let Some((val_expr, val_span)) = value {
-                    self.synthesize(val_expr, val_span);
                 }
                 if self.loop_depth > 0 {
                     self.recheck_loop_edge_defers(label.map(|ident| ident.name.as_str()), span);

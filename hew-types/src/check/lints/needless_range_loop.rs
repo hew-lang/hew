@@ -130,7 +130,7 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
                 find_in_block(ctx, levels, eb, out);
             }
         }
-        Stmt::Var { value, .. } | Stmt::Break { value, .. } | Stmt::Return(value) => {
+        Stmt::Var { value, .. } | Stmt::Return(value) => {
             if let Some(v) = value {
                 find_in_expr(ctx, levels, &v.0, out);
             }
@@ -141,7 +141,7 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
         }
         Stmt::Defer { body: expr, .. } => find_in_expr(ctx, levels, &expr.0, out),
         Stmt::Expression(expr) => find_in_expr(ctx, levels, &expr.0, out),
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 
@@ -512,12 +512,12 @@ impl BodyScan<'_> {
                 }
                 self.block(body);
             }
-            Stmt::Break { value, .. } | Stmt::Return(value) => {
+            Stmt::Return(value) => {
                 if let Some(v) = value {
                     self.expr(&v.0);
                 }
             }
-            Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Defer { body: expr, .. } => self.expr(&expr.0),
             Stmt::Expression(expr) => self.expr(&expr.0),
         }

@@ -126,10 +126,7 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
             condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
                 || block_contains_defer(body)
         }
-        Stmt::Break { value, .. } => value
-            .as_ref()
-            .is_some_and(|(expr, _)| expr_contains_defer(expr)),
-        Stmt::Continue { .. } => false,
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
         Stmt::Return(value) => value
             .as_ref()
             .is_some_and(|(expr, _)| expr_contains_defer(expr)),
@@ -304,7 +301,7 @@ fn expr_contains_defer_inner(expr: &Expr) -> bool {
 
 fn mark_stmt(stmt: &mut Stmt) {
     match stmt {
-        Stmt::Let { value, .. } | Stmt::Var { value, .. } | Stmt::Break { value, .. } => {
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
             if let Some((expr, _)) = value {
                 mark_expr(expr, false);
             }
@@ -370,7 +367,7 @@ fn mark_stmt(stmt: &mut Stmt) {
             }
             mark_block(body, false);
         }
-        Stmt::Continue { .. } | Stmt::Return(None) => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Return(None) => {}
         Stmt::Return(Some((expr, _span))) => mark_expr(expr, true),
         Stmt::Defer { body: expr, .. } => mark_expr(&mut expr.0, false),
         Stmt::Expression((expr, _)) => mark_expr(expr, false),

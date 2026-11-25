@@ -643,11 +643,11 @@ impl Builder<'_, '_> {
                 self.lower_match_control(expr, scrutinee, arms)?;
                 return Ok(());
             }
-            HirExprKind::Break { label, value } => {
-                return self.lower_loop_exit(false, label.as_deref(), value.as_deref());
+            HirExprKind::Break { label } => {
+                return self.lower_loop_exit(false, label.as_deref());
             }
             HirExprKind::Continue { label } => {
-                return self.lower_loop_exit(true, label.as_deref(), None);
+                return self.lower_loop_exit(true, label.as_deref());
             }
             HirExprKind::While {
                 label,

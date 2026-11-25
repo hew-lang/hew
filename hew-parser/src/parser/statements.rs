@@ -965,17 +965,7 @@ impl Parser<'_> {
                 if self.peek() != Some(&Token::RightBrace) {
                     self.expect(&Token::Semicolon)?;
                 }
-                Stmt::Break {
-                    label,
-                    // WHY: `Stmt::Break`'s `value` slot survives the refusal
-                    // above because HIR lowering, the checker, `fmt`, and the
-                    // sandbox emitter all still match on it.
-                    // WHEN OBSOLETE: once those consumers drop the operand
-                    // arm, the parser being its only producer.
-                    // WHAT: delete the field and the lowering that reads it,
-                    // so no layer below the parser can express a break value.
-                    value: None,
-                }
+                Stmt::Break { label }
             }
             Some(Token::Continue) => {
                 self.advance();

@@ -5021,12 +5021,7 @@ impl Checker {
                 }
                 self.classify_escapes_in_block(body, in_fork);
             }
-            Stmt::Break { value, .. } => {
-                if let Some((e, s)) = value {
-                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Tail);
-                }
-            }
-            Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Return(opt) => {
                 if let Some((e, s)) = opt {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::Returned);
@@ -5623,12 +5618,7 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
             }
             collect_lambda_spans_in_block(body, out);
         }
-        Stmt::Break { value, .. } => {
-            if let Some((e, s)) = value {
-                collect_lambda_spans_in_expr(e, s, out);
-            }
-        }
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Return(opt) => {
             if let Some((e, s)) = opt {
                 collect_lambda_spans_in_expr(e, s, out);

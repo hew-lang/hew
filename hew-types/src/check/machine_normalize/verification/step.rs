@@ -159,10 +159,7 @@ impl Iteration<'_> {
                 self.continued.push(path.clone());
                 self.alive = self.term(and([self.alive.clone(), not(&path)]));
             }
-            Stmt::Break {
-                label: None,
-                value: None,
-            } => {
+            Stmt::Break { label: None } => {
                 self.stopped.push(path.clone());
                 self.alive = self.term(and([self.alive.clone(), not(&path)]));
             }
@@ -603,10 +600,7 @@ pub(in crate::check::machine_normalize) fn verify_step(
                             if let Stmt::If { then_block, .. } = stmt {
                                 for (stmt, _) in &mut then_block.stmts {
                                     if matches!(stmt, Stmt::Continue { .. }) {
-                                        *stmt = Stmt::Break {
-                                            label: None,
-                                            value: None,
-                                        };
+                                        *stmt = Stmt::Break { label: None };
                                     }
                                 }
                             }

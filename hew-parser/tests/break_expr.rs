@@ -77,7 +77,7 @@ fn bare_break_in_match_arm_parses() {
         matches!(
             &arm_body.0,
             Expr::Block(Block { stmts, trailing_expr: None })
-                if stmts.len() == 1 && matches!(stmts[0].0, Stmt::Break { label: None, value: None })
+                if stmts.len() == 1 && matches!(stmts[0].0, Stmt::Break { label: None })
         ),
         "expected desugared Expr::Block wrapping Stmt::Break, got {:?}",
         arm_body.0
@@ -136,7 +136,7 @@ fn labelled_break_in_match_arm_parses() {
     };
     assert!(matches!(
         &stmts[0].0,
-        Stmt::Break { label: Some(l), value: None } if l.name.as_str() == "outer"
+        Stmt::Break { label: Some(l) } if l.name.as_str() == "outer"
     ));
 }
 

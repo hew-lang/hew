@@ -146,12 +146,7 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
             }
             esc_visit_block(body, name, in_fork, acc);
         }
-        Stmt::Break { value, .. } => {
-            if let Some((e, _)) = value {
-                esc_visit_expr(e, name, in_fork, acc, true);
-            }
-        }
-        Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Return(opt) => {
             if let Some((e, _)) = opt {
                 // A bare reference to our closure-bound name in a

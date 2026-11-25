@@ -378,7 +378,10 @@ impl Checker {
                     .into_iter()
                     .map(Ty::param)
                     .collect();
-                let actor_self = self.named_ty_for_key(&identity, actor_parameters);
+                let actor_self = actor_decl.map_or(Ty::Error, |id| {
+                    let head = self.head_of_declaration(crate::NominalId::of_declaration(id));
+                    Ty::named_head(head, actor_parameters)
+                });
                 let previous_self = self
                     .current_self_type
                     .replace((identity.clone(), actor_self));

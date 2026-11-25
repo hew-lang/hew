@@ -88,6 +88,12 @@ fn main() {
         ])
     );
 
+    let point = TyPattern::Named {
+        head: output
+            .visible_type_head("Point")
+            .expect("checked Point declaration"),
+        args: Vec::new(),
+    };
     for (_, call) in output
         .resolved_calls
         .iter()
@@ -96,10 +102,7 @@ fn main() {
         assert_eq!(call.impl_id, ImplId(0));
         assert_eq!(
             call.type_args,
-            vec![
-                TyPattern::Primitive("Point".into()),
-                TyPattern::Primitive("i64".into())
-            ],
+            vec![point.clone(), TyPattern::Primitive("i64".into())],
             "ResolvedCall type args should mirror HashMap<K, V> receiver binding"
         );
         assert_eq!(

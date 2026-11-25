@@ -2511,21 +2511,13 @@ impl Checker {
     /// source declaration silently become a compiler builtin.
     fn source_builtin_shorthand_nominal(&self, name: &str, args: &[Ty]) -> Option<Ty> {
         if self.local_type_defs.contains(name) {
-            let resolved_name = self.current_module.as_ref().map_or_else(
-                || name.to_string(),
-                |module| {
-                    let qualified = format!("{module}.{name}");
-                    if self.is_registered_nominal_path(&qualified) {
-                        qualified
-                    } else {
-                        name.to_string()
-                    }
-                },
-            );
-            return Some(self.named_ty_for_key(&resolved_name, args.to_vec()));
+            let id =
+                self.nominal_in_module(self.current_declaration_module()?, Ident::new(name))?;
+            return Some(Ty::named_head(self.head_of_declaration(id), args.to_vec()));
         }
-        self.published_bare_type_qualified(name)
-            .map(|qualified| self.named_ty_for_key(&qualified, args.to_vec()))
+        let qualified = self.published_bare_type_qualified(name)?;
+        let id = self.type_def_key(&qualified)?;
+        Some(Ty::named_head(self.head_of_declaration(id), args.to_vec()))
     }
 
     /// Omitted `ActorError` parameters default to the uninhabited `Never`.

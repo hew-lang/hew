@@ -869,20 +869,13 @@ impl Checker {
                 head: crate::TypeHead::Param(parameter),
                 args,
             } if args.is_empty() => TyPattern::Parameter(parameter),
-            Ty::Named { head, args } => {
-                let name = head.registry_key();
-                if args.is_empty() {
-                    TyPattern::Primitive(name.to_string())
-                } else {
-                    TyPattern::App {
-                        ctor: name.to_string(),
-                        args: args
-                            .iter()
-                            .map(|arg| self.ty_to_dispatch_pattern(arg))
-                            .collect(),
-                    }
-                }
-            }
+            Ty::Named { head, args } => TyPattern::Named {
+                head,
+                args: args
+                    .iter()
+                    .map(|arg| self.ty_to_dispatch_pattern(arg))
+                    .collect(),
+            },
             other => TyPattern::Primitive(other.user_facing().to_string()),
         }
     }

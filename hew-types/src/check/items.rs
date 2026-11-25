@@ -1319,16 +1319,17 @@ impl Checker {
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
         let identity = self.declaration_identity(ad.name);
+        let declaration = self.named_item_declaration(ad.name);
         if ad.is_confined {
-            if let Some(id) = self.lookup_declaration(&identity) {
+            if let Some(id) = declaration {
                 self.effect_graph.confined.insert(id);
             }
         }
         let parameters = self.declaration_parameter_heads(ad.name);
-        let actor_ty = self.named_ty_for_key(
-            &identity,
-            parameters.iter().copied().map(Ty::param).collect(),
-        );
+        let actor_ty = declaration.map_or(Ty::Error, |id| {
+            let head = self.head_of_declaration(crate::NominalId::of_declaration(id));
+            Ty::named_head(head, parameters.iter().copied().map(Ty::param).collect())
+        });
         let generic_bindings: HashMap<_, _> = parameters
             .iter()
             .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
@@ -1337,7 +1338,7 @@ impl Checker {
         if has_parameters {
             self.generic_ctx.push(generic_bindings);
             let bounds = self
-                .type_def_at(&identity)
+                .ty_type_def(&actor_ty)
                 .map(|definition| definition.bounds.clone())
                 .unwrap_or_default();
             self.current_type_param_bounds.push(bounds);

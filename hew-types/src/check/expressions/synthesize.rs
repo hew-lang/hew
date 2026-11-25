@@ -191,7 +191,12 @@ impl Checker {
                         format!("invalid regex literal `re\"{pattern}\"`: {err}"),
                     );
                 }
-                self.named_ty_for_key("std.text.regex.Pattern", vec![])
+                self.defs
+                    .module_for_path("std.text.regex")
+                    .and_then(|module| self.nominal_in_module(module, Ident::new("Pattern")))
+                    .map_or(Ty::Error, |id| {
+                        Ty::named_head(self.head_of_declaration(id), Vec::new())
+                    })
             }
             Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
@@ -1106,7 +1111,7 @@ impl Checker {
         if flatten {
             body_ty
         } else {
-            self.named_ty_for_key("Option", vec![body_ty])
+            Ty::option(body_ty)
         }
     }
 
@@ -1124,7 +1129,12 @@ impl Checker {
         let (payload, error_ty) = if scope_recovery {
             Some((
                 container.clone(),
-                self.named_ty_for_key("std.builtins.ScopeFailure", Vec::new()),
+                self.defs
+                    .module_for_path("std.builtins")
+                    .and_then(|module| self.nominal_in_module(module, Ident::new("ScopeFailure")))
+                    .map_or(Ty::Error, |id| {
+                        Ty::named_head(self.head_of_declaration(id), Vec::new())
+                    }),
             ))
         } else if error.is_some() {
             container

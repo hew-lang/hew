@@ -167,7 +167,7 @@ fn contextual_variant_keeps_its_resolved_owner() {
     let parsed = hew_parser::parse("enum State { Ready; }");
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let expected = checker.named_ty_for_key("State", vec![]);
+    let expected = Ty::named_in(&checker.defs, "State", vec![]);
     checker
         .published_bare_type_owners
         .entry((None, 0, "State".to_string()))

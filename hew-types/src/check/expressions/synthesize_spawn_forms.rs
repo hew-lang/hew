@@ -1530,11 +1530,11 @@ impl Checker {
         let delivery_owner = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
-        if self.reject_sealed_delivery_access(
-            &self.named_ty_for_key(&delivery_owner, Vec::new()),
-            span,
-        ) {
-            return Ty::Error;
+        if let Some(declaration) = self.lookup_declaration(&delivery_owner) {
+            let head = self.head_of_declaration(crate::NominalId::of_declaration(declaration));
+            if self.reject_sealed_delivery_access(&Ty::named_head(head, Vec::new()), span) {
+                return Ty::Error;
+            }
         }
 
         let name = qualified_owned.as_deref().unwrap_or(name);
@@ -1566,7 +1566,12 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
-        if self.named_ty_for_key(name, vec![]).is_timestamp()
+        let nominal = self.type_def_key(name);
+        let head = nominal.map(|id| self.head_of_declaration(id)).or_else(|| {
+            self.resolved_builtin_type(name)
+                .map(crate::TypeHead::Builtin)
+        });
+        if head == Some(crate::TypeHead::Builtin(crate::BuiltinType::Timestamp))
             && !self.checking_canonical_stdlib_source("std.builtins")
         {
             self.report_error(
@@ -1588,10 +1593,8 @@ impl Checker {
             // the exemption to an importer or to a user module with a
             // std-looking spelling.
             || canonical_owner_is_current_source;
-        let is_opaque_handle = !is_declaring_module
-            && self
-                .type_def_key(name)
-                .is_some_and(|nominal| self.opaque_type_ids.contains(&nominal));
+        let is_opaque_handle =
+            !is_declaring_module && nominal.is_some_and(|id| self.opaque_type_ids.contains(&id));
         if is_opaque_handle {
             self.report_error(
                 TypeErrorKind::OpaqueDirectConstruct {
@@ -1614,11 +1617,13 @@ impl Checker {
         } else {
             None
         };
-        let td = module_local_name
+        let definition = module_local_name
             .as_deref()
-            .and_then(|qualified| self.lookup_type_def(qualified))
-            .or_else(|| self.lookup_type_def(name));
-        if let Some(td) = td {
+            .and_then(|qualified| self.type_def_key(qualified))
+            .or(nominal)
+            .and_then(|id| Some((id, self.type_defs.get(&id)?.clone())));
+        if let Some((nominal, td)) = definition {
+            let head = self.head_of_declaration(nominal);
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
             // pre-seed the map from them so field checking constrains against the
@@ -1716,8 +1721,7 @@ impl Checker {
                     .iter()
                     .map(|param| type_arg_map[param].clone())
                     .collect();
-                let expected =
-                    self.named_ty_for_key(module_local_name.as_deref().unwrap_or(name), args);
+                let expected = Ty::named_head(head, args);
                 if crate::unify::unify(&mut self.subst, &expected, &base_ty).is_err() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1767,12 +1771,13 @@ impl Checker {
             // whose arguments were inferred from the fields above.
             let result_name = module_local_name.as_deref().unwrap_or(name);
             self.enforce_type_def_instantiation_bounds(result_name, &type_args, span);
-            let result = self.named_ty_for_key(result_name, type_args);
+            let result = Ty::named_head(head, type_args);
             self.check_record_init_field_visibility(fields, site.field_labels, &result);
             result
-        } else if let Some((enum_name, variant_fields, enum_type_params)) =
+        } else if let Some((owner, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
+            let enum_name = self.defs.path(owner.declaration()).to_owned();
             if let Some(base) = base {
                 self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &base.1,
                     "enum variant constructors do not support record update syntax".to_string(),
@@ -1884,7 +1889,7 @@ impl Checker {
             // struct-variant brace init on the same TypeDef-bound authority as
             // annotations, tuple variants, and plain struct/record init.
             self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
-            let result = self.named_ty_for_key(&enum_name, type_args);
+            let result = self.variant_nominal_ty(owner, type_args);
             self.record_variant_constructor_plan(&enum_name, variant_name, &result, fields, span);
             result
         } else {

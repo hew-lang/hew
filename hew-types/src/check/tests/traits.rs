@@ -1775,8 +1775,7 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
 
     let sig = checker
         .lookup_named_method_sig(
-            checker
-                .named_ty_for_key("Speaker", Vec::new())
+            Ty::named_in(&checker.defs, "Speaker", Vec::new())
                 .head()
                 .unwrap(),
             &[],
@@ -2049,8 +2048,7 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 
     let sig = checker
         .lookup_named_method_sig(
-            checker
-                .named_ty_for_key("Wrapper", Vec::new())
+            Ty::named_in(&checker.defs, "Wrapper", Vec::new())
                 .head()
                 .unwrap(),
             &[Ty::String],
@@ -2900,8 +2898,8 @@ fn main() {}
         output.errors
     );
 
-    let good = checker.named_ty_for_key("Good", vec![]);
-    let bad = checker.named_ty_for_key("Bad", vec![]);
+    let good = Ty::named_in(&checker.defs, "Good", vec![]);
+    let bad = Ty::named_in(&checker.defs, "Bad", vec![]);
 
     for marker in [
         crate::traits::MarkerTrait::Send,

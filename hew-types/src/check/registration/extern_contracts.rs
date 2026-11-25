@@ -105,7 +105,6 @@ impl Checker {
         match ty {
             Ty::Named { head, args, .. } => {
                 let name = head.registry_key();
-                let builtin = head.builtin();
                 // The callable consumes source values, including fields from
                 // peer files assembled into this module. Resolve their registered
                 // declaration rather than substituting the ABI contract's file
@@ -119,11 +118,16 @@ impl Checker {
                     .iter()
                     .map(|arg| self.resolve_extern_signature_nominals(arg))
                     .collect();
-                if builtin.is_some() || head.is_actor() || head.is_param() {
-                    Ty::Named { head: *head, args }
-                } else {
-                    self.named_ty_for_key(&resolved.unwrap_or_else(|| name.to_string()), args)
-                }
+                let selected = match head {
+                    crate::TypeHead::Nominal(_) => resolved
+                        .as_deref()
+                        .and_then(|path| self.lookup_declaration(path))
+                        .map_or(*head, |id| {
+                            self.head_of_declaration(crate::NominalId::of_declaration(id))
+                        }),
+                    _ => *head,
+                };
+                Ty::named_head(selected, args)
             }
             _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),
         }

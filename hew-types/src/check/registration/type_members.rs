@@ -738,7 +738,6 @@ impl Checker {
                     fields.insert(name.to_string(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -746,7 +745,7 @@ impl Checker {
                             crate::DeclarationKind::Variant
                         };
                     let return_type =
-                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
+                        self.variant_nominal_ty(declaration, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
@@ -1043,7 +1042,6 @@ impl Checker {
                 }
                 TypeBodyItem::Variant(variant) => {
                     variant_order.push(variant.name.to_string());
-                    let declaration_name = canonical_name.clone();
                     let variant_member_kind =
                         if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                             crate::DeclarationKind::MachineState
@@ -1051,7 +1049,7 @@ impl Checker {
                             crate::DeclarationKind::Variant
                         };
                     let return_type =
-                        self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
+                        self.variant_nominal_ty(declaration, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);

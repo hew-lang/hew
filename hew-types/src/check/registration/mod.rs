@@ -126,11 +126,14 @@ fn extern_contract_nominal_identity(checker: &Checker, ty: &Ty) -> Ty {
             head: head @ crate::TypeHead::Nominal(_),
             args,
         } => {
-            let name = head.registry_key();
-            checker.named_ty_for_key(
-                &checker
-                    .extern_signature_nominal_owner(name)
-                    .unwrap_or_else(|| name.to_string()),
+            let selected = checker
+                .extern_signature_nominal_owner(head.spelling())
+                .and_then(|path| checker.lookup_declaration(&path))
+                .map_or(*head, |id| {
+                    checker.head_of_declaration(crate::NominalId::of_declaration(id))
+                });
+            Ty::named_head(
+                selected,
                 args.iter()
                     .map(|arg| extern_contract_nominal_identity(checker, arg))
                     .collect(),

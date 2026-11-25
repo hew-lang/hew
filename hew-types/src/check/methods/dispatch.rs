@@ -327,7 +327,7 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
                 }
-                let receiver_ty = self.named_ty_for_key(&head.canonical_type, Vec::new());
+                let receiver_ty = head.receiver_type(Vec::new());
                 let candidates = crate::method_resolution::collect_method_sigs_for_receiver(
                     &self.defs,
                     &self.type_defs,
@@ -411,7 +411,7 @@ impl Checker {
                     let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
                     let constructor_match = self.lookup_variant_constructor(constructor_surface);
                     if let Some(crate::check::calls::VariantConstructor {
-                        type_name,
+                        owner,
                         expected_params,
                         type_params,
                         ..
@@ -445,7 +445,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return self.variant_nominal_ty(&type_name, resolved_args);
+                        return self.variant_nominal_ty(owner, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {

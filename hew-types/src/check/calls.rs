@@ -82,7 +82,7 @@ pub(super) fn variant_owner_spelling(type_name: &str) -> &str {
 }
 
 pub(super) struct VariantConstructor {
-    pub(super) type_name: String,
+    pub(super) owner: crate::NominalId,
     pub(super) expected_params: Vec<Ty>,
     pub(super) type_params: Vec<crate::ParamHead>,
     bare_qualifier: Option<Symbol>,
@@ -114,14 +114,15 @@ impl Checker {
                 })
                 .unwrap_or(type_prefix);
             let lookup = |key: &str| {
-                let td = self.type_def_at(key)?;
+                let owner = self.type_def_key(key)?;
+                let td = self.type_defs.get(&owner)?;
                 let expected_params = match td.variants.get(variant_name)? {
                     VariantDef::Unit => Vec::new(),
                     VariantDef::Tuple(params) => params.clone(),
                     VariantDef::Struct(_) => return None,
                 };
                 Some(VariantConstructor {
-                    type_name: key.to_string(),
+                    owner,
                     expected_params,
                     type_params: td.type_params.clone(),
                     bare_qualifier: None,
@@ -152,7 +153,7 @@ impl Checker {
                 VariantDef::Struct(_) => unreachable!("named payloads use struct construction"),
             };
             Some(VariantConstructor {
-                type_name: self.defs.path(id.declaration()).to_owned(),
+                owner: id,
                 expected_params: params,
                 type_params: td.type_params.clone(),
                 bare_qualifier: Some(spelling),
@@ -163,14 +164,12 @@ impl Checker {
     pub(super) fn expected_constructor_type_args(
         &self,
         expected: &Ty,
-        type_name: &str,
+        owner: crate::NominalId,
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
             Ty::Named { head, args }
-                if self.strict_nominal_identity(head.registry_key())
-                    == self.strict_nominal_identity(type_name)
-                    && args.len() == arity =>
+                if head.declaration(&self.defs) == Some(owner) && args.len() == arity =>
             {
                 Some(args.clone())
             }
@@ -1017,20 +1016,18 @@ impl Checker {
         };
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(func_name.as_str());
         if let Some(VariantConstructor {
-            type_name,
+            owner,
             expected_params,
             type_params,
             ..
         }) = self.lookup_variant_constructor(constructor_name)
         {
+            let type_name = self.defs.path(owner.declaration()).to_owned();
             if contextual_name.is_none() && !func_name.as_str().contains("::") {
                 self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
             }
-            let mut inferred_args = self.expected_constructor_type_args(
-                &resolved_expected,
-                &type_name,
-                type_params.len(),
-            )?;
+            let mut inferred_args =
+                self.expected_constructor_type_args(&resolved_expected, owner, type_params.len())?;
             self.check_arity(args, expected_params.len(), "this function", span);
             {
                 let subst_map: HashMap<crate::ParamHead, Ty> = type_params
@@ -2169,17 +2166,18 @@ impl Checker {
         let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some(VariantConstructor {
-            type_name,
+            owner,
             expected_params,
             type_params,
             bare_qualifier,
         }) = constructor_match
         {
+            let type_name = self.defs.path(owner.declaration()).to_owned();
             let member = constructor_name
                 .rsplit("::")
                 .next()
                 .unwrap_or(constructor_name);
-            if self.type_def_at(&type_name).is_some_and(|definition| {
+            if self.type_defs.get(&owner).is_some_and(|definition| {
                 matches!(definition.variants.get(member), Some(VariantDef::Unit))
             }) {
                 self.report_error(
@@ -2266,7 +2264,7 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = self.variant_nominal_ty(&type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(owner, resolved_args);
             self.record_construct_call(span);
             return result_ty;
         }

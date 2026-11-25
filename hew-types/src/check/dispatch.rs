@@ -80,6 +80,11 @@ pub enum TyPattern {
     /// Match a named generic constructor: `HashMap<K, V>` →
     /// `App { ctor: "HashMap", args: [Var("K"), Var("V")] }`.
     App { ctor: String, args: Vec<TyPattern> },
+    /// A named type already resolved at the call site.
+    Named {
+        head: crate::TypeHead,
+        args: Vec<TyPattern>,
+    },
     /// Tuple pattern.
     Tuple(Vec<TyPattern>),
 }
@@ -89,16 +94,8 @@ impl std::fmt::Display for TyPattern {
         match self {
             Self::Var(name) | Self::Primitive(name) => f.write_str(name),
             Self::Parameter(parameter) => write!(f, "{parameter}"),
-            Self::App { ctor, args } => {
-                write!(f, "{ctor}<")?;
-                for (idx, arg) in args.iter().enumerate() {
-                    if idx > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{arg}")?;
-                }
-                f.write_str(">")
-            }
+            Self::App { ctor, args } => Self::format_application(f, ctor, args),
+            Self::Named { head, args } => Self::format_application(f, head.spelling(), args),
             Self::Tuple(items) => {
                 f.write_str("(")?;
                 for (idx, item) in items.iter().enumerate() {
@@ -113,6 +110,27 @@ impl std::fmt::Display for TyPattern {
                 f.write_str(")")
             }
         }
+    }
+}
+
+impl TyPattern {
+    fn format_application(
+        f: &mut std::fmt::Formatter<'_>,
+        ctor: &str,
+        args: &[Self],
+    ) -> std::fmt::Result {
+        f.write_str(ctor)?;
+        if args.is_empty() {
+            return Ok(());
+        }
+        f.write_str("<")?;
+        for (idx, arg) in args.iter().enumerate() {
+            if idx > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{arg}")?;
+        }
+        f.write_str(">")
     }
 }
 
@@ -579,6 +597,11 @@ fn match_into(pat: &TyPattern, concrete: &TyPattern, out: &mut PatternSubst) -> 
         {
             aa.iter().zip(bb.iter()).all(|(p, c)| match_into(p, c, out))
         }
+        (TyPattern::Named { head: a, args: aa }, TyPattern::Named { head: b, args: bb })
+            if a == b && aa.len() == bb.len() =>
+        {
+            aa.iter().zip(bb.iter()).all(|(p, c)| match_into(p, c, out))
+        }
         (TyPattern::Tuple(a), TyPattern::Tuple(b)) if a.len() == b.len() => {
             a.iter().zip(b.iter()).all(|(p, c)| match_into(p, c, out))
         }
@@ -727,7 +750,7 @@ fn collect_vars(pat: &TyPattern, order: &mut Vec<String>, seen: &mut HashSet<Str
             }
         }
         TyPattern::Primitive(_) | TyPattern::Parameter(_) => {}
-        TyPattern::App { args, .. } | TyPattern::Tuple(args) => {
+        TyPattern::App { args, .. } | TyPattern::Named { args, .. } | TyPattern::Tuple(args) => {
             for a in args {
                 collect_vars(a, order, seen);
             }

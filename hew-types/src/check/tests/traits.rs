@@ -323,7 +323,7 @@ fn main() {
 
     let get_sig = output
         .sigs()
-        .get("Box::get")
+        .test_entry("Box::get")
         .expect("generic inherent method must retain its signature");
     assert_eq!(
         get_sig.return_type,
@@ -333,7 +333,7 @@ fn main() {
 
     let with_sig = output
         .sigs()
-        .get("Box::with")
+        .test_entry("Box::with")
         .expect("generic trait impl method must retain its signature");
     assert!(
         with_sig.returns_receiver_identity,
@@ -386,7 +386,7 @@ impl<T, U> Pair<T, U> {
     assert!(
         output
             .sigs()
-            .get("Pair::swap_identity")
+            .test_entry("Pair::swap_identity")
             .is_some_and(|sig| !sig.returns_receiver_identity),
         "a changed generic instantiation must fail closed in dispatch metadata"
     );
@@ -1848,8 +1848,9 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
             HashMap::new(),
         ),
     );
-    checker.test_fn_sig(
-        "Wrapper::get",
+    checker.test_method_sig(
+        __id,
+        "get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![crate::CallableParameter::borrowed(Ty::I64)],
@@ -2034,8 +2035,9 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
             HashMap::new(),
         ),
     );
-    checker.test_fn_sig(
-        "Wrapper::value",
+    checker.test_method_sig(
+        __id,
+        "value",
         FnSig {
             param_names: vec!["next".to_string()],
             params: vec![crate::CallableParameter::borrowed(Ty::param(
@@ -2220,7 +2222,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
-    checker.test_fn_sig("Speaker::hello", FnSig::default());
+    checker.test_method_sig(__id, "hello", FnSig::default());
 
     let speaker = checker.test_named("Speaker", vec![]);
     assert!(

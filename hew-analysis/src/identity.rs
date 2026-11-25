@@ -105,6 +105,22 @@ pub fn resolution_at(
         .map(|(key, resolution)| (span_of(key), *resolution))
 }
 
+/// The declaration signature attributed to a checked callee span.
+pub(crate) fn callable_signature_at(
+    output: &TypeCheckOutput,
+    start: usize,
+    end: usize,
+) -> Option<&hew_types::check::FnSig> {
+    let (span, resolution) = resolution_at(output, 0, end.checked_sub(1)?)?;
+    if span.start < start || span.end > end {
+        return None;
+    }
+    let (Resolution::Def(id) | Resolution::Member(id)) = resolution else {
+        return None;
+    };
+    output.sigs().of(id)
+}
+
 /// Whether a checked source segment is exactly one authored identifier token.
 /// Some expression resolutions include trailing punctuation or whitespace.
 #[must_use]

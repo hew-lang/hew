@@ -635,6 +635,19 @@ impl Checker {
         self.insert_fn_sig(declaration, sig);
     }
 
+    pub(super) fn test_method_sig(&mut self, owner: crate::NominalId, name: &str, sig: FnSig) {
+        let declaration = self
+            .defs
+            .mint_for_test(format!("{}::{name}", self.defs.path(owner.declaration())));
+        self.dispatch.insert_generic(
+            self.head_of_declaration(owner),
+            super::dispatch_table::MethodOwner::Inherent,
+            Symbol::intern(name),
+            declaration,
+        );
+        self.insert_fn_sig(declaration, sig);
+    }
+
     /// File a hand-built trait under a fresh declaration row spelled `key`.
     pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) -> crate::DefId {
         let declaration = self.defs.mint_for_test(key);

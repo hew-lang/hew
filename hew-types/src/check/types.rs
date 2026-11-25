@@ -1778,10 +1778,49 @@ impl TypeCheckOutput {
         self.type_defs.get(nominal)
     }
 
-    /// The function signatures, read by the keys callers spell.
+    /// The function signatures, read by declaration.
     #[must_use]
     pub fn sigs(&self) -> FnSigView<'_> {
-        FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids)
+        FnSigView::new(
+            &self.defs,
+            &self.fn_sigs,
+            &self.impl_method_declaration_ids,
+            &self.dispatch,
+        )
+    }
+
+    /// Resolve a callable spelling in the viewed source file.
+    #[must_use]
+    pub fn visible_callable_signature(&self, path: &str) -> Option<&FnSig> {
+        use super::scope::Resolution;
+
+        #[cfg(any(test, feature = "test"))]
+        if self.viewed_source().is_none() {
+            return self.sigs().test_entry(path);
+        }
+        let segments: Vec<_> = path.split('.').flat_map(|part| part.split("::")).collect();
+        let file = self.viewed_source()?;
+        let declaration = match self.scopes.lookup_type_path(file, &segments) {
+            Some(Resolution::Def(id) | Resolution::Member(id)) => Some(id),
+            Some(Resolution::Nominal(id)) => Some(id.declaration()),
+            _ => None,
+        };
+        declaration
+            .and_then(|id| self.fn_sigs.get(&id))
+            .or_else(|| {
+                let (receiver, name) = path.rsplit_once("::")?;
+                let head = self.visible_type_head(receiver)?;
+                let super::dispatch_table::MethodSelection::Unique(_, id) =
+                    self.dispatch.select(head, None, Symbol::intern(name))
+                else {
+                    return None;
+                };
+                self.fn_sigs.get(&id)
+            })
+            .or_else(|| {
+                let id = self.defs.lookup_builtin_callable(Symbol::intern(path))?;
+                self.fn_sigs.get(&id)
+            })
     }
 
     /// Record an expression's checker type, keeping the `Ty`-typed
@@ -2757,13 +2796,13 @@ impl<'a> TypeDefView<'a> {
     }
 }
 
-/// The function signatures of one compilation, read by declaration or, until
-/// callers hold ids, by the keys they spell.
+/// The function signatures of one compilation, read by declaration.
 #[derive(Debug, Clone, Copy)]
 pub struct FnSigView<'a> {
     pub sigs: &'a HashMap<crate::DefId, FnSig>,
     impl_names: &'a HashMap<String, crate::DefId>,
     defs: &'a crate::DefTable,
+    pub(crate) dispatch: &'a super::dispatch_table::DispatchTable,
 }
 
 impl<'a> FnSigView<'a> {
@@ -2772,11 +2811,13 @@ impl<'a> FnSigView<'a> {
         defs: &'a crate::DefTable,
         sigs: &'a HashMap<crate::DefId, FnSig>,
         impl_names: &'a HashMap<String, crate::DefId>,
+        dispatch: &'a super::dispatch_table::DispatchTable,
     ) -> Self {
         Self {
             sigs,
             impl_names,
             defs,
+            dispatch,
         }
     }
 
@@ -2786,22 +2827,19 @@ impl<'a> FnSigView<'a> {
         self.sigs.get(&declaration)
     }
 
-    /// The signature a key spells: a declaration's key, else a builtin name.
-    ///
-    /// TRANSITION(A1 commit 4): callers holding rendered names still resolve
-    /// them before accessing the declaration's signature.
+    /// Find a signature by its presentation in a test fixture.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
     #[must_use]
-    pub fn get(self, key: &str) -> Option<&'a FnSig> {
-        self.defs
-            .lookup_path(key)
-            .and_then(|id| self.of(id))
-            .or_else(|| self.impl_names.get(key).and_then(|id| self.of(*id)))
-            .or_else(|| self.of(self.defs.lookup_builtin_callable(Symbol::intern(key))?))
+    pub fn test_entry(self, path: &str) -> Option<&'a FnSig> {
+        self.entries()
+            .find_map(|(name, signature)| (name == path).then_some(signature))
     }
 
+    #[cfg(any(test, feature = "test"))]
     #[must_use]
     pub fn contains(self, key: &str) -> bool {
-        self.get(key).is_some()
+        self.test_entry(key).is_some()
     }
 
     /// Every spelled key with its signature.
@@ -2829,6 +2867,7 @@ impl<'a> FnSigView<'a> {
     }
 }
 
+#[cfg(any(test, feature = "test"))]
 impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
     type Output = FnSig;
 
@@ -2839,7 +2878,7 @@ impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
     /// When no signature answers to the key.
     fn index(&self, key: &Q) -> &FnSig {
         let key = key.as_ref();
-        self.get(key)
+        self.test_entry(key)
             .unwrap_or_else(|| panic!("no signature answers to `{key}`"))
     }
 }
@@ -2870,7 +2909,9 @@ impl FnSigFixture {
     pub fn view(&self) -> FnSigView<'_> {
         static NO_IMPL_NAMES: std::sync::LazyLock<HashMap<String, crate::DefId>> =
             std::sync::LazyLock::new(HashMap::new);
-        FnSigView::new(&self.defs, &self.sigs, &NO_IMPL_NAMES)
+        static NO_DISPATCH: std::sync::LazyLock<super::dispatch_table::DispatchTable> =
+            std::sync::LazyLock::new(super::dispatch_table::DispatchTable::default);
+        FnSigView::new(&self.defs, &self.sigs, &NO_IMPL_NAMES, &NO_DISPATCH)
     }
 
     /// The signature tables of a hand-built

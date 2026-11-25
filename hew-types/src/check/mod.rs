@@ -3467,7 +3467,12 @@ impl Checker {
         self.actor_protocol_descriptors = build_actor_protocol_descriptors(
             program,
             &self.defs,
-            FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids),
+            FnSigView::new(
+                &self.defs,
+                &self.fn_sigs,
+                &self.impl_method_declaration_ids,
+                &self.dispatch,
+            ),
             |ty| self.normalize_for_use(ty),
         );
         self.register_actor_intercept_types(program);

@@ -504,7 +504,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     for name in ["print", "println", "to_string"] {
         let sig = checker
             .sigs()
-            .get(name)
+            .test_entry(name)
             .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
         assert_eq!(
             sig.type_params

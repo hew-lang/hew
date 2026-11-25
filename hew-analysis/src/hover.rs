@@ -91,7 +91,7 @@ pub fn hover(
     })
     .or_else(|| {
         word.as_ref().and_then(|word| {
-            if let Some(sig) = type_output.sigs().get(word.as_str()) {
+            if let Some(sig) = type_output.visible_callable_signature(word.as_str()) {
                 let hover_text = format_fn_signature(word, sig);
                 return Some(HoverResult {
                     contents: hover_text,
@@ -1360,7 +1360,7 @@ fn hover_param_in_item(
         Item::Function(function) => hover_param_in_decl(
             &function.fn_span,
             &function.params,
-            fn_sigs.get(function.name.name.as_str()),
+            type_output.visible_callable_signature(function.name.name.as_str()),
             word,
             word_span,
             offset,
@@ -1371,7 +1371,7 @@ fn hover_param_in_item(
                 if let Some(result) = hover_param_in_decl(
                     &recv.span,
                     &recv.params,
-                    fn_sigs.get(key.as_str()),
+                    type_output.visible_callable_signature(&key),
                     word,
                     word_span,
                     offset,
@@ -1383,7 +1383,7 @@ fn hover_param_in_item(
                 let key = format!("{}::{}", actor.name, method.name);
                 if let Some(result) = hover_param_in_method(
                     method,
-                    fn_sigs.get(key.as_str()),
+                    type_output.visible_callable_signature(&key),
                     word,
                     word_span,
                     offset,
@@ -1419,7 +1419,7 @@ fn hover_param_in_item(
                     if let Some(result) = hover_param_in_decl(
                         &method.span,
                         &method.params,
-                        fn_sigs.get(key.as_str()),
+                        type_output.visible_callable_signature(&key),
                         word,
                         word_span,
                         offset,

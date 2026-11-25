@@ -144,66 +144,10 @@ pub fn build_signature_help(
 }
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
-    // A checked callee is already overload-selected. Its identity takes
-    // precedence over every spelling-based compatibility path below.
-    if let Some((span, resolution)) =
-        crate::identity::resolution_at(tc, 0, context.callee_end.saturating_sub(1))
-    {
-        if span.start >= context.callee_start && span.end <= context.callee_end {
-            if let hew_types::check::scope::Resolution::Def(id)
-            | hew_types::check::scope::Resolution::Member(id) = resolution
-            {
-                if let Some(sig) = tc.fn_sigs.get(&id) {
-                    return Some(sig.clone());
-                }
-            }
-        }
-    }
-    if let Some(sig) = find_exact_fn_sig(&context.callee, tc) {
-        return Some(sig);
-    }
-
-    if let Some(sig) = find_receiver_method_sig(context, tc) {
-        return Some(sig);
-    }
-
-    // A module-qualified free call (`unicode.is_upper(cp)`) reaches here: it is
-    // not the exact key, and its prefix is an import binding rather than a
-    // value, so it has no receiver type. Resolve the binding to the module it
-    // names and ask for the canonical identity. Ordered AFTER the receiver path
-    // so a local value shadowing an import binding still resolves as the method
-    // call it is.
-    if let Some(sig) = find_module_qualified_fn_sig(&context.callee, tc) {
-        return Some(sig);
-    }
-
-    if context.receiver_end.is_none() {
-        return find_fallback_fn_sig(&context.callee, tc);
-    }
-
-    None
-}
-
-/// Resolve `<binding>.<fn>` through the importer's own binding table.
-///
-/// `fn_sigs` is keyed by the declaring module's canonical path
-/// (`std.string.to_int`), while the source spells the lexical import
-/// binding (`unicode.is_upper`). `module_import_bindings` is the checker's
-/// record of exactly which module each binding names, so the surface spelling
-/// resolves to one identity without the LSP inventing an owner or scanning
-/// `fn_sigs` for a matching leaf.
-///
-/// Keyed on the root importer (`None`): the analyzed document is the
-/// compilation root. A miss returns `None`; no owner is guessed.
-fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    let (binding, leaf) = callee.rsplit_once('.')?;
-    if binding.is_empty() || leaf.is_empty() {
-        return None;
-    }
-    let owner = tc
-        .module_import_bindings
-        .get(&(None, 0, binding.to_string()))?;
-    tc.sigs().get(&format!("{owner}.{leaf}")).cloned()
+    crate::identity::callable_signature_at(tc, context.callee_start, context.callee_end)
+        .or_else(|| tc.visible_callable_signature(&context.callee))
+        .cloned()
+        .or_else(|| find_receiver_method_sig(context, tc))
 }
 
 /// Find the call the cursor is inside and its arguments up to the cursor.
@@ -289,53 +233,6 @@ fn find_receiver_method_sig(context: &CallContext, tc: &TypeCheckOutput) -> Opti
     let method = hew_types::short_name(&context.callee);
     let receiver_ty = find_receiver_type(tc, receiver_end)?;
     lookup_receiver_method_sig(tc, receiver_ty, method)
-}
-
-/// Find a function signature by name via qualified-name fallbacks.
-fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    // Try just the last component as a plain function name.
-    let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
-    if last != name {
-        // Root free functions publish under their canonical `{root}.{name}`
-        // key; the leaf resolves through the checker's declaration table
-        // before the bare rung, which remains the builtin/extern floor.
-        if let Some(sig) = find_root_fn_sig(last, tc) {
-            return Some(sig);
-        }
-        if let Some(sig) = tc.sigs().get(last) {
-            return Some(sig.clone());
-        }
-        for (sig_name, sig) in tc.sigs().entries() {
-            if sig_name.ends_with(&format!("::{last}")) {
-                return Some(sig.clone());
-            }
-        }
-    }
-
-    None
-}
-
-fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    if let Some(sig) = find_root_fn_sig(name, tc) {
-        return Some(sig);
-    }
-    tc.sigs().get(name).cloned()
-}
-
-/// Signature of a bare free-function spelling declared by the ROOT unit.
-///
-/// The checker publishes root free functions under `{root}.{name}` and
-/// records that declaration in its identity table. Resolve the spelling
-/// through that table rather than reconstructing the key: a bare spelling
-/// that names no root declaration yields `None` and the caller falls
-/// through to the builtin/extern rung.
-fn find_root_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
-    if name.contains('.') || name.contains("::") {
-        return None;
-    }
-    let root = tc.defs.root_module_path()?;
-    let declaration = tc.defs.lookup_path(&format!("{root}.{name}"))?;
-    tc.sigs().get(tc.defs.path(declaration)).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.

@@ -549,6 +549,7 @@ impl ResolvedTy {
                 | BuiltinType::HashMap
                 | BuiltinType::HashSet
                 | BuiltinType::Stream
+                | BuiltinType::Sink
                 | BuiltinType::NodeId
                 | BuiltinType::Location => builtin(*kind, args.clone()),
                 other

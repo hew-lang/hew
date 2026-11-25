@@ -2173,7 +2173,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     );
     let sig = output
         .sigs()
-        .get("unwrap_or")
+        .test_entry("unwrap_or")
         .expect("unwrap_or signature should be registered");
     assert_eq!(
         sig.params[0].ty,

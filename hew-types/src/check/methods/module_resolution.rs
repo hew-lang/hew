@@ -237,7 +237,12 @@ impl Checker {
 
     /// This compilation's function signatures.
     pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
-        crate::check::FnSigView::new(&self.defs, &self.fn_sigs, &self.impl_method_declaration_ids)
+        crate::check::FnSigView::new(
+            &self.defs,
+            &self.fn_sigs,
+            &self.impl_method_declaration_ids,
+            &self.dispatch,
+        )
     }
 
     /// The signature a key spells.

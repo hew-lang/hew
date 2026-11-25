@@ -428,7 +428,7 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     assert_eq!(
         output
             .sigs()
-            .get(&output.import_fn_name_aliases[&(None, 0, "forward".to_string())])
+            .test_entry(&output.import_fn_name_aliases[&(None, 0, "forward".to_string())])
             .expect("signature")
             .return_type,
         Ty::Named {

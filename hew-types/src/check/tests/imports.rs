@@ -460,7 +460,7 @@ pub fn score() -> i64 {
     assert_eq!(
         output
             .sigs()
-            .get("hew.deepalias.make")
+            .test_entry("hew.deepalias.make")
             .map(|sig| &sig.return_type),
         Some(&Ty::named_for_test("hew.aliassrc.Color", vec![]))
     );
@@ -630,7 +630,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
     assert_eq!(
         output
             .sigs()
-            .get("ClosableHandle::close")
+            .test_entry("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
@@ -668,7 +668,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     assert_eq!(
         output
             .sigs()
-            .get("ClosableHandle::close")
+            .test_entry("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
             Ty::Unit,
@@ -736,7 +736,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.Db::count32")
+            .test_entry("hew.testffi.Db::count32")
             .map(|sig| &sig.return_type),
         Some(&Ty::I32)
     );
@@ -959,14 +959,14 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.Db::query")
+            .test_entry("hew.testffi.Db::query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
     assert_eq!(
         output
             .sigs()
-            .get("hew.testffi.hew_testffi_query")
+            .test_entry("hew.testffi.hew_testffi_query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
@@ -1660,7 +1660,7 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
 
     let signature = checker
         .sigs()
-        .get("std.net.net_error")
+        .test_entry("std.net.net_error")
         .expect("source declaration must publish its canonical signature");
     assert!(matches!(
         signature.return_type,
@@ -1892,7 +1892,10 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         ("keep_left", "pkg.left.Shared"),
         ("keep_right", "pkg.right.Shared"),
     ] {
-        let signature = output.sigs().get(function).expect("function signature");
+        let signature = output
+            .sigs()
+            .test_entry(function)
+            .expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
             [crate::CallableParameter { ty: Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }, .. }] if head.spelling() == expected
@@ -2517,7 +2520,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let output = checker.check_program(&program);
     let stream_open = output
         .sigs()
-        .get("std.stream.open")
+        .test_entry("std.stream.open")
         .expect("expected std::stream import to register std.stream.open");
     assert!(
         !output.sigs().contains("stream.open"),
@@ -4079,7 +4082,7 @@ fn user_import_registers_type_alias_and_publishes_bindings() {
         ]))
     );
     let sigs = output.sigs();
-    let sig = sigs.get("use_aliases").expect("use_aliases sig");
+    let sig = sigs.test_entry("use_aliases").expect("use_aliases sig");
     assert_eq!(sig.params.first().map(|p| &p.ty), Some(&Ty::I64));
     assert!(
         matches!(

@@ -153,7 +153,7 @@ impl Counter {
     );
     let sig = output
         .sigs()
-        .get("Counter::peek")
+        .test_entry("Counter::peek")
         .expect("Counter::peek must be registered");
     assert!(
         !sig.requires_mutable_receiver,

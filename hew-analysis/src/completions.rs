@@ -151,13 +151,12 @@ pub fn complete(
 /// Explicit imports publish lexical bindings to canonical signatures.
 fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
     tc.import_fn_name_aliases
-        .iter()
-        .filter(|((module, file, binding), _)| {
+        .keys()
+        .filter(|(module, file, binding)| {
             module.is_none() && *file == 0 && is_source_identifier(binding)
         })
-        .filter_map(|((_, _, binding), source)| {
-            tc.sigs()
-                .get(source)
+        .filter_map(|(_, _, binding)| {
+            tc.visible_callable_signature(binding)
                 .map(|sig| fn_sig_completion(binding, sig))
         })
         .collect()

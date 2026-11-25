@@ -32,7 +32,7 @@ fn extern_borrow_signature_registers_exact_types() {
         "#,
     );
     assert!(output.errors.is_empty(), "errors: {:#?}", output.errors);
-    let sig = output.sigs().get("read").expect("extern signature");
+    let sig = output.sigs().test_entry("read").expect("extern signature");
     let borrow_i64 = Ty::Borrow {
         pointee: Box::new(Ty::I64),
     };
@@ -290,7 +290,7 @@ fn injected_ordinary_function_borrow_fails_closed() {
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
-    assert!(output.sigs().get("ordinary").is_none_or(|sig| {
+    assert!(output.sigs().test_entry("ordinary").is_none_or(|sig| {
         sig.params
             .iter()
             .all(|parameter| !matches!(parameter.ty, Ty::Borrow { .. }))
@@ -353,7 +353,7 @@ fn checker_extern_context_does_not_leak_to_ordinary_signature() {
     ));
     assert!(output
         .sigs()
-        .get("ordinary")
+        .test_entry("ordinary")
         .is_none_or(|sig| { !matches!(sig.return_type, Ty::Borrow { .. }) }));
 }
 
@@ -373,7 +373,7 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
     );
     let sig = output
         .sigs()
-        .get("vec_push")
+        .test_entry("vec_push")
         .expect("extern fn must be registered");
     let spec = sig
         .extern_symbol
@@ -540,7 +540,7 @@ fn extern_fn_without_extern_symbol_attribute_has_none_spec() {
     );
     let sig = output
         .sigs()
-        .get("unrelated")
+        .test_entry("unrelated")
         .expect("extern fn must be registered");
     assert!(
         sig.extern_symbol.is_none(),
@@ -622,7 +622,7 @@ fn malformed_extern_symbol_template_emits_invalid_template_diagnostic() {
     // unresolved-symbol diagnostic later).
     let sig = output
         .sigs()
-        .get("bad")
+        .test_entry("bad")
         .expect("extern fn must still be registered for downstream resolution");
     assert!(
         sig.extern_symbol.is_none(),

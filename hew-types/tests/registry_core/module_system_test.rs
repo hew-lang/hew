@@ -664,7 +664,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
 
     let sig = output
         .sigs()
-        .get("take_alpha")
+        .test_entry("take_alpha")
         .expect("take_alpha sig must be registered");
     let param = sig.params.first().expect("take_alpha has one param");
     match &param.ty {

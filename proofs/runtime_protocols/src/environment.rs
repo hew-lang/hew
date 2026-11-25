@@ -33,6 +33,15 @@ pub mod clock {
     }
 }
 
+pub mod platform {
+    pub mod clock {
+        pub fn now_ms() -> u64 {
+            // SAFETY: reading the host's model clock has no preconditions.
+            unsafe { crate::clock::hew_now_ms() }
+        }
+    }
+}
+
 pub mod actor {
     #[derive(Debug)]
     pub struct HewPanic {
@@ -200,4 +209,17 @@ pub mod bytes {
     pub unsafe fn hew_bytes_drop(_: *mut u8) {
         panic!("payload buffers are outside the readiness-slot contract");
     }
+}
+
+// Tracing observes protocol transitions without changing the host model.
+pub mod tracing {
+    pub const SPAN_CANCELLATION_FIRED: i32 = 25;
+    pub const SPAN_CANCELLATION_COOPERATE_CHECKED: i32 = 27;
+    pub const SPAN_MAX_HEAP_EXCEEDED: i32 = 32;
+
+    pub fn current_actor_id_or_zero() -> u64 {
+        0
+    }
+
+    pub fn record_substrate_event(_: u64, _: i32, _: i32) {}
 }

@@ -3295,6 +3295,27 @@ mod tests {
         hew_trace_reset();
     }
 
+    #[test]
+    fn cancellation_trace_records_normalized_reason() {
+        let _guard = setup();
+
+        // SAFETY: the test owns the token until release.
+        unsafe {
+            let token = crate::cancel_token::hew_cancel_token_new_child(std::ptr::null_mut());
+            crate::cancel_token::hew_cancel_token_cancel(token, 0);
+            crate::cancel_token::hew_cancel_token_release(token);
+        }
+
+        let snapshot = trace_snapshot(None, None, 8).expect("cancellation snapshot");
+        let reasons: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter(|record| record.event.event_type == SPAN_CANCELLATION_FIRED)
+            .map(|record| record.event.msg_type)
+            .collect();
+        assert_eq!(reasons, [1]);
+    }
+
     /// Real link and monitor substrate operations emit canonical spans.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -3354,6 +3375,62 @@ mod tests {
         );
 
         hew_trace_reset();
+        crate::scheduler::hew_sched_shutdown();
+        crate::scheduler::hew_runtime_cleanup();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn failed_lifecycle_enqueues_do_not_record_delivery_spans() {
+        let _guard = setup();
+        crate::scheduler::init_real_scheduler_for_test();
+
+        // SAFETY: both actors remain live until stopped and freed below.
+        unsafe {
+            let watcher = crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, None);
+            let target = crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, None);
+            assert!(!watcher.is_null() && !target.is_null());
+            let target_id = (*target).id;
+
+            crate::link::hew_actor_link(watcher, target);
+            let mut monitor_id = 0;
+            assert_eq!(
+                crate::monitor::hew_actor_monitor(watcher, target, &raw mut monitor_id),
+                0
+            );
+
+            {
+                let _failure = crate::mailbox::fail_mailbox_alloc_on_nth(0);
+                crate::link::propagate_exit_to_links(target_id, 42);
+                assert!(!crate::mailbox::mailbox_alloc_failure_still_armed());
+            }
+            {
+                let _failure = crate::mailbox::fail_mailbox_alloc_on_nth(0);
+                crate::monitor::notify_monitors_on_death(
+                    target_id,
+                    crate::internal::types::HewActorState::Crashed as i32,
+                    1,
+                );
+                assert!(!crate::mailbox::mailbox_alloc_failure_still_armed());
+            }
+
+            crate::actor::hew_actor_stop(watcher);
+            crate::actor::hew_actor_stop(target);
+            assert_eq!(crate::actor::hew_actor_free(watcher), 0);
+            assert_eq!(crate::actor::hew_actor_free(target), 0);
+        }
+
+        let snapshot = trace_snapshot(None, None, 64).expect("link/monitor snapshot");
+        let types: Vec<_> = snapshot
+            .events
+            .iter()
+            .map(|record| record.event.event_type)
+            .collect();
+        assert!(types.contains(&SPAN_LINK_CREATED));
+        assert!(types.contains(&SPAN_MONITOR_CREATED));
+        assert!(!types.contains(&SPAN_LINK_EXIT), "spans: {types:?}");
+        assert!(!types.contains(&SPAN_MONITOR_DOWN), "spans: {types:?}");
+
         crate::scheduler::hew_sched_shutdown();
         crate::scheduler::hew_runtime_cleanup();
     }

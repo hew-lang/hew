@@ -1317,15 +1317,17 @@ pub(crate) fn deliver_down_message(watcher_actor_id: u64, down_data: HewDownMess
             data_size,
         )
     };
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "HewDownMessage::reason_kind is a small enum discriminant (0..=4)"
-    )]
-    crate::tracing::record_substrate_event(
-        watcher_actor_id,
-        crate::tracing::SPAN_MONITOR_DOWN,
-        down_data.reason_kind as i32,
-    );
+    if sent {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "HewDownMessage::reason_kind is a small enum discriminant (0..=4)"
+        )]
+        crate::tracing::record_substrate_event(
+            watcher_actor_id,
+            crate::tracing::SPAN_MONITOR_DOWN,
+            down_data.reason_kind as i32,
+        );
+    }
 
     #[cfg(test)]
     run_notify_monitors_hook();

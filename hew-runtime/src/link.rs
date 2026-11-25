@@ -451,19 +451,21 @@ fn send_exit_notification(
             let data_size = std::mem::size_of::<ExitMessage>();
 
             // SAFETY: the ActorId pin keeps the linked actor and mailbox live.
-            unsafe {
-                let _ = crate::actor::send_system_message(
+            let sent = unsafe {
+                crate::actor::send_system_message(
                     linked_actor,
                     HewSysMsg::Exit,
                     data_ptr.cast_mut(),
                     data_size,
+                )
+            };
+            if sent {
+                crate::tracing::record_substrate_event(
+                    linked_actor_id,
+                    crate::tracing::SPAN_LINK_EXIT,
+                    reason,
                 );
             }
-            crate::tracing::record_substrate_event(
-                linked_actor_id,
-                crate::tracing::SPAN_LINK_EXIT,
-                reason,
-            );
         }
 
         #[cfg(test)]

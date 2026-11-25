@@ -7044,19 +7044,21 @@ class ExecutorV1 {
               actor.completed = true;
               actor.stateLease?.release();
               actor.stateLease = undefined;
+              const supervisor = actor.supervisor;
+              if (supervisor && action !== "Restart" && action !== "Escalate") {
+                // Publish the terminal ruling before waking admission waiters.
+                supervisor.owner.spent.add(supervisor.child);
+                supervisor.owner.recovering.delete(supervisor.child);
+              }
               for (const wake of actor.closed.splice(0)) wake();
               for (const admit of actor.admission.splice(0)) admit();
-              if (actor.supervisor) {
-                const { owner, child } = actor.supervisor;
+              if (supervisor) {
+                const { owner, child } = supervisor;
                 if (action === "Restart")
                   this.restartChild(owner, child, [debt]);
                 else if (action === "Escalate")
                   this.escalateSupervisor(owner, [debt]);
-                else {
-                  owner.spent.add(child);
-                  owner.recovering.delete(child);
-                  this.wakeRoles();
-                }
+                else this.wakeRoles();
               }
             });
           });

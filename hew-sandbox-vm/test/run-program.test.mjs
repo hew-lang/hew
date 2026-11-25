@@ -601,6 +601,45 @@ test("actor-owned generator adoption rebinds suspended authored cleanup", async 
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
+test("a crash hook that gives up wakes a capacity-blocked caller with Dead", async () => {
+  const result = await runProgram(
+    `
+actor Worker {
+    mailbox 1 overflow fail;
+
+    receive fn fail() {
+        sleep(1ms);
+        panic("worker failed");
+    }
+    receive fn queued() { panic("queued turn must not run"); }
+    receive fn read() -> i64 { 1 }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction { .GiveUp }
+}
+supervisor Tree { intensity: 3 within 60s; child worker: Worker; }
+fn main() {
+    let tree = spawn Tree;
+    let worker = tree.worker;
+    let inbox = mailbox(worker, on_full: .Wait);
+    inbox.fail().expect("start the failing turn");
+    inbox.queued().expect("fill the mailbox");
+    // Virtual time advances to the crash only after this call parks for capacity.
+    match policy(worker, on_full: .Wait).read() {
+        .Err(.Dead) => println("dead"),
+        .Err(.Restarting) => println("restarting"),
+        _ => panic("expected a terminal admission failure"),
+    }
+    stop(tree);
+    stopped(tree);
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "dead\n");
+});
+
 test("actor-owned supervised restart releases the old incarnation before fresh capacity", async () => {
   const source = fs.readFileSync(
     path.join(

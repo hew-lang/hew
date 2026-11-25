@@ -856,9 +856,13 @@ impl Checker {
                         let key = format!("{canonical_owner}.{method}");
                         if self.has_fn_sig(&key) {
                             self.module_fn_exports.insert(key);
-                        } else if self.has_fn_sig(c_symbol.as_str()) {
+                        } else if let Some(declaration) = self.signature_declaration(c_symbol) {
                             self.module_fn_exports.insert(key.clone());
-                            self.alias_fn_sig(&key, c_symbol);
+                            self.scopes.declare_item(
+                                self.scopes.namespace_of(registry_module),
+                                Ident::new(method),
+                                super::scope::Binding::Fn(declaration),
+                            );
                             self.declare_contractless_extern(
                                 registry_module,
                                 &canonical_owner,

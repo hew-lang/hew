@@ -513,7 +513,7 @@ impl Checker {
                         return Ty::Error;
                     }
                 }
-                self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
+                self.require_unsafe(self.signature_declaration(&key), &key, span);
                 // Call and value-position references share the manifest's
                 // canonical member/module capability selection.
                 self.reject_wasm_native_only_module_function(name.name.as_str(), method, span);

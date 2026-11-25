@@ -167,10 +167,8 @@ fn test_qualified_name_resolution() {
     let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
-    assert!(
-        output.sigs().contains("utils.helper"),
-        "bare import should register qualified name 'utils.helper'"
-    );
+    let helper = output.defs.lookup_path("myapp.utils.helper").unwrap();
+    assert!(output.fn_sigs.contains_key(&helper));
     assert!(
         !output.sigs().contains("helper"),
         "bare import must NOT register unqualified 'helper'"
@@ -1160,8 +1158,11 @@ fn test_two_modules_same_fn_no_collision() {
     let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
-    assert!(output.sigs().contains("alpha.run"));
-    assert!(output.sigs().contains("beta.run"));
+    let alpha = output.defs.lookup_path("pkg.alpha.run").unwrap();
+    let beta = output.defs.lookup_path("pkg.beta.run").unwrap();
+    assert_ne!(alpha, beta);
+    assert!(output.fn_sigs.contains_key(&alpha));
+    assert!(output.fn_sigs.contains_key(&beta));
     assert!(
         output.errors.is_empty(),
         "no errors expected: {:?}",

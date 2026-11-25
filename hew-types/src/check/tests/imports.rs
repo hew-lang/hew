@@ -1190,10 +1190,11 @@ fn bare_import_registers_qualified_name() {
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
-    assert!(
-        output.sigs().contains("utils.helper"),
-        "bare import should register qualified name 'utils.helper'"
-    );
+    let declaration = output
+        .defs
+        .lookup_path("myapp.utils.helper")
+        .expect("bare import registers the source declaration");
+    assert!(output.fn_sigs.contains_key(&declaration));
     assert!(
         !output.sigs().contains("helper"),
         "bare import should NOT register unqualified name 'helper'"
@@ -2386,10 +2387,8 @@ fn user_module_fn_sig_has_correct_types() {
     );
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
-    let sig = output
-        .sigs()
-        .get("math.add")
-        .expect("math.add should be registered");
+    let declaration = output.defs.lookup_path("mylib.math.add").unwrap();
+    let sig = &output.fn_sigs[&declaration];
     assert_eq!(sig.params.len(), 2, "should have 2 params");
     assert_eq!(sig.params[0].ty, Ty::I32);
     assert_eq!(sig.params[1].ty, Ty::I32);
@@ -2432,11 +2431,10 @@ fn two_modules_same_fn_name_no_collision() {
         (Item::Import(import_b), 0..0),
     ]);
 
-    assert!(output.sigs().contains("alpha.run"));
-    assert!(output.sigs().contains("beta.run"));
-    // Both should have different return types
-    assert_eq!(output.sigs()["alpha.run"].return_type, Ty::I32);
-    assert_eq!(output.sigs()["beta.run"].return_type, Ty::String);
+    let alpha = output.defs.lookup_path("pkg.alpha.run").unwrap();
+    let beta = output.defs.lookup_path("pkg.beta.run").unwrap();
+    assert_eq!(output.fn_sigs[&alpha].return_type, Ty::I32);
+    assert_eq!(output.fn_sigs[&beta].return_type, Ty::String);
 }
 
 // -- Import with no resolved items (stdlib) still works --

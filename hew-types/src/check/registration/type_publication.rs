@@ -1349,11 +1349,14 @@ impl Checker {
         source_identity: &str,
         publication: StdlibBarePublication<'_>,
     ) {
-        if !self.has_fn_sig(source_identity) {
+        let Some(declaration) = self
+            .lookup_declaration(source_identity)
+            .filter(|id| self.fn_sigs.contains_key(id))
+        else {
             // A declaration source that cannot supply its canonical signature
             // must not manufacture an ambient bare function binding.
             return;
-        }
+        };
         if publication.records_import_identity() {
             self.import_fn_name_aliases.insert(
                 (
@@ -1366,7 +1369,10 @@ impl Checker {
         } else {
             // Implicit language-floor bindings are ambient; explicit imports
             // only publish a lexical binding to the canonical signature.
-            self.alias_fn_sig(&binding, source_identity);
+            self.scopes.bind_prelude(
+                Symbol::intern(&binding),
+                super::scope::Binding::Fn(declaration),
+            );
         }
         self.record_published_bare_function(&binding, source_identity);
         let source_owner = source_identity
@@ -2077,9 +2083,6 @@ impl Checker {
                         }
                     }
                     self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
-                    if spec.is_none() && !self.has_fn_sig(&surface_qualified) {
-                        self.alias_fn_sig(&surface_qualified, &qualified);
-                    }
 
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =

@@ -227,21 +227,38 @@ impl Checker {
     ///
     /// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
     pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
-        self.sigs().get(key)
+        self.fn_sigs.get(&self.signature_declaration(key)?)
+    }
+
+    pub(in crate::check) fn signature_declaration(&self, key: &str) -> Option<crate::DefId> {
+        self.fn_sig_keys
+            .get(key)
+            .copied()
+            .or_else(|| {
+                let (module, name) = key.rsplit_once('.')?;
+                let module = self.defs.module_for_path(module)?;
+                match self
+                    .scopes
+                    .item(self.scopes.namespace_of(module), Ident::new(name))?
+                {
+                    scope::Binding::Fn(declaration) => Some(declaration),
+                    _ => None,
+                }
+            })
+            .or_else(|| match self.scopes.prelude_binding(Symbol::intern(key)) {
+                Some(scope::Binding::Fn(declaration)) => Some(declaration),
+                _ => self.defs.lookup_builtin_callable(Symbol::intern(key)),
+            })
     }
 
     /// Whether a key spells a signature.
     pub(in crate::check) fn has_fn_sig(&self, key: &str) -> bool {
-        self.sigs().contains(key)
+        self.fn_sig(key).is_some()
     }
 
     /// The signature a key spells, mutably.
     pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
-        let declaration = self
-            .fn_sig_keys
-            .get(key)
-            .copied()
-            .or_else(|| self.defs.lookup_builtin_callable(Symbol::intern(key)))?;
+        let declaration = self.signature_declaration(key)?;
         self.fn_sigs.get_mut(&declaration)
     }
 
@@ -275,22 +292,6 @@ impl Checker {
                     self.defs.path(owner)
                 ),
             ));
-        }
-    }
-
-    /// Make `key` spell the signature `source` spells: an import binding or a
-    /// module surface for one declaration.
-    ///
-    /// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
-    /// resolve through it.
-    pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
-        if let Some(declaration) = self
-            .fn_sig_keys
-            .get(source)
-            .copied()
-            .or_else(|| self.defs.lookup_builtin_callable(Symbol::intern(source)))
-        {
-            self.fn_sig_keys.insert(key.to_string(), declaration);
         }
     }
 

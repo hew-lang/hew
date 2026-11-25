@@ -1373,7 +1373,7 @@ impl Checker {
                 return None;
             }
         }
-        self.require_unsafe(self.fn_sig_keys.get(&key).copied(), &key, span);
+        self.require_unsafe(self.signature_declaration(&key), &key, span);
         self.reject_wasm_native_only_module_function(module_name, method, span);
         let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
@@ -2137,7 +2137,7 @@ impl Checker {
                             self.visible_fn_signature_key(Ident::new(func_name.as_str()))
                         };
                     visible_key
-                        .and_then(|key| self.fn_sig_keys.get(&key).copied())
+                        .and_then(|key| self.signature_declaration(&key))
                         .or_else(|| self.scoped_fn_declaration(&func_name, false))
                 })
                 .flatten()

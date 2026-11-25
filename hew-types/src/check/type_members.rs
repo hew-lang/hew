@@ -140,13 +140,23 @@ impl Checker {
                 {
                     return None;
                 }
-                let nominal = self
-                    .nominal_in_scope(*surface)
-                    .or_else(|| {
-                        let canonical = self.source_nominal_declaration(surface.name.as_str())?;
-                        self.nominal_at_path(&canonical)
-                    })
-                    .filter(|id| self.type_defs.contains_key(id));
+                let binding = self
+                    .scope_site()
+                    .and_then(|site| self.scopes.type_head(&self.env, site, *surface));
+                let nominal = match binding {
+                    Some(scope::Resolution::Nominal(id)) => Some(id),
+                    // A compiler type such as Vec can have a scope binding
+                    // without a source declaration. Keep that binding so the
+                    // fallback cannot pick up a same-named root declaration
+                    // while checking an embedded stdlib body.
+                    Some(scope::Resolution::Builtin(builtin)) => {
+                        self.defs.builtin_declaration(builtin)
+                    }
+                    _ => self
+                        .source_nominal_declaration(surface.name.as_str())
+                        .and_then(|canonical| self.nominal_at_path(&canonical)),
+                };
+                let nominal = nominal.filter(|id| self.type_defs.contains_key(id));
                 if let Some(id) = nominal {
                     let head = self.head_of_declaration(id);
                     (

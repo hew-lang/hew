@@ -610,6 +610,75 @@ fn focused_file_resolves_shadowed_type_in_its_own_scope() {
 }
 
 #[test]
+fn directory_module_completions_use_each_files_imports() {
+    let entry = "import left as alias;\nimport left.{first as entry_fn, Left as EntryType};\nfn entry() { let _: EntryType = alias.first(); entry_fn(); }";
+    let peer = "import right as alias;\nimport right.{second as peer_fn, Right as PeerType};\nfn peer() { let _: PeerType = alias.second(); peer_fn(); }";
+    let root = make_temp_workspace_dir(&[
+        ("hew.toml", "[package]\nname = \"app\"\n"),
+        ("pkg/pkg.hew", entry),
+        ("pkg/peer.hew", peer),
+        (
+            "pkg/left/left.hew",
+            "pub type Left {} pub fn first() -> Left { Left {} }",
+        ),
+        (
+            "pkg/right/right.hew",
+            "pub type Right {} pub fn second() -> Right { Right {} }",
+        ),
+    ]);
+    for (file, source, own, other) in [
+        (
+            "pkg/pkg.hew",
+            entry,
+            ["entry_fn", "EntryType", "alias.Left", "first"],
+            ["peer_fn", "PeerType", "alias.Right", "second"],
+        ),
+        (
+            "pkg/peer.hew",
+            peer,
+            ["peer_fn", "PeerType", "alias.Right", "second"],
+            ["entry_fn", "EntryType", "alias.Left", "first"],
+        ),
+    ] {
+        let uri = Url::from_checked_file_path(root.join(file)).unwrap();
+        let doc = analyze_document(&uri, source, &DashMap::new(), &[]);
+        let errors = published_errors(&doc, &uri);
+        assert!(errors.is_empty(), "{file}: {errors:?}");
+        let labels_after = |prefix: &str| {
+            let offset = source.find(prefix).unwrap() + prefix.len();
+            hew_analysis::completions::complete(
+                source,
+                &doc.parse_result,
+                doc.type_output.as_ref(),
+                offset,
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+        let bare = labels_after("{ let");
+        let dot = labels_after("alias.");
+        for (labels, own, other) in [
+            (&bare, &own[..3], &other[..3]),
+            (&dot, &own[3..], &other[3..]),
+        ] {
+            for label in own {
+                assert!(
+                    labels.iter().any(|item| item == label),
+                    "{file}: missing {label} in {labels:?}"
+                );
+            }
+            for label in other {
+                assert!(
+                    !labels.iter().any(|item| item == label),
+                    "{file}: unexpected {label} in {labels:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn user_stream_completion_excludes_builtin_stream_methods() {
     let source = "type Stream {\n    value: i64;\n}\n\nimpl Stream {\n    fn own(self) -> i64 {\n        self.value\n    }\n}\n\nfn main() {\n    let stream = Stream { value: 1 };\n    println(stream.own());\n}\n";
     let doc = make_typed_doc(source);

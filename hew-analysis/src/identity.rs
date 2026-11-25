@@ -23,18 +23,16 @@ pub fn source_identities(parsed: &ParseResult) -> TypeCheckOutput {
     checker.check_program(&parsed.program)
 }
 
-/// The checker resolution whose source segment contains `offset`.
-///
 /// Re-key the checker facts so the open document's own file is index 0.
 ///
-/// Every analysis query reads the open buffer at index 0. A document that is
-/// one file of a directory module is checked under its span index from
-/// the checker's published file-span index, so its facts move to 0 here and
-/// whatever held 0 takes its index.
+/// Analysis queries read the open buffer's spans at index 0. For a file of an
+/// assembled directory module, swap its spans with the root's and keep the
+/// original file index for queries over import bindings.
 pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
     if file == 0 {
         return;
     }
+    output.focused_file_index = file;
     output.focused_file = output
         .file_span_indices
         .file_path(file)

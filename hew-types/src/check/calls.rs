@@ -1668,11 +1668,11 @@ impl Checker {
         self.classify_callable(self.callable_spelling(declaration), Some(declaration))
     }
 
-    pub(super) fn classify_callable(
+    fn signature_call_target(
         &self,
         signature_key: &str,
         declaration: Option<crate::DefId>,
-    ) -> CallTarget {
+    ) -> Option<CallTarget> {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
         // declaration identity is semantic authority, while the validated ABI
@@ -1686,21 +1686,32 @@ impl Checker {
         if let Some(target) =
             declaration.and_then(|declaration| self.declared_call_target(declaration))
         {
-            return target;
+            return Some(target);
         }
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
-            return CallTarget::Runtime(family);
+            return Some(CallTarget::Runtime(family));
         }
         // Associated runtime methods use the same checked declaration and
         // provenance contract as receiver methods. No synthetic callee spelling
         // is needed merely because a method has no receiver.
         if let Some(sig) = declaration.and_then(|id| self.fn_sigs.get(&id)) {
             if let Some(family) = self.associated_runtime_target_for_signature(signature_key, sig) {
-                return CallTarget::Runtime(family);
+                return Some(CallTarget::Runtime(family));
             }
             if let Some(method) = sig.impl_method.as_ref() {
-                return CallTarget::ImplMethod(method.declaration);
+                return Some(CallTarget::ImplMethod(method.declaration));
             }
+        }
+        None
+    }
+
+    pub(super) fn classify_callable(
+        &self,
+        signature_key: &str,
+        declaration: Option<crate::DefId>,
+    ) -> CallTarget {
+        if let Some(target) = self.signature_call_target(signature_key, declaration) {
+            return target;
         }
         if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
             return CallTarget::ImplMethod(*declaration);
@@ -2599,7 +2610,8 @@ impl Checker {
             // `assert` takes one optional parameter, the failure message.
             let target = hygienic_declaration
                 .map(|id| {
-                    self.declared_call_target(id)
+                    // A rendered name can be shared by distinct expansions.
+                    self.signature_call_target(self.callable_spelling(id), Some(id))
                         .unwrap_or_else(|| self.source_call_target(id))
                 })
                 .or_else(|| {

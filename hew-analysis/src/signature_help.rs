@@ -145,9 +145,9 @@ pub fn build_signature_help(
 
 fn find_call_sig(context: &CallContext, tc: &TypeCheckOutput) -> Option<FnSig> {
     crate::identity::callable_signature_at(tc, context.callee_start, context.callee_end)
-        .or_else(|| tc.visible_callable_signature(&context.callee))
         .cloned()
         .or_else(|| find_receiver_method_sig(context, tc))
+        .or_else(|| tc.visible_callable_signature(&context.callee).cloned())
 }
 
 /// Find the call the cursor is inside and its arguments up to the cursor.
@@ -523,67 +523,38 @@ fn probe(mat: Matcher, s: string) {
     }
 
     #[test]
-    fn module_qualified_function_sig_help_prefers_exact_dotted_name_over_receiver_method_fallback()
-    {
-        let source = "stream.pipe(";
+    fn incomplete_method_signature_help_prefers_local_receiver_over_module_alias() {
+        use hew_parser::ast::Item;
 
-        let mut fn_sigs = HashMap::new();
-        fn_sigs.insert(
-            "stream.pipe".to_string(),
-            FnSig {
-                param_names: vec!["capacity".to_string()],
-                params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I64)],
-                return_type: Ty::Unit,
-                ..FnSig::default()
-            },
-        );
+        let source = r"
+            import library as alias;
+            type Receiver { value: i64; }
+            impl Receiver { fn method(self, count: i32) {} }
+            fn module_call() {}
+            fn receiver_call(alias: Receiver) { let _ = alias.value; }
+        ";
+        let mut parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let Item::Import(import) = &mut parsed.program.items[0].0 else {
+            panic!("expected module import");
+        };
+        let library = hew_parser::parse("pub fn method(capacity: i64) {}");
+        assert!(library.errors.is_empty(), "{:?}", library.errors);
+        import.resolved_items = Some(library.program.items.into());
+        let tc = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]))
+            .check_program(&parsed.program);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
 
-        let mut type_defs = HashMap::new();
-        type_defs.insert(
-            hew_types::NominalId::for_test("StreamModule"),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "StreamModule".to_string(),
-                type_params: vec![],
-                bounds: hew_types::check::ParamBounds::default(),
-                fields: HashMap::new(),
-                field_order: vec![],
-                variants: HashMap::new(),
-                implicit_variant_fields: HashMap::default(),
-                methods: HashMap::from([(
-                    "pipe".to_string(),
-                    FnSig {
-                        param_names: vec!["count".to_string()],
-                        params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I32)],
-                        return_type: Ty::Unit,
-                        ..FnSig::default()
-                    },
-                )]),
-                doc_comment: None,
-                is_indirect: false,
-            },
-        );
+        // The incomplete call has a checked receiver and no callee resolution.
+        let receiver_end = source.find("alias.value").unwrap() + "alias.".len();
+        let incomplete = format!("{}method(", &source[..receiver_end]);
+        let local = build_signature_help(&incomplete, &tc, incomplete.len()).unwrap();
+        assert_eq!(local.signatures[0].label, "fn method(count: i32)");
 
-        let mut expr_types = HashMap::new();
-        expr_types.insert(
-            SpanKey {
-                start: 0,
-                end: 6,
-                module_idx: 0,
-            },
-            Ty::named_for_test("StreamModule", vec![]),
-        );
-
-        let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);
-
-        let result = build_signature_help(source, &tc, source.len());
-        assert!(
-            result.is_some(),
-            "module-qualified function call should still provide signature help"
-        );
-        let sh = result.unwrap();
-        assert_eq!(sh.active_parameter, Some(0));
-        assert_eq!(sh.signatures[0].label, "fn pipe(capacity: i64)");
+        let body_start = source.find("fn module_call() {").unwrap() + "fn module_call() {".len();
+        let incomplete = format!("{} alias.method(", &source[..body_start]);
+        let module = build_signature_help(&incomplete, &tc, incomplete.len()).unwrap();
+        assert_eq!(module.signatures[0].label, "fn method(capacity: i64)");
     }
 
     #[test]

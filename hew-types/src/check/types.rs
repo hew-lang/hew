@@ -690,6 +690,8 @@ pub struct TypeCheckOutput {
     pub scopes: std::sync::Arc<super::scope::Scopes>,
     /// Source file whose facts an editor view presents at span index zero.
     pub focused_file: Option<crate::ModuleId>,
+    /// Original span index of the viewed file, used by import binding keys.
+    pub focused_file_index: u32,
     /// Every path segment the checker resolved, keyed by the segment's span:
     /// the identity `Scope::resolve` answered. HIR and tooling read it rather
     /// than resolving a spelling again.

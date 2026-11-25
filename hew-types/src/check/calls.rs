@@ -2121,19 +2121,27 @@ impl Checker {
             return Ty::Error;
         }
 
-        let unsafe_declaration = (!lexical_shadow_of_item)
-            .then(|| {
-                let visible_key =
-                    if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
-                        self.visible_fn_signature_key(*ident)
-                    } else {
-                        self.visible_fn_signature_key(Ident::new(func_name.as_str()))
-                    };
-                visible_key
-                    .and_then(|key| self.fn_sig_keys.get(&key).copied())
-                    .or_else(|| self.scoped_fn_declaration(&func_name, false))
-            })
-            .flatten();
+        let hygienic_declaration = match callee.expr().map(|func| &func.0) {
+            Some(Expr::Ident(ident)) if ident.ctx != hew_parser::ast::SyntaxContext::ROOT => self
+                .named_item_declaration(*ident)
+                .filter(|id| self.fn_sigs.contains_key(id)),
+            _ => None,
+        };
+        let unsafe_declaration = hygienic_declaration.or_else(|| {
+            (!lexical_shadow_of_item)
+                .then(|| {
+                    let visible_key =
+                        if let Some(Expr::Ident(ident)) = callee.expr().map(|func| &func.0) {
+                            self.visible_fn_signature_key(*ident)
+                        } else {
+                            self.visible_fn_signature_key(Ident::new(func_name.as_str()))
+                        };
+                    visible_key
+                        .and_then(|key| self.fn_sig_keys.get(&key).copied())
+                        .or_else(|| self.scoped_fn_declaration(&func_name, false))
+                })
+                .flatten()
+        });
         self.require_unsafe(unsafe_declaration, &func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
         if let Some(source_identity) = self
@@ -2517,8 +2525,10 @@ impl Checker {
             }
             .or_else(|| self.enclosing_actor_method_key(&func_name))
         };
-        let has_visible_fn_signature = visible_fn_key.is_some();
-        let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
+        let resolved_fn_name = hygienic_declaration
+            .map(|id| self.defs.path(id).to_string())
+            .or(visible_fn_key.clone())
+            .unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is
         // entered with the caller's execution context and state pointer. Only
         // the actor's own handlers, hooks, `init`, and sibling methods hold
@@ -2548,10 +2558,10 @@ impl Checker {
                 self.require_deferred_fields_initialized_for_call(&resolved_fn_name, span);
             }
         }
-        if let Some(sig) = self
-            .fn_sig(&resolved_fn_name)
+        if let Some(sig) = hygienic_declaration
+            .and_then(|id| self.fn_sigs.get(&id))
+            .or_else(|| visible_fn_key.as_deref().and_then(|key| self.fn_sig(key)))
             .cloned()
-            .filter(|_| has_visible_fn_signature)
         {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
@@ -2604,7 +2614,17 @@ impl Checker {
                 self.resolve_import_use(ident);
             }
             // `assert` takes one optional parameter, the failure message.
-            let assertion = self.call_target_for_signature(&resolved_fn_name)
+            let target = hygienic_declaration
+                .map(|id| {
+                    self.declared_call_target(id)
+                        .unwrap_or_else(|| self.source_call_target(id))
+                })
+                .or_else(|| {
+                    self.scoped_fn_declaration(&func_name, lexical_shadow_of_item)
+                        .and_then(|id| self.declared_call_target(id))
+                })
+                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
+            let assertion = target
                 == CallTarget::Builtin {
                     endpoint: crate::stdlib_catalog_identity::ASSERT.to_string(),
                 };
@@ -2640,9 +2660,9 @@ impl Checker {
                 self.record_unrendered_assertion_operands(args);
             }
             if matches!(
-                self.call_target_for_signature(&resolved_fn_name),
+                &target,
                 CallTarget::Builtin { endpoint }
-                    if crate::stdlib_authority::OverloadGroup::from_key(&endpoint)
+                    if crate::stdlib_authority::OverloadGroup::from_key(endpoint)
                         == Some(crate::stdlib_authority::OverloadGroup::ToString)
             ) {
                 if let Some(value) = args.first().map(CallArg::expr) {
@@ -2661,12 +2681,6 @@ impl Checker {
                 span,
             );
 
-            // The file's own binding is the callee's identity; its spelling
-            // may name a peer file's declaration of the same leaf.
-            let target = self
-                .scoped_fn_declaration(&func_name, lexical_shadow_of_item)
-                .and_then(|declaration| self.declared_call_target(declaration))
-                .unwrap_or_else(|| self.call_target_for_signature(&resolved_fn_name));
             let target = self.check_actor_call_operand(target, args);
             if matches!(
                 &target,

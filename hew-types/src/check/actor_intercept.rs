@@ -23,8 +23,10 @@ impl Checker {
             super::Item::Actor(declaration) => declaration.name,
             _ => return,
         };
-        let identity = self.declaration_identity(name);
-        let contains = self.type_def_at(&identity).is_some_and(|definition| {
+        let definition = self
+            .named_item_declaration(name)
+            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)));
+        let contains = definition.is_some_and(|definition| {
             Self::structural_member_types_for_type(definition)
                 .iter()
                 .any(|ty| self.normalize_for_use(ty).contains_interceptor_token())
@@ -110,6 +112,7 @@ impl Checker {
         supervisor: &hew_parser::ast::SupervisorDecl,
     ) {
         let identity = self.declaration_identity(supervisor.name);
+        let owner = self.named_item_declaration(supervisor.name);
         for (index, method) in supervisor.methods.iter().enumerate() {
             let intercepts = method
                 .attributes
@@ -117,8 +120,15 @@ impl Checker {
                 .filter(|attribute| attribute.name.as_str() == "intercept")
                 .count();
             let qualified = format!("{identity}::{}", method.name);
-            let signature = self.fn_sig(&qualified).cloned();
-            let valid_signature = signature.as_ref().is_some_and(|signature| {
+            let declaration = owner.and_then(|owner| {
+                self.defs.member_of_kind(
+                    owner,
+                    method.name.name,
+                    crate::DeclarationKind::SupervisorMethod,
+                )
+            });
+            let signature = declaration.and_then(|id| self.fn_sigs.get(&id));
+            let valid_signature = signature.is_some_and(|signature| {
                 let Some(actor) = signature.type_params.last() else {
                     return false;
                 };
@@ -144,7 +154,9 @@ impl Checker {
                         .to_string(),
                 );
             }
+            let previous = std::mem::replace(&mut self.checking_declaration, declaration);
             self.check_function_as(method, &qualified);
+            self.checking_declaration = previous;
         }
     }
 
@@ -172,8 +184,21 @@ impl Checker {
                 );
             }
             seen = true;
-            let qualified = format!("{identity}::{}", method.name);
-            let Some(signature) = self.fn_sig(&qualified).cloned() else {
+            let Some(declaration) = self
+                .current_actor_type
+                .as_ref()
+                .and_then(crate::Ty::head)
+                .and_then(|head| {
+                    self.actor_member(
+                        head,
+                        method.name.name.as_str(),
+                        crate::DeclarationKind::ActorMethod,
+                    )
+                })
+            else {
+                continue;
+            };
+            let Some(signature) = self.fn_sigs.get(&declaration) else {
                 continue;
             };
             let actor_ty = self
@@ -204,9 +229,8 @@ impl Checker {
                 );
                 continue;
             }
-            let declaration = self.defs.lookup_path(&qualified);
             if let Some(protocol) = self.actor_protocol_descriptors.get_mut(identity) {
-                protocol.interceptor = declaration;
+                protocol.interceptor = Some(declaration);
             }
         }
     }

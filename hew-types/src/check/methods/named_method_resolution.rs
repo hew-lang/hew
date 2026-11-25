@@ -256,6 +256,7 @@ impl Checker {
                 },
                 true,
                 Some(GenericCallee::Method {
+                    declaration: None,
                     type_name: &canonical_name,
                     method,
                     owner_type_args: type_args,
@@ -665,7 +666,7 @@ impl Checker {
                     arity_context: format!("field `{method_name}` on `{name}`"),
                 },
                 true,
-                owner.as_deref().map(|key| GenericCallee::Function { key }),
+                owner.map(|declaration| GenericCallee::Function { declaration }),
             );
             if let Ok(field_ty) = crate::ResolvedTy::from_ty(&resolved_field) {
                 self.record_method_call_rewrite(

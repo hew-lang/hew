@@ -176,7 +176,9 @@ impl Checker {
             self.record_call_edge(&key);
             self.record_concrete_call_type_args(&call_span, &arguments);
             self.record_generic_application(
-                GenericCallee::Function { key: &key },
+                GenericCallee::Function {
+                    declaration: provider.declaration,
+                },
                 &signature.type_params,
                 &arguments,
                 &call_span,

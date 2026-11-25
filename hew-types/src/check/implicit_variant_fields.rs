@@ -46,11 +46,11 @@ impl Checker {
 
     pub(super) fn is_implicit_variant_field(
         &self,
-        owner: &str,
+        owner: crate::TypeHead,
         variant: &str,
         index: usize,
     ) -> bool {
-        self.type_def_at(owner).is_some_and(|td| {
+        self.head_type_def(owner).is_some_and(|td| {
             matches!(td.variants.get(variant), Some(VariantDef::Struct(fields))
                 if fields.get(index).is_some_and(|(_, ty)| ty.as_option().is_some()))
                 && td
@@ -62,13 +62,15 @@ impl Checker {
 
     pub(super) fn record_variant_constructor_plan(
         &mut self,
-        owner: &str,
         variant: &str,
         ty: &Ty,
         source: &[(Ident, Spanned<Expr>)],
         span: &Span,
     ) {
-        let Some(td) = self.type_def_at(owner) else {
+        let Some(nominal) = ty.head().and_then(|head| head.declaration(&self.defs)) else {
+            return;
+        };
+        let Some(td) = self.type_defs.get(&nominal) else {
             return;
         };
         let Some(implicit) = td.implicit_variant_fields.get(variant) else {
@@ -114,7 +116,7 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             VariantConstructorPlan {
                 variant: VariantMatch {
-                    type_name: owner.to_string(),
+                    type_name: self.defs.path(nominal.declaration()).to_string(),
                     variant_name: variant.to_string(),
                 },
                 fields: planned,

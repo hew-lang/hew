@@ -854,9 +854,19 @@ impl Checker {
                     // adapt an extern symbol when no Hew declaration owns the name.
                     for (method, c_symbol) in clean_names {
                         let key = format!("{canonical_owner}.{method}");
-                        if self.has_fn_sig(&key) {
+                        if self
+                            .fn_in_module(registry_module, Ident::new(method))
+                            .is_some_and(|id| self.fn_sigs.contains_key(&id))
+                        {
                             self.module_fn_exports.insert(key);
-                        } else if let Some(declaration) = self.signature_declaration(c_symbol) {
+                        } else if let Some(declaration) = self
+                            .fn_in_module(registry_module, Ident::new(c_symbol))
+                            .or_else(|| {
+                                self.extern_table
+                                    .declaration_by_symbol_and_module(c_symbol, &canonical_owner)
+                                    .map(|(id, _)| *id)
+                            })
+                        {
                             self.module_fn_exports.insert(key.clone());
                             self.scopes.declare_item(
                                 self.scopes.namespace_of(registry_module),

@@ -627,19 +627,6 @@ impl Checker {
         self.validate_wire_type_encoding(identity.as_str(), members);
     }
 
-    /// The collision-free key under which this scope's `TypeDef` is stored: the
-    /// module-qualified `{module_short}.{name}` for a non-root module (when it
-    /// exists), else the bare `name` for the root program.
-    pub(super) fn authoritative_type_def_key(&self, bare_name: &str) -> String {
-        if let Some(module_owner) = self.current_module_identity() {
-            let qualified = format!("{module_owner}.{bare_name}");
-            if self.type_def_at(&qualified).is_some() {
-                return qualified;
-            }
-        }
-        bare_name.to_string()
-    }
-
     /// Populate `type_defs` with a full `TypeDef` for a non-root module's
     /// `TypeDecl`, including resolved fields and variant constructors.
     ///

@@ -1453,10 +1453,10 @@ impl Checker {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];
                 let is_binding = self.env.lookup_ref(Ident::new(candidate_module)).is_some();
-                let is_known_type = self.type_def_at(candidate_module);
+                let is_known_type = self.nominal_in_scope(Ident::new(candidate_module));
                 let qualified_key = format!("{candidate_module}.{type_name}");
-                let qualified_in_type_defs = self.type_def_at(&qualified_key);
-                if !is_binding && is_known_type.is_none() && qualified_in_type_defs.is_none() {
+                let qualified_in_type_defs = self.is_registered_nominal_path(&qualified_key);
+                if !is_binding && is_known_type.is_none() && !qualified_in_type_defs {
                     return self.check_module_qualified_variant_ref(
                         candidate_module,
                         type_name,
@@ -1573,7 +1573,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(ident) {
+        } else if let Some(declaration) = self.visible_fn_declaration(ident) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -1587,8 +1587,9 @@ impl Checker {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
                 self.resolve_import_use(ident);
             }
-            self.record_call_edge(&fn_sig_key);
-            self.instantiate_function_value(&fn_sig_key, type_args, span, None)
+            let name = self.callable_spelling(declaration).to_string();
+            self.record_call_edge(&name);
+            self.instantiate_function_value(declaration, type_args, span, None)
         } else if self.module_binding_in_current_file(Ident::new(surface_name)) {
             self.report_error(
                 TypeErrorKind::ModuleUsedAsValue,

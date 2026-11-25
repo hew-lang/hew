@@ -415,8 +415,11 @@ impl Checker {
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     self.pre_register_type_decl(td);
-                    let canonical = format!("std.builtins.{}", td.name);
-                    if let Some(source_def) = self.type_def_at(&canonical).cloned() {
+                    if let Some(source_def) = self
+                        .type_declaration_identity(td)
+                        .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             "std.builtins",
                             td.name.name.as_str(),
@@ -704,7 +707,7 @@ impl Checker {
                 .map(|known| known.path().trim_start_matches("std.builtins.")),
         ) {
             let canonical = format!("std.builtins.{name}");
-            if self.type_def_at(&canonical).is_none() {
+            if !self.is_registered_nominal_path(&canonical) {
                 self.report_missing_builtins_declaration(name);
                 continue;
             }

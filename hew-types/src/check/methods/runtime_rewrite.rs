@@ -679,6 +679,7 @@ impl Checker {
             },
             true,
             Some(GenericCallee::Method {
+                declaration: None,
                 type_name: receiver_type_name,
                 method,
                 owner_type_args: type_args,
@@ -915,9 +916,13 @@ impl Checker {
             .resolve_module_call(&canonical_owner, method)
         {
             let symbol = if c_symbol == method {
-                let source_qualified = format!("{canonical_owner}.{method}");
                 let surface_qualified = format!("{module_name}.{method}");
-                if !self.has_fn_sig(&source_qualified) && !self.has_fn_sig(&surface_qualified) {
+                if self
+                    .defs
+                    .module_for_path(&canonical_owner)
+                    .and_then(|module| self.fn_in_module(module, Ident::new(method)))
+                    .is_none_or(|id| !self.fn_sigs.contains_key(&id))
+                {
                     return;
                 }
                 // Linker presentation remains the checker-selected registry
@@ -964,8 +969,11 @@ impl Checker {
         {
             return;
         }
-        if self.has_fn_sig(&source_declaration)
-            || self.has_fn_sig(&format!("{module_name}.{method}"))
+        if self
+            .defs
+            .module_for_path(&canonical_owner)
+            .and_then(|module| self.fn_in_module(module, Ident::new(method)))
+            .is_some_and(|id| self.fn_sigs.contains_key(&id))
         {
             self.record_module_qualified_method_call_rewrite(
                 span,
@@ -1036,15 +1044,6 @@ impl Checker {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic);
             }
             _ => {}
-        }
-    }
-
-    pub(in crate::check) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
-        let dot = name.find('.')?;
-        if self.module_binding_in_current_file(Ident::new(&name[..dot])) {
-            Some(&name[dot + 1..])
-        } else {
-            None
         }
     }
 }

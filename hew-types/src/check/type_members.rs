@@ -10,7 +10,6 @@ use crate::method_resolution::instantiate_stdlib_method_sig;
 pub(super) struct ResolvedDottedTypeHead {
     pub(super) canonical_type: String,
     receiver_head: Option<crate::TypeHead>,
-    builtin: Option<crate::BuiltinType>,
     trait_id: Option<crate::DefId>,
     type_args: Option<Vec<Spanned<TypeExpr>>>,
     span: Span,
@@ -49,7 +48,6 @@ impl ResolvedDottedTypeHead {
         Self {
             canonical_type: checker.defs.path(event.declaration()).to_owned(),
             receiver_head: Some(checker.head_of_declaration(event)),
-            builtin: None,
             trait_id: None,
             type_args,
             span: target.1.clone(),
@@ -107,7 +105,6 @@ impl Checker {
         let head = ResolvedDottedTypeHead {
             canonical_type: name.to_string(),
             receiver_head: Some(head),
-            builtin: Some(builtin),
             trait_id: None,
             type_args: None,
             span: span.clone(),
@@ -136,45 +133,54 @@ impl Checker {
             _ => (head, None),
         };
 
-        let (canonical_type, builtin, trait_id) = match &target.0 {
+        let (canonical_type, receiver_head, trait_id) = match &target.0 {
             Expr::Ident(surface) => {
                 if self.env.lookup_ref(*surface).is_some()
                     || self.module_binding_in_current_file(*surface)
                 {
                     return None;
                 }
-                if let Some(canonical) = self
-                    .named_item_declaration(*surface)
-                    .map(|id| self.defs.path(id).to_string())
-                    .or_else(|| self.source_nominal_declaration(surface.name.as_str()))
-                    .or_else(|| {
-                        self.resolve_nominal_declaration(
-                            NominalOrigin::Lexical,
-                            surface.name.as_str(),
-                        )
-                    })
-                    .filter(|identity| {
-                        self.lookup_type_def(identity).is_some()
-                            || self.resolved_builtin_type(identity).is_some()
-                    })
-                    .or_else(|| {
-                        self.resolved_builtin_type(surface.name.as_str())
-                            .map(|_| surface.to_string())
-                    })
-                {
-                    let builtin = self.resolved_builtin_type(&canonical);
-                    (canonical, builtin, None)
+                let binding = self
+                    .scope_site()
+                    .and_then(|site| self.scopes.type_head(&self.env, site, *surface));
+                let nominal = match binding {
+                    Some(scope::Resolution::Nominal(id)) => Some(id),
+                    // A compiler type such as Vec can have a scope binding
+                    // without a source declaration. Keep that binding so the
+                    // fallback cannot pick up a same-named root declaration
+                    // while checking an embedded stdlib body.
+                    Some(scope::Resolution::Builtin(builtin)) => {
+                        self.defs.builtin_declaration(builtin)
+                    }
+                    _ => self
+                        .source_nominal_declaration(surface.name.as_str())
+                        .and_then(|canonical| self.nominal_at_path(&canonical)),
+                };
+                let nominal = nominal.filter(|id| self.type_defs.contains_key(id));
+                if let Some(id) = nominal {
+                    let head = self.head_of_declaration(id);
+                    (
+                        self.defs.path(id.declaration()).to_string(),
+                        Some(head),
+                        None,
+                    )
+                } else if let Some(builtin) = self.resolved_builtin_type(surface.name.as_str()) {
+                    (
+                        surface.to_string(),
+                        Some(crate::TypeHead::Builtin(builtin)),
+                        None,
+                    )
                 } else if let Some(trait_id) = self
                     .resolve_trait_path(&hew_parser::ast::Path::single(*surface, target.1.clone()))
                     .filter(|id| self.trait_info(*id).is_some())
                 {
                     (surface.to_string(), None, Some(trait_id))
                 } else {
-                    let canonical = self
-                        .has_fn_sig(&format!("{surface}::{member}"))
-                        .then(|| surface.to_string())?;
+                    self.defs
+                        .lookup_builtin_callable(Symbol::intern(&format!("{surface}::{member}")))?;
+                    let canonical = surface.to_string();
                     let builtin = self.resolved_builtin_type(&canonical);
-                    (canonical, builtin, None)
+                    (canonical, builtin.map(crate::TypeHead::Builtin), None)
                 }
             }
             Expr::FieldAccess { object, field } => {
@@ -199,33 +205,29 @@ impl Checker {
                     return Some(ResolvedDottedTypeHead {
                         canonical_type: trait_path.to_string(),
                         receiver_head: None,
-                        builtin: None,
                         trait_id: Some(trait_id),
                         type_args,
                         span: target.1.clone(),
                     });
                 }
-                self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
+                let id = self.resolve_module_type_declaration(
+                    module_short.name.as_str(),
+                    field.0.name.as_str(),
+                )?;
                 self.resolve_import_use(*module_short);
-                let canonical = format!(
-                    "{}.{}",
-                    self.canonical_module_import_owner(*module_short),
-                    field.0
-                );
-                let builtin = self.resolved_builtin_type(&canonical);
-                (canonical, builtin, None)
+                let head = self.head_of_declaration(id);
+                (
+                    self.defs.path(id.declaration()).to_string(),
+                    Some(head),
+                    None,
+                )
             }
             _ => return None,
         };
 
-        let receiver_head = self
-            .type_def_key(&canonical_type)
-            .map(|id| self.head_of_declaration(id))
-            .or_else(|| builtin.map(crate::TypeHead::Builtin));
         Some(ResolvedDottedTypeHead {
             canonical_type,
             receiver_head,
-            builtin,
             trait_id,
             type_args,
             span: target.1.clone(),
@@ -244,10 +246,9 @@ impl Checker {
             return None;
         }
         let machine = match &object.0 {
-            Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => self
-                .named_item_declaration(*name)
-                .map(crate::NominalId::of_declaration)
-                .or_else(|| self.type_def_key(name.name.as_str())),
+            Expr::Ident(name) if self.env.lookup_ref(*name).is_none() => {
+                self.nominal_in_scope(*name)
+            }
             Expr::FieldAccess {
                 object,
                 field: machine,
@@ -333,8 +334,7 @@ impl Checker {
         if !self.fn_sigs.get(&declaration)?.associated {
             return None;
         }
-        let key = self.defs.path(declaration).to_string();
-        Some(self.instantiate_function_value(&key, method_args, span, owner_args.as_deref()))
+        Some(self.instantiate_function_value(declaration, method_args, span, owner_args.as_deref()))
     }
 
     fn dispatch_declared_variant_member(
@@ -381,6 +381,7 @@ impl Checker {
                         self.check_call_named(
                             &constructor_name,
                             &head.span,
+                            None,
                             head.type_args.as_deref(),
                             args,
                             span,
@@ -426,7 +427,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let builtin = head.builtin?;
+        let builtin = head.receiver_head?.builtin()?;
         let (index, variant) = builtin
             .generic_enum()?
             .variants
@@ -559,22 +560,37 @@ impl Checker {
         expected: Option<&Ty>,
         span: &Span,
     ) -> Option<Ty> {
-        let is_vec_from = crate::has_builtin_associated_item_identity(
-            internal_member,
-            crate::BuiltinType::Vec,
-            "from",
-        );
         // A declared user type may use a runtime spelling such as
         // `Node::shutdown`; its impl owns the call. Compiler builtin types
         // retain their runtime methods even when std/builtins provides source
-        // signatures for those operations.
-        let checker_member = ((head.builtin.is_some()
-            || !self
-                .impl_method_declaration_ids
-                .contains_key(internal_member))
-            && (self.has_fn_sig(internal_member) || is_vec_from))
-            .then_some(internal_member.to_string());
-        if let Some(checker_member) = checker_member {
+        // signatures for those operations. Runtime namespaces like `Node`
+        // have no type head.
+        let allows_builtin = head
+            .receiver_head
+            .is_none_or(|head| head.builtin().is_some());
+        let is_vec_from = allows_builtin
+            && crate::has_builtin_associated_item_identity(
+                internal_member,
+                crate::BuiltinType::Vec,
+                "from",
+            );
+        let declaration = head
+            .receiver_head
+            .and_then(|head| {
+                let (_, member) = internal_member.rsplit_once("::")?;
+                self.actor_member(head, member, crate::DeclarationKind::ActorMethod)
+                    .filter(|id| self.fn_sigs.contains_key(id))
+            })
+            .or_else(|| {
+                allows_builtin
+                    .then(|| {
+                        self.defs
+                            .lookup_builtin_callable(Symbol::intern(internal_member))
+                    })
+                    .flatten()
+            });
+        if declaration.is_some() || is_vec_from {
+            let checker_member = internal_member.to_string();
             if let Some(result) = expected.and_then(|expected| {
                 self.check_call_against_expected_constructor_named(
                     &checker_member,
@@ -591,6 +607,7 @@ impl Checker {
             let result = self.check_call_named(
                 &checker_member,
                 &head.span,
+                declaration,
                 head.type_args.as_deref(),
                 args,
                 span,
@@ -660,9 +677,11 @@ impl Checker {
 
         let receiver = head.receiver_type(Vec::new());
         let source_method = match self.select_method(&receiver, method) {
-            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => {
-                self.fn_sigs.get(&declaration).cloned()
-            }
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => self
+                .fn_sigs
+                .get(&declaration)
+                .cloned()
+                .map(|sig| (Some(declaration), sig)),
             crate::check::dispatch_table::MethodSelection::Ambiguous(traits) => {
                 if let Some(result) =
                     self.check_concrete_from_call(&receiver, method, &traits, args, span)
@@ -678,17 +697,24 @@ impl Checker {
             }
             crate::check::dispatch_table::MethodSelection::Missing => None,
         };
-        let type_def = self.ty_type_def(&receiver).cloned()?;
-        let raw_sig = source_method.or_else(|| type_def.methods.get(method).cloned())?;
+        let type_def = self.ty_type_def(&receiver).cloned();
+        let (declaration, raw_sig) = source_method.or_else(|| {
+            let sig = type_def.as_ref()?.methods.get(method)?.clone();
+            let declaration = sig.impl_method.as_ref().map(|method| method.declaration);
+            Some((declaration, sig))
+        })?;
+        let type_params = type_def
+            .as_ref()
+            .map_or(&[][..], |td| td.type_params.as_slice());
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
-            if type_args.len() != type_def.type_params.len() {
+            if type_args.len() != type_params.len() {
                 self.report_error(
                     TypeErrorKind::ArityMismatch,
                     span,
                     format!(
                         "type `{}` has {} type parameter(s) but {} type argument(s) were supplied",
                         head.canonical_type,
-                        type_def.type_params.len(),
+                        type_params.len(),
                         type_args.len()
                     ),
                 );
@@ -698,7 +724,7 @@ impl Checker {
                 .map(|type_arg| self.resolve_type_expr(type_arg))
                 .collect::<Vec<_>>();
             (
-                instantiate_stdlib_method_sig(&raw_sig, &type_def.type_params, &owner_args),
+                instantiate_stdlib_method_sig(&raw_sig, type_params, &owner_args),
                 owner_args,
             )
         } else {
@@ -715,6 +741,7 @@ impl Checker {
             },
             true,
             Some(GenericCallee::Method {
+                declaration,
                 type_name: &head.canonical_type,
                 method,
                 owner_type_args: &explicit_owner_args,
@@ -723,25 +750,18 @@ impl Checker {
         if !explicit_owner_args.is_empty() {
             self.record_concrete_call_type_args(span, &explicit_owner_args);
         }
-        let declaration = self
-            .impl_method_declaration_ids
-            .get(&internal_member)
-            .copied()
-            .map_or_else(
-                || CallTarget::Unsupported {
-                    reason: format!(
-                        "associated function `{}.{method}` has no registered declaration identity",
-                        head.canonical_type
-                    ),
-                },
-                // Static calls through nominal heads retain the same declared
-                // runtime/implementation selection as direct builtin calls.
-                |_| self.call_target_for_signature(&internal_member),
-            );
+        let target = if let Some(id) = declaration {
+            self.classify_callable(&internal_member, Some(id))
+        } else {
+            CallTarget::Unsupported {
+                reason: format!("associated function `{internal_member}` has no registered declaration identity"),
+            }
+        };
+        self.record_direct_call_target(span, target.clone());
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                target: declaration,
+                target,
                 c_symbol: internal_member,
             },
         );

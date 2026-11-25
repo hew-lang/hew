@@ -445,23 +445,14 @@ else needs `impl Display for {rendered}`)"
                 // exact published owner before constructing the variant result
                 // so `LookupError::NotFound` agrees with a `LookupError`
                 // annotation that already resolved to `std.lookup_error`.
-                let canonical_type_prefix = if type_prefix.contains('.') {
-                    type_prefix.to_string()
-                } else {
-                    self.current_module_identity()
-                        .map(|owner| format!("{owner}.{type_prefix}"))
-                        .filter(|candidate| self.type_def_at(candidate).is_some())
-                        .or_else(|| {
-                            (!self.local_type_defs.contains(type_prefix)
-                                && !self.source_type_defs.contains(type_prefix))
-                            .then(|| self.published_bare_type_qualified(type_prefix))
-                            .flatten()
-                        })
-                        .unwrap_or_else(|| type_prefix.to_string())
-                };
-                if let Some((owner, td)) = self
-                    .type_def_key(&canonical_type_prefix)
-                    .and_then(|id| Some((id, self.type_defs.get(&id)?)))
+                let owner = self
+                    .nominal_in_scope(Ident::new(type_prefix))
+                    .or_else(|| self.nominal_at_path(type_prefix))
+                    .or_else(|| {
+                        let canonical = self.published_bare_type_qualified(type_prefix)?;
+                        self.nominal_at_path(&canonical)
+                    });
+                if let Some((owner, td)) = owner.and_then(|id| Some((id, self.type_defs.get(&id)?)))
                 {
                     if let Some(_variant) = td.variants.get(variant_name) {
                         if Self::variant_is_source_unit(
@@ -483,19 +474,6 @@ else needs `impl Display for {rendered}`)"
                         }
                     }
                 }
-                // Also check fn_sigs for qualified constructors
-                if found.is_none() {
-                    if let Some(sig) = self.fn_sig(variant_name) {
-                        if sig.params.is_empty() {
-                            let ret = &sig.return_type;
-                            let matches_type =
-                                ret.type_name().is_some_and(|name| name == type_prefix);
-                            if matches_type {
-                                found = Some(sig.return_type.clone());
-                            }
-                        }
-                    }
-                }
                 // Import-alias fallback: `Geo::Unit` where "Geo" is an alias for
                 // "shapes.Shape".  Resolve through `import_type_name_aliases` and
                 // retry the unit-variant lookup under the canonical qualified name.
@@ -510,7 +488,7 @@ else needs `impl Display for {rendered}`)"
                         .cloned()
                     {
                         if let Some((owner, td)) = self
-                            .type_def_key(&canonical)
+                            .nominal_at_path(&canonical)
                             .and_then(|id| Some((id, self.type_defs.get(&id)?)))
                         {
                             if let Some(_variant) = td.variants.get(variant_name) {
@@ -528,15 +506,12 @@ else needs `impl Display for {rendered}`)"
             }
         }
         if let Some(ty) = found {
-            if let Some(owner) = ty.type_name() {
-                self.record_variant_constructor_plan(
-                    owner,
-                    name.rsplit("::").next().unwrap_or(name),
-                    &ty,
-                    &[],
-                    span,
-                );
-            }
+            self.record_variant_constructor_plan(
+                name.rsplit("::").next().unwrap_or(name),
+                &ty,
+                &[],
+                span,
+            );
             ty
         } else {
             // Detect recursive closure self-reference: if we are inside a lambda
@@ -720,10 +695,10 @@ else needs `impl Display for {rendered}`)"
 
     pub(in crate::check) fn context_variant_definition(
         &self,
-        owner: &str,
+        expected: &Ty,
         variant: &str,
     ) -> Option<VariantDef> {
-        self.type_def_at(owner)
+        self.ty_type_def(&self.subst.resolve(expected))
             .and_then(|definition| definition.variants.get(variant))
             .cloned()
     }
@@ -795,9 +770,7 @@ else needs `impl Display for {rendered}`)"
         span: &Span,
     ) -> Ty {
         let lifecycle_surface = format!("{module_short}.{type_name}::{variant_name}");
-        let Ok(canonical_lifecycle) =
-            self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
-        else {
+        let Ok(_) = self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span) else {
             return Ty::Error;
         };
         if !self.module_binding_in_current_file(Ident::new(module_short)) {
@@ -839,15 +812,6 @@ else needs `impl Display for {rendered}`)"
             );
             return Ty::Error;
         };
-        let qualified_type = canonical_lifecycle
-            .as_deref()
-            .and_then(|path| path.split_once("::").map(|(ty, _)| ty.to_string()))
-            .unwrap_or_else(|| {
-                format!(
-                    "{}.{type_name}",
-                    self.canonical_module_import_owner(Ident::new(module_short))
-                )
-            });
         if Self::variant_is_source_unit(&td, variant_name) {
             let args = td
                 .type_params
@@ -855,7 +819,7 @@ else needs `impl Display for {rendered}`)"
                 .map(|_| Ty::Var(TypeVar::fresh()))
                 .collect();
             let result = self.variant_nominal_ty(owner, args);
-            self.record_variant_constructor_plan(&qualified_type, variant_name, &result, &[], span);
+            self.record_variant_constructor_plan(variant_name, &result, &[], span);
             return result;
         }
         match variant {
@@ -1031,7 +995,7 @@ else needs `impl Display for {rendered}`)"
             return None;
         };
         Ty::from_name(name.name.as_str()).or_else(|| {
-            self.type_def_key(name.name.as_str())
+            self.nominal_in_scope(*name)
                 .map(|id| Ty::named_head(self.head_of_declaration(id), Vec::new()))
         })
     }
@@ -1152,7 +1116,6 @@ else needs `impl Display for {rendered}`)"
             // Named types: actor handles and any user `TypeDef` whose kind
             // carries heap/reference identity.
             Ty::Named { head, .. } => {
-                let name = head.registry_key();
                 // Actor handles.
                 if ty.as_local_actor_ref().is_some() {
                     return true;
@@ -1176,7 +1139,7 @@ else needs `impl Display for {rendered}`)"
                 // the codegen front, which is the other half of the answer:
                 // the set here is the set codegen can lower, so its legality
                 // check stays an unreachable backstop (#3108, #3134).
-                if let Some(td) = self.type_def_at(name) {
+                if let Some(td) = self.head_type_def(*head) {
                     return matches!(td.kind, TypeDefKind::Actor);
                 }
                 false

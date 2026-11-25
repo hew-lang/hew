@@ -192,8 +192,13 @@ impl Checker {
                 if let Item::TypeDecl(td) = item {
                     if extra_type_names.contains(&td.name.name.as_str()) {
                         self.pre_register_type_decl(td);
-                        let canonical = format!("{module_full_path}.{}", td.name);
-                        if let Some(source_def) = self.type_def_at(&canonical).cloned() {
+                        if let Some(source_def) = self
+                            .type_declaration_identity(td)
+                            .and_then(|id| {
+                                self.type_defs.get(&crate::NominalId::of_declaration(id))
+                            })
+                            .cloned()
+                        {
                             self.register_canonical_type_def(
                                 &module_full_path,
                                 td.name.name.as_str(),
@@ -414,8 +419,11 @@ impl Checker {
             return;
         };
 
-        let type_def_key = self.authoritative_type_def_key(type_decl.name.name.as_str());
-        let Some(type_def) = self.type_def_at(&type_def_key).cloned() else {
+        let Some(type_def) = self
+            .type_declaration_identity(type_decl)
+            .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+            .cloned()
+        else {
             return;
         };
         let fields = type_def.fields.clone();
@@ -875,20 +883,28 @@ impl Checker {
                         // owner before a public sibling resolves a bare reference to
                         // this private type (e.g. `std.net.tls.Holder` containing
                         // `Wrap`).
-                        let canonical = format!("{module_full_path}.{}", td.name);
-                        let source_def = self.type_def_at(&canonical).cloned().or_else(|| {
-                            // Direct resolved-item imports have no module-graph
-                            // pre-registration. Resolve this declaration in its
-                            // own scope and capture its just-written bare def.
-                            let saved_importer_module =
-                                self.current_module.replace(module_full_path.to_string());
-                            self.in_stdlib_registration = true;
-                            self.register_type_decl(td);
-                            self.in_stdlib_registration = false;
-                            let source_def = self.type_def_at(td.name.name.as_str()).cloned();
-                            self.current_module = saved_importer_module;
-                            source_def
-                        });
+                        let source_def = self
+                            .nominal_at_path(&qualified_type)
+                            .and_then(|id| self.type_defs.get(&id))
+                            .cloned()
+                            .or_else(|| {
+                                // Direct resolved-item imports have no module-graph
+                                // pre-registration. Resolve this declaration in its
+                                // own scope and capture its just-written bare def.
+                                let saved_importer_module =
+                                    self.current_module.replace(module_full_path.to_string());
+                                self.in_stdlib_registration = true;
+                                self.register_type_decl(td);
+                                self.in_stdlib_registration = false;
+                                let source_def = self
+                                    .type_declaration_identity(td)
+                                    .and_then(|id| {
+                                        self.type_defs.get(&crate::NominalId::of_declaration(id))
+                                    })
+                                    .cloned();
+                                self.current_module = saved_importer_module;
+                                source_def
+                            });
                         if let Some(source_def) = source_def.as_ref() {
                             self.register_canonical_type_def(
                                 module_full_path,
@@ -906,7 +922,10 @@ impl Checker {
                     self.in_stdlib_registration = true;
                     self.register_type_decl(td);
                     self.in_stdlib_registration = false;
-                    let source_def = self.type_def_at(td.name.name.as_str()).cloned();
+                    let source_def = self
+                        .type_declaration_identity(td)
+                        .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+                        .cloned();
                     self.current_module = saved_importer_module;
                     self.known_types.insert(td.name.to_string());
                     // Qualified authority is always published, mirroring the
@@ -953,8 +972,12 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_def_at(md.name.name.as_str()).cloned();
-                    let event_def = self.type_def_at(&event_name).cloned();
+                    let machine = self.nominal_in_scope(md.name);
+                    let machine_def = machine.and_then(|id| self.type_defs.get(&id)).cloned();
+                    let event_def = machine
+                        .and_then(|id| self.machine_event(id))
+                        .and_then(|id| self.type_defs.get(&id))
+                        .cloned();
                     self.current_module = saved_importer_module;
                     self.known_types.insert(md.name.to_string());
                     self.known_types.insert(event_name.clone());
@@ -1072,12 +1095,18 @@ impl Checker {
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }
-                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
-                    if let Some(intrinsic_key) = &fd.intrinsic {
+                    let declaration = self.publish_module_fn_signature(
+                        module_full_path,
+                        fd,
+                        span,
+                        &qualified,
+                        sig,
+                    );
+                    if let (Some(intrinsic_key), Some(declaration)) = (&fd.intrinsic, declaration) {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
                         self.register_intrinsic_declaration(
-                            qualified,
+                            declaration,
                             intrinsic_key,
                             fd.name.name.as_str(),
                             fd,
@@ -1304,12 +1333,12 @@ impl Checker {
         span: &Span,
         key: &str,
         sig: FnSig,
-    ) {
-        let binding = self.defs.module_for_path(module_path).and_then(|module| {
-            self.scopes
-                .item(self.scopes.namespace_of(module), function.name)
-        });
-        if let Some(super::scope::Binding::Fn(declaration)) = binding {
+    ) -> Option<crate::DefId> {
+        let declaration = self
+            .defs
+            .module_for_path(module_path)
+            .and_then(|module| self.fn_in_module(module, function.name));
+        if let Some(declaration) = declaration {
             self.insert_fn_sig(declaration, sig);
         } else {
             self.report_error(
@@ -1318,6 +1347,7 @@ impl Checker {
                 format!("internal: function `{key}` has no declaration"),
             );
         }
+        declaration
     }
 
     /// Publish a selected stdlib free function into one importer's bare scope.
@@ -1610,7 +1640,11 @@ impl Checker {
                     let saved_module = self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_record_decl(decl);
-                    if let Some(definition) = self.type_def_at(&canonical).cloned() {
+                    if let Some(definition) = self
+                        .nominal_in_scope(decl.name)
+                        .and_then(|id| self.type_defs.get(&id))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             decl.name.name.as_str(),
@@ -1682,16 +1716,25 @@ impl Checker {
                         // appear in a public actor's reply or extern signature.
                         // Publish their exact owner metadata without exposing
                         // them as module exports or importer bindings.
-                        let source_def = self.type_def_at(&qualified_type).cloned().or_else(|| {
-                            let saved_importer_module =
-                                self.current_module.replace(module_full_path.to_string());
-                            self.current_module_idx = declaring_file_idx;
-                            self.register_type_decl(td);
-                            let source_def = self.type_def_at(td.name.name.as_str()).cloned();
-                            self.current_module = saved_importer_module;
-                            self.current_module_idx = importer_file_idx;
-                            source_def
-                        });
+                        let source_def = self
+                            .nominal_at_path(&qualified_type)
+                            .and_then(|id| self.type_defs.get(&id))
+                            .cloned()
+                            .or_else(|| {
+                                let saved_importer_module =
+                                    self.current_module.replace(module_full_path.to_string());
+                                self.current_module_idx = declaring_file_idx;
+                                self.register_type_decl(td);
+                                let source_def = self
+                                    .type_declaration_identity(td)
+                                    .and_then(|id| {
+                                        self.type_defs.get(&crate::NominalId::of_declaration(id))
+                                    })
+                                    .cloned();
+                                self.current_module = saved_importer_module;
+                                self.current_module_idx = importer_file_idx;
+                                source_def
+                            });
                         if let Some(source_def) = source_def.as_ref() {
                             self.register_canonical_type_def(
                                 module_full_path,
@@ -1712,7 +1755,10 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_type_decl(td);
-                    let source_def = self.type_def_at(td.name.name.as_str()).cloned();
+                    let source_def = self
+                        .type_declaration_identity(td)
+                        .and_then(|id| self.type_defs.get(&crate::NominalId::of_declaration(id)))
+                        .cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     if spec.is_none() {
@@ -1798,8 +1844,12 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_def_at(md.name.name.as_str()).cloned();
-                    let event_def = self.type_def_at(&event_name).cloned();
+                    let machine = self.nominal_in_scope(md.name);
+                    let machine_def = machine.and_then(|id| self.type_defs.get(&id)).cloned();
+                    let event_def = machine
+                        .and_then(|id| self.machine_event(id))
+                        .and_then(|id| self.type_defs.get(&id))
+                        .cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     self.register_qualified_type_alias(module_short, md.name.name.as_str());
@@ -1938,8 +1988,9 @@ impl Checker {
                     if !ad.visibility.is_pub() {
                         continue;
                     }
-                    let actor_already_registered = self.type_def_at(&qualified_actor);
-                    if actor_already_registered.is_none()
+                    let actor_already_registered =
+                        self.is_registered_nominal_path(&qualified_actor);
+                    if !actor_already_registered
                         && !self.register_type_namespace_name(Some(module_full_path), ad.name, span)
                     {
                         continue;
@@ -1985,7 +2036,7 @@ impl Checker {
                     if !sd.visibility.is_pub() {
                         continue;
                     }
-                    if self.type_def_at(&qualified).is_none()
+                    if !self.is_registered_nominal_path(&qualified)
                         && !self.register_type_namespace_name(Some(module_full_path), sd.name, span)
                     {
                         continue;
@@ -2064,14 +2115,20 @@ impl Checker {
                             self.module_fn_exports.insert(surface_qualified.clone());
                         }
                     }
-                    self.publish_module_fn_signature(module_full_path, fd, span, &qualified, sig);
+                    let declaration = self.publish_module_fn_signature(
+                        module_full_path,
+                        fd,
+                        span,
+                        &qualified,
+                        sig,
+                    );
 
-                    if let Some(intrinsic_key) = &fd.intrinsic {
+                    if let (Some(intrinsic_key), Some(declaration)) = (&fd.intrinsic, declaration) {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
                         self.current_module_idx = declaring_file_idx;
                         self.register_intrinsic_declaration(
-                            qualified.clone(),
+                            declaration,
                             intrinsic_key,
                             fd.name.name.as_str(),
                             fd,
@@ -2129,7 +2186,10 @@ impl Checker {
                 }
                 Item::ExternBlock(eb) => {
                     let has_unregistered_signature = eb.functions.iter().any(|function| {
-                        !self.has_fn_sig(&format!("{module_full_path}.{}", function.name))
+                        self.defs
+                            .module_for_path(module_full_path)
+                            .and_then(|module| self.fn_in_module(module, function.name))
+                            .is_none_or(|id| !self.fn_sigs.contains_key(&id))
                     });
                     if has_unregistered_signature {
                         let saved_importer_module =
@@ -2324,8 +2384,8 @@ impl Checker {
         let qualified = format!("{module_short}.{name}");
         // Both source spellings must select the same declaration before its
         // source-span index can acquire an alias. Semantic tables use the ID.
-        let declaration = self.type_def_key(name);
-        if declaration.is_some() && declaration == self.type_def_key(&qualified) {
+        let declaration = self.nominal_in_scope(Ident::new(name));
+        if declaration.is_some() && declaration == self.nominal_at_path(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
             }

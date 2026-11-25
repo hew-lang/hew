@@ -517,8 +517,8 @@ fn check_ambiguous_module_import_bindings(
     graph: &hew_parser::module::ModuleGraph,
 ) -> Result<(), String> {
     for (owner_id, module) in &graph.modules {
-        let mut seen: HashMap<String, String> = HashMap::new();
-        for (item, _) in &module.items {
+        let mut seen = HashMap::new();
+        for (index, (item, _)) in module.items.iter().enumerate() {
             let Item::Import(import) = item else {
                 continue;
             };
@@ -530,7 +530,10 @@ fn check_ambiguous_module_import_bindings(
                 .module_alias
                 .or_else(|| import.path.last())
                 .expect("non-file module imports have a path");
-            if let Some(existing) = seen.insert(binding.to_string(), source.clone()) {
+            let file = graph
+                .item_source(owner_id, index)
+                .or_else(|| module.source_paths.first());
+            if let Some(existing) = seen.insert((file, binding.name), source.clone()) {
                 if existing != source {
                     return Err(format!(
                         "Error: module `{}` imports both `{existing}` and `{source}` \

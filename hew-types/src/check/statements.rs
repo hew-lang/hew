@@ -1722,7 +1722,7 @@ impl Checker {
                             });
                         if !root_is_mutable
                             && self
-                                .lookup_type_def(name)
+                                .head_type_def(*head)
                                 .is_some_and(|td| td.kind == TypeDefKind::Record)
                         {
                             self.report_error(

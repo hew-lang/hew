@@ -86,6 +86,72 @@ fn directory_module_peers_keep_distinct_source_files() {
 }
 
 #[test]
+fn hygienic_macro_call_lowers_selectively_imported_intrinsic() {
+    use hew_hir::{HirExprKind, HirItem, ResolvedRef};
+    use hew_types::runtime_call::{MathIntrinsic, RuntimeCallFamily};
+    use hew_types::CallTarget;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = write_source(
+        dir.path(),
+        "macro_intrinsic.hew",
+        r"
+        import std.math.{sqrt};
+        macro square_root { ($x:expr) => expr { sqrt($x) } }
+        pub fn calculate(x: f64) -> f64 { square_root!(x) }
+        macro local_square_root {
+            ($name:ident) => items {
+                fn sqrt(x: f64) -> f64 { x + 1.0 }
+                pub fn $name(x: f64) -> f64 { sqrt(x) }
+            }
+        }
+        local_square_root!(calculate_local)
+        ",
+    );
+    let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+    let checked = state.typecheck_result.tco.unwrap();
+    let family = RuntimeCallFamily::MathIntrinsic(MathIntrinsic::Sqrt);
+    let targets: Vec<_> = checked
+        .direct_call_targets
+        .iter()
+        .filter_map(|(span, target)| (span.module_idx == 0).then_some(target))
+        .collect();
+    assert_eq!(targets.len(), 2, "{targets:?}");
+    assert!(
+        targets.contains(&&CallTarget::Runtime(family)),
+        "{targets:?}"
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|target| matches!(target, CallTarget::User(id)
+        if checked.defs.name(*id).as_str() == "sqrt")),
+        "{targets:?}"
+    );
+
+    let hir = hew_hir::lower_program_host_target(&state.program, &checked, &hew_hir::ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let call = hir
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "calculate" => {
+                function.body.tail.as_deref()
+            }
+            _ => None,
+        })
+        .unwrap();
+    let HirExprKind::Call { callee, .. } = &call.kind else {
+        panic!("expected a lowered square root call, got {:?}", call.kind);
+    };
+    assert!(matches!(
+        callee.kind,
+        HirExprKind::BindingRef { resolved: ResolvedRef::Builtin(found), .. } if found == family
+    ));
+}
+
+#[test]
 fn embedded_prelude_lowers_vector_get_and_println_once() {
     let mut parsed = hew_parser::parse(
         "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); \

@@ -148,12 +148,19 @@ pub fn complete(
     items
 }
 
+/// Import bindings retain the original file index after editor spans are re-keyed.
+fn viewed_import_scope(tc: &TypeCheckOutput) -> (Option<&str>, u32) {
+    let file = tc.focused_file_index;
+    (tc.file_span_indices.module_name(file), file)
+}
+
 /// Explicit imports publish lexical bindings to canonical signatures.
 fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
+    let scope = viewed_import_scope(tc);
     tc.import_fn_name_aliases
         .keys()
         .filter(|(module, file, binding)| {
-            module.is_none() && *file == 0 && is_source_identifier(binding)
+            (module.as_deref(), *file) == scope && is_source_identifier(binding)
         })
         .filter_map(|(_, _, binding)| {
             tc.visible_callable_signature(binding)
@@ -162,22 +169,22 @@ fn imported_function_completions(tc: &TypeCheckOutput) -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Render type identities through the root file's actual import bindings.
+/// Render type identities through the viewed file's import bindings.
 fn visible_type_labels(tc: &TypeCheckOutput, path: &str) -> Vec<String> {
     if is_source_identifier(path) {
         return vec![path.to_string()];
     }
+    let scope = viewed_import_scope(tc);
     let mut labels = Vec::new();
     for ((module, file, binding), owner) in &tc.import_type_name_aliases {
-        if module.is_none() && *file == 0 && owner == path && is_source_identifier(binding) {
+        if (module.as_deref(), *file) == scope && owner == path && is_source_identifier(binding) {
             labels.push(binding.clone());
         }
     }
     if let Some((owner, name)) = path.rsplit_once('.') {
         if is_source_identifier(name) {
             for ((module, file, binding), imported) in &tc.module_import_bindings {
-                if module.is_none()
-                    && *file == 0
+                if (module.as_deref(), *file) == scope
                     && imported == owner
                     && is_source_identifier(binding)
                 {
@@ -391,9 +398,10 @@ fn module_member_completions(
     {
         return None;
     }
-    let owner = tc
-        .module_import_bindings
-        .get(&(None, 0, binding.to_string()))?;
+    let (module, file) = viewed_import_scope(tc);
+    let owner =
+        tc.module_import_bindings
+            .get(&(module.map(str::to_owned), file, binding.to_string()))?;
     let prefix = format!("{owner}.");
     // A member is a DIRECT child of the owner: `std.io.scanner.from_string`
     // belongs to `scanner`, `std.io.scanner.inner.helper` does not.
@@ -878,8 +886,7 @@ fn try_spawn_completions(
     }
 }
 
-/// Return source-spellable completion labels for imported actors in the root
-/// editor document.
+/// Return source-spellable completion labels for imported actors in the viewed file.
 ///
 /// `TypeCheckOutput::type_defs` stores the canonical declaration identity, but
 /// source code must use the import binding selected in
@@ -888,6 +895,7 @@ fn try_spawn_completions(
 /// same-leaf package modules and explicit aliases cannot collapse into one
 /// candidate or produce an unspellable fully canonical label.
 fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
+    let scope = viewed_import_scope(output);
     let mut labels = BTreeSet::new();
     for (id, definition) in &output.type_defs {
         if definition.kind != TypeDefKind::Actor {
@@ -898,7 +906,7 @@ fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
             continue;
         };
         for ((importer, file, binding), bound_owner) in &output.module_import_bindings {
-            if importer.is_none() && *file == 0 && bound_owner == owner {
+            if (importer.as_deref(), *file) == scope && bound_owner == owner {
                 labels.insert(format!("{binding}.{actor_name}"));
             }
         }

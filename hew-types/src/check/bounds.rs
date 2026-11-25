@@ -242,15 +242,20 @@ impl Checker {
         );
     }
 
+    /// The declaration of the callable body currently being checked.
+    pub(super) fn current_callable_declaration(&self) -> Option<crate::DefId> {
+        self.checking_declaration
+            .or(match &self.effect_graph.current_body {
+                Some(
+                    crate::ty::EffectBody::Declaration(id) | crate::ty::EffectBody::Generator(id),
+                ) => Some(*id),
+                _ => None,
+            })
+    }
+
     /// The signature whose body is being checked.
     pub(in crate::check) fn checking_signature(&self) -> Option<&FnSig> {
-        self.checking_declaration
-            .and_then(|declaration| self.fn_sigs.get(&declaration))
-            .or_else(|| {
-                self.current_function
-                    .as_deref()
-                    .and_then(|name| self.fn_sig(name))
-            })
+        self.fn_sigs.get(&self.current_callable_declaration()?)
     }
 
     /// The parameter's declaration-owned bounds, plus the enclosing frames

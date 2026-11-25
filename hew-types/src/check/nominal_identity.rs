@@ -334,23 +334,11 @@ impl Checker {
 }
 
 impl Checker {
-    /// The nominal head a string registry key names: the declaration the key
-    /// was minted under, rendered as the key.
-    ///
-    /// TRANSITION(A1 commit 3): deleted when the registries are keyed by
-    /// identity and every carrier holds the head `Scope::resolve` returned.
-    pub(super) fn nominal_head_for_key(&self, key: &str) -> Option<crate::NominalHead> {
-        let id = self.lookup_declaration(key)?;
-        Some(crate::NominalHead::new(
-            crate::NominalId::from_minted_declaration(id),
-            self.defs.path(id),
-        ))
-    }
-
     /// The named type a string registry key names: its declared nominal, or
     /// the builtin the key spells when no declaration claims it.
     ///
-    /// TRANSITION(A1 commit 3): see [`Self::nominal_head_for_key`].
+    /// TRANSITION(A1 commit 3): callers still carry registry spellings where
+    /// they need checked type heads.
     pub(super) fn named_ty_for_key(&self, key: &str, args: Vec<Ty>) -> Ty {
         if let Some(primitive) = Ty::from_name(key).filter(|_| args.is_empty()) {
             return primitive;
@@ -358,25 +346,12 @@ impl Checker {
         // An import alias spelling projects to its declaration's owner.
         let canonical = self.canonical_nominal_name(key);
         let key = canonical.as_deref().unwrap_or(key);
-        if let Some(nominal) = self.nominal_head_for_key(key) {
-            return Ty::named_head(self.head_of_declaration(nominal.id), args);
+        if let Some(declaration) = self.lookup_declaration(key) {
+            let nominal = crate::NominalId::of_declaration(declaration);
+            return Ty::named_head(self.head_of_declaration(nominal), args);
         }
         if let Some(builtin) = crate::builtin_type::lookup_builtin_type(key) {
             return Ty::named_head(crate::TypeHead::Builtin(builtin), args);
-        }
-        // A trait written in type position names the trait's declaration; a
-        // handler-style trait becomes the actor handle it types.
-        if let Some(id) = self
-            .lookup_declaration(key)
-            .filter(|id| self.defs.kind(*id) == crate::DeclarationKind::Trait)
-        {
-            return Ty::named_head(
-                crate::TypeHead::Nominal(crate::NominalHead::new(
-                    crate::NominalId::from_minted_declaration(id),
-                    self.defs.path(id),
-                )),
-                args,
-            );
         }
         Ty::Error
     }

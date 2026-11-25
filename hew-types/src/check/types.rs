@@ -3433,14 +3433,11 @@ pub(super) struct DeferredBoundCheck {
 /// bare name carried by `Account`'s own actor-handle type) against the
 /// local-first identity policy.
 ///
-/// Produced by `Checker::resolve_bare_spawn_target_identity`. `Resolved` carries the
-/// registered identity key — bare for root/flat actors, dotted
-/// `{module_short}.{name}` for module actors. `Ambiguous` carries the sorted
-/// candidate module list for the typed diagnostic; resolution is never
-/// silent first-wins.
+/// The declaration selected for a bare spawn target, or the candidate
+/// modules needed for an ambiguity diagnostic.
 #[derive(Debug, Clone)]
 pub(super) enum BareActorResolution {
-    Resolved(String),
+    Resolved(crate::NominalId),
     Ambiguous(Vec<String>),
     Unknown,
 }
@@ -3849,7 +3846,7 @@ pub struct Checker {
     /// constructor synthesis, and expected-type coercion may all observe the
     /// same nominal instantiation, but the reference site should emit one
     /// `BoundsNotSatisfied` diagnostic.
-    pub(super) reported_type_def_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    pub(super) reported_type_def_bound_violations: HashSet<(crate::NominalId, Vec<Ty>, SpanKey)>,
     /// Spans that already carry the retired-actor-handle-spelling refusal. A
     /// signature is resolved more than once, and one written type earns one
     /// diagnostic.

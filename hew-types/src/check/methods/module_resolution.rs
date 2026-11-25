@@ -354,6 +354,15 @@ impl Checker {
         module_short: &str,
         type_name: &str,
     ) -> Option<TypeDef> {
+        let nominal = self.resolve_module_type_declaration(module_short, type_name)?;
+        self.type_defs.get(&nominal).cloned()
+    }
+
+    pub(in crate::check) fn resolve_module_type_declaration(
+        &self,
+        module_short: &str,
+        type_name: &str,
+    ) -> Option<crate::NominalId> {
         if !self.module_binding_in_current_file(Ident::new(module_short)) {
             return None;
         }
@@ -370,7 +379,7 @@ impl Checker {
             return None;
         }
         let qualified = format!("{resolved_module}.{type_name}");
-        self.type_def_at(&qualified).cloned()
+        self.type_def_key(&qualified)
     }
 
     /// Return the exact source owner's exported type set for a lexical module
@@ -471,7 +480,7 @@ impl Checker {
                 self.defs.kind(id),
                 crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
             ) {
-                return BareActorResolution::Resolved(self.defs.path(id).to_string());
+                return BareActorResolution::Resolved(crate::NominalId::of_declaration(id));
             }
         }
         self.resolve_bare_declaration_identity(
@@ -485,57 +494,60 @@ impl Checker {
         name: &str,
         kinds: &[TypeDefKind],
     ) -> BareActorResolution {
-        let is_actor = |key: &str| {
-            self.type_def_exact(key)
-                .is_some_and(|td| kinds.contains(&td.kind))
+        let actor_at = |key: &str| {
+            let nominal = crate::NominalId::of_declaration(self.lookup_declaration(key)?);
+            self.type_defs
+                .get(&nominal)
+                .filter(|td| kinds.contains(&td.kind))
+                .map(|_| nominal)
         };
         if let Some(module) = self.current_module.as_deref() {
             let dotted = format!("{module}.{name}");
-            if is_actor(&dotted) {
-                return BareActorResolution::Resolved(dotted);
+            if let Some(nominal) = actor_at(&dotted) {
+                return BareActorResolution::Resolved(nominal);
             }
         }
-        if is_actor(name) {
-            return BareActorResolution::Resolved(name.to_string());
+        if let Some(nominal) = actor_at(name) {
+            return BareActorResolution::Resolved(nominal);
         }
         if let Some(owners) = self.published_bare_type_owners.get(&(
             self.current_module.clone(),
             self.current_module_idx,
             name.to_string(),
         )) {
-            let candidates: Vec<String> = owners
+            let candidates: Vec<_> = owners
                 .iter()
-                .filter(|identity| is_actor(identity))
-                .cloned()
+                .filter_map(|identity| Some((identity, actor_at(identity)?)))
                 .collect();
             match candidates.as_slice() {
-                [identity] => return BareActorResolution::Resolved(identity.clone()),
+                [(_, nominal)] => return BareActorResolution::Resolved(*nominal),
                 [] => {}
                 _ => {
                     let modules = candidates
                         .iter()
-                        .filter_map(|identity| identity.rsplit_once('.'))
+                        .filter_map(|(identity, _)| identity.rsplit_once('.'))
                         .map(|(module, _)| module.to_string())
                         .collect();
                     return BareActorResolution::Ambiguous(modules);
                 }
             }
         }
-        let mut candidates: Vec<&str> = self
+        let mut candidates: Vec<_> = self
             .module_type_exports
             .iter()
-            .filter(|(module, exports)| {
-                exports.contains(name) && is_actor(&format!("{module}.{name}"))
-            })
-            .map(|(module, _)| module.as_str())
+            .filter(|(_, exports)| exports.contains(name))
+            .filter_map(|(module, _)| Some((module, actor_at(&format!("{module}.{name}"))?)))
             .collect();
         candidates.sort_unstable();
         match candidates.as_slice() {
             [] => BareActorResolution::Unknown,
-            [module] => BareActorResolution::Resolved(format!("{module}.{name}")),
-            _ => {
-                BareActorResolution::Ambiguous(candidates.iter().map(ToString::to_string).collect())
-            }
+            [(_, nominal)] => BareActorResolution::Resolved(*nominal),
+            _ => BareActorResolution::Ambiguous(
+                candidates
+                    .into_iter()
+                    .map(|(module, _)| module.clone())
+                    .collect(),
+            ),
         }
     }
 }

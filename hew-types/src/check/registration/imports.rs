@@ -880,14 +880,14 @@ impl Checker {
                                     name,
                                 )
                                 .unwrap_or_else(|| name.clone());
-                            let Some(nominal) = self.nominal_head_for_key(&canonical) else {
-                                self.require_declaration_path(
-                                    &canonical,
-                                    import_span.unwrap_or(&(0..0)),
-                                );
+                            let Some(declaration) = self.require_declaration_path(
+                                &canonical,
+                                import_span.unwrap_or(&(0..0)),
+                            ) else {
                                 continue;
                             };
-                            let head = self.head_of_declaration(nominal.id);
+                            let head = self
+                                .head_of_declaration(crate::NominalId::of_declaration(declaration));
                             if is_drop {
                                 self.registry.register_drop_type(head);
                             } else {

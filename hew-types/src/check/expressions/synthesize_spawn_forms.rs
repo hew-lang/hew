@@ -1591,8 +1591,8 @@ impl Checker {
             || canonical_owner_is_current_source;
         let is_opaque_handle = !is_declaring_module
             && self
-                .nominal_head_for_key(name)
-                .is_some_and(|head| self.opaque_type_ids.contains(&head.id));
+                .type_def_key(name)
+                .is_some_and(|nominal| self.opaque_type_ids.contains(&nominal));
         if is_opaque_handle {
             self.report_error(
                 TypeErrorKind::OpaqueDirectConstruct {
@@ -1923,23 +1923,24 @@ impl Checker {
     /// construction.
     pub(super) fn check_spawn_constructor_args(
         &mut self,
-        actor_name: &str,
+        actor: crate::NominalId,
         args: &[(Ident, Spanned<Expr>)],
         labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
         typed_arguments: &HashMap<usize, Ty>,
     ) {
-        let registered = self.registered_spawn_identity(actor_name);
-        let actor_fields = self.lookup_type_def(actor_name).map(|td| td.fields);
+        let actor_name = self.defs.path(actor.declaration()).to_string();
+        let actor_fields = self.type_defs.get(&actor).map(|td| td.fields.clone());
+        let registered = self.registered_spawn_identity(&actor_name);
         let init_params = self.constructor_signature(&registered).cloned();
         let keys = self.actor_spawn_args.get(&registered).cloned();
-        let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
+        let mut seen = HashSet::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
             let typed = typed_arguments.get(&index);
             let key_span = labels
                 .get(index)
                 .map_or_else(|| as_.clone(), |label| label.span.clone());
-            if seen.contains(&field_name.name) {
+            if !seen.insert(field_name.name) {
                 self.report_error(
                     TypeErrorKind::SpawnArgDuplicate,
                     &key_span,
@@ -1949,7 +1950,6 @@ impl Checker {
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
-            seen.push(field_name.name);
             // A field init initializes has no spawn value (D447): one init
             // body cannot be a first store at one spawn site and a
             // replacement at another.
@@ -1980,7 +1980,7 @@ impl Checker {
                 .filter(|keys| !keys.iter().any(|key| key.name == field_name.name))
             {
                 self.report_unknown_spawn_key(
-                    actor_name,
+                    &actor_name,
                     &registered,
                     *field_name,
                     keys,
@@ -2182,15 +2182,14 @@ impl Checker {
 
     /// Resolve a `spawn` target expression to the registered actor identity.
     ///
-    /// `Ok(Some(identity))` carries the identity key (bare for root/flat
-    /// actors, dotted `{module}.{name}` for module actors); `Ok(None)` is an
+    /// `Ok(Some(identity))` carries the selected declaration. `Ok(None)` is an
     /// unsupported target shape; `Err(())` means a diagnostic was already
     /// emitted and the spawn must type to bare `Ty::Error`.
     pub(super) fn resolve_spawn_target(
         &mut self,
         target: &Spanned<Expr>,
         span: &Span,
-    ) -> Result<Option<String>, ()> {
+    ) -> Result<Option<crate::NominalId>, ()> {
         Ok(match &target.0 {
             // Bare spawn target: resolve local-first to the registered
             // actor identity (the current module's own actor, then a
@@ -2265,11 +2264,15 @@ impl Checker {
                         // is not clobbered by a same-named root/other-module type).
                         // Fail closed before HIR/MIR rather than misroute.
                         let actor_identity = self
-                            .resolve_module_type(module.name.as_str(), field.0.name.as_str())
-                            .filter(|td| {
-                                matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
-                            })
-                            .map(|td| td.name);
+                            .resolve_module_type_declaration(
+                                module.name.as_str(),
+                                field.0.name.as_str(),
+                            )
+                            .filter(|id| {
+                                self.type_defs.get(id).is_some_and(|td| {
+                                    matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
+                                })
+                            });
                         let Some(actor_identity) = actor_identity else {
                             let similar = self
                                 .module_type_exports_for_binding(module.name.as_str())
@@ -2340,15 +2343,17 @@ impl Checker {
         span: &Span,
         typed_arguments: &HashMap<usize, Ty>,
     ) -> Ty {
-        let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
+        let Ok(actor) = self.resolve_spawn_target(target, span) else {
             return Ty::Error;
         };
 
-        if let Some(name) = actor_name {
-            let owner_kind = if self
-                .type_def_at(&name)
-                .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
-            {
+        if let Some(actor) = actor {
+            let name = self.defs.path(actor.declaration()).to_string();
+            let (kind, type_params) = match self.type_defs.get(&actor) {
+                Some(definition) => (definition.kind, definition.type_params.clone()),
+                None => return Ty::Error,
+            };
+            let owner_kind = if kind == TypeDefKind::Supervisor {
                 // Initial construction may await child callbacks and rollback,
                 // independently of any particular child's inferred effects.
                 self.mark_body_suspends("supervisor construction");
@@ -2357,9 +2362,6 @@ impl Checker {
             } else {
                 "actor"
             };
-            let type_params = self
-                .type_def_at(&name)
-                .map_or_else(Vec::new, |definition| definition.type_params.clone());
             let declared_arity = type_params.len();
             let mut resolved_type_args: Vec<Ty> = if type_args.is_empty() {
                 type_params
@@ -2387,7 +2389,7 @@ impl Checker {
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(
-                &name,
+                actor,
                 args,
                 labels,
                 Some(&type_subst),
@@ -2406,18 +2408,13 @@ impl Checker {
                 );
                 return Ty::Error;
             }
-            self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
-
-            match self.nominal_head_for_key(&name) {
-                Some(actor) => {
-                    let handle = Ty::actor_handle(actor, resolved_type_args);
-                    // A key naming a state field resolves to that field, so
-                    // a field rename reaches every spawn that names it.
-                    self.record_struct_init_field_resolutions(args, labels, &handle);
-                    handle
-                }
-                None => Ty::Error,
-            }
+            self.enforce_nominal_instantiation_bounds(actor, &resolved_type_args, span);
+            let handle =
+                Ty::actor_handle(crate::NominalHead::new(actor, &name), resolved_type_args);
+            // A key naming a state field resolves to that field, so
+            // a field rename reaches every spawn that names it.
+            self.record_struct_init_field_resolutions(args, labels, &handle);
+            handle
         } else {
             Ty::Error
         }

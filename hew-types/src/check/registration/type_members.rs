@@ -662,32 +662,17 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn pre_register_type_decl_in_scope(&mut self, td: &TypeDecl) {
-        // Idempotency guard, keyed per-module. Two non-root modules that each
-        // declare a type of the same bare name (`badpkg.Reply` and
-        // `goodpkg.Reply`) must BOTH register: the bare `type_defs` entry is
-        // last-write-wins across modules (the qualified alias is the authority),
-        // but each module's qualified marker set must be seeded so the ask-reply
-        // Send gate derives `Send` from the correct module's fields. Keying the
-        // guard on the bare name skipped the second module's `Reply` entirely,
-        // leaving the gate to read whichever module won the bare-key race.
-        let canonical_name = self
-            .type_declaration_identity(td)
-            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
-        let guard_key = canonical_name.clone();
-        if self.type_def_at(guard_key.as_str()).is_some() {
-            return;
-        }
-        let Some(head) = self.nominal_head_for_key(&guard_key) else {
-            // A rejected duplicate declaration has no owner to register.
-            let span = self
-                .type_def_spans
-                .get(&guard_key)
-                .cloned()
-                .unwrap_or_default();
-            self.require_declaration_path(&guard_key, &span);
+        let Some(declaration) = self.type_declaration_identity(td) else {
+            let name = td.name.name.as_str();
+            let span = self.type_def_spans.get(name).cloned().unwrap_or_default();
+            self.require_declaration_path(name, &span);
             return;
         };
-        let declaration = head.id;
+        let canonical_name = self.defs.path(declaration).to_string();
+        let declaration = crate::NominalId::of_declaration(declaration);
+        if self.type_defs.contains_key(&declaration) {
+            return;
+        }
         // #1295: record `#[resource]` types from pre-registered (imported)
         // modules too, so an imported handle type's inherent `close(self)`
         // consumes its receiver at the call site (mirrors `register_type_decl`).
@@ -863,20 +848,10 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(declaration), field_types);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(declaration),
             type_def.type_params.clone(),
         );
         // Mirror the markers under the module-qualified key so a same-bare-name
@@ -986,32 +961,17 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn register_type_decl_in_scope(&mut self, td: &TypeDecl) {
-        if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
-            let qualified = self
-                .current_declaration_module()
-                .map(|module| format!("{}.{}", self.defs.module_path(module), td.name));
-            if let Some(declaration) = qualified
-                .as_deref()
-                .and_then(|name| self.lookup_declaration(name))
-                .or_else(|| self.lookup_declaration(td.name.name.as_str()))
-            {
-                self.must_use_types.insert(declaration);
-            }
-        }
-        let canonical_name = self
-            .type_declaration_identity(td)
-            .map_or_else(|| td.name.to_string(), |id| self.defs.path(id).to_string());
-        let Some(head) = self.nominal_head_for_key(&canonical_name) else {
-            // A rejected duplicate declaration has no owner to register.
-            let span = self
-                .type_def_spans
-                .get(&canonical_name)
-                .cloned()
-                .unwrap_or_default();
-            self.require_declaration_path(&canonical_name, &span);
+        let Some(declaration) = self.type_declaration_identity(td) else {
+            let name = td.name.name.as_str();
+            let span = self.type_def_spans.get(name).cloned().unwrap_or_default();
+            self.require_declaration_path(name, &span);
             return;
         };
-        let declaration = head.id;
+        if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
+            self.must_use_types.insert(declaration);
+        }
+        let canonical_name = self.defs.path(declaration).to_string();
+        let declaration = crate::NominalId::of_declaration(declaration);
         match td.resource_marker {
             hew_parser::ast::ResourceMarker::Resource => {
                 self.registry.register_resource_type(declaration);
@@ -1195,20 +1155,10 @@ impl Checker {
         };
         let field_types = self.expand_for_marker_registration(&field_types);
 
-        self.registry.register_type(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
-            field_types,
-        );
+        self.registry
+            .register_type(self.head_of_declaration(declaration), field_types);
         self.registry.register_type_params(
-            self.head_of_declaration(
-                self.nominal_head_for_key(&canonical_name)
-                    .expect("registered type has a declaration")
-                    .id,
-            ),
+            self.head_of_declaration(declaration),
             type_param_names.clone(),
         );
         // Mirror the markers under the module-qualified key (when this type is

@@ -407,6 +407,7 @@ impl Checker {
     /// Check child construction with the supervisor's retained config in scope.
     /// Store each complete child handle at its source site for HIR to consume.
     fn check_supervisor_init_args(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let owner = self.named_item_declaration(sd.name);
         self.env.push_scope();
 
         // Bind each config param to its resolved type. `resolve_annotation_with_holes`
@@ -429,18 +430,16 @@ impl Checker {
             self.record_local_resolution(param.name, &param.name_span);
         }
 
-        let owner = self
-            .nominal_head_for_key(&self.declaration_identity(sd.name))
-            .map(|head| {
-                let params = self
-                    .type_def_at(&self.declaration_identity(sd.name))
-                    .map_or_else(Vec::new, |td| {
-                        td.type_params.iter().copied().map(Ty::param).collect()
-                    });
-                Ty::actor_handle(head, params)
-            });
         if let Some(owner) = owner {
-            self.record_type(span, &owner);
+            let nominal = crate::NominalId::of_declaration(owner);
+            let params = self.type_defs.get(&nominal).map_or_else(Vec::new, |td| {
+                td.type_params.iter().copied().map(Ty::param).collect()
+            });
+            let handle = Ty::actor_handle(
+                crate::NominalHead::new(nominal, self.defs.path(owner)),
+                params,
+            );
+            self.record_type(span, &handle);
         }
         let order = self
             .supervisor_startup_order

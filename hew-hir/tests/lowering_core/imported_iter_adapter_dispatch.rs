@@ -87,7 +87,8 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
         let nominal = output
             .module
             .defs
-            .lookup_nominal(&format!("std.iter.{adapter}"))
+            .lookup_path(&format!("std.iter.{adapter}"))
+            .map(hew_types::NominalId::of_declaration)
             .expect("declared");
         let entry = lookup_trait_impl_entry_by_id(
             &index,
@@ -186,7 +187,8 @@ fn main() -> i64 {
     let std_cursor = output
         .module
         .defs
-        .lookup_nominal("std.builtins.HashMapIter")
+        .lookup_path("std.builtins.HashMapIter")
+        .map(hew_types::NominalId::of_declaration)
         .expect("declared");
     let builtin = lookup_trait_impl_entry_by_id(
         &index,
@@ -207,7 +209,8 @@ fn main() -> i64 {
     let user_cursor = output
         .module
         .defs
-        .lookup_nominal("HashMapIter")
+        .lookup_path("HashMapIter")
+        .map(hew_types::NominalId::of_declaration)
         .expect("declared");
     let user = lookup_trait_impl_entry_by_id(
         &index,
@@ -259,7 +262,8 @@ fn main() -> i64 {
     let std_map = output
         .module
         .defs
-        .lookup_nominal("std.iter.Map")
+        .lookup_path("std.iter.Map")
+        .map(hew_types::NominalId::of_declaration)
         .expect("declared");
     let std_entry = lookup_trait_impl_entry_by_id(
         &index,
@@ -272,7 +276,12 @@ fn main() -> i64 {
         &next,
     )
     .expect("std.iter.Map remains registered despite a local Map");
-    let local_map = output.module.defs.lookup_nominal("Map").expect("declared");
+    let local_map = output
+        .module
+        .defs
+        .lookup_path("Map")
+        .map(hew_types::NominalId::of_declaration)
+        .expect("declared");
     let local_entry = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,

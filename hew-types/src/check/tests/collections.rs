@@ -3011,7 +3011,8 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
     for (name, expected) in [("Inner", true), ("Outer", true), ("Plain", false)] {
         let id = output
             .defs
-            .lookup_nominal(name)
+            .lookup_path(name)
+            .map(crate::NominalId::of_declaration)
             .expect("source declaration");
         assert_eq!(
             output.handle_bearing_structs.contains(&id),

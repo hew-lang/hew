@@ -296,7 +296,11 @@ fn aggregate_hash_ignores_padding_and_composes_exact_user_field_methods() {
         let outer = ResolvedTy::named_head(
             hew_types::TypeHead::of_declaration(
                 &physical.defs,
-                physical.defs.lookup_nominal("Outer").unwrap(),
+                physical
+                    .defs
+                    .lookup_path("Outer")
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         );
@@ -494,7 +498,11 @@ fn main() {
         let outer = ResolvedTy::named_head(
             hew_types::TypeHead::of_declaration(
                 &physical.defs,
-                physical.defs.lookup_nominal("Outer").unwrap(),
+                physical
+                    .defs
+                    .lookup_path("Outer")
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         );
@@ -574,7 +582,11 @@ fn main() {
             &ResolvedTy::named_head(
                 hew_types::TypeHead::of_declaration(
                     &physical.defs,
-                    physical.defs.lookup_nominal("Key").unwrap(),
+                    physical
+                        .defs
+                        .lookup_path("Key")
+                        .map(hew_types::NominalId::of_declaration)
+                        .unwrap(),
                 ),
                 vec![],
             ),
@@ -776,7 +788,11 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         ResolvedTy::named_head(
             hew_types::TypeHead::of_declaration(
                 &physical.defs,
-                physical.defs.lookup_nominal("Key").unwrap(),
+                physical
+                    .defs
+                    .lookup_path("Key")
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         ),

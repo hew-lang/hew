@@ -10,9 +10,13 @@ fn handle_wrapper_accessor_returning_raw_field_is_rejected() {
     );
 
     assert!(
-        output
-            .handle_bearing_structs
-            .contains(&output.defs.lookup_nominal("PatternWrapper").unwrap()),
+        output.handle_bearing_structs.contains(
+            &output
+                .defs
+                .lookup_path("PatternWrapper")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap()
+        ),
         "expected PatternWrapper to be marked handle-bearing, got: {:#?}",
         output.handle_bearing_structs
     );

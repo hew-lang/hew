@@ -968,7 +968,12 @@ fn example() -> string {
     let expected_args = vec![hew_types::ResolvedTy::named_head(
         hew_types::TypeHead::of_declaration(
             &output.module.defs,
-            output.module.defs.lookup_nominal("Wrapper").unwrap(),
+            output
+                .module
+                .defs
+                .lookup_path("Wrapper")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
         ),
         vec![hew_types::ResolvedTy::I64],
     )];

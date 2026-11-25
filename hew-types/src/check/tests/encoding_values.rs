@@ -107,7 +107,8 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert_eq!(
             lookalike.type_fact_context.declarations()[&lookalike
                 .defs
-                .lookup_nominal(kind.canonical_name())
+                .lookup_path(kind.canonical_name())
+                .map(crate::NominalId::of_declaration)
                 .unwrap()]
                 .builtin,
             None
@@ -209,7 +210,8 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
                     service.defs(),
                     service
                         .defs()
-                        .lookup_nominal(&format!("std.encoding.{format}.Holder"))
+                        .lookup_path(&format!("std.encoding.{format}.Holder"))
+                        .map(crate::NominalId::of_declaration)
                         .unwrap(),
                 ),
                 vec![argument.clone()],

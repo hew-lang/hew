@@ -646,10 +646,10 @@ impl Checker {
     /// [`Self::test_declaration`]); a path nothing declared is a fixture
     /// nominal no definition answers to.
     pub(super) fn test_named(&self, path: &str, args: Vec<Ty>) -> Ty {
-        let id = self
-            .defs
-            .lookup_nominal(path)
-            .unwrap_or_else(|| crate::NominalId::for_test(path));
+        let id = self.defs.lookup_path(path).map_or_else(
+            || crate::NominalId::for_test(path),
+            crate::NominalId::of_declaration,
+        );
         Ty::named_head(
             crate::TypeHead::Nominal(crate::NominalHead::new(id, path)),
             args,

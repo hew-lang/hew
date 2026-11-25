@@ -874,7 +874,11 @@ fn same(a: Sample, b: Sample) -> bool {
         .get(&crate::TypeInstanceKey(ResolvedTy::named_head(
             crate::TypeHead::of_declaration(
                 &output.defs,
-                output.defs.lookup_nominal("Sample").unwrap(),
+                output
+                    .defs
+                    .lookup_path("Sample")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         )))

@@ -278,7 +278,8 @@ mod tests {
             crate::TypeHead::Nominal(crate::NominalHead::new(
                 output
                     .defs
-                    .lookup_nominal(name)
+                    .lookup_path(name)
+                    .map(crate::NominalId::of_declaration)
                     .expect("checked declaration"),
                 name,
             )),

@@ -715,13 +715,16 @@ impl Ty {
     #[doc(hidden)]
     #[must_use]
     pub fn named_in(defs: &crate::DefTable, path: &str, args: Vec<Ty>) -> Ty {
-        let nominal = defs
-            .lookup_nominal(path)
+        let declaration = defs
+            .lookup_path(path)
             .unwrap_or_else(|| panic!("no declaration `{path}` in the table"));
-        Ty::Named {
-            head: TypeHead::Nominal(NominalHead::new(nominal, defs.path(nominal.declaration()))),
+        Ty::named_head(
+            TypeHead::Nominal(NominalHead::new(
+                crate::NominalId::of_declaration(declaration),
+                defs.path(declaration),
+            )),
             args,
-        }
+        )
     }
 
     /// The handle type of the actor a checker's table established at `path`.

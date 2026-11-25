@@ -289,7 +289,8 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             None => hew_types::TypeHead::Nominal(hew_types::NominalHead::new(
                 checked
                     .defs
-                    .lookup_nominal("Handle")
+                    .lookup_path("Handle")
+                    .map(hew_types::NominalId::of_declaration)
                     .expect("Handle declaration"),
                 "Handle",
             )),
@@ -303,8 +304,11 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let fields = &find_type(&hir, "Envelope").fields;
-        let published = &checked.type_fact_context.declarations()
-            [&checked.defs.lookup_nominal("Envelope").unwrap()]
+        let published = &checked.type_fact_context.declarations()[&checked
+            .defs
+            .lookup_path("Envelope")
+            .map(hew_types::NominalId::of_declaration)
+            .unwrap()]
             .members;
         assert_eq!(
             published,
@@ -331,7 +335,11 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             ResolvedTy::named_head(
                 hew_types::TypeHead::of_declaration(
                     &checked.defs,
-                    checked.defs.lookup_nominal("Value").unwrap()
+                    checked
+                        .defs
+                        .lookup_path("Value")
+                        .map(hew_types::NominalId::of_declaration)
+                        .unwrap()
                 ),
                 vec![]
             )
@@ -345,8 +353,11 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             .flat_map(hew_hir::HirVariant::field_tys)
             .collect();
         assert_eq!(
-            checked.type_fact_context.declarations()
-                [&checked.defs.lookup_nominal("Payload").unwrap()]
+            checked.type_fact_context.declarations()[&checked
+                .defs
+                .lookup_path("Payload")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap()]
                 .members,
             payloads
         );

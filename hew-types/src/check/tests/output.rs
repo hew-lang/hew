@@ -350,7 +350,11 @@ fn imported_generic_aggregate_publishes_selected_callback_field() {
     );
     assert_eq!(
         fields[0].owner,
-        output.defs.lookup_nominal("m.Map").unwrap()
+        output
+            .defs
+            .lookup_path("m.Map")
+            .map(crate::NominalId::of_declaration)
+            .unwrap()
     );
     assert_eq!(fields[0].index, 0);
     assert!(!fields[0].candidates.may_be_unknown);
@@ -448,7 +452,11 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
     assert_eq!(
         output.aggregate_field_candidates.get(aggregate),
         Some(&vec![CallableFieldFlow {
-            owner: output.defs.lookup_nominal("Map").expect("Map nominal"),
+            owner: output
+                .defs
+                .lookup_path("Map")
+                .map(crate::NominalId::of_declaration)
+                .expect("Map nominal"),
             index: 0,
             candidates: IndirectCallCandidates {
                 known: vec![CallableCandidate::Formal(*f_formal)],
@@ -507,7 +515,7 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
     assert!(matches!(
         field_candidates.known.as_slice(),
         [CallableCandidate::Field { owner, index: 0, .. }]
-            if *owner == output.defs.lookup_nominal("Map").unwrap()
+            if *owner == output.defs.lookup_path("Map").map(crate::NominalId::of_declaration).unwrap()
     ));
     assert!(!field_candidates.may_be_unknown);
 }

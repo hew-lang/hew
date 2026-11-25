@@ -1159,14 +1159,24 @@ fn generic_instances_publish_exact_nested_and_indirect_shapes() {
         let packet = ResolvedTy::named_head(
             hew_types::TypeHead::of_declaration(
                 &lowered.module.defs,
-                lowered.module.defs.lookup_nominal("Packet").unwrap(),
+                lowered
+                    .module
+                    .defs
+                    .lookup_path("Packet")
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![argument.clone()],
         );
         let cell = ResolvedTy::named_head(
             hew_types::TypeHead::of_declaration(
                 &lowered.module.defs,
-                lowered.module.defs.lookup_nominal("Cell").unwrap(),
+                lowered
+                    .module
+                    .defs
+                    .lookup_path("Cell")
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![argument.clone()],
         );
@@ -1187,7 +1197,12 @@ fn generic_instances_publish_exact_nested_and_indirect_shapes() {
     let chain = ResolvedTy::named_head(
         hew_types::TypeHead::of_declaration(
             &lowered.module.defs,
-            lowered.module.defs.lookup_nominal("Chain").unwrap(),
+            lowered
+                .module
+                .defs
+                .lookup_path("Chain")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
         ),
         vec![ResolvedTy::String],
     );

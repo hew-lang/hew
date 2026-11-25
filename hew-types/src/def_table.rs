@@ -1639,15 +1639,6 @@ impl DefTable {
         self.by_path.get(canonical_path).copied()
     }
 
-    /// The nominal identity at an established canonical path.
-    ///
-    /// TRANSITION(P2): deleted by A1 commit 2.
-    #[must_use]
-    pub fn lookup_nominal(&self, canonical_path: &str) -> Option<NominalId> {
-        self.lookup_path(canonical_path)
-            .map(NominalId::from_minted_declaration)
-    }
-
     /// The declaration kind established for a canonical path.
     ///
     /// Call resolution needs the kind, not only the identity: `Counter::helper`

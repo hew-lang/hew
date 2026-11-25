@@ -250,14 +250,14 @@ impl LowerCtx<'_> {
         let is_declaring_encoding_impl = builtin_impl_kind
             .is_some_and(BuiltinType::is_encoding_value)
             && matches!(&resolved_impl_self_ty, ResolvedTy::Named { head, .. } if {
-                self.defs.declarations().any(|(occurrence, declaration)| {
-                    self.defs.lookup_path(head.registry_key()) == Some(declaration)
-                        && occurrence.module().is_some_and(|module| {
-                            Some(self.defs.module_path(module))
-                                == self.current_module_name.as_deref()
-                                    .or_else(|| self.defs.root_module_path())
-                        })
-                })
+                head.declaration(&self.defs)
+                    .and_then(|id| self.defs.site(id.declaration()))
+                    .and_then(hew_types::DeclarationOccurrence::module)
+                    .is_some_and(|module| {
+                        Some(self.defs.module_path(module))
+                            == self.current_module_name.as_deref()
+                                .or_else(|| self.defs.root_module_path())
+                    })
             });
         // The checked embedded program owns executable builtin methods,
         // including generic receivers. Ordinary user impls never enter this

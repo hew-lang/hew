@@ -69,14 +69,16 @@ impl NodeVisitor for MustUse<'_> {
             let Some(Ty::Named { head, .. }) = self.ctx.resolved_type_at(expr_span) else {
                 continue;
             };
-            let name = head.registry_key();
-            if self
-                .ctx
-                .checker
-                .defs
-                .lookup_path(name)
-                .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(&declaration))
+            if head
+                .declaration(&self.ctx.checker.defs)
+                .is_some_and(|nominal| {
+                    self.ctx
+                        .checker
+                        .must_use_types
+                        .contains(&nominal.declaration())
+                })
             {
+                let name = head.spelling();
                 self.hits.push(Hit {
                     span: expr_span.clone(),
                     message: format!("discarded `{name}` machine step report"),

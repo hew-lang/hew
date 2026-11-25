@@ -14,7 +14,9 @@ const NAMED_WORKER_MODULE: &str = "services.workers";
 fn child_handle(defs: &hew_types::DefTable, name: &str) -> hew_types::ResolvedTy {
     hew_types::ResolvedTy::named_head(
         hew_types::TypeHead::Actor(hew_types::NominalHead::new(
-            defs.lookup_nominal(name).unwrap(),
+            defs.lookup_path(name)
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
             name,
         )),
         Vec::new(),

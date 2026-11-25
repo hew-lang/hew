@@ -2264,7 +2264,11 @@ fn main() {}"#,
                 ResolvedTy::named_head(
                     crate::TypeHead::of_declaration(
                         service.defs(),
-                        service.defs().lookup_nominal("Wrapper").unwrap(),
+                        service
+                            .defs()
+                            .lookup_path("Wrapper")
+                            .map(crate::NominalId::of_declaration)
+                            .unwrap(),
                     ),
                     vec![ty],
                 )
@@ -2273,7 +2277,11 @@ fn main() {}"#,
         let ty = wrap(ResolvedTy::named_head(
             crate::TypeHead::of_declaration(
                 service.defs(),
-                service.defs().lookup_nominal("Leaf").unwrap(),
+                service
+                    .defs()
+                    .lookup_path("Leaf")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         ));
@@ -2285,7 +2293,11 @@ fn main() {}"#,
         let missing = wrap(ResolvedTy::named_head(
             crate::TypeHead::of_declaration(
                 service.defs(),
-                service.defs().lookup_nominal("Missing").unwrap(),
+                service
+                    .defs()
+                    .lookup_path("Missing")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         ));
@@ -2314,7 +2326,11 @@ fn main() {}"#,
         let service = TypeFactService::new(output.type_fact_context, output.type_facts);
         let actor = ResolvedTy::named_head(
             crate::TypeHead::Actor(crate::NominalHead::new(
-                service.defs().lookup_nominal("Worker").unwrap(),
+                service
+                    .defs()
+                    .lookup_path("Worker")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
                 "Worker",
             )),
             vec![],
@@ -2322,7 +2338,11 @@ fn main() {}"#,
         let holder = ResolvedTy::named_head(
             crate::TypeHead::of_declaration(
                 service.defs(),
-                service.defs().lookup_nominal("Holder").unwrap(),
+                service
+                    .defs()
+                    .lookup_path("Holder")
+                    .map(crate::NominalId::of_declaration)
+                    .unwrap(),
             ),
             vec![],
         );
@@ -2362,7 +2382,11 @@ fn main() {}"#,
                     let ty = ResolvedTy::named_head(
                         crate::TypeHead::of_declaration(
                             service.defs(),
-                            service.defs().lookup_nominal(name).unwrap(),
+                            service
+                                .defs()
+                                .lookup_path(name)
+                                .map(crate::NominalId::of_declaration)
+                                .unwrap(),
                         ),
                         vec![],
                     );
@@ -2375,7 +2399,11 @@ fn main() {}"#,
                 let node = ResolvedTy::named_head(
                     crate::TypeHead::of_declaration(
                         service.defs(),
-                        service.defs().lookup_nominal("Node").unwrap(),
+                        service
+                            .defs()
+                            .lookup_path("Node")
+                            .map(crate::NominalId::of_declaration)
+                            .unwrap(),
                     ),
                     vec![],
                 );

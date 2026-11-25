@@ -63,7 +63,12 @@ fn struct_of_primitives_is_inferred_bitcopy() {
     let ty = ResolvedTy::named_head(
         hew_types::TypeHead::of_declaration(
             &output.module.defs,
-            output.module.defs.lookup_nominal("Point").unwrap(),
+            output
+                .module
+                .defs
+                .lookup_path("Point")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
         ),
         Vec::new(),
     );
@@ -107,7 +112,12 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
     let ty = ResolvedTy::named_head(
         hew_types::TypeHead::of_declaration(
             &output.module.defs,
-            output.module.defs.lookup_nominal("Sparse").unwrap(),
+            output
+                .module
+                .defs
+                .lookup_path("Sparse")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
         ),
         Vec::new(),
     );
@@ -219,7 +229,12 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
     let user_ty = ResolvedTy::named_head(
         hew_types::TypeHead::of_declaration(
             &output.module.defs,
-            output.module.defs.lookup_nominal("Stream").unwrap(),
+            output
+                .module
+                .defs
+                .lookup_path("Stream")
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
         ),
         Vec::new(),
     );
@@ -249,11 +264,21 @@ fn nested_generic_records_use_exact_checker_value_classes() {
     let mut facts = hew_types::TypeFactService::new(checked.type_fact_context, checked.type_facts);
     for name in ["Inner", "Outer"] {
         let primitive = ResolvedTy::named_head(
-            hew_types::TypeHead::of_declaration(&defs, defs.lookup_nominal(name).unwrap()),
+            hew_types::TypeHead::of_declaration(
+                &defs,
+                defs.lookup_path(name)
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
+            ),
             vec![ResolvedTy::I64],
         );
         let owned = ResolvedTy::named_head(
-            hew_types::TypeHead::of_declaration(&defs, defs.lookup_nominal(name).unwrap()),
+            hew_types::TypeHead::of_declaration(
+                &defs,
+                defs.lookup_path(name)
+                    .map(hew_types::NominalId::of_declaration)
+                    .unwrap(),
+            ),
             vec![ResolvedTy::String],
         );
         assert_eq!(

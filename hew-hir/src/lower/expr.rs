@@ -1415,14 +1415,10 @@ impl LowerCtx<'_> {
                     {
                         let checker_ty = self.checker_expr_ty_if_present(&span);
                         if let Some(ResolvedTy::Named { head, .. }) = checker_ty.as_ref() {
-                            if self
-                                .defs
-                                .lookup_path(head.registry_key())
-                                .is_some_and(|id| {
-                                    self.defs.kind(id)
-                                        == hew_types::DeclarationKind::MachineEventType
-                                })
-                            {
+                            if head.declaration(&self.defs).is_some_and(|id| {
+                                self.defs.kind(id.declaration())
+                                    == hew_types::DeclarationKind::MachineEventType
+                            }) {
                                 if let Some((type_name, variant_idx, HirVariantKind::Unit)) = self
                                     .lookup_variant_ctor(field.0.name.as_str(), checker_ty.as_ref())
                                 {

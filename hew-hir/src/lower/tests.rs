@@ -181,7 +181,11 @@ fn source_annotations_keep_user_nominals_with_builtin_spellings() {
             "{name}: {:?}",
             lowered.diagnostics
         );
-        let declaration = output.defs.lookup_nominal(name).unwrap();
+        let declaration = output
+            .defs
+            .lookup_path(name)
+            .map(hew_types::NominalId::of_declaration)
+            .unwrap();
         let function = function_named(&lowered, "keep");
         for ty in [&function.params[0].ty, &function.return_ty] {
             assert!(
@@ -3269,7 +3273,9 @@ fn holder_conn_field_ty(lowered: &LowerOutput, holder_name: &str) -> ResolvedTy 
 fn localpid_of(defs: &hew_types::DefTable, qualified_actor_name: &str) -> ResolvedTy {
     ResolvedTy::named_head(
         hew_types::TypeHead::Actor(hew_types::NominalHead::new(
-            defs.lookup_nominal(qualified_actor_name).unwrap(),
+            defs.lookup_path(qualified_actor_name)
+                .map(hew_types::NominalId::of_declaration)
+                .unwrap(),
             qualified_actor_name,
         )),
         Vec::new(),

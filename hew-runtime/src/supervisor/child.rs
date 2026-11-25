@@ -312,23 +312,39 @@ fn child_get_from_supervisor(
 ) -> ChildLookupResult {
     // Fast-path: supervisor-level shutdown check (no lock required — atomics).
     // SAFETY: caller keeps `sup` live for these atomic reads.
-    // SAFETY: caller keeps the allocation live through this atomic re-check.
     if unsafe {
         (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
     } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
-    // Critical section: read the slot pointer AND the per-slot discriminator
-    // fields under the same lock so the (pointer, CB-state, backoff-timer)
-    // triple is consistent with one lifecycle state from the FSM in §2.2.
-    //
-    // The default scheduler runs one worker per core, so readers here race the
-    // restart machinery (store_child_slot / restart_child_from_spec) on other
-    // workers; `roster` is the exclusion that keeps the discriminator
-    // triple coherent. Future optimization: migrate to AtomicPtr<HewActor> +
-    // atomic discriminator fields so readers can avoid the mutex on the common
-    // Live path.
+    // Lock-free fast path on the common `Live` slot case. Any null/vacant slot,
+    // concurrent slot transition, or invalid token falls through to the
+    // `roster`-locked slow path for full FSM classification.
+    // SAFETY: caller keeps `sup` live through this atomic lookup.
+    if let Some(live) = unsafe { &(*sup).live_slots }.try_load(key as usize) {
+        // Re-check shutdown atomics after observing the live snapshot.
+        // SAFETY: caller keeps `sup` live for these atomic reads.
+        if unsafe {
+            (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        } {
+            return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+        }
+        match handle_kind {
+            ChildHandleKind::RawPointer => return ChildLookupResult::live(live.actor_ptr),
+            ChildHandleKind::StableLocalPid => {
+                if live.local_pid_id
+                    != usize::from(crate::lifetime::local_handles::HewLocalPidId::INVALID)
+                {
+                    return ChildLookupResult::live(live.local_pid_id as *mut HewActor);
+                }
+            }
+        }
+    }
+
+    // Slow path: read the slot pointer AND the per-slot discriminator fields
+    // under `roster` so the (pointer, CB-state, backoff-timer) triple is
+    // consistent with one lifecycle state from the FSM in §2.2.
     // SAFETY: caller keeps `sup` live through the classified roster lookup.
     let guard = unsafe { &(*sup).roster }.lock_or_recover();
     // SAFETY: the guard protects this scoped child/spec access.
@@ -599,6 +615,13 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         s.child_specs.push(internal_spec);
         s.children.push(ptr::null_mut());
         s.child_count += 1;
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe {
+            (*sup).live_slots.ensure_slot(i);
+            (*sup)
+                .child_count_atomic
+                .store(s.child_count, Ordering::Release);
+        }
         debug_assert_eq!(s.children.len(), s.child_specs.len());
         // SAFETY: caller keeps `sup` live; running is atomic and independent of
         // the mutex-protected roster transaction.
@@ -668,6 +691,16 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
         let child = s.children.swap_remove(idx);
         let removed_spec = s.child_specs.swap_remove(idx);
         s.child_count -= 1;
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe {
+            (*sup)
+                .child_count_atomic
+                .store(s.child_count, Ordering::Release);
+            (*sup).live_slots.publish(previous_last, ptr::null_mut());
+            if idx < s.child_count {
+                (*sup).live_slots.publish(idx, s.children[idx]);
+            }
+        }
 
         // Static-backed pool membership names child roster indices. Apply the
         // same swap-remove mapping atomically: remove the retired membership,

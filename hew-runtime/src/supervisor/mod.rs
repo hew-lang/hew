@@ -1144,6 +1144,213 @@ pub(crate) struct SupervisorRoster {
 unsafe impl Send for SupervisorRoster {}
 
 // ---------------------------------------------------------------------------
+// Lock-free live child slot mirror
+// ---------------------------------------------------------------------------
+
+/// Base slot count for chunk 0 of [`LiveChildSlotTable`]. Chunk `k` holds
+/// `LIVE_SLOT_CHUNK_BASE << k` slots (16, 32, 64, ...).
+const LIVE_SLOT_CHUNK_BASE: usize = 16;
+/// Number of power-of-2 chunks (covers > 16M children with zero reallocation).
+const LIVE_SLOT_CHUNK_COUNT: usize = 20;
+
+/// Tear-free snapshot of a live child slot read without acquiring `roster`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LiveChildSnapshot {
+    pub(super) actor_ptr: *mut HewActor,
+    pub(super) actor_id: u64,
+    pub(super) spawn_serial: u64,
+    pub(super) local_pid_id: usize,
+}
+
+/// One seqlock-protected slot mirroring `roster.children[index]`.
+///
+/// All writers hold `HewSupervisor::roster`, so writers are mutually exclusive.
+/// Readers load `seq`, copy the four atomic fields, and re-verify `seq`.
+struct LiveChildSlot {
+    seq: std::sync::atomic::AtomicU64,
+    actor_ptr: std::sync::atomic::AtomicPtr<HewActor>,
+    actor_id: std::sync::atomic::AtomicU64,
+    spawn_serial: std::sync::atomic::AtomicU64,
+    local_pid_id: std::sync::atomic::AtomicUsize,
+}
+
+impl LiveChildSlot {
+    const fn empty() -> Self {
+        Self {
+            seq: std::sync::atomic::AtomicU64::new(0),
+            actor_ptr: std::sync::atomic::AtomicPtr::new(ptr::null_mut()),
+            actor_id: std::sync::atomic::AtomicU64::new(0),
+            spawn_serial: std::sync::atomic::AtomicU64::new(0),
+            local_pid_id: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn publish(&self, actor: *mut HewActor) {
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+        if actor.is_null() {
+            self.actor_ptr.store(ptr::null_mut(), Ordering::Relaxed);
+            self.actor_id.store(0, Ordering::Relaxed);
+            self.spawn_serial.store(0, Ordering::Relaxed);
+            self.local_pid_id.store(
+                usize::from(crate::lifetime::local_handles::HewLocalPidId::INVALID),
+                Ordering::Relaxed,
+            );
+        } else {
+            // SAFETY: caller holds `roster`, which owns this live actor.
+            let (id, serial, local_pid) = unsafe {
+                (
+                    (*actor).id,
+                    (*actor).spawn_serial,
+                    usize::from((*actor).local_pid_id),
+                )
+            };
+            self.actor_ptr.store(actor, Ordering::Relaxed);
+            self.actor_id.store(id, Ordering::Relaxed);
+            self.spawn_serial.store(serial, Ordering::Relaxed);
+            self.local_pid_id.store(local_pid, Ordering::Relaxed);
+        }
+        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+    }
+
+    #[inline]
+    fn try_load(&self) -> Option<LiveChildSnapshot> {
+        let s1 = self.seq.load(Ordering::Acquire);
+        if s1 & 1 != 0 {
+            return None;
+        }
+        let actor_ptr = self.actor_ptr.load(Ordering::Relaxed);
+        let actor_id = self.actor_id.load(Ordering::Relaxed);
+        let spawn_serial = self.spawn_serial.load(Ordering::Relaxed);
+        let local_pid_id = self.local_pid_id.load(Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Acquire);
+        let s2 = self.seq.load(Ordering::Relaxed);
+        if s1 != s2 || actor_ptr.is_null() {
+            return None;
+        }
+        Some(LiveChildSnapshot {
+            actor_ptr,
+            actor_id,
+            spawn_serial,
+            local_pid_id,
+        })
+    }
+}
+
+/// Power-of-2 segmented table of [`LiveChildSlot`]s.
+///
+/// Chunks are allocated lazily under `roster` and never reallocated or freed
+/// until [`HewSupervisor`] is dropped (after `close_supervisor_access` drains
+/// all supervisor pins), so lock-free readers cannot race reclamation.
+pub(super) struct LiveChildSlotTable {
+    chunks: [std::sync::atomic::AtomicPtr<LiveChildSlot>; LIVE_SLOT_CHUNK_COUNT],
+}
+
+impl LiveChildSlotTable {
+    pub(super) fn new() -> Self {
+        Self {
+            chunks: std::array::from_fn(|_| std::sync::atomic::AtomicPtr::new(ptr::null_mut())),
+        }
+    }
+
+    #[inline]
+    fn locate(index: usize) -> Option<(usize, usize)> {
+        let shifted = index.checked_add(LIVE_SLOT_CHUNK_BASE)?;
+        let chunk_idx = (usize::BITS - 1 - shifted.leading_zeros()) as usize - 4;
+        if chunk_idx >= LIVE_SLOT_CHUNK_COUNT {
+            return None;
+        }
+        let offset = shifted - (LIVE_SLOT_CHUNK_BASE << chunk_idx);
+        Some((chunk_idx, offset))
+    }
+
+    #[inline]
+    const fn chunk_len(chunk_idx: usize) -> usize {
+        LIVE_SLOT_CHUNK_BASE << chunk_idx
+    }
+
+    fn alloc_chunk(chunk_idx: usize) -> *mut LiveChildSlot {
+        let len = Self::chunk_len(chunk_idx);
+        let mut vec = Vec::with_capacity(len);
+        for _ in 0..len {
+            vec.push(LiveChildSlot::empty());
+        }
+        Box::into_raw(vec.into_boxed_slice()).cast::<LiveChildSlot>()
+    }
+
+    /// Ensure the chunk backing `index` is allocated. Caller must hold `roster`.
+    pub(super) fn ensure_slot(&self, index: usize) {
+        let Some((chunk_idx, _)) = Self::locate(index) else {
+            return;
+        };
+        if self.chunks[chunk_idx].load(Ordering::Relaxed).is_null() {
+            self.chunks[chunk_idx].store(Self::alloc_chunk(chunk_idx), Ordering::Release);
+        }
+    }
+
+    /// Ensure chunks covering `0..count` are allocated. Caller must hold `roster`.
+    pub(super) fn ensure_capacity(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let Some((max_chunk, _)) = Self::locate(count - 1) else {
+            return;
+        };
+        for chunk_idx in 0..=max_chunk {
+            if self.chunks[chunk_idx].load(Ordering::Relaxed).is_null() {
+                self.chunks[chunk_idx].store(Self::alloc_chunk(chunk_idx), Ordering::Release);
+            }
+        }
+    }
+
+    /// Publish `actor` (or null) into slot `index`. Caller must hold `roster`.
+    pub(super) fn publish(&self, index: usize, actor: *mut HewActor) {
+        let Some((chunk_idx, offset)) = Self::locate(index) else {
+            return;
+        };
+        self.ensure_slot(index);
+        let chunk = self.chunks[chunk_idx].load(Ordering::Relaxed);
+        if chunk.is_null() {
+            return;
+        }
+        // SAFETY: `chunk` points to an immutable-address allocation of
+        // `chunk_len(chunk_idx)` slots owned by this table until Drop, and
+        // `offset < chunk_len(chunk_idx)`.
+        unsafe { &*chunk.add(offset) }.publish(actor);
+    }
+
+    #[inline]
+    pub(super) fn try_load(&self, index: usize) -> Option<LiveChildSnapshot> {
+        let (chunk_idx, offset) = Self::locate(index)?;
+        let chunk = self.chunks[chunk_idx].load(Ordering::Acquire);
+        if chunk.is_null() {
+            return None;
+        }
+        // SAFETY: `chunk` was published with Release and remains live until
+        // `HewSupervisor` is dropped after all supervisor pins drain.
+        unsafe { &*chunk.add(offset) }.try_load()
+    }
+}
+
+impl Drop for LiveChildSlotTable {
+    fn drop(&mut self) {
+        for (chunk_idx, slot) in self.chunks.iter_mut().enumerate() {
+            let raw = *slot.get_mut();
+            if !raw.is_null() {
+                let len = Self::chunk_len(chunk_idx);
+                // SAFETY: `raw` was created via `Box::into_raw(vec.into_boxed_slice())`
+                // with exact length `len` and no readers remain during Drop.
+                unsafe {
+                    drop(Box::from_raw(ptr::slice_from_raw_parts_mut(raw, len)));
+                }
+                *slot.get_mut() = ptr::null_mut();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Supervisor struct
 // ---------------------------------------------------------------------------
 
@@ -1181,6 +1388,12 @@ pub struct HewSupervisor {
     /// Any raw template read is converted to an owned restart snapshot while
     /// this lock is held; no spec-owned pointer crosses the guard boundary.
     roster: Mutex<SupervisorRoster>,
+    /// Lock-free mirror of live child slots, updated under `roster` so hot
+    /// `Live` lookups and stable-role resolution avoid acquiring `roster`.
+    live_slots: LiveChildSlotTable,
+    /// Atomic mirror of `roster.child_count`, updated under `roster` so
+    /// lock-free pool-length reads avoid acquiring `roster`.
+    child_count_atomic: std::sync::atomic::AtomicUsize,
 
     /// Parent supervisor (set by `hew_supervisor_add_child_supervisor`).
     parent: *mut HewSupervisor,
@@ -2522,6 +2735,10 @@ fn wake_restart_waiters(sup: *mut HewSupervisor) {
 
 fn load_child_slot(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
     // SAFETY: callers keep `sup` live for this synchronous lookup.
+    if let Some(live) = unsafe { &(*sup).live_slots }.try_load(index) {
+        return live.actor_ptr;
+    }
+    // SAFETY: callers keep `sup` live for this synchronous lookup.
     let roster = unsafe { &(*sup).roster }.lock_or_recover();
     roster
         .children
@@ -2535,6 +2752,8 @@ fn store_child_slot(sup: *mut HewSupervisor, index: usize, child: *mut HewActor)
     let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = child;
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe { &(*sup).live_slots }.publish(index, child);
     }
 }
 
@@ -2546,6 +2765,8 @@ fn take_child_slot(sup: *mut HewSupervisor, index: usize) -> *mut HewActor {
     };
     let child = *slot;
     *slot = ptr::null_mut();
+    // SAFETY: `roster` is held and `sup` is live.
+    unsafe { &(*sup).live_slots }.publish(index, ptr::null_mut());
     child
 }
 
@@ -2564,6 +2785,8 @@ fn take_child_slot_by_identity(sup: *mut HewSupervisor, identity: u64) -> *mut H
     };
     let child = roster.children[index];
     roster.children[index] = ptr::null_mut();
+    // SAFETY: `roster` is held and `sup` is live.
+    unsafe { &(*sup).live_slots }.publish(index, ptr::null_mut());
     child
 }
 
@@ -2585,6 +2808,8 @@ fn take_child_slot_for_event(
     }
     let identity = roster.child_specs.get(index)?.identity;
     roster.children[index] = ptr::null_mut();
+    // SAFETY: `roster` is held and `sup` is live.
+    unsafe { &(*sup).live_slots }.publish(index, ptr::null_mut());
     Some((child, identity))
 }
 

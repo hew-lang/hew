@@ -335,6 +335,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
             roster.native_code = Some(op.code.clone());
             if valid_order {
                 pool::register_native_roster(
+                    &*op.supervisor,
                     &mut roster,
                     &op.children,
                     &declarations,

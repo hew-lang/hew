@@ -807,6 +807,8 @@ pub(super) fn fail_restart_snapshot(
     // SAFETY: the same roster guard protects child-slot mutation.
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = ptr::null_mut();
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe { &(*sup).live_slots }.publish(index, ptr::null_mut());
     }
 }
 
@@ -860,6 +862,8 @@ pub(super) fn publish_restart_snapshot(
     // SAFETY: the same roster guard protects child-slot mutation.
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = child;
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe { &(*sup).live_slots }.publish(index, child);
     }
     true
 }

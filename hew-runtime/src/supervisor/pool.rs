@@ -528,6 +528,7 @@ fn register_native_child(
 /// Register declaration slots and project the compiler's startup permutation
 /// onto their stable runtime identities. No callbacks run under this lock.
 pub(super) fn register_native_roster(
+    sup: &HewSupervisor,
     roster: &mut SupervisorRoster,
     children: &[HewNativeChildSpec],
     declarations: &[(usize, &HewNativeChildSpec)],
@@ -552,6 +553,9 @@ pub(super) fn register_native_roster(
         .iter()
         .flat_map(|(declaration, _)| identities[*declaration].iter().copied())
         .collect();
+    sup.live_slots.ensure_capacity(roster.child_count);
+    sup.child_count_atomic
+        .store(roster.child_count, Ordering::Release);
     Some(slots)
 }
 
@@ -632,6 +636,8 @@ pub(super) unsafe fn adopt_native_child(
         }
     }
     roster.children[index] = actor;
+    // SAFETY: `roster` is held and `sup` is live.
+    unsafe { &(*sup).live_slots }.publish(index, actor);
     true
 }
 
@@ -648,12 +654,11 @@ pub unsafe extern "C" fn hew_supervisor_native_pool_count(
         // SAFETY: the pin retains this supervisor throughout the roster read.
         let supervisor = unsafe { &*pin.supervisor() };
         if supervisor.strategy == STRATEGY_SIMPLE_ONE_FOR_ONE {
-            let roster = supervisor.roster.lock_or_recover();
             #[expect(
                 clippy::cast_possible_wrap,
                 reason = "native pool construction bounds the roster count by i32::MAX"
             )]
-            return roster.child_count as i64;
+            return supervisor.child_count_atomic.load(Ordering::Acquire) as i64;
         }
     }
     if !fault.is_null() {

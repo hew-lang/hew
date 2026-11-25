@@ -1940,7 +1940,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         losses: std::array::from_fn(|_| AtomicU64::new(0)),
-        use_slow_path: needs_slow_path(policy),
+        use_slow_path: cap > 0 && needs_slow_path(policy),
     }))
 }
 
@@ -4153,6 +4153,39 @@ mod tests {
             let mb = hew_mailbox_new();
             assert_eq!(hew_mailbox_has_messages(mb), 0);
             hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn unbounded_mailbox_with_policy_uses_lock_free_fast_path() {
+        // SAFETY: test owns each mailbox exclusively.
+        unsafe {
+            for policy in [
+                HewOverflowPolicy::Block,
+                HewOverflowPolicy::DropNew,
+                HewOverflowPolicy::DropOld,
+                HewOverflowPolicy::Fail,
+                HewOverflowPolicy::Coalesce,
+            ] {
+                let mb = hew_mailbox_new_with_policy(0, policy);
+                assert!(!mb.is_null());
+                assert_eq!((*mb).capacity, -1);
+                assert!(!(*mb).use_slow_path);
+                let val: i32 = 99;
+                let rc =
+                    hew_mailbox_send(mb, 7, (&raw const val).cast_mut().cast(), size_of::<i32>());
+                assert_eq!(rc, 0);
+                let node = hew_mailbox_try_recv(mb);
+                assert!(!node.is_null());
+                assert_eq!(*((*node).data.cast::<i32>()), 99);
+                hew_msg_node_free(node);
+                hew_mailbox_free(mb);
+            }
+
+            let bounded_block = hew_mailbox_new_with_policy(2, HewOverflowPolicy::Block);
+            assert!(!bounded_block.is_null());
+            assert!((*bounded_block).use_slow_path);
+            hew_mailbox_free(bounded_block);
         }
     }
 

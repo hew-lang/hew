@@ -131,7 +131,9 @@ use environment::observe;
 use environment::timer_periodic;
 #[cfg(any(feature = "arena", feature = "vector"))]
 use environment::trap_code;
-use environment::{clock, coro_state, execution_context, fault, lifetime, resume, util};
+use environment::{
+    clock, coro_state, execution_context, fault, lifetime, platform, resume, tracing, util,
+};
 #[cfg(feature = "executor")]
 use executor::{actor, cont, internal};
 #[cfg(feature = "executor")]

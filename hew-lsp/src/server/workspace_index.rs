@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
 use hew_analysis::{OffsetSpan, RenameError};
-use hew_parser::ast::{ImportDecl, ImportSpec, Span};
+use hew_parser::ast::{ImportDecl, ImportSpec};
 use hew_parser::ParseResult;
 use tower_lsp_server::ls_types::{FileChangeType, FileEvent, Range, Uri as Url};
 
@@ -111,14 +111,25 @@ enum FileOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct IndexedNamedImport {
-    target_key: Url,
-    imported_uri: Url,
+struct NamedImport {
     imported_name: String,
     visible_name: String,
     import_name_span: OffsetSpan,
     visible_name_span: OffsetSpan,
     has_alias: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RawNamedImport {
+    decl: ImportDecl,
+    names: Vec<NamedImport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedNamedImport {
+    target_key: Url,
+    imported_uri: Url,
+    name: NamedImport,
 }
 
 #[derive(Debug, Clone)]
@@ -132,9 +143,9 @@ struct IndexedFile {
     /// Resolved physical path on disk, if file-backed.
     path: Option<PathBuf>,
     origin: FileOrigin,
-    /// Raw imports retained so newly opened unsaved buffers can resolve
-    /// previously unresolved import edges without re-parsing the file.
-    raw_imports: Vec<(ImportDecl, Span)>,
+    /// Raw imports retained so changes to module availability can refresh
+    /// import edges without reading or re-parsing the file.
+    raw_imports: Vec<RawNamedImport>,
     has_unresolved_imports: bool,
     resolved_imports: Vec<IndexedNamedImport>,
     definitions: HashMap<String, Range>,
@@ -274,7 +285,7 @@ impl WorkspaceIndex {
                 state.stats.buffer_parses += 1;
             }
             if !was_present {
-                state.re_resolve_unresolved_imports(open_uris);
+                state.re_resolve_imports(None, open_uris);
             }
         }
     }
@@ -351,7 +362,7 @@ impl WorkspaceIndex {
                 }
                 state.insert_file(file);
             }
-            state.re_resolve_unresolved_imports(&open_uris);
+            state.re_resolve_imports(None, &open_uris);
         }
     }
 
@@ -409,7 +420,7 @@ impl WorkspaceIndex {
                             }
                             state.record_disk_key_under_matching_roots(&key, &path);
                             if !was_present {
-                                state.re_resolve_unresolved_imports(open_uris);
+                                state.re_resolve_imports(None, open_uris);
                             }
                         }
                         return;
@@ -419,10 +430,7 @@ impl WorkspaceIndex {
         }
 
         if let Ok(mut state) = self.state.write() {
-            state.remove_file(&key);
-            for root in state.roots.values_mut() {
-                root.disk_keys.remove(&key);
-            }
+            state.remove_workspace_file(&key, open_uris);
         }
     }
 
@@ -441,10 +449,7 @@ impl WorkspaceIndex {
             }
             if event.typ == FileChangeType::DELETED {
                 if let Ok(mut state) = self.state.write() {
-                    state.remove_file(&key);
-                    for root in state.roots.values_mut() {
-                        root.disk_keys.remove(&key);
-                    }
+                    state.remove_workspace_file(&key, open_uris);
                 }
                 continue;
             }
@@ -481,15 +486,12 @@ impl WorkspaceIndex {
         let key = source_file_key(uri);
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             if let Ok(mut state) = self.state.write() {
-                if state
+                if !state
                     .files
                     .get(&key)
-                    .is_some_and(|file| matches!(file.origin, FileOrigin::Disk { .. }))
+                    .is_some_and(|file| matches!(file.origin, FileOrigin::Open { .. }))
                 {
-                    state.remove_file(&key);
-                    for root in state.roots.values_mut() {
-                        root.disk_keys.remove(&key);
-                    }
+                    state.remove_workspace_file(&key, open_uris);
                 }
             }
             return;
@@ -550,7 +552,7 @@ impl WorkspaceIndex {
             }
             state.record_disk_key_under_matching_roots(&key, &path);
             if !was_present {
-                state.re_resolve_unresolved_imports(open_uris);
+                state.re_resolve_imports(None, open_uris);
             }
         }
     }
@@ -672,7 +674,9 @@ impl WorkspaceIndex {
                 continue;
             }
             let imports_nonaliased = file.resolved_imports.iter().any(|imp| {
-                imp.target_key == def_key && imp.imported_name == renamed_name && !imp.has_alias
+                imp.target_key == def_key
+                    && imp.name.imported_name == renamed_name
+                    && !imp.name.has_alias
             });
             if !imports_nonaliased {
                 continue;
@@ -727,15 +731,15 @@ impl WorkspaceIndex {
                 continue;
             }
             for imp in &file.resolved_imports {
-                if imp.target_key == def_key && imp.imported_name == renamed_name {
+                if imp.target_key == def_key && imp.name.imported_name == renamed_name {
                     matches.push(NamedImportMatch {
                         importer_uri: file.uri.clone(),
                         imported_uri: imp.imported_uri.clone(),
-                        imported_name: imp.imported_name.clone(),
-                        visible_name: imp.visible_name.clone(),
-                        import_name_span: imp.import_name_span,
-                        visible_name_span: imp.visible_name_span,
-                        has_alias: imp.has_alias,
+                        imported_name: imp.name.imported_name.clone(),
+                        visible_name: imp.name.visible_name.clone(),
+                        import_name_span: imp.name.import_name_span,
+                        visible_name_span: imp.name.visible_name_span,
+                        has_alias: imp.name.has_alias,
                     });
                 }
             }
@@ -819,31 +823,47 @@ impl IndexState {
         }
     }
 
-    /// Re-resolve import targets for files that previously had unresolved
-    /// imports (for example, when an unsaved imported buffer is opened later).
-    fn re_resolve_unresolved_imports(&mut self, open_uris: &[Url]) {
+    fn remove_workspace_file(&mut self, key: &Url, open_uris: &[Url]) {
+        let importers = self.remove_files_and_collect_importers(std::slice::from_ref(key));
+        for root in self.roots.values_mut() {
+            root.disk_keys.remove(key);
+        }
+        self.re_resolve_imports(Some(&importers), open_uris);
+    }
+
+    fn remove_files_and_collect_importers(&mut self, keys: &[Url]) -> HashSet<Url> {
+        let mut affected_importers = HashSet::new();
+        for key in keys {
+            if let Some(importers) = self.importers.get(key) {
+                affected_importers.extend(importers.iter().cloned());
+            }
+            self.remove_file(key);
+        }
+        affected_importers
+    }
+
+    /// A new module can change a resolved import as well as satisfy a missing
+    /// one, so additions refresh all named importers. Removals supply their
+    /// previous reverse edges.
+    fn re_resolve_imports(&mut self, affected_importers: Option<&HashSet<Url>>, open_uris: &[Url]) {
         let keys_to_refresh: Vec<Url> = self
             .files
             .values()
-            .filter(|file| file.has_unresolved_imports)
+            .filter(|file| {
+                !file.raw_imports.is_empty()
+                    && affected_importers.is_none_or(|affected| {
+                        // Removing a competing candidate can resolve ambiguity.
+                        file.has_unresolved_imports || affected.contains(&file.key)
+                    })
+            })
             .map(|file| file.key.clone())
             .collect();
         for key in keys_to_refresh {
             let Some(existing) = self.files.get(&key) else {
                 continue;
             };
-            let source_opt = match &existing.origin {
-                FileOrigin::Open { source, .. } => Some(source.to_string()),
-                FileOrigin::Disk { .. } => existing
-                    .path
-                    .as_deref()
-                    .and_then(|path| std::fs::read_to_string(path).ok()),
-            };
-            let Some(source) = source_opt else {
-                continue;
-            };
             let (resolved, has_unresolved) =
-                resolve_named_imports(&existing.uri, &source, &existing.raw_imports, open_uris);
+                resolve_named_imports(&existing.uri, &existing.raw_imports, open_uris);
             if resolved == existing.resolved_imports
                 && has_unresolved == existing.has_unresolved_imports
             {
@@ -892,11 +912,13 @@ impl IndexState {
         strict_io: bool,
         open_uris: &[Url],
     ) -> Result<(), RenameError> {
+        #[cfg(test)]
         let is_initial = !self.roots.contains_key(canonical_root);
         let discovered = discover_hew_files(root, strict_io)?;
 
         let mut current_disk_keys = HashSet::with_capacity(discovered.len());
         let mut to_upsert: Vec<IndexedFile> = Vec::new();
+        let mut removed_keys = Vec::new();
 
         for (spelled_path, meta) in discovered {
             let Some(uri) = Url::from_checked_file_path(&spelled_path) else {
@@ -914,7 +936,7 @@ impl IndexState {
                             return Err(RenameError::from((spelled_path, err)));
                         }
                         Err(_) => {
-                            self.remove_file(&key);
+                            removed_keys.push(key);
                             continue;
                         }
                     };
@@ -950,21 +972,20 @@ impl IndexState {
 
         // Remove disk entries that disappeared from disk (never touching open buffers).
         if let Some(prev_root) = self.roots.get(canonical_root) {
-            let removed_keys: Vec<Url> = prev_root
-                .disk_keys
-                .difference(&current_disk_keys)
-                .cloned()
-                .collect();
-            for key in removed_keys {
-                if self
-                    .files
-                    .get(&key)
-                    .is_some_and(|file| matches!(file.origin, FileOrigin::Disk { .. }))
-                {
-                    self.remove_file(&key);
-                }
-            }
+            removed_keys.extend(
+                prev_root
+                    .disk_keys
+                    .difference(&current_disk_keys)
+                    .filter(|key| {
+                        self.files
+                            .get(*key)
+                            .is_some_and(|file| matches!(file.origin, FileOrigin::Disk { .. }))
+                    })
+                    .cloned(),
+            );
         }
+
+        let affected_importers = self.remove_files_and_collect_importers(&removed_keys);
 
         #[cfg(test)]
         {
@@ -975,9 +996,7 @@ impl IndexState {
                 self.stats.staleness_checks += 1;
             }
         }
-        #[cfg(not(test))]
-        let _ = is_initial;
-
+        let had_indexed_files = !self.files.is_empty();
         let mut added_new_file = false;
         for file in to_upsert {
             if !self.files.contains_key(&file.key) {
@@ -992,8 +1011,10 @@ impl IndexState {
                 disk_keys: current_disk_keys,
             },
         );
-        if added_new_file {
-            self.re_resolve_unresolved_imports(open_uris);
+        if added_new_file && had_indexed_files {
+            self.re_resolve_imports(None, open_uris);
+        } else if !removed_keys.is_empty() {
+            self.re_resolve_imports(Some(&affected_importers), open_uris);
         }
         Ok(())
     }
@@ -1132,9 +1153,9 @@ fn build_indexed_file(
     }
 
     let identifiers = extract_identifiers(source, &definitions);
-    let raw_imports = collect_import_items(parse_result);
+    let raw_imports = collect_raw_named_imports(source, parse_result);
     let (resolved_imports, has_unresolved_imports) =
-        resolve_named_imports(uri, source, &raw_imports, open_uris);
+        resolve_named_imports(uri, &raw_imports, open_uris);
 
     IndexedFile {
         key,
@@ -1150,42 +1171,63 @@ fn build_indexed_file(
     }
 }
 
+fn collect_raw_named_imports(source: &str, parse_result: &ParseResult) -> Vec<RawNamedImport> {
+    collect_import_items(parse_result)
+        .into_iter()
+        .filter_map(|(decl, span)| {
+            let Some(ImportSpec::Names(names)) = &decl.spec else {
+                return None;
+            };
+            let names = names
+                .iter()
+                .filter_map(|name| {
+                    let (import_name_span, visible_name_span) =
+                        find_named_import_spans(source, &span, name)?;
+                    Some(NamedImport {
+                        imported_name: name.name.to_string(),
+                        visible_name: name.alias.unwrap_or(name.name).to_string(),
+                        import_name_span,
+                        visible_name_span,
+                        has_alias: name.alias.is_some(),
+                    })
+                })
+                .collect();
+            Some(RawNamedImport { decl, names })
+        })
+        .collect()
+}
+
 fn resolve_named_imports(
     file_uri: &Url,
-    source: &str,
-    raw_imports: &[(ImportDecl, Span)],
+    raw_imports: &[RawNamedImport],
     open_uris: &[Url],
 ) -> (Vec<IndexedNamedImport>, bool) {
     let mut resolved = Vec::new();
     let mut has_unresolved = false;
 
-    for (import, item_span) in raw_imports {
-        let Some(ImportSpec::Names(names)) = &import.spec else {
-            continue;
-        };
-        let Some(resolved_uri) = compute_import_uri(file_uri, import, open_uris.iter().cloned())
+    for raw in raw_imports {
+        let Some(resolved_uri) = compute_import_uri(file_uri, &raw.decl, open_uris.iter().cloned())
         else {
             has_unresolved = true;
             continue;
         };
         let target_key = source_file_key(&resolved_uri);
-        for import_name in names {
-            let Some((import_name_span, visible_name_span)) =
-                find_named_import_spans(source, item_span, import_name)
-            else {
-                continue;
-            };
-            let visible_name = import_name.alias.unwrap_or(import_name.name);
-            resolved.push(IndexedNamedImport {
-                target_key: target_key.clone(),
-                imported_uri: resolved_uri.clone(),
-                imported_name: import_name.name.to_string(),
-                visible_name: visible_name.to_string(),
-                import_name_span,
-                visible_name_span,
-                has_alias: import_name.alias.is_some(),
-            });
+        if raw.decl.file_path.is_some()
+            && !open_uris
+                .iter()
+                .any(|uri| source_file_key(uri) == target_key)
+            && !resolved_uri
+                .to_checked_file_path()
+                .is_some_and(|path| path.is_file())
+        {
+            has_unresolved = true;
+            continue;
         }
+        resolved.extend(raw.names.iter().cloned().map(|name| IndexedNamedImport {
+            target_key: target_key.clone(),
+            imported_uri: resolved_uri.clone(),
+            name,
+        }));
     }
 
     (resolved, has_unresolved)
@@ -1467,6 +1509,133 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unopened_named_importer_follows_module_move() {
+        for update in ["watched", "close", "refresh", "sync"] {
+            let root = make_temp_dir(update);
+            let (flat, flat_uri) = write_file(&root, "util.hew", "pub fn greet() -> i64 { 1 }");
+            let (_, importer_uri) = write_file(
+                &root,
+                "importer.hew",
+                "import util.{ greet };\nfn run() -> i64 { greet() }\n",
+            );
+            write_file(
+                &root,
+                "util/hew.toml",
+                "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+            );
+            let nested = root.join("util/util.hew");
+            let nested_uri = Url::from_checked_file_path(&nested).unwrap();
+            let index = WorkspaceIndex::new();
+            let open = HashSet::new();
+            assert_eq!(
+                index
+                    .unopened_named_importers(&root, &flat_uri, "greet", &open)
+                    .unwrap()
+                    .len(),
+                1,
+                "{update}"
+            );
+            if update == "close" {
+                index.upsert_open_document(
+                    &flat_uri,
+                    "pub fn greet() -> i64 { 1 }",
+                    std::slice::from_ref(&flat_uri),
+                );
+            }
+
+            std::fs::rename(flat, nested).expect("move module");
+            match update {
+                "watched" => index.handle_watched_files(
+                    &[FileEvent {
+                        uri: flat_uri.clone(),
+                        typ: FileChangeType::DELETED,
+                    }],
+                    &[],
+                ),
+                "close" => index.close_document(&flat_uri, &[]),
+                "refresh" => index.refresh_single_disk_uri(&flat_uri, &[]),
+                "sync" => {}
+                _ => unreachable!(),
+            }
+            if update != "sync" {
+                // Check the incremental update before a query can discover the new file.
+                let state = index.state.read().unwrap();
+                assert!(
+                    !state.importers.contains_key(&source_file_key(&flat_uri)),
+                    "{update}"
+                );
+                assert!(
+                    state.importers[&source_file_key(&nested_uri)]
+                        .contains(&source_file_key(&importer_uri)),
+                    "{update}"
+                );
+            }
+
+            let matches = index
+                .unopened_named_importers(&root, &nested_uri, "greet", &open)
+                .unwrap();
+            assert_eq!(matches.len(), 1, "{update}");
+            assert_eq!(matches[0].importer_uri, importer_uri, "{update}");
+            assert!(index
+                .unopened_named_importers(&root, &flat_uri, "greet", &open)
+                .unwrap()
+                .is_empty());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn new_module_candidate_invalidates_a_resolved_named_import() {
+        let root = make_temp_dir("ambiguous-target");
+        let (flat, flat_uri) = write_file(&root, "util.hew", "pub fn greet() -> i64 { 1 }");
+        let (_, importer_uri) = write_file(&root, "importer.hew", "import util.{ greet };");
+        write_file(
+            &root,
+            "util/hew.toml",
+            "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+        );
+        let index = WorkspaceIndex::new();
+        let open = HashSet::new();
+        assert_eq!(
+            index
+                .unopened_named_importers(&root, &flat_uri, "greet", &open)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let (_, nested_uri) = write_file(&root, "util/util.hew", "pub fn greet() -> i64 { 2 }");
+        index.handle_watched_files(
+            &[FileEvent {
+                uri: nested_uri.clone(),
+                typ: FileChangeType::CREATED,
+            }],
+            &[],
+        );
+        {
+            let state = index.state.read().unwrap();
+            let importer = &state.files[&source_file_key(&importer_uri)];
+            assert!(importer.has_unresolved_imports);
+            assert!(importer.resolved_imports.is_empty());
+        }
+
+        std::fs::remove_file(flat).unwrap();
+        index.handle_watched_files(
+            &[FileEvent {
+                uri: flat_uri,
+                typ: FileChangeType::DELETED,
+            }],
+            &[],
+        );
+        let matches = index
+            .unopened_named_importers(&root, &nested_uri, "greet", &open)
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].importer_uri, importer_uri);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

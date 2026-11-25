@@ -173,7 +173,7 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
         crate::tracing::record_substrate_event(
             crate::tracing::current_actor_id_or_zero(),
             crate::tracing::SPAN_CANCELLATION_FIRED,
-            reason,
+            t.reason.load(Ordering::Acquire),
         );
         let observers = {
             let mut registered = t.observers.lock_or_recover();

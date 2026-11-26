@@ -6,14 +6,11 @@
 //! codegen intercepts the `mem.alloc` / `mem.realloc` / `mem.dealloc`
 //! intrinsic call sites and lowers them to `build_call` of these symbols.
 //!
-//! # Relationship to the per-actor arena (`arena.rs`)
+//! # Symmetric Heap Semantics
 //!
-//! This is **not** the arena. The arena's free (`hew_arena_free`) is a
-//! deliberate no-op (bulk-free at dispatch end) and its C-ABI malloc takes
-//! size only. That model is structurally unfit to back heap containers, which
-//! need a deterministic, symmetric free. This module is a true symmetric pair
-//! over Rust's `GlobalAlloc`. The arena keeps its per-actor-dispatch role
-//! unchanged; this is a *new* general allocator alongside it.
+//! Unlike region/bump allocators (`std/arena.hew`), these primitives provide a
+//! deterministic, symmetric `alloc`/`realloc`/`dealloc` contract over Rust's
+//! `GlobalAlloc` suitable for backing long-lived heap containers.
 //!
 //! # Relationship to the sized-block family (`buf_alloc`)
 //!

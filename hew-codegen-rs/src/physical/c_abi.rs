@@ -169,9 +169,10 @@ pub(super) fn get_or_declare_external_widened<'ctx>(
 }
 
 /// Attach sound LLVM optimization attributes (`nounwind`, `willreturn`,
-/// `readonly`, `noalias`) to known Hew runtime declarations so LLVM's O2
-/// pipeline can CSE/hoist pure getters, eliminate redundant coroutine-frame
-/// reloads, and avoid conservative alias/unwind barriers.
+/// `readonly`, `noalias`, `captures(none)`) to known Hew runtime declarations
+/// so LLVM's O2 and CoroSplit pipelines can CSE/hoist pure getters, keep
+/// transient inline wrappers/stamps out of heap coroutine frames, and avoid
+/// conservative alias/unwind barriers.
 fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
     let ctx = function.get_type().get_context();
     let add_fn = |name: &str| {
@@ -186,23 +187,62 @@ fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
             function.add_attribute(AttributeLoc::Return, ctx.create_enum_attribute(id, 0));
         }
     };
+    let add_nocapture_params = |indices: &[u32]| {
+        let cap_id = Attribute::get_named_enum_kind_id("captures");
+        let nocap_id = Attribute::get_named_enum_kind_id("nocapture");
+        let id = if cap_id != 0 { cap_id } else { nocap_id };
+        if id == 0 {
+            return;
+        }
+        let param_types = function.get_type().get_param_types();
+        for &idx in indices {
+            if param_types
+                .get(idx as usize)
+                .is_some_and(|t| t.is_pointer_type())
+            {
+                function.add_attribute(AttributeLoc::Param(idx), ctx.create_enum_attribute(id, 0));
+            }
+        }
+    };
 
-    // Pure argument-only read getters (non-unwinding, bounded, nofree, nosync,
-    // memory(argmem: read), readonly param 0).
-    let is_argmem_readonly = matches!(
+    match symbol {
+        "hew_coro_state_sender" => add_nocapture_params(&[1]),
+        "hew_local_sender" | "hew_msg_envelope_new_inline" => add_nocapture_params(&[0]),
+        "hew_actor_send_wait_new" => add_nocapture_params(&[8]),
+        "hew_actor_send_wait_new_inline" => add_nocapture_params(&[2, 8]),
+        "hew_actor_submit_native" => add_nocapture_params(&[7, 8]),
+        "hew_actor_submit_native_inline" => add_nocapture_params(&[2, 7, 8]),
+        "hew_actor_submit_native_terminal" => add_nocapture_params(&[6, 7]),
+        "hew_actor_submit_native_terminal_inline" => add_nocapture_params(&[2, 6, 7]),
+        "hew_actor_timer_new_inline" => add_nocapture_params(&[2]),
+        "hew_actor_call_new" => add_nocapture_params(&[12, 16]),
+        "hew_actor_call_new_inline" => add_nocapture_params(&[2, 12, 16]),
+        "hew_actor_call_init_in_place" => add_nocapture_params(&[13, 17]),
+        "hew_actor_call_init_inline" => add_nocapture_params(&[3, 13, 17]),
+        "hew_actor_call_resume" => add_nocapture_params(&[9]),
+        "hew_actor_call_resume_in_place" => add_nocapture_params(&[10]),
+        "hew_actor_submit_new" => add_nocapture_params(&[9, 13]),
+        "hew_actor_submit_new_inline" => add_nocapture_params(&[2, 9, 13]),
+        "hew_actor_submit_init_in_place" => add_nocapture_params(&[10, 14]),
+        "hew_actor_submit_init_inline" => add_nocapture_params(&[3, 10, 14]),
+        "hew_actor_call_take" | "hew_actor_submit_take" => add_nocapture_params(&[1, 2]),
+        _ => {}
+    }
+
+    // Pure single-hop argument-only read getters (non-unwinding, bounded, nofree,
+    // nosync, memory(argmem: read), readonly param 0).
+    let is_argmem_readonly = matches!(symbol, "hew_vec_len" | "hew_fault_code");
+    // Read-only queries that traverse nested pointers (`(*state).context`) or
+    // synchronization state (`memory(read)` `0x55`, no `nosync`, readonly param 0).
+    let is_general_readonly = matches!(
         symbol,
         "hew_coro_state_waker"
             | "hew_coro_state_request_deadline"
             | "hew_coro_state_token"
             | "hew_actor_call_failure"
-            | "hew_vec_len"
-            | "hew_fault_code"
-    );
-    // Read-only queries that may read nested pointers or globals (non-unwinding,
-    // bounded, nofree, memory(read), readonly param 0).
-    let is_general_readonly = matches!(
-        symbol,
-        "hew_coro_state_is_cancelled" | "hew_coro_state_cancel_code" | "hew_stack_check"
+            | "hew_coro_state_is_cancelled"
+            | "hew_coro_state_cancel_code"
+            | "hew_stack_check"
     );
     if is_argmem_readonly || is_general_readonly {
         add_fn("nounwind");
@@ -237,11 +277,22 @@ fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
     }
 
     // Fresh heap/pool allocators (non-unwinding, bounded, noalias return).
+    // In-place initializers (`*_init_*`, `*_resume_in_place`) return `slot`
+    // (param 0) and MUST NOT carry return `noalias`.
     let is_allocator = matches!(
         symbol,
         "hew_actor_payload_try_alloc"
             | "hew_cont_frame_alloc"
+            | "hew_msg_envelope_new"
+            | "hew_msg_envelope_new_inline"
             | "hew_actor_call_new"
+            | "hew_actor_call_new_inline"
+            | "hew_actor_submit_new"
+            | "hew_actor_submit_new_inline"
+            | "hew_actor_send_wait_new"
+            | "hew_actor_send_wait_new_inline"
+            | "hew_actor_timer_new"
+            | "hew_actor_timer_new_inline"
             | "hew_actor_wait_edge_new_for_call"
             | "hew_vec_new_with_elem_layout"
             | "hew_fault_new"
@@ -265,6 +316,7 @@ fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
     if matches!(
         symbol,
         "hew_coro_state_sender"
+            | "hew_local_sender"
             | "hew_coro_safepoint_budget"
             | "hew_coro_safepoint"
             | "hew_actor_payload_free"
@@ -272,8 +324,19 @@ fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
             | "hew_actor_wait_edge_prepare"
             | "hew_actor_wait_edge_pending"
             | "hew_actor_wait_edge_free"
+            | "hew_actor_call_init_in_place"
+            | "hew_actor_call_init_inline"
+            | "hew_actor_call_resume"
+            | "hew_actor_call_resume_in_place"
+            | "hew_actor_submit_init_in_place"
+            | "hew_actor_submit_init_inline"
             | "hew_actor_call_poll"
             | "hew_actor_call_free"
+            | "hew_actor_call_drop_in_place"
+            | "hew_actor_submit_native"
+            | "hew_actor_submit_native_inline"
+            | "hew_actor_submit_native_terminal"
+            | "hew_actor_submit_native_terminal_inline"
             | "hew_actor_handle_retain"
             | "hew_actor_handle_release"
             | "hew_fault_set_site_in_image"

@@ -44,7 +44,6 @@ fn spawn_with_cycle_flag(cycle_capable: i32) -> *mut hew_runtime::actor::HewActo
         coalesce_fallback: 0,
         message_drop_fn: None,
         budget: 0,
-        arena_cap_bytes: 0,
         cycle_capable,
     };
 
@@ -85,7 +84,6 @@ fn supervisor_child_spec_accepts_cycle_capable_bit() {
         coalesce_fallback: 1,
         message_drop_fn: None,
         sys_dispatch: None,
-        arena_cap_bytes: 0,
         cycle_capable: 1,
         lifecycle_fn: None,
         init_fn: None,

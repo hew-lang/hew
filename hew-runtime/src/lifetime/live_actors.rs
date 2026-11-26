@@ -1,53 +1,75 @@
 //! Runtime-owned actor-liveness registry (`LiveActors`).
 //!
-//! All access to the actor liveness map goes through the free functions
+//! All access to the actor liveness registry goes through the free functions
 //! exported here (`track_actor`, `untrack_actor`, `drain_all_for_cleanup`)
 //! or through the liveness-probe functions (`with_live_actor`,
 //! `with_live_actor_by_id`, `is_actor_live`). Those free functions resolve the
-//! map off the current runtime ([`crate::runtime::rt_current`]); the [`LiveActors`]
-//! struct itself is owned by `RuntimeInner`.
+//! registry off the current runtime ([`crate::runtime::rt_current`]); the
+//! [`LiveActors`] struct itself is owned by `RuntimeInner`.
 //!
-//! The inner `PoisonSafe<…>` is not re-exported; raw `.lock()` /
-//! `.lock_or_recover()` on the map is unreachable by type from outside
-//! this module.
+//! # Lock-free 2-level paged slab + cold overflow shards
 //!
-//! # Sharding and lock ordering
-//!
-//! `LiveActors` partitions actor IDs across 64 cache-line-aligned `Mutex`
-//! shards (`LIVE_ACTOR_SHARDS`).
-//!
-//! **Single-shard lock invariant**: no operation in this module ever holds more
-//! than one shard lock at a time. Point operations (`track_actor`,
-//! `untrack_actor`, `take_actor_by_id`, `pin_actor_by_id`,
-//! `with_live_actor_by_id`, `get_actor_ptr_by_id`,
-//! `swap_slot_under_registry_lock`) acquire only `shards[actor_id % 64]`.
-//! Whole-registry scans (`with_live_actor`, `has_drain_blocking_suspended_actor`,
-//! `snapshot_live_actor_*`, `drain_all_for_cleanup`) visit shards `0..64` one
-//! shard at a time, releasing shard `i` before acquiring shard `i + 1`. Because
-//! an actor's `id` is immutable for its lifetime, its shard is fixed, so
-//! per-actor serialization (`pin_actor_by_id` vs `untrack_actor`, and
-//! `has_drain_blocking_suspended_actor` vs `swap_slot_under_registry_lock`)
-//! synchronizes on that single shard lock with zero possibility of cross-shard
-//! deadlock.
+//! Local actor IDs pack a 16-bit route slot and a 48-bit monotonic serial
+//! (`1..67_108_864` on the fast path). `LiveActorSlab` indexes directly by
+//! `serial` across a demand-paged 2-level radix tree (`256 * 256 * 1024`
+//! slots), giving each actor its own independent atomic reader-writer lease
+//! word (`LiveSlabSlot::state`) with **zero OS mutexes** on `pin_actor_by_id`,
+//! `with_actor_send_by_id`, `with_live_incarnation`, `track_actor`, and
+//! `untrack_actor`. Synthetic unit-test IDs outside the slab span or colliding
+//! on the masked serial transparently fall back to sharded overflow maps gated
+//! behind `overflow_count`.
 
 use rustc_hash::FxHashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::ffi::c_void;
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
 
-/// Number of shards for the live-actor registry. Must remain a power of two.
-const LIVE_ACTOR_SHARDS: usize = 256;
+/// Mask for the 48-bit serial portion of a packed actor ID (`pid.rs`).
+const SERIAL_MASK: u64 = (1u64 << 48) - 1;
+
+// 2-level lazy paged slab geometry: 256 * 256 * 1024 = 67,108,864 slots.
+const SLAB_L0_LEN: usize = 256;
+const SLAB_L1_LEN: usize = 256;
+const SLAB_PAGE_BITS: usize = 10;
+const SLAB_PAGE_LEN: usize = 1 << SLAB_PAGE_BITS; // 1024
+const SLAB_PAGE_MASK: usize = SLAB_PAGE_LEN - 1;
+const SLAB_L1_BITS: usize = 8;
+const SLAB_L1_MASK: usize = SLAB_L1_LEN - 1;
+const LIVE_SLAB_CAPACITY: usize = SLAB_L0_LEN * SLAB_L1_LEN * SLAB_PAGE_LEN;
+
+// Per-slot atomic state flags (portable across 32-bit wasm32 and 64-bit native).
+const SLOT_LIVE: usize = 1usize << (usize::BITS - 1);
+const SLOT_INIT: usize = 1usize << (usize::BITS - 2);
+const SLOT_WRITER: usize = 1usize << (usize::BITS - 3);
+const LEASE_MASK: usize = !(SLOT_LIVE | SLOT_INIT | SLOT_WRITER);
+
+/// Cold overflow shards for synthetic test IDs (`serial >= LIVE_SLAB_CAPACITY`
+/// or multi-node serial collisions in unit tests).
+const OVERFLOW_SHARDS: usize = 16;
 
 #[inline]
-fn shard_index(actor_id: u64) -> usize {
+fn overflow_shard_index(actor_id: u64) -> usize {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..256)"
+        reason = "shard index is masked to OVERFLOW_SHARDS - 1 (0..16)"
     )]
     {
-        (actor_id as usize) & (LIVE_ACTOR_SHARDS - 1)
+        (actor_id as usize) & (OVERFLOW_SHARDS - 1)
     }
+}
+
+#[inline]
+fn slab_index_of(actor_id: u64) -> Option<usize> {
+    let serial = actor_id & SERIAL_MASK;
+    if serial == 0 {
+        return None;
+    }
+    let idx = usize::try_from(serial).ok()?;
+    (idx < LIVE_SLAB_CAPACITY).then_some(idx)
 }
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
@@ -60,7 +82,7 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
-// SAFETY: `HewActor` is `Sync` and all reads under shared registry locks only
+// SAFETY: `HewActor` is `Sync` and all reads under shared registry leases only
 // access synchronized/atomic actor fields.
 unsafe impl Sync for ActorPtr {}
 
@@ -70,28 +92,347 @@ struct LiveActor {
 
 fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     // SAFETY: callers invoke this only after successful removal from the live
-    // map and retain allocation ownership until finalization.
+    // registry and retain allocation ownership until finalization.
     let token = unsafe { (*actor).local_pid_id };
     if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
         return;
     }
-    // SAFETY: callers invoke this only after removal from the live map while
+    // SAFETY: callers invoke this only after removal from the live registry while
     // retaining allocation ownership until finalization.
     let runtime = unsafe { (*actor).runtime };
     // SAFETY: the owning runtime outlives tracked actor route retirement.
     unsafe { crate::platform::executor::retire_tracked_actor_route(runtime, token, actor_id) };
 }
 
-/// One cache-line-aligned shard of the live-actor registry.
+/// One direct-indexed actor liveness slot (`32` bytes on 64-bit).
+#[repr(C, align(32))]
+struct LiveSlabSlot {
+    state: AtomicUsize,
+    actor_id: AtomicU64,
+    actor_ptr: AtomicPtr<HewActor>,
+}
+
+struct SlotLeaseGuard<'a>(&'a LiveSlabSlot);
+
+impl Drop for SlotLeaseGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.state.fetch_sub(1, Ordering::Release);
+    }
+}
+
+enum SlabLookup<'a> {
+    Empty,
+    Matched(*mut HewActor, SlotLeaseGuard<'a>),
+    Collision,
+}
+
+impl LiveSlabSlot {
+    #[inline]
+    fn try_lease_by_id(&self, expected_id: u64) -> SlabLookup<'_> {
+        let mut cur = self.state.load(Ordering::Acquire);
+        loop {
+            if (cur & (SLOT_INIT | SLOT_WRITER)) != 0 {
+                std::hint::spin_loop();
+                cur = self.state.load(Ordering::Acquire);
+                continue;
+            }
+            if (cur & SLOT_LIVE) == 0 {
+                return SlabLookup::Empty;
+            }
+            debug_assert!((cur & LEASE_MASK) < LEASE_MASK);
+            match self.state.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    let guard = SlotLeaseGuard(self);
+                    if self.actor_id.load(Ordering::Relaxed) == expected_id {
+                        let ptr = self.actor_ptr.load(Ordering::Relaxed);
+                        return SlabLookup::Matched(ptr, guard);
+                    }
+                    drop(guard);
+                    return SlabLookup::Collision;
+                }
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn try_lease_any(&self) -> Option<(u64, *mut HewActor, SlotLeaseGuard<'_>)> {
+        let mut cur = self.state.load(Ordering::Acquire);
+        loop {
+            if (cur & (SLOT_INIT | SLOT_WRITER)) != 0 {
+                std::hint::spin_loop();
+                cur = self.state.load(Ordering::Acquire);
+                continue;
+            }
+            if (cur & SLOT_LIVE) == 0 {
+                return None;
+            }
+            debug_assert!((cur & LEASE_MASK) < LEASE_MASK);
+            match self.state.compare_exchange_weak(
+                cur,
+                cur + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    let guard = SlotLeaseGuard(self);
+                    let id = self.actor_id.load(Ordering::Relaxed);
+                    let ptr = self.actor_ptr.load(Ordering::Relaxed);
+                    return Some((id, ptr, guard));
+                }
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    /// Acquire exclusive writer access (`SLOT_WRITER`) if this slot is live,
+    /// waiting for any in-flight reader leases on this slot to drain.
+    #[inline]
+    fn acquire_writer(&self) -> bool {
+        let mut cur = self.state.load(Ordering::Acquire);
+        loop {
+            if (cur & (SLOT_INIT | SLOT_WRITER)) != 0 {
+                std::hint::spin_loop();
+                cur = self.state.load(Ordering::Acquire);
+                continue;
+            }
+            if (cur & SLOT_LIVE) == 0 {
+                return false;
+            }
+            match self.state.compare_exchange_weak(
+                cur,
+                cur | SLOT_WRITER,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    while (self.state.load(Ordering::Acquire) & LEASE_MASK) != 0 {
+                        std::hint::spin_loop();
+                    }
+                    return true;
+                }
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn release_writer_keep_live(&self) {
+        self.state.fetch_and(!SLOT_WRITER, Ordering::Release);
+    }
+
+    #[inline]
+    fn clear_writer_and_remove(&self) {
+        self.actor_ptr.store(ptr::null_mut(), Ordering::Relaxed);
+        self.actor_id.store(0, Ordering::Relaxed);
+        self.state.store(0, Ordering::Release);
+    }
+}
+
+#[repr(C)]
+struct LiveSlabPage {
+    slots: [LiveSlabSlot; SLAB_PAGE_LEN],
+}
+
+#[repr(C)]
+struct LiveSlabL1 {
+    pages: [AtomicPtr<LiveSlabPage>; SLAB_L1_LEN],
+}
+
+struct LiveActorSlab {
+    l0: [AtomicPtr<LiveSlabL1>; SLAB_L0_LEN],
+    /// Highest slab index ever inserted in this runtime, bounding whole-slab scans.
+    max_index: AtomicUsize,
+}
+
+impl LiveActorSlab {
+    const fn new() -> Self {
+        Self {
+            l0: [const { AtomicPtr::new(ptr::null_mut()) }; SLAB_L0_LEN],
+            max_index: AtomicUsize::new(0),
+        }
+    }
+
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "alloc_zeroed receives Layout::new::<LiveSlabL1>() which guarantees LiveSlabL1 alignment"
+    )]
+    fn alloc_l1() -> *mut LiveSlabL1 {
+        let layout = Layout::new::<LiveSlabL1>();
+        // SAFETY: `LiveSlabL1` is an array of `AtomicPtr` valid when zero-initialized.
+        let raw = unsafe { alloc_zeroed(layout) }.cast::<LiveSlabL1>();
+        if raw.is_null() {
+            handle_alloc_error(layout);
+        }
+        raw
+    }
+
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "alloc_zeroed receives Layout::new::<LiveSlabPage>() which guarantees LiveSlabPage alignment"
+    )]
+    fn alloc_page() -> *mut LiveSlabPage {
+        let layout = Layout::new::<LiveSlabPage>();
+        // SAFETY: `LiveSlabPage` contains only zero-valid atomics (`0` = empty slot).
+        let raw = unsafe { alloc_zeroed(layout) }.cast::<LiveSlabPage>();
+        if raw.is_null() {
+            handle_alloc_error(layout);
+        }
+        raw
+    }
+
+    #[inline]
+    fn get_slot(&self, idx: usize) -> Option<&LiveSlabSlot> {
+        let l0_idx = idx >> (SLAB_PAGE_BITS + SLAB_L1_BITS);
+        let l1_idx = (idx >> SLAB_PAGE_BITS) & SLAB_L1_MASK;
+        let page_idx = idx & SLAB_PAGE_MASK;
+
+        let l1 = self.l0[l0_idx].load(Ordering::Acquire);
+        if l1.is_null() {
+            return None;
+        }
+        // SAFETY: non-null `l1` lives until `LiveActorSlab::drop`.
+        let page = unsafe { (*l1).pages[l1_idx].load(Ordering::Acquire) };
+        if page.is_null() {
+            return None;
+        }
+        // SAFETY: non-null `page` lives until `LiveActorSlab::drop`.
+        Some(unsafe { &(*page).slots[page_idx] })
+    }
+
+    #[inline]
+    fn ensure_slot(&self, idx: usize) -> &LiveSlabSlot {
+        let l0_idx = idx >> (SLAB_PAGE_BITS + SLAB_L1_BITS);
+        let l1_idx = (idx >> SLAB_PAGE_BITS) & SLAB_L1_MASK;
+        let page_idx = idx & SLAB_PAGE_MASK;
+
+        let mut l1 = self.l0[l0_idx].load(Ordering::Acquire);
+        if l1.is_null() {
+            let fresh = Self::alloc_l1();
+            match self.l0[l0_idx].compare_exchange(
+                ptr::null_mut(),
+                fresh,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => l1 = fresh,
+                Err(existing) => {
+                    // SAFETY: `fresh` was never published.
+                    unsafe { dealloc(fresh.cast::<u8>(), Layout::new::<LiveSlabL1>()) };
+                    l1 = existing;
+                }
+            }
+        }
+
+        // SAFETY: `l1` is non-null and valid for the lifetime of `self`.
+        let page_slot = unsafe { &(*l1).pages[l1_idx] };
+        let mut page = page_slot.load(Ordering::Acquire);
+        if page.is_null() {
+            let fresh = Self::alloc_page();
+            match page_slot.compare_exchange(
+                ptr::null_mut(),
+                fresh,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => page = fresh,
+                Err(existing) => {
+                    // SAFETY: `fresh` was never published.
+                    unsafe { dealloc(fresh.cast::<u8>(), Layout::new::<LiveSlabPage>()) };
+                    page = existing;
+                }
+            }
+        }
+
+        self.max_index.fetch_max(idx, Ordering::AcqRel);
+        // SAFETY: `page` is non-null and valid for the lifetime of `self`.
+        unsafe { &(*page).slots[page_idx] }
+    }
+
+    /// Visit every allocated slot up to `max_index`, stopping early when `visit`
+    /// returns `Some(R)`. Unallocated `L0`/`L1` subtrees are skipped in `O(1)`.
+    fn visit_allocated_slots<R>(
+        &self,
+        mut visit: impl FnMut(&LiveSlabSlot) -> Option<R>,
+    ) -> Option<R> {
+        let bound = self.max_index.load(Ordering::Acquire);
+        if bound == 0 {
+            return None;
+        }
+        let max_l0 = bound >> (SLAB_PAGE_BITS + SLAB_L1_BITS);
+        for l0_idx in 0..=max_l0.min(SLAB_L0_LEN - 1) {
+            let l1 = self.l0[l0_idx].load(Ordering::Acquire);
+            if l1.is_null() {
+                continue;
+            }
+            let max_l1 = if l0_idx == max_l0 {
+                (bound >> SLAB_PAGE_BITS) & SLAB_L1_MASK
+            } else {
+                SLAB_L1_LEN - 1
+            };
+            for l1_idx in 0..=max_l1 {
+                // SAFETY: `l1` is live until `LiveActorSlab::drop`.
+                let page = unsafe { (*l1).pages[l1_idx].load(Ordering::Acquire) };
+                if page.is_null() {
+                    continue;
+                }
+                let page_base =
+                    (l0_idx << (SLAB_PAGE_BITS + SLAB_L1_BITS)) | (l1_idx << SLAB_PAGE_BITS);
+                let max_slot = if page_base + SLAB_PAGE_LEN - 1 > bound {
+                    bound - page_base
+                } else {
+                    SLAB_PAGE_LEN - 1
+                };
+                for slot_idx in 0..=max_slot {
+                    // SAFETY: `page` is live until `LiveActorSlab::drop`.
+                    let slot = unsafe { &(*page).slots[slot_idx] };
+                    if let Some(out) = visit(slot) {
+                        return Some(out);
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Drop for LiveActorSlab {
+    fn drop(&mut self) {
+        for l0_entry in &mut self.l0 {
+            let l1 = *l0_entry.get_mut();
+            if l1.is_null() {
+                continue;
+            }
+            // SAFETY: exclusive `&mut self` during drop.
+            unsafe {
+                for page_entry in &mut (*l1).pages {
+                    let page = *page_entry.get_mut();
+                    if !page.is_null() {
+                        dealloc(page.cast::<u8>(), Layout::new::<LiveSlabPage>());
+                    }
+                }
+                dealloc(l1.cast::<u8>(), Layout::new::<LiveSlabL1>());
+            }
+        }
+    }
+}
+
+/// Cold overflow shard for out-of-range or colliding synthetic actor IDs.
 #[repr(align(64))]
-struct LiveActorShard(PoisonSafe<Option<FxHashMap<u64, LiveActor>>>);
+struct OverflowShard(PoisonSafe<Option<FxHashMap<u64, LiveActor>>>);
 
 /// Runtime-owned actor-liveness state.
 pub(crate) struct LiveActors {
-    /// Sharded maps of live actor id -> pointer (64 shards; see module doc).
-    shards: [LiveActorShard; LIVE_ACTOR_SHARDS],
-    /// Exact count of tracked actors across all shards, maintained under each
-    /// shard's lock on insert, remove, and drain.
+    slab: LiveActorSlab,
+    overflow_count: AtomicUsize,
+    overflow: [OverflowShard; OVERFLOW_SHARDS],
+    /// Exact count of tracked actors across slab + overflow.
     len: AtomicUsize,
     /// Background teardown threads that hold raw actor/supervisor pointers.
     #[cfg(not(target_arch = "wasm32"))]
@@ -102,51 +443,105 @@ impl LiveActors {
     /// Construct an empty liveness registry for a runtime.
     pub(crate) const fn new() -> Self {
         Self {
-            shards: [const { LiveActorShard(PoisonSafe::new(None)) }; LIVE_ACTOR_SHARDS],
+            slab: LiveActorSlab::new(),
+            overflow_count: AtomicUsize::new(0),
+            overflow: [const { OverflowShard(PoisonSafe::new(None)) }; OVERFLOW_SHARDS],
             len: AtomicUsize::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
         }
     }
+
+    #[inline]
+    fn has_overflow(&self) -> bool {
+        self.overflow_count.load(Ordering::Acquire) != 0
+    }
 }
 
-/// Run `f` with exclusive access to the shard owning `actor_id`.
-fn with_shard<R>(
-    actor_id: u64,
-    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
-) -> R {
-    let actors = crate::platform::executor::current_live_actors();
-    actors.shards[shard_index(actor_id)]
+enum SlabInsert {
+    Inserted,
+    DuplicateId,
+    NeedsOverflow,
+}
+
+fn try_insert_slab(actors: &LiveActors, idx: usize, id: u64, actor: *mut HewActor) -> SlabInsert {
+    let slot = actors.slab.ensure_slot(idx);
+    let mut cur = slot.state.load(Ordering::Acquire);
+    loop {
+        if cur == 0 {
+            match slot.state.compare_exchange_weak(
+                0,
+                SLOT_INIT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    slot.actor_id.store(id, Ordering::Relaxed);
+                    slot.actor_ptr.store(actor, Ordering::Relaxed);
+                    slot.state.store(SLOT_LIVE, Ordering::Release);
+                    actors.len.fetch_add(1, Ordering::AcqRel);
+                    return SlabInsert::Inserted;
+                }
+                Err(actual) => {
+                    cur = actual;
+                    continue;
+                }
+            }
+        }
+        if (cur & (SLOT_INIT | SLOT_WRITER)) != 0 {
+            std::hint::spin_loop();
+            cur = slot.state.load(Ordering::Acquire);
+            continue;
+        }
+        match slot.try_lease_by_id(id) {
+            SlabLookup::Matched(_, _guard) => return SlabInsert::DuplicateId,
+            SlabLookup::Collision => return SlabInsert::NeedsOverflow,
+            SlabLookup::Empty => {
+                cur = slot.state.load(Ordering::Acquire);
+            }
+        }
+    }
+}
+
+fn try_remove_matching(actors: &LiveActors, actor_id: u64, expected: *mut HewActor) -> bool {
+    if let Some(idx) = slab_index_of(actor_id) {
+        if let Some(slot) = actors.slab.get_slot(idx) {
+            if slot.acquire_writer() {
+                let id_matches = slot.actor_id.load(Ordering::Relaxed) == actor_id;
+                let ptr_matches = slot.actor_ptr.load(Ordering::Relaxed) == expected;
+                if id_matches && ptr_matches {
+                    slot.clear_writer_and_remove();
+                    actors.len.fetch_sub(1, Ordering::AcqRel);
+                    return true;
+                }
+                slot.release_writer_keep_live();
+                if id_matches {
+                    return false;
+                }
+            }
+        }
+    }
+    if !actors.has_overflow() {
+        return false;
+    }
+    actors.overflow[overflow_shard_index(actor_id)]
         .0
-        .access(|map| f(map, &actors.len))
-}
-
-/// Run `f` with exclusive access to the shard owning `actor_id` when a runtime is installed.
-fn with_shard_opt<R>(
-    actor_id: u64,
-    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
-) -> Option<R> {
-    crate::platform::executor::current_live_actors_opt().map(|actors| {
-        actors.shards[shard_index(actor_id)]
-            .0
-            .access(|map| f(map, &actors.len))
-    })
-}
-
-/// Run `f` with read-only access to the shard owning `actor_id` when a runtime is installed.
-fn with_shard_read_opt<R>(
-    actor_id: u64,
-    f: impl FnOnce(&Option<FxHashMap<u64, LiveActor>>) -> R,
-) -> Option<R> {
-    crate::platform::executor::current_live_actors_opt()
-        .map(|actors| actors.shards[shard_index(actor_id)].0.access(|map| f(map)))
+        .access(|map| {
+            if let Some(m) = map.as_mut() {
+                if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(actor_id) {
+                    if entry.get().actor.0 == expected {
+                        entry.remove();
+                        actors.overflow_count.fetch_sub(1, Ordering::AcqRel);
+                        actors.len.fetch_sub(1, Ordering::AcqRel);
+                        return true;
+                    }
+                }
+            }
+            false
+        })
 }
 
 /// Register an actor in the live tracking map.
-///
-/// Returns `false` without changing the existing entry when the `ActorId` is
-/// already live. Publication callers must treat that collision as spawn
-/// failure and roll back only their own route reservation.
 ///
 /// # Safety
 ///
@@ -155,13 +550,29 @@ fn with_shard_read_opt<R>(
 pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and initialised.
     let id = unsafe { (*actor).id };
-    with_shard(id, |map, len| {
+    let actors = crate::platform::executor::current_live_actors();
+    if actors.has_overflow()
+        && actors.overflow[overflow_shard_index(id)]
+            .0
+            .access(|map| map.as_ref().is_some_and(|m| m.contains_key(&id)))
+    {
+        return false;
+    }
+    if let Some(idx) = slab_index_of(id) {
+        match try_insert_slab(actors, idx, id, actor) {
+            SlabInsert::Inserted => return true,
+            SlabInsert::DuplicateId => return false,
+            SlabInsert::NeedsOverflow => {}
+        }
+    }
+    actors.overflow[overflow_shard_index(id)].0.access(|map| {
         match map.get_or_insert_with(FxHashMap::default).entry(id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(LiveActor {
                     actor: ActorPtr(actor),
                 });
-                len.fetch_add(1, Ordering::AcqRel);
+                actors.overflow_count.fetch_add(1, Ordering::AcqRel);
+                actors.len.fetch_add(1, Ordering::AcqRel);
                 true
             }
             std::collections::hash_map::Entry::Occupied(_) => false,
@@ -176,26 +587,13 @@ pub(crate) fn actor_count_for_test() -> usize {
 }
 
 /// Remove an actor from the live tracking map.
-///
-/// Returns `true` if the actor was present and removed, `false` if it
-/// was not found (e.g. already consumed by `drain_all_for_cleanup`).
-/// Only removes the entry if the stored pointer matches `actor`.
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
-    let removed = with_shard_opt(id, |map, len| {
-        if let Some(m) = map.as_mut() {
-            if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
-                if entry.get().actor.0 == actor {
-                    entry.remove();
-                    len.fetch_sub(1, Ordering::AcqRel);
-                    return true;
-                }
-            }
-        }
-        false
-    })
-    .unwrap_or(false);
+    let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+        return false;
+    };
+    let removed = try_remove_matching(actors, id, actor);
     if removed {
         retire_actor_route(actor, id);
     }
@@ -205,48 +603,47 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
-    let actor = with_shard_opt(actor_id, |map, len| {
-        let m = map.as_mut()?;
-        if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(actor_id) {
-            if entry.get().actor.0 == expected {
-                let tracked = entry.remove();
-                len.fetch_sub(1, Ordering::AcqRel);
-                return Some(tracked.actor.0);
-            }
-        }
+    let actors = crate::platform::executor::current_live_actors_opt()?;
+    if try_remove_matching(actors, actor_id, expected) {
+        retire_actor_route(expected, actor_id);
+        Some(expected)
+    } else {
         None
-    })
-    .flatten();
-    if let Some(actor) = actor {
-        retire_actor_route(actor, actor_id);
     }
-    actor
 }
 
-/// Check whether an actor pointer is still live.
-///
-/// Calls `f` with a shared reference to the actor and returns `Some(f(..))`
-/// if `actor` is in the live map.  Returns `None` otherwise.
-///
-/// The owning shard's lock is held across `f`, preventing concurrent frees
-/// from reclaiming the allocation while `f` runs. Shards are probed one at a
-/// time so no two shard locks are ever held simultaneously.
+/// Check whether an actor pointer is still live without dereferencing `actor`
+/// until registry membership is confirmed.
 pub(crate) fn with_live_actor<R>(
     actor: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
     let actors = crate::platform::executor::current_live_actors_opt()?;
     let mut f = Some(f);
-    for shard in &actors.shards {
+    let found = actors.slab.visit_allocated_slots(|slot| {
+        let (_, ptr, _guard) = slot.try_lease_any()?;
+        if ptr == actor {
+            let func = f.take().expect("closure runs at most once");
+            // SAFETY: `_guard` holds the slot's reader lease across `func`.
+            Some(func(unsafe { &*actor }))
+        } else {
+            None
+        }
+    });
+    if found.is_some() {
+        return found;
+    }
+    if !actors.has_overflow() {
+        return None;
+    }
+    for shard in &actors.overflow {
         let result = shard.0.access(|map| {
             if map
                 .as_ref()
                 .is_some_and(|m| m.values().any(|ptr| ptr.actor.0 == actor))
             {
                 let func = f.take().expect("closure runs at most once");
-                // SAFETY: `actor` is tracked in this shard; concurrent frees
-                // must remove it under this same shard's write lock before
-                // reclaiming the allocation.
+                // SAFETY: `actor` is tracked under this overflow shard's lock.
                 Some(func(unsafe { &*actor }))
             } else {
                 None
@@ -259,98 +656,114 @@ pub(crate) fn with_live_actor<R>(
     None
 }
 
-/// Return whether any tracked actor still owns a parked continuation that
-/// represents IN-FLIGHT work the shutdown drain must wait for.
-///
-/// The liveness shard lock is held while reading each actor state, so a
-/// concurrent free cannot reclaim an allocation beneath the scan. Shutdown uses
-/// this as source-agnostic drain authority: TCP, timer, ask, stream, and other
-/// await implementations all converge on `HewActorState::Suspended`.
-///
-/// A `Suspended` actor whose currently-dispatching `ask` was ABANDONED by its
-/// caller is NOT in-flight work: the `await … | after d` deadline (or a task
-/// cancel) already resolved the caller with a typed `Err`, and nothing will
-/// ever consume the parked handler's reply. Blocking the drain on it would
-/// regress the documented never-hangs abandonment contract into a full
-/// drain-timeout plus abnormal exit. The abandonment bit is the reply
-/// channel's `cancelled` flag, reached through the actor's independently
-/// retained [`crate::actor::HewActor::parked_ask_channel`] gate reference —
-/// safe to dereference here because every release site swaps that slot to
-/// null under THIS actor's shard lock before dropping the reference
-/// (`activation::release_parked_ask_channel`).
-///
-/// Swap `slot` to null under the owning actor's live-actors shard lock.
-///
-/// Serialization primitive for pointer slots that the shutdown drain scan
-/// dereferences under this lock ([`has_drain_blocking_suspended_actor`]): a
-/// releaser swaps here first, so a scan that observed a non-null pointer holds
-/// the shard lock the swap needs and the backing allocation cannot be freed
-/// beneath the dereference. The actual release of the swapped-out reference
-/// belongs OUTSIDE the lock (it may run reply destructors). Falls back to a
-/// bare swap when no runtime is installed — the scan resolves through the same
-/// runtime slot, so no scan can be racing in that case.
+/// Swap `slot` to null under the owning actor's per-slot writer lock (or
+/// overflow shard lock), serializing against [`has_drain_blocking_suspended_actor`].
 pub(crate) fn swap_slot_under_registry_lock(
     actor_id: u64,
-    slot: &std::sync::atomic::AtomicPtr<std::ffi::c_void>,
-) -> *mut std::ffi::c_void {
-    with_shard_opt(actor_id, |_, _| {
-        slot.swap(std::ptr::null_mut(), Ordering::AcqRel)
-    })
-    .unwrap_or_else(|| slot.swap(std::ptr::null_mut(), Ordering::AcqRel))
+    slot: &AtomicPtr<c_void>,
+) -> *mut c_void {
+    let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
+        return slot.swap(ptr::null_mut(), Ordering::AcqRel);
+    };
+    if let Some(idx) = slab_index_of(actor_id) {
+        if let Some(slab_slot) = actors.slab.get_slot(idx) {
+            if slab_slot.acquire_writer() {
+                if slab_slot.actor_id.load(Ordering::Relaxed) == actor_id {
+                    let prev = slot.swap(ptr::null_mut(), Ordering::AcqRel);
+                    slab_slot.release_writer_keep_live();
+                    return prev;
+                }
+                slab_slot.release_writer_keep_live();
+            }
+        }
+    }
+    if actors.has_overflow() {
+        return actors.overflow[overflow_shard_index(actor_id)]
+            .0
+            .access(|_| slot.swap(ptr::null_mut(), Ordering::AcqRel));
+    }
+    slot.swap(ptr::null_mut(), Ordering::AcqRel)
 }
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
-///
-/// Returns `Some(f(..))` if `actor_id` maps to `expected`; `None` otherwise.
-/// The owning shard's lock is held across `f`.
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
     expected: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_shard_read_opt(actor_id, |map| {
-        if map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id))
-            .is_some_and(|ptr| ptr.actor.0 == expected)
-        {
-            // SAFETY: `expected` is tracked under `actor_id`; concurrent frees
-            // must remove that exact entry under the write lock before
-            // reclaiming the allocation.
-            Some(f(unsafe { &*expected }))
-        } else {
-            None
+    let actors = crate::platform::executor::current_live_actors_opt()?;
+    if let Some(idx) = slab_index_of(actor_id) {
+        if let Some(slot) = actors.slab.get_slot(idx) {
+            match slot.try_lease_by_id(actor_id) {
+                SlabLookup::Matched(ptr, _guard) => {
+                    return (ptr == expected).then(|| {
+                        // SAFETY: `_guard` holds the slot lease across `f`.
+                        f(unsafe { &*expected })
+                    });
+                }
+                SlabLookup::Empty => {
+                    if !actors.has_overflow() {
+                        return None;
+                    }
+                }
+                SlabLookup::Collision => {}
+            }
+        } else if !actors.has_overflow() {
+            return None;
         }
-    })
-    .flatten()
+    }
+    if !actors.has_overflow() {
+        return None;
+    }
+    actors.overflow[overflow_shard_index(actor_id)]
+        .0
+        .access(|map| {
+            if map
+                .as_ref()
+                .and_then(|m| m.get(&actor_id))
+                .is_some_and(|ptr| ptr.actor.0 == expected)
+            {
+                // SAFETY: `expected` is tracked under this overflow shard's lock.
+                Some(f(unsafe { &*expected }))
+            } else {
+                None
+            }
+        })
 }
 
 /// Look up an actor by ID and return a copy of its raw pointer if live.
-///
-/// The lock is *not* held after this returns.  Call sites that can tolerate
-/// a narrow TOCTOU window (e.g. remote routing that only compares the pointer
-/// or fails gracefully if the actor disappears) may use this.
-///
-/// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
-/// instead so the actor cannot be freed between lookup and dereference.
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
-    with_shard_read_opt(actor_id, |map| {
-        map.as_ref()
-            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
-            .filter(|ptr| !ptr.is_null())
-    })
-    .flatten()
+    let actors = crate::platform::executor::current_live_actors_opt()?;
+    if let Some(idx) = slab_index_of(actor_id) {
+        if let Some(slot) = actors.slab.get_slot(idx) {
+            match slot.try_lease_by_id(actor_id) {
+                SlabLookup::Matched(ptr, _guard) => {
+                    return (!ptr.is_null()).then_some(ptr);
+                }
+                SlabLookup::Empty => {
+                    if !actors.has_overflow() {
+                        return None;
+                    }
+                }
+                SlabLookup::Collision => {}
+            }
+        } else if !actors.has_overflow() {
+            return None;
+        }
+    }
+    if !actors.has_overflow() {
+        return None;
+    }
+    actors.overflow[overflow_shard_index(actor_id)]
+        .0
+        .access(|map| {
+            map.as_ref()
+                .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
+                .filter(|ptr| !ptr.is_null())
+        })
 }
 
 /// RAII guard that decrements `HewActor.send_pin_count` on drop.
-///
-/// Taken by [`with_actor_send_by_id`] after the liveness validation
-/// (under `LIVE_ACTORS`) so the free path cannot reclaim the actor
-/// allocation while the by-ID operation is in progress.
-///
-/// The `Release` ordering on drop pairs with the free path's `Acquire`
-/// load of `send_pin_count`, ensuring all writes from the pinned
-/// operation are visible to the freer before it reclaims the allocation.
 pub(crate) struct ActorPin(*mut HewActor);
 
 // SAFETY: `HewActor` is `Send`; the guard only touches the atomic
@@ -358,16 +771,17 @@ pub(crate) struct ActorPin(*mut HewActor);
 unsafe impl Send for ActorPin {}
 
 impl Drop for ActorPin {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: the pointer was validated-live when the pin was taken.
-        // The free path defers the free until `send_pin_count` reaches 0,
-        // so the allocation remains valid until this drop runs.
+        // The free path defers reclamation until `send_pin_count` reaches 0.
         unsafe { (*self.0).send_pin_count.fetch_sub(1, Ordering::Release) };
     }
 }
 
 impl ActorPin {
     /// Borrow the pinned actor allocation.
+    #[inline]
     #[must_use]
     pub(crate) fn actor(&self) -> &HewActor {
         // SAFETY: construction increments `send_pin_count` while the actor is
@@ -376,72 +790,63 @@ impl ActorPin {
     }
 
     /// Return the pinned actor pointer for existing internal operations.
+    #[inline]
     #[must_use]
     pub(crate) fn as_ptr(&self) -> *mut HewActor {
         self.0
     }
 }
 
-/// Resolve one `ActorId` and hold its existing liveness/send pin until drop.
-///
-/// The live-actor lock is released before this function returns. Callers may
-/// compose multiple pins, but must release them before reply waits, callbacks,
-/// or user work. Existing mailbox submission keeps its pin only for that
-/// submission operation.
+/// Resolve one `ActorId` and hold its liveness/send pin until drop (**lock-free**
+/// on the 67M-entry paged slab fast path).
+#[inline]
 pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
-    let ptr = with_shard_read_opt(actor_id, |map| {
-        let ptr = map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|p| p.actor.0))
-            .filter(|p| !p.is_null())?;
-        // SAFETY: the pointer is tracked under the owning shard's read lock.
-        // Incrementing before releasing the read lock is mutually exclusive
-        // with untracking, which acquires the shard's exclusive write lock.
-        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
-        Some(ptr)
-    })
-    .flatten()?;
+    let actors = crate::platform::executor::current_live_actors_opt()?;
+    if let Some(idx) = slab_index_of(actor_id) {
+        if let Some(slot) = actors.slab.get_slot(idx) {
+            match slot.try_lease_by_id(actor_id) {
+                SlabLookup::Matched(ptr, guard) => {
+                    if ptr.is_null() {
+                        return None;
+                    }
+                    // SAFETY: `guard` holds the slot's reader lease, preventing
+                    // `untrack_actor` from completing before `send_pin_count`
+                    // is incremented.
+                    unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+                    drop(guard);
+                    return Some(ActorPin(ptr));
+                }
+                SlabLookup::Empty => {
+                    if !actors.has_overflow() {
+                        return None;
+                    }
+                }
+                SlabLookup::Collision => {}
+            }
+        } else if !actors.has_overflow() {
+            return None;
+        }
+    }
+    if !actors.has_overflow() {
+        return None;
+    }
+    let ptr = actors.overflow[overflow_shard_index(actor_id)]
+        .0
+        .access(|map| {
+            let ptr = map
+                .as_ref()
+                .and_then(|m| m.get(&actor_id).map(|p| p.actor.0))
+                .filter(|p| !p.is_null())?;
+            // SAFETY: tracked under the overflow shard's lock.
+            unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+            Some(ptr)
+        })?;
     Some(ActorPin(ptr))
 }
 
 /// Look up an actor by ID and, if live, call `f` with its raw pointer while
 /// guaranteeing the allocation cannot be freed for the duration of `f`.
-///
-/// **Lock discipline**: unlike an older design that held `LIVE_ACTORS` across
-/// `f`, this function:
-///
-/// 1. Acquires `LIVE_ACTORS`, validates liveness, increments `send_pin_count`
-///    on the actor, then **releases** `LIVE_ACTORS`.
-/// 2. Calls `f(ptr)` with the lock fully released.
-/// 3. Decrements `send_pin_count` via a RAII guard on return **or panic**.
-///
-/// The free paths (`hew_actor_free_inner`, `drain_quiesced_actor`) call
-/// `untrack_actor` (or `take_actor_by_id`) FIRST — under `LIVE_ACTORS` — so no
-/// new pins can be taken after the map entry is removed.  They then spin until
-/// `send_pin_count` drops to 0 (draining any pins taken before the removal)
-/// before calling `finalize`.  Because the pin-increment and the map-removal
-/// both run under `LIVE_ACTORS`, the two are mutually exclusive: either this
-/// function pins before the freer removes the entry (freer waits for the pin to
-/// drain), or the freer removes the entry before this function's map lookup
-/// (lookup returns `None` → no pin, no use of a freed pointer).
-///
-/// Because `LIVE_ACTORS` is not held across `f`, blocking mailbox operations
-/// (the `Block` overflow condvar wait) and eviction retire paths
-/// (`DropOld` → `hew_msg_node_free` → `retire_orphaned_ask_sender_ref` →
-/// `scheduler::enqueue_resume_by_incarnation` → `with_live_incarnation`) are
-/// both safe to call from `f` without deadlocking.
-///
-/// # Lock ordering (unchanged from the module invariant)
-///
-/// `f` is free to acquire any lock that does not transitively re-acquire
-/// `LIVE_ACTORS`.  `LIVE_ACTORS` is fully released before `f` runs, and the
-/// wake path re-takes it twice without ever holding it across a call:
-/// `with_live_incarnation` takes the lock to resolve the incarnation and pin
-/// it, releases it, and only then does `enqueue_resume_pinned` →
-/// `with_live_actor` take it again for the wake itself.  So neither step
-/// self-deadlocks against this function.
-///
-/// Returns `Some(f(ptr))` if the actor is live, `None` if not found.
+#[inline]
 pub(crate) fn with_actor_send_by_id<R>(
     actor_id: u64,
     f: impl FnOnce(*mut HewActor) -> R,
@@ -450,24 +855,8 @@ pub(crate) fn with_actor_send_by_id<R>(
     Some(f(pin.as_ptr()))
 }
 
-/// Like [`with_actor_send_by_id`], but additionally verifies the pinned actor
-/// IS the resolved incarnation by matching its full [`HewActor::spawn_serial`]
-/// against `expected_serial` before running `f`.
-///
-/// The by-ID pin resolves through `LIVE_ACTORS`, keyed by the packed `id`, whose
-/// serial portion is masked to 48 bits (`pid::hew_pid_make`), so a pin by `id`
-/// alone could hand `f` an actor that merely collides on the masked value. The
-/// two-phase owner-scoped role ask copies the resolved incarnation's full serial
-/// out under `children_lock` and passes it here; on serial mismatch this returns
-/// `None` WITHOUT calling `f` — fail closed, treated exactly like a retirement
-/// (the ID aliased a different incarnation). Only used where the caller holds
-/// the resolved incarnation's authoritative serial.
-///
-/// The spawn allocator now refuses past `MAX_ACTOR_SERIAL` rather than wrapping
-/// into already-issued ids, so production cannot reach the collision this
-/// guards; the check stays because it is what makes wrong-actor delivery
-/// unrepresentable at the resolve→submit seam rather than merely unlikely, and
-/// `supervisor.rs` fabricates the collision to keep it honest.
+/// Like [`with_actor_send_by_id`], additionally verifying `spawn_serial`.
+#[inline]
 pub(crate) fn with_actor_send_by_identity<R>(
     actor_id: u64,
     expected_serial: u64,
@@ -482,21 +871,6 @@ pub(crate) fn with_actor_send_by_identity<R>(
 
 /// The exact identity of one actor incarnation: the location-transparent `id`
 /// plus the never-reissued [`HewActor::spawn_serial`].
-///
-/// A readiness source that records a wake target records an ADDRESS when it
-/// keeps a `*mut HewActor`. Addresses are recycled: the allocator hands a freed
-/// actor box straight back to the next spawn, so a wake registered by one
-/// incarnation and fired after that incarnation died can resolve to whatever
-/// actor now occupies the address. The registry's pointer probe cannot tell the
-/// two apart — both are tracked-live — so the wake lands on the wrong
-/// incarnation and moves it `Suspended -> Runnable` with no readiness behind
-/// it.
-///
-/// `spawn_serial` is the discriminator that closes it. It comes from a
-/// monotonic allocator that refuses to wrap ([`crate::pid::MAX_ACTOR_SERIAL`]
-/// is a hard spawn failure, not a wrap), so no two incarnations in a process
-/// ever share one. Recording the pair and resolving it through
-/// [`with_live_incarnation`] makes a wake name an incarnation, not an address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ActorIncarnation {
     actor_id: u64,
@@ -505,14 +879,6 @@ pub(crate) struct ActorIncarnation {
 
 impl ActorIncarnation {
     /// No wake target.
-    ///
-    /// Actor id `0` is the runtime's invalid-actor sentinel. Minting refuses
-    /// it: [`crate::pid::next_actor_id`] rejects any slot that fails
-    /// `actor_slot_fits_internal_alias`, slot `0` included, before it can reach
-    /// the packing primitive - which masks rather than refuses. So `0` can never
-    /// name a real incarnation. Sources
-    /// that park without an actor — a foreign thread, or an await registered
-    /// before the caller is known — record this.
     pub(crate) const NONE: Self = Self {
         actor_id: 0,
         spawn_serial: 0,
@@ -522,9 +888,8 @@ impl ActorIncarnation {
     ///
     /// # Safety
     ///
-    /// `actor`, if non-null, must be live for the duration of this call. Every
-    /// caller records its own actor at park time, where that holds by
-    /// construction.
+    /// `actor`, if non-null, must be live for the duration of this call.
+    #[inline]
     pub(crate) unsafe fn of(actor: *mut HewActor) -> Self {
         if actor.is_null() {
             return Self::NONE;
@@ -539,6 +904,7 @@ impl ActorIncarnation {
     }
 
     /// Rebuild an incarnation from its two scalars (an ABI-boundary record).
+    #[inline]
     pub(crate) const fn from_parts(actor_id: u64, spawn_serial: u64) -> Self {
         Self {
             actor_id,
@@ -547,32 +913,26 @@ impl ActorIncarnation {
     }
 
     /// Whether this records no target at all.
+    #[inline]
     pub(crate) const fn is_none(self) -> bool {
         self.actor_id == 0
     }
 
     /// The location-transparent actor id half of the pair.
+    #[inline]
     pub(crate) const fn actor_id(self) -> u64 {
         self.actor_id
     }
 
     /// The never-reissued serial half of the pair.
+    #[inline]
     pub(crate) const fn spawn_serial(self) -> u64 {
         self.spawn_serial
     }
 }
 
 /// Pin the exact incarnation named by `target` and run `f` while it is held.
-///
-/// Returns `None` — and runs nothing — when the incarnation is gone: the id is
-/// untracked, or it now resolves to a DIFFERENT incarnation (a serial
-/// mismatch). Dropping the call is the correct answer in both cases; the dead
-/// incarnation's continuation was destroyed by its own teardown.
-///
-/// The pin is the allocation lease: [`pin_actor_by_id`] takes it under the
-/// registry lock, and the free path drains `send_pin_count` to zero before
-/// reclaiming the box, so `f` cannot race the target into a free or an address
-/// reuse.
+#[inline]
 pub(crate) fn with_live_incarnation<R>(
     target: ActorIncarnation,
     f: impl FnOnce(&ActorPin) -> R,
@@ -584,11 +944,6 @@ pub(crate) fn with_live_incarnation<R>(
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).
-///
-/// Pointer-identity only: a freed allocation whose address is reused by a
-/// concurrently spawned actor probes as live again (ABA). Probes that wait
-/// for an actor to *disappear* while other threads may spawn actors must use
-/// [`is_actor_live_with_id`] instead.
 #[cfg_attr(
     not(test),
     allow(
@@ -601,14 +956,6 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
 }
 
 /// Check whether `actor_id` still maps to the expected live actor pointer.
-///
-/// ABA-proof variant of [`is_actor_live`]: it also matches `expected`, so a
-/// recycled allocation address cannot resurrect liveness for a freed actor
-/// (a different live actor reusing the address maps under a different `id` or
-/// pointer). Note the packed `id` masks the serial to 48 bits, so full
-/// incarnation identity across a 2^48 wrap needs the serial discriminator
-/// (`with_actor_send_by_identity`); this probe's pointer + id match is
-/// sufficient for its liveness-probe callers.
 #[cfg_attr(
     not(test),
     allow(
@@ -620,53 +967,64 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
     with_live_actor_by_id(actor_id, expected, |_| ()).is_some()
 }
 
-/// Copy the currently tracked actor pointers without removing them.
-///
-/// Unlike [`drain_all_for_cleanup`] this leaves the registry intact, so the
-/// caller can act on live actors while reclamation ownership stays with the
-/// cleanup sweep. Used by `actor::retire_parked_activations`, which must run
-/// before the sweep but must not take the actors from it.
-///
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::{retire_actor_route, ActorPtr, FxHashMap, HewActor, Ordering};
     use crate::runtime::{rt_current, rt_current_opt};
     use std::collections::HashMap;
 
+    #[inline]
+    unsafe fn is_actor_drain_blocking(actor: *mut HewActor) -> bool {
+        // SAFETY: caller holds either the slot reader lease or the overflow shard lock.
+        let a = unsafe { &*actor };
+        if a.actor_state.load(Ordering::Acquire)
+            != crate::internal::types::HewActorState::Suspended as i32
+        {
+            return false;
+        }
+        if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+            return true;
+        }
+        let gate = a.parked_ask_channel.load(Ordering::Acquire);
+        if gate.is_null() {
+            return true;
+        }
+        // SAFETY: `parked_ask_channel` is swapped to null under `SLOT_WRITER`
+        // (or the overflow shard lock) before releasing the retained channel.
+        let cancelled = unsafe {
+            (*gate.cast::<crate::reply_channel::HewReplyChannel>())
+                .cancelled
+                .load(Ordering::Acquire)
+        };
+        !cancelled
+    }
+
     pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
         let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
             return false;
         };
-        for shard in &actors.shards {
+        if actors
+            .slab
+            .visit_allocated_slots(|slot| {
+                let (_, ptr, _guard) = slot.try_lease_any()?;
+                // SAFETY: `_guard` holds the slot reader lease across inspection,
+                // serializing against `swap_slot_under_registry_lock` and `untrack_actor`.
+                unsafe { is_actor_drain_blocking(ptr) }.then_some(true)
+            })
+            .is_some()
+        {
+            return true;
+        }
+        if !actors.has_overflow() {
+            return false;
+        }
+        for shard in &actors.overflow {
             let blocked = shard.0.access(|map| {
                 map.as_ref().is_some_and(|entries| {
-                    entries.values().any(|entry| {
-                        let actor = &entry.actor.0;
-                        // SAFETY: the pointer remains tracked under its owning shard lock;
-                        // every free path must untrack it under the lock before reclaiming.
-                        let a = unsafe { &**actor };
-                        if a.actor_state.load(Ordering::Acquire)
-                            != crate::internal::types::HewActorState::Suspended as i32
-                        {
-                            return false;
-                        }
-                        if !a.checked_invocation.load(Ordering::Acquire).is_null() {
-                            return true;
-                        }
-                        let gate = a.parked_ask_channel.load(Ordering::Acquire);
-                        if gate.is_null() {
-                            return true;
-                        }
-                        // SAFETY: the gate slot owns a retained channel reference that
-                        // is released only after a swap performed under this same
-                        // actor's shard lock.
-                        let cancelled = unsafe {
-                            (*gate.cast::<crate::reply_channel::HewReplyChannel>())
-                                .cancelled
-                                .load(Ordering::Acquire)
-                        };
-                        !cancelled
-                    })
+                    entries
+                        .values()
+                        // SAFETY: overflow shard lock held across inspection.
+                        .any(|entry| unsafe { is_actor_drain_blocking(entry.actor.0) })
                 })
             });
             if blocked {
@@ -683,12 +1041,20 @@ mod native {
             return Vec::new();
         };
         let mut ptrs = Vec::new();
-        for shard in &actors.shards {
-            shard.0.access(|map| {
-                if let Some(m) = map.as_ref() {
-                    ptrs.extend(m.values().map(|entry| entry.actor.0));
-                }
-            });
+        let _ = actors.slab.visit_allocated_slots::<()>(|slot| {
+            if let Some((_, ptr, _guard)) = slot.try_lease_any() {
+                ptrs.push(ptr);
+            }
+            None
+        });
+        if actors.has_overflow() {
+            for shard in &actors.overflow {
+                shard.0.access(|map| {
+                    if let Some(m) = map.as_ref() {
+                        ptrs.extend(m.values().map(|entry| entry.actor.0));
+                    }
+                });
+            }
         }
         ptrs
     }
@@ -700,36 +1066,63 @@ mod native {
             return Vec::new();
         };
         let mut ids = Vec::new();
-        for shard in &actors.shards {
-            shard.0.access(|map| {
-                if let Some(m) = map.as_ref() {
-                    ids.extend(m.keys().copied());
-                }
-            });
+        let _ = actors.slab.visit_allocated_slots::<()>(|slot| {
+            if let Some((id, _, _guard)) = slot.try_lease_any() {
+                ids.push(id);
+            }
+            None
+        });
+        if actors.has_overflow() {
+            for shard in &actors.overflow {
+                shard.0.access(|map| {
+                    if let Some(m) = map.as_ref() {
+                        ids.extend(m.keys().copied());
+                    }
+                });
+            }
         }
         ids
     }
 
-    /// Take all currently tracked actors out of the live map.
+    /// Take all currently tracked actors out of the live registry.
     pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
         let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
             return HashMap::new();
         };
         let mut drained = HashMap::new();
-        for shard in &actors.shards {
-            let taken = shard.0.access(|map| match map.as_mut() {
-                Some(m) => {
-                    let entries = std::mem::take(m);
-                    actors.len.fetch_sub(entries.len(), Ordering::AcqRel);
-                    entries
+        let _ = actors.slab.visit_allocated_slots::<()>(|slot| {
+            if slot.acquire_writer() {
+                let actor_id = slot.actor_id.load(Ordering::Relaxed);
+                let ptr = slot.actor_ptr.load(Ordering::Relaxed);
+                slot.clear_writer_and_remove();
+                actors.len.fetch_sub(1, Ordering::AcqRel);
+                if !ptr.is_null() {
+                    retire_actor_route(ptr, actor_id);
                 }
-                None => FxHashMap::default(),
-            });
-            for (actor_id, entry) in taken {
-                if !entry.actor.0.is_null() {
-                    retire_actor_route(entry.actor.0, actor_id);
+                drained.insert(actor_id, ActorPtr(ptr));
+            }
+            None
+        });
+        if actors.has_overflow() {
+            for shard in &actors.overflow {
+                let taken = shard.0.access(|map| match map.as_mut() {
+                    Some(m) => {
+                        let entries = std::mem::take(m);
+                        let n = entries.len();
+                        if n != 0 {
+                            actors.overflow_count.fetch_sub(n, Ordering::AcqRel);
+                            actors.len.fetch_sub(n, Ordering::AcqRel);
+                        }
+                        entries
+                    }
+                    None => FxHashMap::default(),
+                });
+                for (actor_id, entry) in taken {
+                    if !entry.actor.0.is_null() {
+                        retire_actor_route(entry.actor.0, actor_id);
+                    }
+                    drained.insert(actor_id, entry.actor);
                 }
-                drained.insert(actor_id, entry.actor);
             }
         }
         drained
@@ -791,32 +1184,47 @@ pub(crate) use native::{
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_guest {
-    use super::{ActorIncarnation, Ordering};
+    use super::{ActorIncarnation, HewActor, Ordering};
+
+    fn is_guest_actor_active(ptr: *mut HewActor) -> bool {
+        use crate::internal::types::HewActorState;
+        // SAFETY: caller holds the slot lease or overflow shard lock.
+        let actor = unsafe { &*ptr };
+        let state = actor.actor_state.load(Ordering::Acquire);
+        ![
+            HewActorState::Idle,
+            HewActorState::Stopped,
+            HewActorState::Crashed,
+        ]
+        .iter()
+        .any(|idle| state == *idle as i32)
+            || !actor.checked_invocation.load(Ordering::Acquire).is_null()
+    }
 
     /// Retained guest snapshots require every actor turn and its cleanup to finish.
     pub(crate) fn has_active_guest_actor() -> bool {
-        use crate::internal::types::HewActorState;
-
         let Some(actors) = crate::platform::executor::current_live_actors_opt() else {
             return false;
         };
-        for shard in &actors.shards {
+        if actors
+            .slab
+            .visit_allocated_slots(|slot| {
+                let (_, ptr, _guard) = slot.try_lease_any()?;
+                is_guest_actor_active(ptr).then_some(true)
+            })
+            .is_some()
+        {
+            return true;
+        }
+        if !actors.has_overflow() {
+            return false;
+        }
+        for shard in &actors.overflow {
             let active = shard.0.access(|map| {
                 map.as_ref().is_some_and(|entries| {
-                    entries.values().any(|entry| {
-                        // SAFETY: the liveness shard retains the allocation during
-                        // this inspection; the guest has one execution thread.
-                        let actor = unsafe { &*entry.actor.0 };
-                        let state = actor.actor_state.load(Ordering::Acquire);
-                        ![
-                            HewActorState::Idle,
-                            HewActorState::Stopped,
-                            HewActorState::Crashed,
-                        ]
-                        .iter()
-                        .any(|idle| state == *idle as i32)
-                            || !actor.checked_invocation.load(Ordering::Acquire).is_null()
-                    })
+                    entries
+                        .values()
+                        .any(|entry| is_guest_actor_active(entry.actor.0))
                 })
             });
             if active {
@@ -832,15 +1240,24 @@ mod wasm_guest {
             return Vec::new();
         };
         let mut incarnations = Vec::new();
-        for shard in &actors.shards {
-            shard.0.access(|map| {
-                if let Some(entries) = map.as_ref() {
-                    incarnations.extend(entries.values().map(|entry| {
-                        // SAFETY: the shard lock retains this tracked allocation.
-                        unsafe { ActorIncarnation::of(entry.actor.0) }
-                    }));
-                }
-            });
+        let _ = actors.slab.visit_allocated_slots::<()>(|slot| {
+            if let Some((_, ptr, _guard)) = slot.try_lease_any() {
+                // SAFETY: `_guard` retains this tracked allocation.
+                incarnations.push(unsafe { ActorIncarnation::of(ptr) });
+            }
+            None
+        });
+        if actors.has_overflow() {
+            for shard in &actors.overflow {
+                shard.0.access(|map| {
+                    if let Some(entries) = map.as_ref() {
+                        incarnations.extend(entries.values().map(|entry| {
+                            // SAFETY: overflow shard lock retains this tracked allocation.
+                            unsafe { ActorIncarnation::of(entry.actor.0) }
+                        }));
+                    }
+                });
+            }
         }
         incarnations
     }
@@ -871,9 +1288,6 @@ mod tests {
         drain_deferred_teardown_threads();
     }
 
-    /// `push_deferred_teardown_thread` must opportunistically reap handles for
-    /// threads that have already finished, rather than only growing the vector
-    /// forever until runtime shutdown.
     #[test]
     fn push_deferred_teardown_thread_reaps_already_finished_handles() {
         use std::sync::atomic::AtomicBool;
@@ -881,12 +1295,6 @@ mod tests {
 
         let _rt = crate::scheduler::NoWorkerSchedulerForTest::install();
 
-        // Push three threads that return immediately. By the time each
-        // subsequent push happens, the prior ones have almost certainly
-        // already finished — but to make the assertion deterministic rather
-        // than timing-dependent, explicitly wait for each one to report
-        // `is_finished()` before pushing the next, so the *next* push's
-        // opportunistic reap is guaranteed to see it as finished.
         for _ in 0..3 {
             let handle = std::thread::spawn(|| {});
             while !handle.is_finished() {
@@ -895,22 +1303,12 @@ mod tests {
             push_deferred_teardown_thread(handle);
         }
 
-        // A fourth push (still-finished) must reap all three prior finished
-        // handles as well as itself once it too becomes finished, leaving none
-        // behind. Wait for it the same way, then push a fifth, gated-open
-        // thread that must NOT be reaped while it is still running.
         let handle = std::thread::spawn(|| {});
         while !handle.is_finished() {
             std::thread::yield_now();
         }
         push_deferred_teardown_thread(handle);
-        assert_eq!(
-            deferred_teardown_thread_count(),
-            0,
-            "all four already-finished handles must have been reaped by the \
-             time the fourth was pushed, since each prior push waited for \
-             is_finished() before proceeding"
-        );
+        assert_eq!(deferred_teardown_thread_count(), 0);
 
         let release = Arc::new(AtomicBool::new(false));
         let release2 = Arc::clone(&release);
@@ -920,50 +1318,40 @@ mod tests {
             }
         }));
 
-        // Push one more already-finished handle. The reap inside THIS push
-        // must not touch the still-running gated thread pushed just above.
         let handle = std::thread::spawn(|| {});
         while !handle.is_finished() {
             std::thread::yield_now();
         }
         push_deferred_teardown_thread(handle);
-        assert_eq!(
-            deferred_teardown_thread_count(),
-            1,
-            "the still-running gated thread must be retained, not reaped, \
-             while genuinely still running"
-        );
+        assert_eq!(deferred_teardown_thread_count(), 1);
 
-        // Release the gate and confirm the shutdown-path full drain still
-        // joins it correctly (the opportunistic reap must not have broken the
-        // existing join-before-free barrier).
         release.store(true, Ordering::Release);
         drain_deferred_teardown_threads();
         assert_eq!(deferred_teardown_thread_count(), 0);
     }
 
-    /// Multi-threaded stress test covering all 16 shards: concurrent tracking,
-    /// pinning, pointer/ID lookups, slot swaps against drain scans, untracking,
-    /// and final cross-shard cleanup drain must maintain exact counts with zero
-    /// deadlock.
     #[test]
-    fn sharded_live_actors_concurrent_stress_across_all_shards() {
+    fn paged_slab_and_overflow_concurrent_stress() {
         use std::sync::{Arc, Barrier};
 
         const THREADS: usize = 8;
-        const ACTORS_PER_THREAD: usize = 32; // spans all 16 shards twice per thread
+        const ACTORS_PER_THREAD: usize = 32;
 
         let _rt = crate::scheduler::NoWorkerSchedulerForTest::install();
         assert_eq!(actor_count_for_test(), 0);
 
-        // Allocate actors up front so raw pointers outlive every worker thread.
-        let mut owned: Vec<Box<HewActor>> = Vec::with_capacity(THREADS * ACTORS_PER_THREAD);
+        let mut owned: Vec<Box<HewActor>> = Vec::with_capacity(THREADS * ACTORS_PER_THREAD + 2);
         for idx in 0..(THREADS * ACTORS_PER_THREAD) {
             let mut actor = Box::new(crate::test_actor::stub_actor());
             actor.id = (idx as u64) + 1;
             actor.spawn_serial = actor.id;
             owned.push(actor);
         }
+
+        let mut node_collision = Box::new(crate::test_actor::stub_actor());
+        node_collision.id = (3u64 << 48) | 1;
+        node_collision.spawn_serial = 999_999;
+        let collision_raw: *mut HewActor = &raw mut *node_collision;
 
         let ptrs: Arc<Vec<usize>> = Arc::new(
             owned
@@ -985,8 +1373,7 @@ mod tests {
                     let id = (base + offset) as u64 + 1;
                     // SAFETY: `owned` remains live until all threads join.
                     assert!(unsafe { track_actor(raw) });
-                    // Duplicate registration on the same shard must fail closed.
-                    // SAFETY: as above.
+                    // SAFETY: `owned` remains live until all threads join.
                     assert!(!unsafe { track_actor(raw) });
 
                     assert!(is_actor_live(raw));
@@ -997,12 +1384,10 @@ mod tests {
                     assert_eq!(pin.actor().id, id);
                     drop(pin);
 
-                    // Exercise shard-serialized slot swap concurrently with scans.
                     // SAFETY: `raw` is live until threads join.
                     let slot = unsafe { &(*raw).parked_ask_channel };
                     let _ = swap_slot_under_registry_lock(id, slot);
 
-                    // Leave half of each thread's actors tracked for drain_all_for_cleanup.
                     if offset % 2 == 0 {
                         assert!(untrack_actor(raw));
                         assert!(!is_actor_live_with_id(id, raw));
@@ -1011,7 +1396,6 @@ mod tests {
             }));
         }
 
-        // Concurrent whole-registry scans while workers mutate all 16 shards.
         start.wait();
         for _ in 0..64 {
             let _ = has_drain_blocking_suspended_actor();
@@ -1021,6 +1405,21 @@ mod tests {
         for worker in workers {
             worker.join().expect("live_actors stress worker panicked");
         }
+
+        let raw_1 = ptrs[0] as *mut HewActor;
+        // SAFETY: `owned` and `collision_actor` remain live through cleanup.
+        assert!(unsafe { track_actor(raw_1) });
+        // SAFETY: `collision_actor` remains live through cleanup.
+        assert!(unsafe { track_actor(collision_raw) });
+        // SAFETY: `collision_actor` remains live through cleanup.
+        assert!(!unsafe { track_actor(collision_raw) });
+        assert_eq!(get_actor_ptr_by_id(1), Some(raw_1));
+        assert_eq!(get_actor_ptr_by_id((3u64 << 48) | 1), Some(collision_raw));
+        assert!(untrack_actor(raw_1));
+        // SAFETY: `collision_actor` remains live through cleanup.
+        assert!(!unsafe { track_actor(collision_raw) });
+        assert_eq!(get_actor_ptr_by_id((3u64 << 48) | 1), Some(collision_raw));
+        assert!(untrack_actor(collision_raw));
 
         let expected_remaining = (THREADS * ACTORS_PER_THREAD) / 2;
         assert_eq!(actor_count_for_test(), expected_remaining);

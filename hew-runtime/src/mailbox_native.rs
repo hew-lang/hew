@@ -52,8 +52,7 @@ impl Drop for HewNativeSend {
             // SAFETY: an unpublished wrapper owns no fields independently of the
             // source message. Admission clears this slot before relinquishing it.
             unsafe {
-                crate::mem::buf_free((*self.envelope).payload);
-                crate::cow_envelope::free_allocation(self.envelope);
+                crate::cow_envelope::discard_unpublished_shallow(self.envelope);
             }
         }
     }
@@ -93,6 +92,59 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     if envelope.is_null() {
         // SAFETY: allocation failed before any field ownership transferred.
         unsafe { crate::mem::buf_free(payload) };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the unpublished envelope's fields still belong to its source.
+    unsafe {
+        (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
+        (*envelope).transfer_waker = Some(match &waker {
+            CapacityWake::Direct(waker) => waker.clone(),
+            CapacityWake::Registered(waker) => (**waker).clone(),
+        });
+    };
+    Box::into_raw(Box::new(HewNativeSend {
+        // SAFETY: the caller retains its explicit stamp through this constructor.
+        caller: unsafe { *caller },
+        obligated: obligated != 0,
+        token,
+        message,
+        envelope,
+        wake: waker,
+    }))
+}
+
+/// Inline-SBO variant of [`hew_actor_send_wait_new`] copying `size` bytes from
+/// a caller stack wrapper directly into the envelope's inline buffer.
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes live for this call.
+/// `caller`, `waker`, and `payload_layout` satisfy [`hew_actor_send_wait_new`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the ABI carries payload ownership, readiness and request obligation"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_wait_new_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const std::ffi::c_void,
+    size: usize,
+    drop_payload: super::HewMsgEnvelopeDropFn,
+    waker: *const HewWaker,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    obligated: i32,
+    caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> *mut HewNativeSend {
+    // SAFETY: the caller lends `src` for the synchronous copy into `envelope`.
+    let (envelope, waker) = unsafe {
+        (
+            super::hew_msg_envelope_new_inline(src, size, Some(drop_payload)),
+            CapacityWake::Direct(OwnedWaker::retain(&*waker)),
+        )
+    };
+    if envelope.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: the unpublished envelope's fields still belong to its source.

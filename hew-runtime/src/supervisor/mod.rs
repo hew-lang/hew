@@ -782,11 +782,6 @@ pub struct HewChildSpec {
     pub overflow: c_int,
     pub coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     pub coalesce_fallback: c_int,
-    /// Per-dispatch arena cap in bytes. 0 = unbounded. Mirrors
-    /// `hew_actor_spawn_opts::arena_cap_bytes`; supervisor restart path
-    /// re-applies this cap to every restarted child so `#[max_heap(N)]`
-    /// actors retain their cap across crashes.
-    pub arena_cap_bytes: usize,
     /// Non-zero when the child actor participates in an actor-ref cycle.
     /// Future consumer: cycle-detection / Machine Lane B cycle handling.
     pub cycle_capable: c_int,
@@ -2067,11 +2062,6 @@ struct InternalChildSpec {
     backoff: RestartBackoff,
     /// Circuit breaker state for this child.
     circuit_breaker: CircuitBreakerState,
-    /// Per-dispatch arena cap in bytes. 0 = unbounded. Copied from
-    /// `HewChildSpec::arena_cap_bytes` at spec-registration time and
-    /// applied by every restart path so restarted actors keep the cap
-    /// originally set by `#[max_heap(N)]`.
-    arena_cap_bytes: usize,
     /// Copied from `HewChildSpec::cycle_capable` and forwarded into
     /// `HewActorOpts` for every restart.
     cycle_capable: c_int,
@@ -2225,7 +2215,6 @@ impl Default for InternalChildSpec {
             native_spawn: None,
             backoff: RestartBackoff::default(),
             circuit_breaker: CircuitBreakerState::default(),
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,

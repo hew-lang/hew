@@ -341,10 +341,6 @@ pub(crate) unsafe fn cancel_parked_activation_for_stop(actor: *mut HewActor) {
     // crash-reply, before dropping the cancel token.
     retire_suspended_reply_channel(a);
     clear_suspended_cancel_token(a);
-    if !a.arena.is_null() {
-        // SAFETY: arena was created at spawn; the cancelled activation is over.
-        unsafe { crate::arena::hew_arena_reset(a.arena) };
-    }
     settle_after_activation(actor, 0);
 }
 /// The RESUME re-entry: drive the actor's parked continuation to its next
@@ -412,7 +408,6 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
         cancel_token: stashed_cancel_token.cast(),
         task_scope: std::ptr::null_mut(),
-        arena: a.arena,
         trace: crate::tracing::HewTraceContext::default(),
         partition_policy: std::ptr::null_mut(),
         prev_context: crate::execution_context::current_context(),
@@ -560,13 +555,6 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
             // Destroyed tag with a null slot, so a refusal here (the None
             // branch where nothing was ever parked) is harmless.
             let _ = crate::coro_exec::re_arm(a);
-            // Settle: the resumed dispatch is finished. Mirror the post-loop
-            // idle/requeue CAS so queued messages are served. Reset the arena
-            // for the completed activation.
-            if !a.arena.is_null() {
-                // SAFETY: arena was created at spawn; no references survive.
-                unsafe { crate::arena::hew_arena_reset(a.arena) };
-            }
             settle_after_activation(actor, 0);
         }
     }
@@ -731,10 +719,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         _ => base_budget,
     };
     let mailbox = a.mailbox.cast::<HewMailbox>();
-    // Cache arena pointer before dispatch — the actor may be freed by a
-    // supervisor on another worker during crash recovery, making `a.arena`
-    // a dangling read.
-    let actor_arena = a.arena;
 
     let _activation_metrics = ActivationMetricsGuard::new();
 
@@ -970,7 +954,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
                     cancel_token: std::ptr::null_mut(),
                     task_scope: std::ptr::null_mut(),
-                    arena: a.arena,
                     trace: msg_ref.trace_context,
                     partition_policy: std::ptr::null_mut(),
                     prev_context: crate::execution_context::current_context(),
@@ -1383,11 +1366,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         }
     }
 
-    if !crashed && !actor_arena.is_null() {
-        // SAFETY: Arena was created during spawn; no references survive past activation.
-        unsafe { crate::arena::hew_arena_reset(actor_arena) };
-    }
-
     // An external trap defers its mailbox drain while this frame owns the
     // consumer. `dispatch_active` prevents a supervisor from freeing the actor
     // until the activation-ownership guard drops, so retire any queued nodes
@@ -1792,7 +1770,6 @@ unsafe fn finish_failed_resume(
 
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
-    let actor_arena = a.arena;
     let checked = matches!(&failure, crate::actor_native::DispatchFailure::Checked(_));
     let code = match failure {
         crate::actor_native::DispatchFailure::Checked(fault) => {
@@ -1901,14 +1878,6 @@ unsafe fn finish_failed_resume(
         // SAFETY: the native unwind abandoned a running frame; its typed
         // obligations were recovered above, so only raw reclamation remains.
         let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
-    }
-
-    // Per-activation arena cleanup BEFORE publishing terminal `Crashed`.
-    if took_crashing && !actor_arena.is_null() {
-        // SAFETY: arena was created at spawn; the crash discards all in-flight
-        // data, and `Crashing` prevents `hew_actor_free` from reclaiming it
-        // ahead of us.
-        unsafe { crate::arena::hew_arena_reset(actor_arena) };
     }
 
     // If the handler did not already deposit its reply, send the empty crash

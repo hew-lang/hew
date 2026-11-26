@@ -161,7 +161,6 @@ fn await_race(prefix: u8) {
         crate::resume::WAKES.store(0, Ordering::Relaxed);
         let token = hew_cancel_token_new_child(std::ptr::null_mut());
         let mut context = crate::execution_context::Context {
-            arena: std::ptr::null_mut(),
             cancel_token: token,
             request_deadline: crate::request_deadline::RequestDeadline::default(),
         };

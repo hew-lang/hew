@@ -6740,7 +6740,6 @@ mod vec_owned_tests {
             coalesce_match_fn: None,
             coalesce_fallback: crate::internal::types::HewOverflowPolicy::DropNew as i32,
             message_drop_fn: None,
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,

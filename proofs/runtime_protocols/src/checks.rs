@@ -325,59 +325,6 @@ fn core_timer_removal_and_collection_have_one_payload_owner() {
     assert!(head.is_null(), "protocol: terminal timer stayed linked");
 }
 
-#[cfg(feature = "arena")]
-#[kani::proof]
-fn arena_layout_and_quota_are_exact_for_all_machine_integers() {
-    use crate::arena_layout::{budget, fit};
-    let cursor: usize = kani::any();
-    let size: usize = kani::any();
-    let align: usize = kani::any();
-    let capacity: usize = kani::any();
-    let valid = size > 0
-        && size <= isize::MAX as usize
-        && align > 0
-        && align <= 4096
-        && align.count_ones() == 1
-        && capacity <= isize::MAX as usize;
-    let result = fit(cursor, size, align, capacity);
-    if valid {
-        let wide_align = align as u128;
-        let start = (cursor as u128 + wide_align - 1) & !(wide_align - 1);
-        let end = start + size as u128;
-        assert_eq!(
-            result.is_some(),
-            end <= capacity as u128,
-            "arena: fit disagrees with representable extent"
-        );
-        if let Some(extent) = result {
-            assert_eq!(extent.start as u128, start, "arena: alignment wrapped");
-            assert_eq!(extent.end as u128, end, "arena: extent wrapped");
-            assert!(
-                extent.start >= cursor,
-                "arena: overlap with previous allocation"
-            );
-            assert_eq!(extent.start % align, 0, "arena: invalid alignment");
-            assert_eq!(extent.end - extent.start, size, "arena: undersized extent");
-        }
-    } else {
-        assert!(result.is_none(), "arena: invalid request was accepted");
-    }
-    let used: usize = kani::any();
-    let cap: usize = kani::any();
-    let expected = if cap == 0 {
-        Some(used)
-    } else if used as u128 + size as u128 <= cap as u128 {
-        Some((used as u128 + size as u128) as usize)
-    } else {
-        None
-    };
-    assert_eq!(
-        budget(used, cap, size),
-        expected,
-        "arena: quota wrapped or rejected available capacity"
-    );
-}
-
 fn unexpected_panic(_: std::fmt::Arguments<'_>) -> ! {
     assert!(false, "protocol: unexpected runtime panic");
     kani::assume(false);

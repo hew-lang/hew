@@ -41,14 +41,16 @@
 //!
 //! The block is allocated with alignment [`BUF_ALIGN`] (16), matching what
 //! `libc::malloc` guaranteed before the migration, and the header is exactly
-//! [`BUF_ALIGN`] bytes so the payload keeps that alignment.
+//! [`BUF_ALIGN`] bytes so the payload pointer keeps that alignment.
 //!
 //! A zero-length request allocates a one-byte payload, so the returned pointer
 //! is always non-null and always releasable -- the same sentinel behaviour the
 //! `libc::malloc(n.max(1))` call sites relied on.
 
 use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
+use std::cell::Cell;
 use std::ffi::c_void;
+use std::ptr;
 
 /// Alignment of every block this module hands out.
 ///
@@ -65,25 +67,59 @@ const HEADER: usize = BUF_ALIGN;
 const SMALL_BLOCK_MAX: usize = 64;
 const SMALL_POOL_CAP: usize = 256;
 
-struct SmallBufPool(std::cell::RefCell<Vec<*mut u8>>);
+const _: () = {
+    assert!(HEADER + SMALL_BLOCK_MAX >= std::mem::size_of::<*mut u8>());
+    assert!(BUF_ALIGN >= std::mem::align_of::<*mut u8>());
+};
+
+/// Intrusive word-0 thread-local freelist for 80-byte (`HEADER + SMALL_BLOCK_MAX`)
+/// small blocks. While cached, word 0 at `base` holds the next cached `base`
+/// pointer; on reuse, [`buf_try_alloc`] immediately overwrites word 0 with the
+/// new payload size.
+struct SmallBufPool {
+    head: Cell<*mut u8>,
+    count: Cell<usize>,
+}
 
 impl SmallBufPool {
     const fn new() -> Self {
-        Self(std::cell::RefCell::new(Vec::new()))
+        Self {
+            head: Cell::new(ptr::null_mut()),
+            count: Cell::new(0),
+        }
     }
 
     #[inline]
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "each pooled base was allocated with align BUF_ALIGN (16) >= align_of::<*mut u8>()"
+    )]
     fn pop(&self) -> Option<*mut u8> {
-        self.0.try_borrow_mut().ok()?.pop()
+        let head = self.head.get();
+        if head.is_null() {
+            return None;
+        }
+        // SAFETY: `head` owns a `small_block_layout()` block whose first word
+        // links the next cached block.
+        let next = unsafe { head.cast::<*mut u8>().read() };
+        self.head.set(next);
+        self.count.set(self.count.get() - 1);
+        Some(head)
     }
 
     #[inline]
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "base was allocated with align BUF_ALIGN (16) >= align_of::<*mut u8>()"
+    )]
     unsafe fn push(&self, base: *mut u8) {
-        if let Ok(mut slots) = self.0.try_borrow_mut() {
-            if slots.len() < SMALL_POOL_CAP {
-                slots.push(base);
-                return;
-            }
+        if self.count.get() < SMALL_POOL_CAP {
+            // SAFETY: `base` is a uniquely owned `small_block_layout()` block
+            // (80 bytes, 16-byte aligned).
+            unsafe { base.cast::<*mut u8>().write(self.head.get()) };
+            self.head.set(base);
+            self.count.set(self.count.get() + 1);
+            return;
         }
         // SAFETY: `base` was allocated with `small_block_layout()`.
         unsafe { dealloc(base, small_block_layout()) };
@@ -91,11 +127,20 @@ impl SmallBufPool {
 }
 
 impl Drop for SmallBufPool {
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "each pooled base was allocated with align BUF_ALIGN (16) >= align_of::<*mut u8>()"
+    )]
     fn drop(&mut self) {
         let layout = small_block_layout();
-        for base in self.0.get_mut().drain(..) {
+        let mut cur = self.head.replace(ptr::null_mut());
+        self.count.set(0);
+        while !cur.is_null() {
+            // SAFETY: read the word-0 link before `dealloc` reclaims `cur`.
+            let next = unsafe { cur.cast::<*mut u8>().read() };
             // SAFETY: each pooled block was allocated with `small_block_layout()`.
-            unsafe { dealloc(base, layout) };
+            unsafe { dealloc(cur, layout) };
+            cur = next;
         }
     }
 }
@@ -158,7 +203,7 @@ unsafe fn payload_size(ptr: *mut c_void) -> usize {
 pub fn buf_try_alloc(size: usize) -> *mut c_void {
     let size = size.max(1);
     let base = if size <= SMALL_BLOCK_MAX {
-        if let Some(pooled) = SMALL_BUF_POOL.with(SmallBufPool::pop) {
+        if let Ok(Some(pooled)) = SMALL_BUF_POOL.try_with(SmallBufPool::pop) {
             pooled
         } else {
             // SAFETY: small_block_layout() has non-zero size (80 bytes).
@@ -166,13 +211,13 @@ pub fn buf_try_alloc(size: usize) -> *mut c_void {
         }
     } else {
         let Some(layout) = block_layout(size) else {
-            return std::ptr::null_mut();
+            return ptr::null_mut();
         };
         // SAFETY: layout has non-zero size (HEADER > 0).
         unsafe { alloc(layout) } // ALLOCATOR-PAIRING: GlobalAlloc
     };
     if base.is_null() {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     // SAFETY: base is a fresh block of at least HEADER bytes, aligned to
     // BUF_ALIGN >= align_of::<usize>().
@@ -262,8 +307,18 @@ pub unsafe fn buf_free(ptr: *mut c_void) {
     // SAFETY: same guarantee; the base is HEADER bytes before the payload.
     let base = unsafe { ptr.cast::<u8>().sub(HEADER) };
     if size <= SMALL_BLOCK_MAX {
-        // SAFETY: `base` was allocated with `small_block_layout()`.
-        SMALL_BUF_POOL.with(|pool| unsafe { pool.push(base) });
+        if SMALL_BUF_POOL
+            .try_with(|pool| {
+                // SAFETY: `base` was allocated with `small_block_layout()`.
+                unsafe { pool.push(base) };
+            })
+            .is_err()
+        {
+            // Thread-local storage is already torn down during thread exit;
+            // return the block directly to GlobalAlloc instead of panicking.
+            // SAFETY: `base` was allocated with `small_block_layout()`.
+            unsafe { dealloc(base, small_block_layout()) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        }
         return;
     }
     let Some(layout) = block_layout(size) else {
@@ -334,7 +389,7 @@ mod tests {
     fn realloc_of_null_allocates() {
         // SAFETY: null base is an explicit allocate; the result is freed once.
         unsafe {
-            let ptr = buf_realloc(std::ptr::null_mut(), 32);
+            let ptr = buf_realloc(ptr::null_mut(), 32);
             assert!(!ptr.is_null());
             assert_eq!(payload_size(ptr), 32);
             buf_free(ptr);
@@ -344,7 +399,7 @@ mod tests {
     #[test]
     fn free_of_null_is_a_no_op() {
         // SAFETY: null is the documented no-op input.
-        unsafe { buf_free(std::ptr::null_mut()) };
+        unsafe { buf_free(ptr::null_mut()) };
     }
 
     /// A high-iteration alloc/free loop completes, proving the blocks really
@@ -360,5 +415,37 @@ mod tests {
                 buf_free(ptr);
             }
         }
+    }
+
+    #[test]
+    fn small_buf_pool_recycles_word0_lifo_and_drains_on_thread_exit() {
+        let worker = std::thread::spawn(|| {
+            // SAFETY: each block is uniquely owned, written, and freed once.
+            unsafe {
+                let p1 = buf_alloc(16);
+                let p2 = buf_alloc(32);
+                buf_free(p1);
+                buf_free(p2);
+                // LIFO reuse: p2 comes back first, then p1, with fresh size headers.
+                let r2 = buf_alloc(8);
+                let r1 = buf_alloc(64);
+                assert_eq!(r2, p2);
+                assert_eq!(r1, p1);
+                assert_eq!(payload_size(r2), 8);
+                assert_eq!(payload_size(r1), 64);
+                buf_free(r2);
+                buf_free(r1);
+
+                // Saturate beyond SMALL_POOL_CAP and let thread exit drop the rest.
+                let mut batch = Vec::with_capacity(SMALL_POOL_CAP + 32);
+                for _ in 0..(SMALL_POOL_CAP + 32) {
+                    batch.push(buf_alloc(48));
+                }
+                for ptr in batch {
+                    buf_free(ptr);
+                }
+            }
+        });
+        worker.join().expect("small buf pool worker");
     }
 }

@@ -945,7 +945,6 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
             coalesce_match_fn: spec.coalesce_match_fn,
             coalesce_fallback: spec.coalesce_fallback,
             budget: 0,
-            arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
             message_drop_fn: spec.message_drop_fn,
         };
@@ -1023,7 +1022,6 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
             coalesce_match_fn: opts.coalesce_match_fn,
             coalesce_fallback: opts.coalesce_fallback,
             budget: 0,
-            arena_cap_bytes: opts.arena_cap_bytes,
             cycle_capable: opts.cycle_capable,
             message_drop_fn: opts.message_drop_fn,
         };

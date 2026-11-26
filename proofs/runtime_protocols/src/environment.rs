@@ -78,14 +78,9 @@ type Token = ();
 ))]
 type Token = crate::cancel_token::HewCancellationToken;
 
-#[cfg(feature = "arena")]
-type Arena = crate::arena::ActorArena;
-#[cfg(not(feature = "arena"))]
-type Arena = ();
 pub mod execution_context {
     use super::*;
     pub struct Context {
-        pub arena: *mut Arena,
         pub cancel_token: *mut Token,
         pub request_deadline: crate::request_deadline::RequestDeadline,
     }
@@ -177,7 +172,7 @@ pub mod timer_periodic {
     }
 }
 
-#[cfg(any(feature = "arena", feature = "semaphore", feature = "vector"))]
+#[cfg(any(feature = "semaphore", feature = "vector"))]
 pub mod internal {
     pub mod types {
         pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
@@ -185,7 +180,7 @@ pub mod internal {
         pub const HEW_TRAP_USER_PANIC: i32 = 1;
     }
 }
-#[cfg(any(feature = "arena", feature = "vector"))]
+#[cfg(feature = "vector")]
 pub mod trap_code {
     pub unsafe fn write_stderr(_: &[u8]) {}
     pub fn fmt_decimal_usize(_: usize, _: &mut [u8; 20]) -> &[u8] {
@@ -197,10 +192,6 @@ pub mod trap_code {
     pub fn stamp_current_actor_error_code(_: i32) -> bool {
         true
     }
-}
-#[cfg(feature = "arena")]
-pub mod observe {
-    pub fn record_arena_reset() {}
 }
 
 #[cfg(feature = "read_slot")]

@@ -41,7 +41,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        let entry_block = self.ctx.append_basic_block(function, "entry");
+        builder.position_at_end(entry_block);
         let pid = function.get_nth_param(0).unwrap();
         let data = function.get_nth_param(1).unwrap();
         let length = function.get_nth_param(2).unwrap().into_int_value();
@@ -65,26 +66,40 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(allocate_block);
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
         let size = target.get_abi_size(&wrapper_ty);
-        let allocator = get_or_declare_external(
-            &self.llvm,
-            "hew_actor_payload_try_alloc",
-            ptr.fn_type(&[size_ty.into()], false),
-        )?;
-        let wrapper = call_value(
-            &builder,
-            allocator,
-            &[size_ty.const_int(size, false).into()],
-            "ingress.wrapper",
-        )?
-        .into_pointer_value();
-        let allocated = self.ctx.append_basic_block(function, "allocated");
-        let missing = builder
-            .build_is_null(wrapper, "ingress.no_memory")
-            .llvm_ctx("check ingress allocation")?;
-        builder
-            .build_conditional_branch(missing, refused, allocated)
-            .llvm_ctx("admit allocated ingress wrapper")?;
-        builder.position_at_end(allocated);
+        let use_inline = size <= hew_runtime::cow_envelope::INLINE_PAYLOAD_CAP as u64;
+        let wrapper = if use_inline {
+            let slot = coro::entry_storage_aligned(
+                self.ctx,
+                entry_block,
+                wrapper_ty.into(),
+                16,
+                "ingress.wrapper",
+            )?;
+            coro::emit_lifetime_start(self.ctx, &self.llvm, &builder, slot)?;
+            slot
+        } else {
+            let allocator = get_or_declare_external(
+                &self.llvm,
+                "hew_actor_payload_try_alloc",
+                ptr.fn_type(&[size_ty.into()], false),
+            )?;
+            let wrapper = call_value(
+                &builder,
+                allocator,
+                &[size_ty.const_int(size, false).into()],
+                "ingress.wrapper",
+            )?
+            .into_pointer_value();
+            let allocated = self.ctx.append_basic_block(function, "allocated");
+            let missing = builder
+                .build_is_null(wrapper, "ingress.no_memory")
+                .llvm_ctx("check ingress allocation")?;
+            builder
+                .build_conditional_branch(missing, refused, allocated)
+                .llvm_ctx("admit allocated ingress wrapper")?;
+            builder.position_at_end(allocated);
+            wrapper
+        };
         builder
             .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
             .llvm_ctx("initialize ingress payload ownership")?;
@@ -146,31 +161,44 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             size_ty.const_int(size, false).into(),
             drop.as_global_value().as_pointer_value().into(),
         ];
-        let symbol = if handler.params.is_empty() {
-            "hew_actor_submit_native_terminal"
-        } else {
-            parameters.push(i32_ty.into());
-            arguments.push(i32_ty.const_zero().into());
-            "hew_actor_submit_native"
+        let symbol = match (handler.params.is_empty(), use_inline) {
+            (true, true) => "hew_actor_submit_native_terminal_inline",
+            (true, false) => "hew_actor_submit_native_terminal",
+            (false, true) => {
+                parameters.push(i32_ty.into());
+                arguments.push(i32_ty.const_zero().into());
+                "hew_actor_submit_native_inline"
+            }
+            (false, false) => {
+                parameters.push(i32_ty.into());
+                arguments.push(i32_ty.const_zero().into());
+                "hew_actor_submit_native"
+            }
         };
         parameters.push(ptr.into());
         arguments
             .push(message_release(&self.llvm, self.ctx, adapter.actor, adapter.message).into());
-        let discarded = builder
-            .build_alloca(ptr, "ingress.discarded")
-            .llvm_ctx("allocate ingress discard cursor")?;
+        let discarded =
+            coro::entry_storage(self.ctx, entry_block, ptr.into(), "ingress.discarded")?;
+        coro::emit_lifetime_start(self.ctx, &self.llvm, &builder, discarded)?;
         builder
             .build_store(discarded, ptr.const_null())
             .llvm_ctx("initialize ingress discard cursor")?;
         parameters.push(ptr.into());
         arguments.push(discarded.into());
         parameters.push(ptr.into());
-        arguments.push(sender_stamp(self.ctx, &self.llvm, &builder, None)?.into());
+        let stamp = sender_stamp(self.ctx, &self.llvm, &builder, None)?;
+        arguments.push(stamp.into());
         parameters.push(ptr.into());
         arguments.push(message_layout(&self.llvm, adapter.actor, adapter.message)?.into());
         let submit =
             get_or_declare_external(&self.llvm, symbol, i32_ty.fn_type(&parameters, false))?;
         let status = call_value(&builder, submit, &arguments, "ingress.status")?.into_int_value();
+        coro::emit_lifetime_end(self.ctx, &self.llvm, &builder, stamp)?;
+        coro::emit_lifetime_end(self.ctx, &self.llvm, &builder, discarded)?;
+        if use_inline {
+            coro::emit_lifetime_end(self.ctx, &self.llvm, &builder, wrapper)?;
+        }
         if let Some((ty, layout, value)) = payload {
             let rejected = self.ctx.append_basic_block(function, "rejected");
             let done = self.ctx.append_basic_block(function, "done");
@@ -185,7 +213,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             // A destination that discarded the message under its declared
             // mailbox policy still consumed the typed fields, so only a
             // refusal leaves this frame an owner to release.
-            let discarded = builder
+            let discarded_status = builder
                 .build_int_compare(
                     IntPredicate::EQ,
                     status,
@@ -194,7 +222,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 )
                 .llvm_ctx("classify a declared-policy discard")?;
             let transferred = builder
-                .build_or(accepted, discarded, "ingress.transferred")
+                .build_or(accepted, discarded_status, "ingress.transferred")
                 .llvm_ctx("combine the statuses that take the payload")?;
             builder
                 .build_conditional_branch(transferred, done, rejected)

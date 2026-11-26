@@ -536,6 +536,153 @@ pub(crate) unsafe fn submit_native(
     }
     // SAFETY: attach the selected consuming callback before publication.
     unsafe {
+        submit_native_envelope(
+            token,
+            message,
+            envelope,
+            policy,
+            terminal,
+            payload_release,
+            discarded_release_out,
+            caller,
+            payload_layout,
+        )
+    }
+}
+
+/// Inline-SBO variant of [`hew_actor_submit_native`] copying `size` bytes from
+/// a caller stack wrapper directly into the envelope's inline buffer.
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes live for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_submit_native_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const std::ffi::c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    policy: i32,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> i32 {
+    // SAFETY: forwards the stack-wrapper borrow and typed ownership contract.
+    unsafe {
+        submit_native_inline(
+            token,
+            message,
+            src,
+            size,
+            drop_payload,
+            policy,
+            false,
+            payload_release,
+            discarded_release_out,
+            *caller,
+            payload_layout,
+        )
+    }
+}
+
+/// Inline-SBO variant of [`hew_actor_submit_native_terminal`].
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes live for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_submit_native_terminal_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const std::ffi::c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> i32 {
+    // SAFETY: forwards the stack-wrapper borrow and typed ownership contract.
+    unsafe {
+        submit_native_inline(
+            token,
+            message,
+            src,
+            size,
+            drop_payload,
+            0,
+            true,
+            payload_release,
+            discarded_release_out,
+            *caller,
+            payload_layout,
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete compiler-private payload admission and cleanup contract"
+)]
+unsafe fn submit_native_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const std::ffi::c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    policy: i32,
+    terminal: bool,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> i32 {
+    if !discarded_release_out.is_null() {
+        // SAFETY: generated code supplies a writable optional cursor output.
+        unsafe { discarded_release_out.write(ptr::null_mut()) };
+    }
+    if src.is_null() {
+        return HewSubmitStatus::Oom as i32;
+    }
+    // SAFETY: copies `size` bytes synchronously from `src` into the envelope.
+    let envelope =
+        unsafe { crate::mailbox::hew_msg_envelope_new_inline(src, size, Some(drop_payload)) };
+    if envelope.is_null() {
+        return HewSubmitStatus::Oom as i32;
+    }
+    // SAFETY: envelope is uniquely owned by this submission attempt.
+    unsafe {
+        submit_native_envelope(
+            token,
+            message,
+            envelope,
+            policy,
+            terminal,
+            payload_release,
+            discarded_release_out,
+            caller,
+            payload_layout,
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete compiler-private payload admission and cleanup contract"
+)]
+unsafe fn submit_native_envelope(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    policy: i32,
+    terminal: bool,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> i32 {
+    // SAFETY: attach the selected consuming callback before publication.
+    unsafe {
         (*envelope).release_start = payload_release;
         crate::cow_envelope::set_layout(envelope, payload_layout);
     };
@@ -564,10 +711,9 @@ pub(crate) unsafe fn submit_native(
         status => status as i32,
     };
     // SAFETY: admission failed without publishing or aliasing. The source retains
-    // the typed fields; these two allocations contain no other owning resources.
+    // the typed fields; discard only shallow wrapper/envelope storage.
     unsafe {
-        crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
-        crate::cow_envelope::free_allocation(envelope); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::cow_envelope::discard_unpublished_shallow(envelope);
     }
     status
 }

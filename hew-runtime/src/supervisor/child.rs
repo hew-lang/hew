@@ -566,7 +566,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         native_spawn: None,
         backoff: RestartBackoff::default(),
         circuit_breaker: CircuitBreakerState::default(),
-        arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
         // Carried IN the spec literal  so the dynamic child's
         // initial spawn — which also routes through restart_child_from_spec —

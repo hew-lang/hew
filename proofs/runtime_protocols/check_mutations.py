@@ -414,30 +414,6 @@ MUTATIONS = [
         "core_timer_removal_preserves_sibling_links",
     ),
     (
-        "arena_extent",
-        "arena",
-        "arena_layout.rs",
-        "let end = start.checked_add(size)?;",
-        "let end = start.wrapping_add(size);",
-        "arena_layout_and_quota",
-    ),
-    (
-        "arena_overlap",
-        "arena",
-        "arena.rs",
-        "chunk.base.add(extent.start)",
-        "chunk.base",
-        "arena_allocation_is_disjoint",
-    ),
-    (
-        "arena_failed_charge",
-        "arena",
-        "arena.rs",
-        "let mut index = self.current_chunk;",
-        "self.used = new_used; let mut index = self.current_chunk;",
-        "arena_mapping_failure",
-    ),
-    (
         "wheel_generation",
         "timer",
         "timer_wheel.rs",
@@ -812,8 +788,6 @@ FILES = [
     "await_cancel.rs",
     "timer_entry.rs",
     "timer_wheel.rs",
-    "arena.rs",
-    "arena_layout.rs",
     "coro_sleep.rs",
     "request_deadline.rs",
     "semaphore.rs",
@@ -1031,7 +1005,6 @@ def main():
                     f'Failed Checks: "{prefix}:' in result.stdout
                     for prefix in (
                         "protocol",
-                        "arena",
                         "wheel",
                         "lifecycle",
                         "heap",

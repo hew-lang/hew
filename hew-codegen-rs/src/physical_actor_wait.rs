@@ -519,9 +519,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         clippy::too_many_arguments,
         reason = "one owned submission and its exact protocol"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one owned submission and its exact protocol"
+    )]
     pub(super) fn emit_owned_actor_submission(
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
+        inline_wrapper: Option<PointerValue<'ctx>>,
         payload_release: PointerValue<'ctx>,
         payload_layout: PointerValue<'ctx>,
         source: StorageId,
@@ -536,6 +541,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = self.target_data;
         let word = self.ctx.ptr_sized_int_type(target, None);
+        let call_slot = frame.shared_actor_call_storage(self.ctx)?;
         let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
@@ -552,14 +558,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.ctx.i32_type().into(),
             "submission.seal.status",
         )?;
+        coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, quota_status)?;
         self.builder
             .build_store(quota_status, self.ctx.i32_type().const_zero())
             .llvm_ctx("initialize checked submission sealing")?;
         let new = get_or_declare_external_widened(
             self.llvm,
-            "hew_actor_submit_new",
+            if inline_wrapper.is_some() {
+                "hew_actor_submit_init_inline"
+            } else {
+                "hew_actor_submit_init_in_place"
+            },
             ptr.fn_type(
                 &[
+                    ptr.into(),
                     word.into(),
                     self.ctx.i32_type().into(),
                     ptr.into(),
@@ -577,7 +589,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ],
                 false,
             ),
-            &[(7, Widen::Zero)],
+            &[(8, Widen::Zero)],
         )?;
         use hew_runtime::envelope::RequestKind;
         use hew_types::actor_delivery::SendPolicy;
@@ -586,13 +598,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             SendPolicy::Reject => RequestKind::SendReject,
             SendPolicy::DropNewest => RequestKind::SendDropNewest,
         };
-        let mut args = request.to_vec();
+        let stamp = self.sender_stamp()?;
+        let mut args = Vec::with_capacity(15);
+        args.push(call_slot.into());
+        args.extend_from_slice(request);
         args.extend::<[BasicMetadataValueEnum<'ctx>; 7]>([
             waker.into(),
             self.request_deadline()?.into(),
             self.ctx.i8_type().const_int(kind as u64, false).into(),
             payload_release.into(),
-            self.sender_stamp()?.into(),
+            stamp.into(),
             dispatch.into(),
             self.ctx
                 .bool_type()
@@ -603,11 +618,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         args.push(quota_status.into());
         let operation =
             call_value(&self.builder, new, &args, "submission.operation")?.into_pointer_value();
+        coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, stamp)?;
+        if let Some(wrapper) = inline_wrapper {
+            coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, wrapper)?;
+        }
         let status = self
             .builder
             .build_load(self.ctx.i32_type(), quota_status, "submission.seal.status")
             .llvm_ctx("read checked submission ownership")?
             .into_int_value();
+        coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, quota_status)?;
         let accepted = self
             .ctx
             .append_basic_block(self.value, "submission.quota.accepted");
@@ -627,10 +647,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ok, accepted, quota_refused)
             .llvm_ctx("preserve message fields before quota acquisition")?;
         self.builder.position_at_end(quota_refused);
-        let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
-        self.builder
-            .build_call(free, &[request[2]], "")
-            .llvm_ctx("free unadopted shallow submission wrapper")?;
+        if inline_wrapper.is_none() {
+            let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
+            self.builder
+                .build_call(free, &[request[2]], "")
+                .llvm_ctx("free unadopted shallow submission wrapper")?;
+        }
         self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
         self.discard_pending_message(source)?;
         if let Some(unwind) = unwind {
@@ -800,9 +822,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "waiting send carries optional inline wrapper plus protocol metadata"
+    )]
     pub(super) fn emit_actor_send_wait(
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
+        inline_wrapper: Option<PointerValue<'ctx>>,
         release: PointerValue<'ctx>,
         payload_layout: PointerValue<'ctx>,
         source: StorageId,
@@ -823,7 +850,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let waker = call_value(&self.builder, wake, &[frame.state.into()], "send.waker")?;
         let new = get_or_declare_external(
             self.llvm,
-            "hew_actor_send_wait_new",
+            if inline_wrapper.is_some() {
+                "hew_actor_send_wait_new_inline"
+            } else {
+                "hew_actor_send_wait_new"
+            },
             ptr.fn_type(
                 &[
                     size_ty.into(),
@@ -842,6 +873,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let edge = self.new_actor_wait_edge(request[0], 1)?;
         let cycle = self.ctx.append_basic_block(self.value, "send.cycle.fault");
+        let stamp = self.sender_stamp()?;
         let mut args = request.to_vec();
         args.push(waker.into());
         args.push(release.into());
@@ -851,9 +883,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .const_int(u64::from(obligated), false)
                 .into(),
         );
-        args.push(self.sender_stamp()?.into());
+        args.push(stamp.into());
         args.push(payload_layout.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
+        coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, stamp)?;
+        if let Some(wrapper) = inline_wrapper {
+            coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, wrapper)?;
+        }
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");
         let pending = self.ctx.append_basic_block(self.value, "send.pending");

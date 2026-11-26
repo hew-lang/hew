@@ -570,6 +570,12 @@ pub(crate) struct ActorStateLock {
     /// Slow-path waiter count and condvar synchronization (only touched under contention or poison).
     waiters: Mutex<usize>,
     available: Condvar,
+    /// Inline outgoing strict-turn wait-graph slot for this actor incarnation.
+    /// Embedded at the tail of `ActorStateLock` (which itself sits at the tail
+    /// of `HewActor`) so every `HewActor` constructor initializes it via
+    /// `ActorStateLock::new()` without touching external struct literals or
+    /// shifting codegen-mirrored offsets (`id`, `state`).
+    pub(crate) active_wait_edge: crate::actor_native::wait_graph::ActorWaitSlot,
 }
 
 impl ActorStateLock {
@@ -579,6 +585,7 @@ impl ActorStateLock {
             fast_owner: AtomicU64::new(STATE_LOCK_UNLOCKED),
             waiters: Mutex::new(0),
             available: Condvar::new(),
+            active_wait_edge: crate::actor_native::wait_graph::ActorWaitSlot::new(),
         }
     }
 }
@@ -893,39 +900,6 @@ mod native_dispatch_test_hooks {
         })
     }
 
-    // Thread-local one-shot flag: when set, the next `alloc_actor_arena` call
-    // returns null to simulate an OOM on the arena allocation step.
-    // Reset to `false` automatically by `ArenaAllocFailureGuard::drop`.
-    thread_local! {
-        static FAIL_ARENA_ALLOC_NEXT: Cell<bool> = const { Cell::new(false) };
-    }
-
-    pub(super) struct ArenaAllocFailureGuard;
-
-    impl Drop for ArenaAllocFailureGuard {
-        fn drop(&mut self) {
-            FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(false));
-        }
-    }
-
-    /// Arm the arena-alloc failure injection.  Returns a guard that disarms it on
-    /// drop so the hook cannot leak across test boundaries.
-    pub(super) fn fail_arena_alloc_next() -> ArenaAllocFailureGuard {
-        FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(true));
-        ArenaAllocFailureGuard
-    }
-
-    pub(super) fn should_fail_arena_alloc() -> bool {
-        FAIL_ARENA_ALLOC_NEXT.with(|slot| {
-            if slot.get() {
-                slot.set(false);
-                true
-            } else {
-                false
-            }
-        })
-    }
-
     thread_local! {
         pub(super) static NEXT_SPAWN_ACTOR_ID_OVERRIDE: Cell<Option<(u64, u64)>> =
             const { Cell::new(None) };
@@ -968,9 +942,8 @@ mod native_dispatch_test_hooks {
 pub(crate) use native_dispatch_test_hooks::override_next_spawn_actor_identity;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use native_dispatch_test_hooks::{
-    fail_actor_state_alloc_on_nth, fail_arena_alloc_next, override_next_spawn_actor_id,
-    run_spawn_publication_hook, should_fail_actor_state_alloc, should_fail_arena_alloc,
-    NEXT_SPAWN_ACTOR_ID_OVERRIDE, SPAWN_PUBLICATION_HOOK,
+    fail_actor_state_alloc_on_nth, override_next_spawn_actor_id, run_spawn_publication_hook,
+    should_fail_actor_state_alloc, NEXT_SPAWN_ACTOR_ID_OVERRIDE, SPAWN_PUBLICATION_HOOK,
 };
 
 /// Derive the current actor's ID from an execution context pointer.
@@ -1222,10 +1195,6 @@ pub struct HewActor {
 
     /// Cumulative nanoseconds spent in dispatch for this actor.
     pub prof_processing_time_ns: AtomicU64,
-
-    /// Per-actor arena bump allocator. Installed in the dispatch context so
-    /// `hew_arena_malloc` routes through it. Reset after each activation.
-    pub arena: *mut crate::arena::ActorArena,
 
     // ── Slice-4 suspend/resume executor (appended to preserve C ABI layout) ──
     //
@@ -1570,13 +1539,20 @@ pub const HEW_ACTOR_OFFSET_ID: usize = std::mem::offset_of!(HewActor, id);
 /// Byte offset of [`HewActor::state`].
 pub const HEW_ACTOR_OFFSET_STATE: usize = std::mem::offset_of!(HewActor, state);
 
+impl HewActor {
+    /// Inline lock-free outgoing wait-graph slot for this actor incarnation.
+    #[inline]
+    pub(crate) fn active_wait_edge(&self) -> &crate::actor_native::wait_graph::ActorWaitSlot {
+        &self.state_lock.active_wait_edge
+    }
+}
+
 impl std::fmt::Debug for HewActor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewActor")
             .field("id", &self.id)
             .field("actor_state", &self.actor_state)
             .field("budget", &self.budget.load(Ordering::Relaxed))
-            .field("arena", &self.arena)
             .finish_non_exhaustive()
     }
 }

@@ -38,7 +38,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("ask requires a resumable invocation".into())
         })?;
         let operation =
-            self.emit_actor_call_start(actor, message, policy, sealed, args, Some(unwind))?;
+            self.emit_actor_call_start(actor, message, policy, sealed, args, Some(unwind), true)?;
         frame.bind_operation(
             self.ctx,
             &self.builder,
@@ -235,6 +235,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         sealed: bool,
         args: &[ArgumentTransfer],
         unwind: Option<&PhysicalEdge>,
+        in_shared_slot: bool,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("completion start requires an invocation state".into())
@@ -266,9 +267,38 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
         let size = target.get_abi_size(&wrapper_ty);
+        let use_inline = !sealed && size <= hew_runtime::cow_envelope::INLINE_PAYLOAD_CAP as u64;
+        let call_slot = if in_shared_slot {
+            frame.shared_actor_call_storage(self.ctx)?
+        } else {
+            frame.select_actor_call_storage(self.ctx)?
+        };
         let wrapper = if sealed {
             self.load(sources[1], "ask.sealed.request")?
                 .into_pointer_value()
+        } else if use_inline {
+            let slot =
+                frame.storage_aligned(self.ctx, wrapper_ty.into(), 16, "ask.request.inline")?;
+            coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, slot)?;
+            super::actor::initialize_message_occupancy(
+                self.module,
+                self.ctx,
+                &self.builder,
+                handler,
+                slot,
+            )?;
+            for (index, source) in sources.iter().skip(1).enumerate() {
+                let field = self
+                    .builder
+                    .build_struct_gep(wrapper_ty, slot, (index + 1) as u32, "ask.request.field")
+                    .llvm_ctx("address request field")?;
+                self.value_emitter().store_value(
+                    field,
+                    &self.storage(*source)?.layout,
+                    self.load(*source, "ask.argument")?,
+                )?;
+            }
+            slot
         } else {
             let allocate = get_or_declare_external(
                 self.llvm,
@@ -351,9 +381,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .return_layout
             .as_ref()
             .map_or(0, |layout| layout.size);
-        let mut types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            vec![size_ty.into(), self.ctx.i32_type().into(), ptr.into()];
+        let mut types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = vec![
+            ptr.into(),
+            size_ty.into(),
+            self.ctx.i32_type().into(),
+            ptr.into(),
+        ];
         let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+            call_slot.into(),
             self.load_actor_target(sources[0], "ask.target")?.into(),
             self.ctx
                 .i32_type()
@@ -411,7 +446,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .into(),
         );
         types.push(ptr.into());
-        arguments.push(self.sender_stamp()?.into());
+        let stamp = self.sender_stamp()?;
+        arguments.push(stamp.into());
         types.push(ptr.into());
         let dispatch = self
             .llvm
@@ -436,6 +472,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             None
         } else {
             let status = frame.storage(self.ctx, self.ctx.i32_type().into(), "ask.seal.status")?;
+            coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, status)?;
             self.builder
                 .build_store(status, self.ctx.i32_type().const_zero())
                 .llvm_ctx("initialize checked request sealing")?;
@@ -446,20 +483,27 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let start = get_or_declare_external(
             self.llvm,
             if sealed {
-                "hew_actor_call_resume"
+                "hew_actor_call_resume_in_place"
+            } else if use_inline {
+                "hew_actor_call_init_inline"
             } else {
-                "hew_actor_call_new"
+                "hew_actor_call_init_in_place"
             },
             ptr.fn_type(&types, false),
         )?;
         let operation =
             call_value(&self.builder, start, &arguments, "ask.operation")?.into_pointer_value();
-        if let Some(status) = quota_status {
+        coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, stamp)?;
+        if use_inline {
+            coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, wrapper)?;
+        }
+        if let Some(status_slot) = quota_status {
             let status = self
                 .builder
-                .build_load(self.ctx.i32_type(), status, "ask.seal.status")
+                .build_load(self.ctx.i32_type(), status_slot, "ask.seal.status")
                 .llvm_ctx("read request quota admission")?
                 .into_int_value();
+            coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, status_slot)?;
             let accepted = self.ctx.append_basic_block(self.value, "ask.sealed");
             let refused = self.ctx.append_basic_block(self.value, "ask.quota.refused");
             let ok = self
@@ -477,10 +521,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder.position_at_end(refused);
             // The SIR actor boundary consumes these operands on either exit.
             // A refused acquisition leaves them initialized for this cleanup.
-            let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
-            self.builder
-                .build_call(free, &[wrapper.into()], "")
-                .llvm_ctx("free refused shallow request wrapper")?;
+            if !use_inline {
+                let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
+                self.builder
+                    .build_call(free, &[wrapper.into()], "")
+                    .llvm_ctx("free refused shallow request wrapper")?;
+            }
             self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
             for source in sources.iter().skip(1) {
                 if let Some(action) = self

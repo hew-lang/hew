@@ -208,10 +208,6 @@ pub(crate) fn record_actor_restart() {
     ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn record_arena_reset() {
-    ARENA_RESETS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
 #[no_mangle]
 pub extern "C" fn hew_observe_hot_tier_enabled() -> i32 {
     i32::from(observe_hot_tier_enabled())

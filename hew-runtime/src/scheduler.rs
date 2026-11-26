@@ -418,31 +418,39 @@ impl Parker {
     /// notifier that arrives second cannot notify until `Condvar::wait_timeout`
     /// has atomically registered the waiter and released the mutex.
     fn notify_one(&self) {
-        let _guard = self.mutex.lock_or_recover();
+        let guard = self.mutex.lock_or_recover();
+        self.parked.store(false, Ordering::SeqCst);
+        drop(guard);
         self.cond.notify_one();
     }
 
     /// Notify this parker only if its worker is still registered as parked.
     ///
     /// The optimistic atomic read avoids taking unrelated parker mutexes while
-    /// scanning. The under-lock recheck closes the timeout/return race.
+    /// scanning. The under-lock recheck claims the wake by clearing `parked`
+    /// before releasing the mutex and notifying, preventing duplicate wakes and
+    /// lock-held-across-notify futex bounces.
     fn notify_one_if_parked(&self) -> bool {
         if !self.parked.load(Ordering::SeqCst) {
             return false;
         }
-        let _guard = self.mutex.lock_or_recover();
+        let guard = self.mutex.lock_or_recover();
         if !self.parked.load(Ordering::SeqCst) {
             return false;
         }
+        self.parked.store(false, Ordering::SeqCst);
         #[cfg(test)]
         self.work_notifications.fetch_add(1, Ordering::Relaxed);
+        drop(guard);
         self.cond.notify_one();
         true
     }
 
     #[cfg(test)]
     fn notify_all(&self) {
-        let _guard = self.mutex.lock_or_recover();
+        let guard = self.mutex.lock_or_recover();
+        self.parked.store(false, Ordering::SeqCst);
+        drop(guard);
         self.cond.notify_all();
     }
 }
@@ -1209,12 +1217,48 @@ pub(crate) fn sched_enqueue(actor: *mut HewActor) {
     sched_enqueue_owned_inner(sched, entry);
 }
 
+std::thread_local! {
+    static CURRENT_WORKER_DEQUE: std::cell::Cell<(*const Scheduler, *const WorkDeque)> =
+        const { std::cell::Cell::new((std::ptr::null(), std::ptr::null())) };
+}
+
+struct CurrentWorkerDequeGuard {
+    prev: (*const Scheduler, *const WorkDeque),
+}
+
+impl CurrentWorkerDequeGuard {
+    fn enter(sched: &Scheduler, local: &WorkDeque) -> Self {
+        let prev = CURRENT_WORKER_DEQUE
+            .with(|slot| slot.replace((std::ptr::from_ref(sched), std::ptr::from_ref(local))));
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentWorkerDequeGuard {
+    fn drop(&mut self) {
+        CURRENT_WORKER_DEQUE.with(|slot| slot.set(self.prev));
+    }
+}
+
 fn sched_enqueue_owned_inner(sched: &Scheduler, mut entry: SchedulerQueueEntry) {
     let actor = entry.actor;
     #[cfg(test)]
     run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
     TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
-    sched.global_queue.push(actor.cast::<()>());
+    let pushed_local = CURRENT_WORKER_DEQUE.with(|slot| {
+        let (bound_sched, local_ptr) = slot.get();
+        if std::ptr::eq(bound_sched, sched) && !local_ptr.is_null() {
+            // SAFETY: `local_ptr` is bound by `CurrentWorkerDequeGuard` for the
+            // lifetime of this worker thread's `worker_loop` stack frame.
+            unsafe { (&*local_ptr).push(actor.cast::<()>()) };
+            true
+        } else {
+            false
+        }
+    });
+    if !pushed_local {
+        sched.global_queue.push(actor.cast::<()>());
+    }
     entry.disarm();
     sched_try_wake();
 }
@@ -1263,6 +1307,11 @@ pub fn sched_try_wake() {
 fn wake_one_worker(sched: &Scheduler) {
     static WAKE_COUNTER: AtomicU64 = AtomicU64::new(0);
     if sched.worker_count == 0 {
+        return;
+    }
+    if sched.spinning_workers.load(Ordering::SeqCst) != 0
+        || sched.parked_workers.load(Ordering::SeqCst) == 0
+    {
         return;
     }
     #[expect(
@@ -1377,6 +1426,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // their owner deque retain actor allocations, so release those references
     // when this loop exits (including unwinding).
     let _local_queue_ref_drain = LocalQueueRefDrain(local);
+    let _worker_deque_guard = CurrentWorkerDequeGuard::enter(sched, local);
     // A late-starting worker must not join a replacement default runtime. The
     // per-iteration test check detects replacement and exits before taking
     // work from, or parking on, a transient test scheduler.
@@ -1539,14 +1589,14 @@ fn find_work(
         return Some(Work::Actor(ptr.cast::<HewActor>()));
     }
 
-    // 2. Steal from a random peer.
-    if let Some(actor) = try_steal_from_peers(sched, id, rng) {
-        return Some(Work::Actor(actor));
-    }
-
-    // 3. Try global queue (batch steal into local deque).
+    // 2. Try global queue (batch steal into local deque) before scanning peers.
     if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
         return Some(Work::Actor(ptr.cast::<HewActor>()));
+    }
+
+    // 3. Steal from a random peer.
+    if let Some(actor) = try_steal_from_peers(sched, id, rng) {
+        return Some(Work::Actor(actor));
     }
     let task = pop_task(sched);
     if let Some(task) = task {
@@ -1647,7 +1697,7 @@ fn park_worker(
     }
 
     let parker = &sched.parkers[id];
-    let guard = parker.mutex.lock_or_recover();
+    let mut guard = parker.mutex.lock_or_recover();
     parker.parked.store(true, Ordering::SeqCst);
     sched.parked_workers.fetch_add(1, Ordering::SeqCst);
 
@@ -1679,8 +1729,10 @@ fn park_worker(
             WorkerParkOutcome::Notified
         };
     }
-    let _guard = parker.cond.wait_or_recover(guard);
-    parker.parked.store(false, Ordering::SeqCst);
+    while parker.parked.load(Ordering::Acquire) {
+        guard = parker.cond.wait_or_recover(guard);
+    }
+    drop(guard);
     sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
     WorkerParkOutcome::Notified
 }

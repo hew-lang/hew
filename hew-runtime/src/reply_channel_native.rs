@@ -200,6 +200,7 @@ pub unsafe extern "C" fn hew_reply_channel_new_native(
         {
             let mut owner = (*channel).native.lock_or_recover();
             owner.waker = Some(OwnedWaker::retain(&*waker));
+            (*channel).has_native_waker.store(true, Ordering::Release);
             owner.value_owner = crate::owned_value_budget::current_owner();
             owner.binding = crate::owned_value_budget::transfer::current_binding();
         }

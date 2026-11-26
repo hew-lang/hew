@@ -225,6 +225,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 0,
             ),
         );
+        // The snapshot record and caller fault pair are private entry allocas
+        // that cannot alias heap vector headers/buffers or each other.
+        let noalias = self.ctx.create_enum_attribute(
+            inkwell::attributes::Attribute::get_named_enum_kind_id("noalias"),
+            0,
+        );
+        for param in [0, 4, 5] {
+            value.add_attribute(inkwell::attributes::AttributeLoc::Param(param), noalias);
+        }
         let entry = self.ctx.append_basic_block(value, "entry");
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);

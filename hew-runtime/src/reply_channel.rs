@@ -104,6 +104,8 @@ pub struct HewReplyChannel {
     cond: Condvar,
     /// Optional common cancellation/deadline record attached to a suspended ask.
     await_cancel: AtomicPtr<HewAwaitCancel>,
+    /// Fast-path flag set when a native waker is registered in `native`.
+    has_native_waker: AtomicBool,
     /// Retained readiness target for a checked native invocation. Registration
     /// precedes admission; abandonment detaches it without touching the sender.
     native: Mutex<native::NativeReplyOwner>,
@@ -157,6 +159,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         lock: Mutex::new(()),
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
+        has_native_waker: AtomicBool::new(false),
         native: Mutex::new(native::NativeReplyOwner::default()),
         native_request: None,
         native_layout: ptr::null(),
@@ -462,18 +465,22 @@ unsafe fn publish_reply_from_sender_ref(
             (*ch).caller_actor_id.load(Ordering::Acquire),
             (*ch).caller_actor_serial.load(Ordering::Relaxed),
         );
-        let native_waker = (*ch).native.lock_or_recover().waker.take();
+        let native_waker = if (*ch).has_native_waker.load(Ordering::Acquire) {
+            (*ch).native.lock_or_recover().waker.take()
+        } else {
+            None
+        };
         if let Some(waker) = native_waker {
             if reply_won {
                 waker.wake();
             }
         } else if caller_actor.is_none() {
-            // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
-            // waiter re-checks its `ready`/`cancelled` predicate under the lock,
-            // so a notify on the losing edge is harmless; it is left ungated.
+            // Foreign/main-thread condvar waiter (E6 — unchanged). Release the
+            // mutex before `notify_one` to avoid a lock-handoff bounce; the
+            // sender reference keeps `ch` live until `hew_reply_channel_free`.
             let guard = (*ch).lock.lock_or_recover();
-            (*ch).cond.notify_one();
             drop(guard);
+            (*ch).cond.notify_one();
         } else if reply_won {
             // Parked-continuation waiter: re-enqueue the caller actor ONLY when
             // the reply won the arbiter (or carried no deadline registration). The

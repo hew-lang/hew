@@ -199,6 +199,9 @@ pub struct ValueTransfer {
     source: Option<ValueOwner>,
     destination: Option<Acquisition>,
     walk: Option<Box<TransferWalk>>,
+    /// Same-account recipient held until a later destination bind re-arms the
+    /// transfer and the walk must acquire it.
+    deferred_destination: Option<ValueOwner>,
     layout: *const HewValueLayout,
     slot: *const c_void,
     prepared: bool,
@@ -208,10 +211,12 @@ pub struct ValueTransfer {
 
 impl ValueTransfer {
     fn walk_mut(&mut self) -> &mut TransferWalk {
+        let deferred = &mut self.deferred_destination;
         self.walk.get_or_insert_with(|| {
+            let destination = deferred.take();
             Box::new(TransferWalk {
-                destination: None,
-                binding: None,
+                binding: destination.as_ref().and_then(ValueOwner::execution_binding),
+                destination,
                 waker: None,
                 seen: SeenStorage::default(),
             })
@@ -251,6 +256,7 @@ impl ValueTransfer {
                 source,
                 destination: None,
                 walk: None,
+                deferred_destination: destination,
                 layout,
                 slot,
                 prepared: false,
@@ -267,6 +273,7 @@ impl ValueTransfer {
                 waker: None,
                 seen: SeenStorage::default(),
             })),
+            deferred_destination: None,
             layout,
             slot,
             prepared: true,

@@ -166,6 +166,15 @@ pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
 }
 
 #[inline]
+pub(crate) fn publish_requeue_entry(entry: SchedulerQueueEntry) {
+    if crate::driver::active() {
+        crate::driver::publish_queue_entry(entry);
+        return;
+    }
+    crate::scheduler::publish_requeue_entry(entry);
+}
+
+#[inline]
 pub(crate) fn has_runnable_work() -> bool {
     crate::scheduler::has_runnable_work()
 }

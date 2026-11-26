@@ -1221,6 +1221,24 @@ pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
     sched_enqueue_owned_inner(sched, entry);
 }
 
+/// Push a running actor's own requeue onto the global FIFO and wake a worker.
+///
+/// The LIFO slot belongs to the peer the actor woke during its turn. Taking it
+/// would evict that peer and run the requeuing actor again at once, and the
+/// owner deque pops LIFO, so the global queue is the only FIFO tail.
+pub(crate) fn publish_requeue_entry(mut entry: SchedulerQueueEntry) {
+    let Some(sched) = get_scheduler() else {
+        return;
+    };
+    let actor = entry.actor;
+    #[cfg(test)]
+    run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
+    TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
+    sched.global_queue.push(actor.cast::<()>());
+    entry.disarm();
+    wake_one_worker(sched);
+}
+
 /// Publish ready work on the same worker pool as actor activations.
 pub(crate) fn enqueue_work(task: std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>) {
     let Some(sched) = get_scheduler() else {
@@ -1708,7 +1726,8 @@ impl PickState {
 /// Every [`GLOBAL_QUEUE_INTERVAL`] picks, one task or the oldest global-queue
 /// actor goes first; a LIFO-slot occupant stays put, and the next enqueue
 /// evicts it to the stealable deque. Otherwise the LIFO slot runs up to
-/// [`MAX_LIFO_POLLS`] times in a row before [`find_work`] searches the queues.
+/// [`MAX_LIFO_POLLS`] times in a row; then, if other work is queued, its
+/// occupant joins the global FIFO and [`find_work`] searches the queues.
 fn next_work(
     sched: &Scheduler,
     id: usize,
@@ -1727,11 +1746,19 @@ fn next_work(
     }
     let lifo_actor = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
     if !lifo_actor.is_null() {
-        if pick.lifo_polls < MAX_LIFO_POLLS {
-            pick.lifo_polls += 1;
+        let others_wait = pick.lifo_polls >= MAX_LIFO_POLLS
+            && (!local.is_empty()
+                || !sched.global_queue.is_empty()
+                || sched.pending_tasks.load(Ordering::Acquire) != 0);
+        if !others_wait {
+            // Under the cap, or at the cap with nothing else queued here: a
+            // new window starts rather than moving the occupant for nothing.
+            pick.lifo_polls = pick.lifo_polls % MAX_LIFO_POLLS + 1;
             return Some(Work::Actor(lifo_actor));
         }
-        local.push(lifo_actor.cast::<()>());
+        // Cap reached with other work queued: send the occupant to the FIFO
+        // tail. The owner deque pops LIFO and would hand it straight back.
+        sched.global_queue.push(lifo_actor.cast::<()>());
         wake_one_worker(sched);
     }
     pick.lifo_polls = 0;
@@ -6516,6 +6543,88 @@ mod tests {
 
         take_default_runtime_for_test();
         crate::activation::ACTIVE_ACTIVATIONS.store(0, Ordering::Release);
+    }
+
+    /// A budget-exhausted actor's requeue leaves the worker's LIFO slot to the
+    /// peer it woke, so the peer runs next and the requeue waits at the FIFO
+    /// tail. Taking the slot would evict the peer and resume the same actor.
+    #[test]
+    fn budget_exhausted_requeue_leaves_woken_peer_in_lifo_slot() {
+        static PEER: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+        unsafe extern "C-unwind" fn wake_peer_dispatch(
+            _ctx: *mut crate::execution_context::HewExecutionContext,
+            _state: *mut c_void,
+            _msg_type: i32,
+            _data: *mut c_void,
+            _size: usize,
+            _borrow_mode: i32,
+        ) -> *mut c_void {
+            sched_enqueue(PEER.load(Ordering::Acquire));
+            ptr::null_mut()
+        }
+
+        let sched = NoWorkerSchedulerForTest::install();
+        // SAFETY: the test thread owns this deque and stands in for its worker.
+        let (local, _stealer) = unsafe { crate::deque::WorkDeque::new() };
+        let _worker = CurrentWorkerDequeGuard::enter(
+            get_scheduler().expect("worker-less scheduler installed"),
+            &local,
+        );
+
+        // SAFETY: fresh mailbox, owned through the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        for msg_type in [1, 2] {
+            // SAFETY: `mailbox` is live and the empty payload has no ownership.
+            let sent = unsafe { mailbox::hew_mailbox_send(mailbox, msg_type, ptr::null_mut(), 0) };
+            assert_eq!(sent, 0);
+        }
+
+        let mut peer = stub_actor();
+        peer.id = 0x2849_0002;
+        let peer_ptr: *mut HewActor = (&raw mut peer).cast();
+        PEER.store(peer_ptr, Ordering::Release);
+
+        let mut actor = stub_actor();
+        actor.id = 0x2849_0001;
+        actor.dispatch = Some(wake_peer_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.budget.store(1, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+
+        activate_actor(actor_ptr);
+
+        let slot = CURRENT_WORKER_LIFO.with(|slot| slot.replace(ptr::null_mut()));
+        let evicted = local.pop();
+        let requeued = sched.take_global_with_queue_ref();
+        assert_eq!(slot, peer_ptr, "the woken peer keeps the LIFO slot");
+        assert!(evicted.is_none(), "the requeue must not evict the peer");
+        assert_eq!(
+            requeued,
+            Some(actor_ptr),
+            "the budget-exhausted actor waits at the FIFO tail"
+        );
+
+        // SAFETY: each pointer was taken from exactly one queue entry.
+        unsafe {
+            release_scheduler_queue_ref(slot);
+            release_scheduler_queue_ref(actor_ptr);
+        }
+        assert_eq!(peer.send_pin_count.load(Ordering::Acquire), 0);
+        assert_eq!(actor.send_pin_count.load(Ordering::Acquire), 0);
+        PEER.store(ptr::null_mut(), Ordering::Release);
+
+        // SAFETY: the activation returned; this test is the sole consumer of
+        // the message the exhausted budget left behind.
+        unsafe {
+            let msg = mailbox::hew_mailbox_try_recv(mailbox);
+            assert!(!msg.is_null());
+            hew_msg_node_free(msg);
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     #[test]

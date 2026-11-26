@@ -20,6 +20,20 @@ pub(crate) fn sched_enqueue(actor: *mut HewActor) {
     publish(entry);
 }
 
+/// Requeue the actor whose activation is ending, behind the work it woke.
+///
+/// A budget-exhausted or yielding actor uses this instead of
+/// [`sched_enqueue`]: a peer it woke during the turn runs before it does.
+pub(crate) fn sched_requeue_self(actor: *mut HewActor) {
+    if actor.is_null() {
+        return;
+    }
+    // SAFETY: the calling activation keeps the actor live while transferring
+    // that lifetime to the queue entry.
+    let entry = unsafe { SchedulerQueueEntry::retain(actor) };
+    crate::platform::executor::publish_requeue_entry(entry);
+}
+
 /// Publish an entry whose queue reference the caller already owns.
 pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
     publish(entry);

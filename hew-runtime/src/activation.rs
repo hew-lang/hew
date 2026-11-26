@@ -27,7 +27,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::mailbox_header::{HewSysMsg, Origin};
-use crate::resume::{sched_enqueue, sched_enqueue_owned};
+use crate::resume::{sched_enqueue, sched_enqueue_owned, sched_requeue_self};
 
 /// Activations running right now, and activations finished. The native
 /// scheduler reports these as its worker and task counters; the wasm32 driver
@@ -281,7 +281,7 @@ pub(crate) unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut 
             )
             .is_ok()
     {
-        sched_enqueue(actor);
+        sched_requeue_self(actor);
     }
     crate::observe::record_coroutine_suspend();
     crate::observe::hew_observe_probe_suspend(
@@ -1482,7 +1482,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             )
             .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
         }
     } else {
         // No more messages → RUNNING → IDLE.
@@ -1533,7 +1533,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         )
                         .is_ok()
                     {
-                        sched_enqueue(actor);
+                        sched_requeue_self(actor);
                     }
                     return;
                 }
@@ -1703,7 +1703,7 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
                 )
                 .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
             return;
         }
         // Latch re-check AFTER publishing `Suspended`, mirroring the FG3 drain
@@ -2026,7 +2026,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             )
             .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
         }
     } else if a
         .actor_state
@@ -2069,7 +2069,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                     )
                     .is_ok()
                 {
-                    sched_enqueue(actor);
+                    sched_requeue_self(actor);
                 }
                 return;
             }

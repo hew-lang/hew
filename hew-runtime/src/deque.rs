@@ -150,6 +150,21 @@ impl GlobalQueue {
         }
     }
 
+    /// Takes the oldest item from the global queue without moving a batch
+    /// into a local deque.
+    ///
+    /// Returns `None` if the queue is empty.
+    #[must_use]
+    pub fn steal(&self) -> Option<*mut ()> {
+        loop {
+            match self.injector.steal() {
+                Steal::Success(ptr) => return Some(ptr),
+                Steal::Empty => return None,
+                Steal::Retry => {}
+            }
+        }
+    }
+
     /// Returns `true` if the global queue is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {

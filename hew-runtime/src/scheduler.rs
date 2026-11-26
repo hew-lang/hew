@@ -1248,6 +1248,13 @@ pub(crate) fn sched_enqueue(actor: *mut HewActor) {
 /// local/global queues for fairness (mirrors Go's `runnext` / Tokio's `lifo_slot`).
 const MAX_LIFO_POLLS: u32 = 31;
 
+/// Worker iterations between forced polls of the task and global queues.
+/// The LIFO slot and the local deque are served first, so without this tick
+/// an off-worker wake (reactor, timer, blocking pool, main thread) waits for
+/// all local work to drain. Prime, as in Go's `schedtick % 61`, so the poll
+/// does not phase-lock with a periodic workload.
+const GLOBAL_QUEUE_INTERVAL: u32 = 61;
+
 std::thread_local! {
     static CURRENT_WORKER_DEQUE: std::cell::Cell<(*const Scheduler, *const WorkDeque)> =
         const { std::cell::Cell::new((std::ptr::null(), std::ptr::null())) };
@@ -1556,8 +1563,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     )]
     crate::signal::init_worker_recovery(id as u32);
 
-    let mut prefer_task = true;
-    let mut lifo_polls: u32 = 0;
+    let mut pick = PickState::new();
     let mut spin_budget = spin::SpinBudget::new(sched.spin_limit);
     // Set when this worker ran out of work; cleared by the next item it takes.
     let mut leaving_idle = false;
@@ -1635,20 +1641,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         // including the `continue`s.
         {
             let _handoff = ActivationClaim::new(id);
-            let lifo_actor = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
-            if lifo_actor.is_null() {
-                lifo_polls = 0;
-            } else {
-                if lifo_polls < MAX_LIFO_POLLS {
-                    lifo_polls += 1;
-                    activate_queued_actor(lifo_actor);
-                    continue;
-                }
-                lifo_polls = 0;
-                local.push(lifo_actor.cast::<()>());
-                wake_one_worker(sched);
-            }
-            if let Some(work) = find_work(sched, id, local, &mut rng, &mut prefer_task) {
+            if let Some(work) = next_work(sched, id, local, &mut rng, &mut pick) {
                 if let Some(spent) = spun.take() {
                     spin_budget.hit(spent, sched.spin_limit);
                 }
@@ -1690,6 +1683,59 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
 enum Work {
     Task(std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>),
     Actor(*mut HewActor),
+}
+
+/// Per-worker counters that bound how long one source of work can defer the
+/// others.
+struct PickState {
+    prefer_task: bool,
+    lifo_polls: u32,
+    tick: u32,
+}
+
+impl PickState {
+    const fn new() -> Self {
+        Self {
+            prefer_task: true,
+            lifo_polls: 0,
+            tick: 0,
+        }
+    }
+}
+
+/// Take the next runnable item for worker `id`.
+///
+/// Every [`GLOBAL_QUEUE_INTERVAL`] picks, one task or the oldest global-queue
+/// actor goes first; a LIFO-slot occupant stays put, and the next enqueue
+/// evicts it to the stealable deque. Otherwise the LIFO slot runs up to
+/// [`MAX_LIFO_POLLS`] times in a row before [`find_work`] searches the queues.
+fn next_work(
+    sched: &Scheduler,
+    id: usize,
+    local: &WorkDeque,
+    rng: &mut Xorshift64,
+    pick: &mut PickState,
+) -> Option<Work> {
+    pick.tick = pick.tick.wrapping_add(1);
+    if pick.tick.is_multiple_of(GLOBAL_QUEUE_INTERVAL) {
+        if let Some(task) = pop_task(sched) {
+            return Some(Work::Task(task));
+        }
+        if let Some(actor) = sched.global_queue.steal() {
+            return Some(Work::Actor(actor.cast::<HewActor>()));
+        }
+    }
+    let lifo_actor = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
+    if !lifo_actor.is_null() {
+        if pick.lifo_polls < MAX_LIFO_POLLS {
+            pick.lifo_polls += 1;
+            return Some(Work::Actor(lifo_actor));
+        }
+        local.push(lifo_actor.cast::<()>());
+        wake_one_worker(sched);
+    }
+    pick.lifo_polls = 0;
+    find_work(sched, id, local, rng, &mut pick.prefer_task)
 }
 
 /// Take the next runnable item, alternating task and actor priority.
@@ -3222,6 +3268,54 @@ mod tests {
 
             assert_eq!(actor.actor_state.load(Ordering::Acquire), state as i32);
         }
+    }
+
+    /// A global-queue entry is picked within `GLOBAL_QUEUE_INTERVAL` picks
+    /// even while a 1:1 handoff keeps the LIFO slot full and the owner deque
+    /// never runs dry. Without the tick it waits for all local work to drain.
+    #[test]
+    fn global_queue_is_picked_while_local_work_persists() {
+        let _sched = NoWorkerSchedulerForTest::install();
+        let sched = get_scheduler().expect("worker-less scheduler installed");
+        // SAFETY: the test thread owns this deque and stands in for its worker.
+        let (local, _stealer) = unsafe { crate::deque::WorkDeque::new() };
+        let _worker = CurrentWorkerDequeGuard::enter(sched, &local);
+        let mut rng = Xorshift64::new(1);
+        let mut pick = PickState::new();
+
+        // Picks only move these pointers between queues; nothing activates
+        // them, so they carry no queue references.
+        let handoff = stub_actor();
+        let backlog = stub_actor();
+        let woken = stub_actor();
+        let handoff_ptr: *mut HewActor = (&raw const handoff).cast_mut();
+        let backlog_ptr: *mut HewActor = (&raw const backlog).cast_mut();
+        let woken_ptr: *mut HewActor = (&raw const woken).cast_mut();
+
+        local.push(backlog_ptr.cast());
+        sched.global_queue.push(woken_ptr.cast());
+        let mut picked_global = false;
+        for _ in 0..GLOBAL_QUEUE_INTERVAL {
+            CURRENT_WORKER_LIFO.with(|slot| slot.set(handoff_ptr));
+            match next_work(sched, 0, &local, &mut rng, &mut pick) {
+                Some(Work::Actor(actor)) if actor == woken_ptr => {
+                    picked_global = true;
+                    break;
+                }
+                Some(Work::Actor(actor)) if actor == backlog_ptr => local.push(actor.cast()),
+                Some(Work::Actor(actor)) => assert_eq!(actor, handoff_ptr),
+                Some(Work::Task(_)) => panic!("no task was queued"),
+                None => panic!("local work is always available"),
+            }
+        }
+
+        CURRENT_WORKER_LIFO.with(|slot| slot.set(ptr::null_mut()));
+        while local.pop().is_some() {}
+        while sched.global_queue.steal().is_some() {}
+        assert!(
+            picked_global,
+            "the global queue must be polled while local work persists"
+        );
     }
 
     /// `enqueue_resume` on a `Suspended` actor CASes it to `Runnable` and

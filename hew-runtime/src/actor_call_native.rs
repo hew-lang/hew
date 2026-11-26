@@ -29,6 +29,8 @@ enum CallState {
     Waiting,
     Ready(RequestOutcome),
     Taken,
+    /// Reply was cleanly delivered and taken; no pending sender or reply remains.
+    TakenClean,
 }
 
 #[derive(Debug)]
@@ -126,11 +128,14 @@ impl HewActorCall {
             return;
         }
         self.cleanup_started = true;
+        if matches!(self.state, CallState::TakenClean) && self.rejected_payload.is_null() {
+            return;
+        }
         // SAFETY: this operation owns both receiving and unpublished request slots.
         unsafe {
             let (request, reply) = match &mut self.route {
                 CallRoute::Local(local) => {
-                    if !matches!(self.state, CallState::Taken)
+                    if !matches!(self.state, CallState::Taken | CallState::TakenClean)
                         || self.kind.completion_policy().is_some()
                     {
                         local.request.withdraw();
@@ -163,7 +168,7 @@ impl HewActorCall {
         if let CallRoute::Imported(imported) = &self.route {
             return match self.state {
                 CallState::Ready(outcome) => outcome.code(),
-                CallState::Taken => -2,
+                CallState::Taken | CallState::TakenClean => -2,
                 CallState::Admitting | CallState::Waiting => {
                     // SAFETY: this call exclusively drives the imported operation.
                     let status = unsafe { imported.poll() };
@@ -176,20 +181,24 @@ impl HewActorCall {
         }
         match self.state {
             CallState::Ready(outcome) => return outcome.code(),
-            CallState::Taken => return -2,
+            CallState::Taken | CallState::TakenClean => return -2,
             CallState::Admitting => {
                 let deadline = self.poll_deadline();
                 if deadline != -1 {
                     return deadline;
                 }
                 // SAFETY: this operation exclusively owns the admission.
-                let result = self
-                    .local()
-                    .admission
-                    .as_mut()
-                    .map_or(Err(AskError::SendFailed), |admission| unsafe {
-                        poll_request_admission(admission)
-                    });
+                let (result, resolved_target) = match self.local().admission.as_mut() {
+                    Some(admission) => {
+                        // SAFETY: this operation exclusively owns the admission.
+                        let r = unsafe { poll_request_admission(admission) };
+                        (r, admission.resolved_target)
+                    }
+                    None => (Err(AskError::SendFailed), None),
+                };
+                if resolved_target.is_some() {
+                    self.target = resolved_target;
+                }
                 let discarded = match result {
                     Ok(SendOutcome::Failed)
                         // SAFETY: this operation exclusively owns the same pending admission.
@@ -289,6 +298,7 @@ impl HewActorCall {
     /// # Safety
     /// This operation is ready and unique; output holds the completion reply.
     pub(crate) unsafe fn take_outcome(&mut self, output: *mut c_void) -> RequestOutcome {
+        let mut clean_local = false;
         let outcome = match self.state {
             CallState::Ready(outcome) => match &self.route {
                 CallRoute::Local(local) => {
@@ -298,6 +308,7 @@ impl HewActorCall {
                             hew_reply_channel_poll_native(local.channel, self.expected_size, output)
                         };
                         debug_assert_eq!(taken, 0, "ready reply changes before its unique take");
+                        clean_local = local.admission.is_none();
                     }
                     outcome
                 }
@@ -306,7 +317,11 @@ impl HewActorCall {
             },
             _ => return RequestOutcome::Completed(-2),
         };
-        self.state = CallState::Taken;
+        self.state = if clean_local {
+            CallState::TakenClean
+        } else {
+            CallState::Taken
+        };
         outcome
     }
 
@@ -329,7 +344,10 @@ impl HewActorCall {
 impl HewActorCall {
     /// Move the queued request's timer to its inbound publication owner.
     pub(crate) fn take_queued(&mut self) -> (Arc<RequestState>, *mut HewCoroSleep) {
-        assert!(matches!(self.state, CallState::Taken));
+        assert!(matches!(
+            self.state,
+            CallState::Taken | CallState::TakenClean
+        ));
         let local = self.local();
         (
             Arc::clone(&local.request),
@@ -347,15 +365,23 @@ impl Drop for HewActorCall {
         // SAFETY: all three operations belong to this call. Cancellation wins
         // against dispatch before any sender reference can be released.
         unsafe {
-            self.prepare_cleanup();
+            let clean =
+                matches!(self.state, CallState::TakenClean) && self.rejected_payload.is_null();
+            if !clean {
+                self.prepare_cleanup();
+            }
             if let Some(target) = self.owned_target.take() {
                 crate::lifetime::local_handles::hew_actor_handle_release(target);
             }
             match &mut self.route {
                 CallRoute::Local(local) => {
-                    hew_reply_channel_cancel(local.channel);
-                    local.admission = None;
-                    hew_coro_sleep_free(local.timer);
+                    if !clean {
+                        hew_reply_channel_cancel(local.channel);
+                        local.admission = None;
+                    }
+                    if !local.timer.is_null() {
+                        hew_coro_sleep_free(local.timer);
+                    }
                     hew_reply_channel_free(local.channel);
                 }
                 CallRoute::Imported(_) => {}
@@ -655,12 +681,13 @@ pub(crate) unsafe fn actor_call_resume(
         expected_size: reply_size,
         kind,
         state: CallState::Admitting,
-        target: crate::actor_native::wait_graph::resolve_target(token),
+        target: None,
         cleanup_started: false,
         cleanup: None,
         rejected_payload: ptr::null_mut(),
     });
-    // SAFETY: the first attempt establishes admission in source evaluation order.
+    // SAFETY: the first attempt establishes admission in source evaluation order
+    // and captures `operation.target` directly from the pinned receiver.
     unsafe { operation.poll() };
     Box::into_raw(operation)
 }

@@ -256,6 +256,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         .into_pointer_value())
     }
 
+    pub(super) fn new_actor_wait_edge_for_call(
+        &self,
+        call: PointerValue<'ctx>,
+        operation: u64,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("actor wait edge requires an invocation".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let new = get_or_declare_external(
+            self.llvm,
+            "hew_actor_wait_edge_new_for_call",
+            ptr.fn_type(&[ptr.into(), ptr.into(), self.ctx.i32_type().into()], false),
+        )?;
+        Ok(call_value(
+            &self.builder,
+            new,
+            &[
+                frame.state.into(),
+                call.into(),
+                self.ctx.i32_type().const_int(operation, false).into(),
+            ],
+            "actor.wait.edge",
+        )?
+        .into_pointer_value())
+    }
+
     pub(super) fn check_actor_wait_cycle(
         &self,
         edge: PointerValue<'ctx>,
@@ -630,7 +657,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("return the unsealed message")?;
         self.builder.position_at_end(owned);
         self.clear_owned(source)?;
-        let edge = self.new_actor_wait_edge(request[0], 1)?;
+        let edge = self.new_actor_wait_edge_for_call(operation, 1)?;
         let cycle = self.ctx.append_basic_block(self.value, "submission.cycle");
         let poll = self.ctx.append_basic_block(self.value, "submission.poll");
         let inspect = self

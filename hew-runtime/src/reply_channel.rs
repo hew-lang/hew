@@ -61,6 +61,10 @@ pub struct HewReplyChannel {
     pub(crate) orphaned: AtomicBool,
     /// Reply payload (from [`hew_reply`]'s sized-block allocation, owned by the waiter).
     value: *mut c_void,
+    /// Inline buffer for small plain scalar replies (avoids per-reply malloc/free).
+    inline_value: [u8; 16],
+    /// True when the reply payload is stored in `inline_value` instead of `value`.
+    value_is_inline: bool,
     /// Size of `value` in bytes.
     value_size: usize,
     /// Optional typed destructor for the reply payload (`R`'s embedded heap),
@@ -106,6 +110,8 @@ pub struct HewReplyChannel {
     await_cancel: AtomicPtr<HewAwaitCancel>,
     /// Fast-path flag set when a native waker is registered in `native`.
     has_native_waker: AtomicBool,
+    /// True when `native.payload_owned` is set (avoids locking `native` on take).
+    payload_owned: AtomicBool,
     /// Retained readiness target for a checked native invocation. Registration
     /// precedes admission; abandonment detaches it without touching the sender.
     native: Mutex<native::NativeReplyOwner>,
@@ -148,6 +154,8 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         cancelled: AtomicBool::new(false),
         orphaned: AtomicBool::new(false),
         value: ptr::null_mut(),
+        inline_value: [0; 16],
+        value_is_inline: false,
         value_size: 0,
         reply_drop_fn: Mutex::new(None),
         native_reply_release: None,
@@ -160,10 +168,50 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
         has_native_waker: AtomicBool::new(false),
+        payload_owned: AtomicBool::new(false),
         native: Mutex::new(native::NativeReplyOwner::default()),
         native_request: None,
         native_layout: ptr::null(),
         native_code: None,
+    }))
+}
+
+/// Construct a native reply channel with its initial owner state populated
+/// directly before publication (zero mutex acquisitions on construction).
+fn new_native_channel(
+    native_owner: native::NativeReplyOwner,
+    drop_reply: Option<HewReplyDropFn>,
+    native_reply_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    native_layout: *const hew_cabi::value::HewValueLayout,
+    native_code: Option<crate::code_owner::CodeRoot>,
+) -> *mut HewReplyChannel {
+    #[cfg(test)]
+    ACTIVE_CHANNELS.fetch_add(1, Ordering::Relaxed);
+    Box::into_raw(Box::new(HewReplyChannel {
+        refs: AtomicUsize::new(1),
+        ready: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
+        orphaned: AtomicBool::new(false),
+        value: ptr::null_mut(),
+        inline_value: [0; 16],
+        value_is_inline: false,
+        value_size: 0,
+        reply_drop_fn: Mutex::new(drop_reply),
+        native_reply_release,
+        allocation_failed: AtomicBool::new(false),
+        fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
+        failure: Mutex::new(None),
+        caller_actor_id: AtomicU64::new(0),
+        caller_actor_serial: AtomicU64::new(0),
+        lock: Mutex::new(()),
+        cond: Condvar::new(),
+        await_cancel: AtomicPtr::new(ptr::null_mut()),
+        has_native_waker: AtomicBool::new(true),
+        payload_owned: AtomicBool::new(false),
+        native: Mutex::new(native_owner),
+        native_request: None,
+        native_layout,
+        native_code,
     }))
 }
 
@@ -579,7 +627,11 @@ pub(crate) unsafe fn published_failure(
     ch: *const HewReplyChannel,
 ) -> Option<Arc<crate::failure_snapshot::FailureSnapshot>> {
     // SAFETY: the caller retains a live channel through this read.
-    unsafe { ch.as_ref() }?.failure.lock_or_recover().clone()
+    let ch = unsafe { ch.as_ref() }?;
+    if ch.fail_reason.load(Ordering::Acquire) == crate::internal::types::HEW_REPLY_FAIL_NONE {
+        return None;
+    }
+    ch.failure.lock_or_recover().clone()
 }
 
 /// Classify a resolved-null reply: WHY did the wait produce no value?

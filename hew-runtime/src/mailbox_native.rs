@@ -128,6 +128,7 @@ pub struct HewNativeAsk {
     envelope: *mut super::HewMsgEnvelope,
     channel: *mut std::ffi::c_void,
     wake: CapacityWake,
+    pub(crate) resolved_target: Option<crate::lifetime::live_actors::ActorIncarnation>,
 }
 
 /// Walk the actual unpublished request until accepted admission takes it.
@@ -252,10 +253,11 @@ pub(crate) unsafe fn poll_request_admission(
         return Err(AskError::Timeout);
     }
     // SAFETY: the operation retains its unpublished envelope until transfer.
+    let mut resolved_target = wait.resolved_target;
     let outcome = wait.wake.poll(|capacity| {
         // SAFETY: this poll retains its unpublished request through each pinned attempt.
         unsafe {
-            crate::actor::try_submit_native_request(
+            crate::actor::try_submit_native_request_capturing_target(
                 wait.token,
                 wait.message,
                 wait.envelope,
@@ -263,9 +265,11 @@ pub(crate) unsafe fn poll_request_admission(
                 wait.obligated,
                 wait.caller,
                 capacity,
+                &mut resolved_target,
             )
         }
     });
+    wait.resolved_target = resolved_target;
     if matches!(
         outcome,
         super::SendOutcome::Enqueued | super::SendOutcome::Coalesced | super::SendOutcome::Dropped
@@ -401,8 +405,11 @@ pub(crate) unsafe fn request_wait_resume(
     // SAFETY: the unpublished envelope is exclusive.
     unsafe { (*envelope).request = state };
     // SAFETY: the resumed operation uniquely owns this envelope and retains its new wake target.
+    // Avoid redundant retain/drop when `seal_checked` already installed the same waker.
     unsafe {
-        (*envelope).transfer_waker = Some(OwnedWaker::retain(&*waker));
+        if (*envelope).transfer_waker.is_none() {
+            (*envelope).transfer_waker = Some(OwnedWaker::retain(&*waker));
+        }
     }
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
@@ -417,6 +424,7 @@ pub(crate) unsafe fn request_wait_resume(
         envelope,
         channel,
         wake: waker,
+        resolved_target: None,
     })
 }
 

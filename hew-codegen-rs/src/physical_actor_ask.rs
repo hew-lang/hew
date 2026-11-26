@@ -55,21 +55,50 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "ask must borrow its target".into(),
             ));
         };
-        let wait_edge =
-            self.new_actor_wait_edge(self.load_actor_target(target, "ask.wait.target")?.into(), 0)?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let wait_edge_slot = frame.storage(self.ctx, ptr.into(), "ask.wait.edge.slot")?;
+        self.builder
+            .build_store(wait_edge_slot, ptr.const_null())
+            .llvm_ctx("initialize lazy wait edge")?;
         let poll = self.ctx.append_basic_block(self.value, "ask.poll");
+        let prepare_edge = self.ctx.append_basic_block(self.value, "ask.prepare.edge");
+        let check_cancel = self.ctx.append_basic_block(self.value, "ask.check.cancel");
         let inspect = self.ctx.append_basic_block(self.value, "ask.inspect");
         let pending = self.ctx.append_basic_block(self.value, "ask.pending");
+        let register_edge = self.ctx.append_basic_block(self.value, "ask.register.edge");
+        let check_cycle = self.ctx.append_basic_block(self.value, "ask.check.cycle");
+        let suspend_block = self.ctx.append_basic_block(self.value, "ask.suspend");
         let completed = self.ctx.append_basic_block(self.value, "ask.completed");
         let cancelled = self.ctx.append_basic_block(self.value, "ask.cancelled");
         let destroyed = self.ctx.append_basic_block(self.value, "ask.destroyed");
         let failed = self.ctx.append_basic_block(self.value, "ask.failed");
         let cycle = self.ctx.append_basic_block(self.value, "ask.cycle");
+        let free_edge = self.ctx.append_basic_block(self.value, "ask.free.edge");
+        let after_free_edge = self
+            .ctx
+            .append_basic_block(self.value, "ask.after.free.edge");
         self.builder
             .build_unconditional_branch(poll)
             .llvm_ctx("poll completion")?;
         self.builder.position_at_end(poll);
-        self.free_handle("hew_actor_wait_edge_prepare", wait_edge)?;
+        let current_edge = self
+            .builder
+            .build_load(ptr, wait_edge_slot, "ask.wait.edge")
+            .llvm_ctx("load lazy wait edge")?
+            .into_pointer_value();
+        let has_edge = self
+            .builder
+            .build_is_not_null(current_edge, "ask.has.edge")
+            .llvm_ctx("check lazy wait edge")?;
+        self.builder
+            .build_conditional_branch(has_edge, prepare_edge, check_cancel)
+            .llvm_ctx("arm wait edge only when registered")?;
+        self.builder.position_at_end(prepare_edge);
+        self.free_handle("hew_actor_wait_edge_prepare", current_edge)?;
+        self.builder
+            .build_unconditional_branch(check_cancel)
+            .llvm_ctx("continue after arming wait edge")?;
+        self.builder.position_at_end(check_cancel);
         let cancelling = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
         let cancelling = self
             .builder
@@ -96,7 +125,38 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )
             .llvm_ctx("inspect completion readiness")?;
         self.builder.position_at_end(pending);
-        self.check_actor_wait_cycle(wait_edge, cycle)?;
+        let pending_edge = self
+            .builder
+            .build_load(ptr, wait_edge_slot, "ask.pending.edge")
+            .llvm_ctx("load wait edge before suspend")?
+            .into_pointer_value();
+        let edge_missing = self
+            .builder
+            .build_is_null(pending_edge, "ask.edge.missing")
+            .llvm_ctx("check if wait edge needs lazy registration")?;
+        self.builder
+            .build_conditional_branch(edge_missing, register_edge, check_cycle)
+            .llvm_ctx("register wait edge lazily on first pending poll")?;
+        self.builder.position_at_end(register_edge);
+        let new_edge = self.new_actor_wait_edge_for_call(operation, 0)?;
+        self.builder
+            .build_store(wait_edge_slot, new_edge)
+            .llvm_ctx("store registered wait edge")?;
+        let registered = self
+            .builder
+            .build_is_not_null(new_edge, "ask.edge.registered")
+            .llvm_ctx("check if actor wait edge was created")?;
+        // If registered, re-enter poll to arm and re-check readiness before
+        // confirming pending, closing any registration/wake race.
+        self.builder
+            .build_conditional_branch(registered, poll, suspend_block)
+            .llvm_ctx("re-poll after wait edge registration")?;
+        self.builder.position_at_end(check_cycle);
+        self.check_actor_wait_cycle(pending_edge, cycle)?;
+        self.builder
+            .build_unconditional_branch(suspend_block)
+            .llvm_ctx("suspend after acyclic confirmation")?;
+        self.builder.position_at_end(suspend_block);
         frame.suspend(self.ctx, &self.builder, poll, destroyed)?;
         self.builder.position_at_end(destroyed);
         self.builder
@@ -113,13 +173,35 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.initialize_cancellation_fault()?;
         self.leave(&mut join, suspend::EXIT_CANCEL)?;
         self.builder.position_at_end(cycle);
-        self.initialize_actor_cycle_fault(wait_edge)?;
+        let cycle_edge = self
+            .builder
+            .build_load(ptr, wait_edge_slot, "ask.cycle.edge")
+            .llvm_ctx("load diagnosed wait edge")?
+            .into_pointer_value();
+        self.initialize_actor_cycle_fault(cycle_edge)?;
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         self.builder.position_at_end(failed);
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         let selected = self.enter_join(&join)?;
-        self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        let exit_edge = self
+            .builder
+            .build_load(ptr, wait_edge_slot, "ask.exit.edge")
+            .llvm_ctx("load wait edge for release")?
+            .into_pointer_value();
+        let has_exit_edge = self
+            .builder
+            .build_is_not_null(exit_edge, "ask.has.exit.edge")
+            .llvm_ctx("check if wait edge was registered")?;
+        self.builder
+            .build_conditional_branch(has_exit_edge, free_edge, after_free_edge)
+            .llvm_ctx("free wait edge only when registered")?;
+        self.builder.position_at_end(free_edge);
+        self.free_handle("hew_actor_wait_edge_free", exit_edge)?;
+        self.builder
+            .build_unconditional_branch(after_free_edge)
+            .llvm_ctx("continue after freeing wait edge")?;
+        self.builder.position_at_end(after_free_edge);
         frame.clear_operation(self.ctx, &self.builder)?;
         self.release_handle(release::Handle::ActorCall, operation)?;
         let ([normal_block, cancel_block], unwind_block) = self.dispatch_exits(
@@ -511,18 +593,45 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("finish rejected request")?;
             self.builder.position_at_end(replied);
         }
+        let is_ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "ask.take.ok",
+            )
+            .llvm_ctx("skip failure lookup on successful ask")?;
+        let ok_block = self.builder.get_insert_block().unwrap();
+        let fetch_failure = self.ctx.append_basic_block(self.value, "ask.fetch.failure");
+        let materialize = self.ctx.append_basic_block(self.value, "ask.materialize");
+        self.builder
+            .build_conditional_branch(is_ok, materialize, fetch_failure)
+            .llvm_ctx("branch around failure lookup on success")?;
+        self.builder.position_at_end(fetch_failure);
         let failure_fn = get_or_declare_external(
             self.llvm,
             "hew_actor_call_failure",
             ptr.fn_type(&[ptr.into()], false),
         )?;
-        let failure = call_value(
+        let fetched_failure = call_value(
             &self.builder,
             failure_fn,
             &[operation.into()],
             "ask.failure",
         )?
         .into_pointer_value();
+        self.builder
+            .build_unconditional_branch(materialize)
+            .llvm_ctx("join fetched ask failure")?;
+        self.builder.position_at_end(materialize);
+        let failure = self
+            .builder
+            .build_phi(ptr, "ask.failure.phi")
+            .llvm_ctx("select ask failure pointer")?;
+        let null_ptr = ptr.const_null();
+        failure.add_incoming(&[(&null_ptr, ok_block), (&fetched_failure, fetch_failure)]);
+        let failure = failure.as_basic_value().into_pointer_value();
         self.emit_ask_result(result, status, reply, &handler.return_ty, Some(failure))?;
         self.builder
             .build_unconditional_branch(done)

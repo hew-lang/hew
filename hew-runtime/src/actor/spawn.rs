@@ -1132,7 +1132,42 @@ pub(crate) unsafe fn try_submit_native_request(
     // SAFETY: forwards the uniquely owned request and its optional reply.
     unsafe {
         submit_native_request(
-            token, message, envelope, reply, obligated, false, caller, capacity,
+            token, message, envelope, reply, obligated, false, caller, capacity, None,
+        )
+    }
+}
+
+/// Submit an envelope and capture the pinned target's [`ActorIncarnation`] in
+/// the same pin so callers do not re-resolve `token` for wait-graph tracking.
+///
+/// # Safety
+/// Both unpublished references transfer only on successful admission.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "forwards the admission contract plus target capture slot"
+)]
+pub(crate) unsafe fn try_submit_native_request_capturing_target(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    reply: *mut c_void,
+    obligated: bool,
+    caller: crate::actor_caller::HewCallerStamp,
+    capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
+    target_out: &mut Option<live_actors::ActorIncarnation>,
+) -> crate::mailbox::SendOutcome {
+    // SAFETY: forwards the uniquely owned request and its optional reply.
+    unsafe {
+        submit_native_request(
+            token,
+            message,
+            envelope,
+            reply,
+            obligated,
+            false,
+            caller,
+            capacity,
+            Some(target_out),
         )
     }
 }
@@ -1153,6 +1188,7 @@ pub(crate) unsafe fn submit_native_terminal(
             true,
             crate::actor_caller::local_sender(),
             None,
+            None,
         )
     }
 }
@@ -1170,6 +1206,7 @@ unsafe fn submit_native_request(
     terminal: bool,
     caller: crate::actor_caller::HewCallerStamp,
     capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
+    target_out: Option<&mut Option<live_actors::ActorIncarnation>>,
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
@@ -1185,6 +1222,10 @@ unsafe fn submit_native_request(
     crate::lifetime::local_handles::with_current_actor(token, |actor| {
         // SAFETY: this guard pins the exact actor incarnation and its mailbox.
         let a = unsafe { &*actor };
+        if let Some(slot) = target_out {
+            // SAFETY: `actor` is live and pinned for this closure.
+            *slot = Some(unsafe { live_actors::ActorIncarnation::of(actor) });
+        }
         if let Some(waker) = capacity {
             // SAFETY: this same pin covers registration and the admission check.
             unsafe { &*a.mailbox.cast::<HewMailbox>() }

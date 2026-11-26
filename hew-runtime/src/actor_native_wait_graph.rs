@@ -9,30 +9,100 @@ use crate::coro_state::HewCoroState;
 use crate::lifetime::{live_actors, local_handles};
 use crate::util::MutexExt;
 use live_actors::ActorIncarnation;
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock, Weak};
+
+const WAIT_SHARDS: usize = 64;
+const STATE_DISARMED: u8 = 0;
+const STATE_ARMED: u8 = 1;
+const STATE_PENDING: u8 = 2;
 
 #[derive(Debug)]
 pub struct HewActorWaitEdge {
     owner: ActorIncarnation,
-    targets: Vec<ActorIncarnation>,
+    /// Inline first target avoids a heap `Vec` on single-target asks and waits.
+    primary_target: Option<ActorIncarnation>,
+    /// Additional targets for multi-arm `select` registrations.
+    extra_targets: Box<[ActorIncarnation]>,
     external_progress: bool,
     operation: i32,
+    state: AtomicU8,
+    replaced: AtomicBool,
     diagnostic: OnceLock<String>,
 }
 
-struct Registration {
-    edge: Weak<HewActorWaitEdge>,
-    armed: bool,
-    pending: bool,
+impl HewActorWaitEdge {
+    fn targets(&self) -> impl Iterator<Item = ActorIncarnation> + '_ {
+        self.primary_target
+            .into_iter()
+            .chain(self.extra_targets.iter().copied())
+    }
+
+    fn can_block(&self) -> bool {
+        !self.external_progress && self.primary_target.is_some()
+    }
 }
 
-static WAITS: LazyLock<Mutex<HashMap<ActorIncarnation, Registration>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+struct WaitShard {
+    len: AtomicUsize,
+    entries: RwLock<FxHashMap<ActorIncarnation, Weak<HewActorWaitEdge>>>,
+}
+
+impl WaitShard {
+    fn new() -> Self {
+        Self {
+            len: AtomicUsize::new(0),
+            entries: RwLock::new(FxHashMap::default()),
+        }
+    }
+}
+
+#[inline]
+const fn shard_index(owner: ActorIncarnation) -> usize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "masked to WAIT_SHARDS - 1 (0..64)"
+    )]
+    {
+        (owner.actor_id() as usize) & (WAIT_SHARDS - 1)
+    }
+}
+
+static WAITS: LazyLock<[WaitShard; WAIT_SHARDS]> =
+    LazyLock::new(|| std::array::from_fn(|_| WaitShard::new()));
+
+/// Serializes rare potential-cycle graph snapshots so two actors closing the
+/// same knot simultaneously do not race diagnostic publication.
+static CYCLE_CHECK_LOCK: Mutex<()> = Mutex::new(());
+
+fn is_target_pending(target: ActorIncarnation) -> bool {
+    let shard = &WAITS[shard_index(target)];
+    if shard.len.load(Ordering::SeqCst) == 0 {
+        return false;
+    }
+    let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+    entries
+        .get(&target)
+        .and_then(Weak::upgrade)
+        .is_some_and(|edge| edge.state.load(Ordering::SeqCst) == STATE_PENDING)
+}
 
 impl HewActorWaitEdge {
     fn register(owner: ActorIncarnation, target: ActorIncarnation, operation: i32) -> Arc<Self> {
-        Self::register_alternatives(owner, vec![target], false, operation)
+        let edge = Arc::new(Self {
+            owner,
+            primary_target: Some(target),
+            extra_targets: Box::default(),
+            external_progress: false,
+            operation,
+            state: AtomicU8::new(STATE_DISARMED),
+            replaced: AtomicBool::new(false),
+            diagnostic: OnceLock::new(),
+        });
+        Self::install(owner, &edge);
+        edge
     }
 
     fn register_alternatives(
@@ -41,31 +111,50 @@ impl HewActorWaitEdge {
         external_progress: bool,
         operation: i32,
     ) -> Arc<Self> {
+        let mut iter = targets.into_iter();
+        let primary_target = iter.next();
+        let extra_targets: Box<[ActorIncarnation]> = iter.collect();
         let edge = Arc::new(Self {
             owner,
-            targets,
+            primary_target,
+            extra_targets,
             external_progress,
             operation,
+            state: AtomicU8::new(STATE_DISARMED),
+            replaced: AtomicBool::new(false),
             diagnostic: OnceLock::new(),
         });
-        WAITS.lock_or_recover().insert(
-            owner,
-            Registration {
-                edge: Arc::downgrade(&edge),
-                armed: false,
-                pending: false,
-            },
-        );
+        Self::install(owner, &edge);
         edge
+    }
+
+    fn install(owner: ActorIncarnation, edge: &Arc<Self>) {
+        let shard = &WAITS[shard_index(owner)];
+        let mut entries = shard
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(previous) = entries.insert(owner, Arc::downgrade(edge)) {
+            if let Some(previous_edge) = previous.upgrade() {
+                previous_edge.replaced.store(true, Ordering::Release);
+                previous_edge.state.store(STATE_DISARMED, Ordering::SeqCst);
+            }
+        } else {
+            shard.len.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
 /// Invalidate before readiness makes the actor runnable. The operation arms
 /// its candidate again before the next poll, then confirms only a pending poll.
 pub(crate) fn ready(owner: ActorIncarnation) {
-    if let Some(registration) = WAITS.lock_or_recover().get_mut(&owner) {
-        registration.armed = false;
-        registration.pending = false;
+    let shard = &WAITS[shard_index(owner)];
+    if shard.len.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(edge) = entries.get(&owner).and_then(Weak::upgrade) {
+        edge.state.store(STATE_DISARMED, Ordering::SeqCst);
     }
 }
 
@@ -119,6 +208,30 @@ pub unsafe extern "C" fn hew_actor_wait_edge_new(
     })
 }
 
+/// Register a dependency on the target incarnation already captured by a
+/// local actor call during submission, avoiding a redundant handle and
+/// live-actor registry lookup.
+///
+/// # Safety
+/// `state` and `call` remain live through this registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_wait_edge_new_for_call(
+    state: *const HewCoroState,
+    call: *const crate::actor_call_native::HewActorCall,
+    operation: i32,
+) -> *const HewActorWaitEdge {
+    // SAFETY: the caller retains both pointers for this call.
+    let owner = unsafe { &*state }.execution().actor_turn;
+    if owner.is_none() || call.is_null() {
+        return std::ptr::null();
+    }
+    // SAFETY: the caller exclusively owns this live call operation.
+    let Some(target) = unsafe { &*call }.target else {
+        return std::ptr::null();
+    };
+    Arc::into_raw(HewActorWaitEdge::register(owner, target, operation))
+}
+
 /// Register a dependency on the incarnation selected by a terminal observer.
 /// A role's owner token is a supervisor, so resolving that token independently
 /// cannot prove an actor wait cycle and can select a different child after a
@@ -152,19 +265,16 @@ pub unsafe extern "C" fn hew_actor_wait_edge_prepare(edge: *const HewActorWaitEd
     let Some(edge) = (unsafe { edge.as_ref() }) else {
         return;
     };
-    if let Some(registration) = WAITS
-        .lock_or_recover()
-        .get_mut(&edge.owner)
-        .filter(|registration| std::ptr::eq(registration.edge.as_ptr(), edge))
-    {
-        registration.armed = true;
-        registration.pending = false;
+    if !edge.replaced.load(Ordering::Acquire) {
+        edge.state.store(STATE_ARMED, Ordering::SeqCst);
     }
 }
 
 /// Confirm a pending predicate and return 1 only when it closes a local cycle.
-/// Wakes and confirmations share the graph lock; neither can resurrect a wake
-/// that happened between predicate inspection and this confirmation.
+/// Wakes and confirmations synchronize through the edge's `SeqCst` state so
+/// neither can resurrect a wake that happened between predicate inspection and
+/// this confirmation, and two actors closing a cycle concurrently cannot both
+/// miss each other's pending state.
 ///
 /// # Safety
 /// The pointer is null or a live edge prepared before the last pending poll.
@@ -174,43 +284,61 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
     let Some(edge) = (unsafe { edge.as_ref() }) else {
         return 0;
     };
-    let mut graph = WAITS.lock_or_recover();
-    let Some(registration) = graph
-        .get_mut(&edge.owner)
-        .filter(|registration| std::ptr::eq(registration.edge.as_ptr(), edge))
-    else {
-        return 0;
-    };
-    if !registration.armed {
+    if edge.replaced.load(Ordering::Acquire) {
         return 0;
     }
-    registration.pending = true;
+    if edge
+        .state
+        .compare_exchange(
+            STATE_ARMED,
+            STATE_PENDING,
+            Ordering::SeqCst,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return 0;
+    }
+    std::sync::atomic::fence(Ordering::SeqCst);
 
-    let is_pending = |registration: &Registration| registration.armed && registration.pending;
-    let can_block = |edge: &HewActorWaitEdge| !edge.external_progress && !edge.targets.is_empty();
     // An independent or non-pending alternative rules out this edge before
     // the graph walk. Keep the edge pending so a later confirmation can close
     // a cycle through it.
-    if !can_block(edge)
-        || edge
-            .targets
-            .iter()
-            .any(|target| !graph.get(target).is_some_and(is_pending))
-    {
+    if !edge.can_block() || edge.targets().any(|target| !is_target_pending(target)) {
+        return 0;
+    }
+
+    detect_cycle_slow(edge)
+}
+
+#[cold]
+#[inline(never)]
+fn detect_cycle_slow(edge: &HewActorWaitEdge) -> i32 {
+    let _cycle_guard = CYCLE_CHECK_LOCK.lock_or_recover();
+    if edge.replaced.load(Ordering::Acquire) || edge.state.load(Ordering::SeqCst) != STATE_PENDING {
         return 0;
     }
 
     // A turn is proven blocked only when every alternative is another proven
     // blocked turn. Remove escapes to readiness, independent sources, timers
     // and unregistered actors until the remaining closed set stops shrinking.
-    let active: HashMap<_, _> = graph
-        .iter()
-        .filter(|(_, registration)| is_pending(registration))
-        .filter_map(|(owner, registration)| registration.edge.upgrade().map(|edge| (*owner, edge)))
-        .collect();
+    let mut active: HashMap<ActorIncarnation, Arc<HewActorWaitEdge>> = HashMap::new();
+    for shard in WAITS.iter() {
+        if shard.len.load(Ordering::SeqCst) == 0 {
+            continue;
+        }
+        let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+        for (owner, weak) in entries.iter() {
+            if let Some(candidate) = weak.upgrade() {
+                if candidate.state.load(Ordering::SeqCst) == STATE_PENDING {
+                    active.insert(*owner, candidate);
+                }
+            }
+        }
+    }
     let mut blocked: HashSet<_> = active
         .iter()
-        .filter(|(_, edge)| can_block(edge))
+        .filter(|(_, candidate)| candidate.can_block())
         .map(|(owner, _)| *owner)
         .collect();
     loop {
@@ -218,9 +346,8 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
             .iter()
             .filter(|owner| {
                 active[owner]
-                    .targets
-                    .iter()
-                    .any(|target| !blocked.contains(target))
+                    .targets()
+                    .any(|target| !blocked.contains(&target))
             })
             .copied()
             .collect();
@@ -239,7 +366,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
     let mut visited = HashSet::new();
     while visited.insert(next) {
         path.push(next.actor_id());
-        next = active[&next].targets[0];
+        next = active[&next].primary_target.expect("blocked edge target");
     }
     path.push(next.actor_id());
     let operation = match edge.operation {
@@ -256,7 +383,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
     let _ = edge
         .diagnostic
         .set(format!("local actor wait cycle at {operation}: {path}"));
-    graph.get_mut(&edge.owner).unwrap().pending = false;
+    edge.state.store(STATE_DISARMED, Ordering::SeqCst);
     1
 }
 
@@ -290,12 +417,18 @@ pub unsafe extern "C" fn hew_actor_wait_edge_free(edge: *const HewActorWaitEdge)
     }
     // SAFETY: this call consumes the operation's one raw Arc reference.
     let edge = unsafe { Arc::from_raw(edge) };
-    let mut graph = WAITS.lock_or_recover();
-    if graph
+    edge.state.store(STATE_DISARMED, Ordering::SeqCst);
+    let shard = &WAITS[shard_index(edge.owner)];
+    let mut entries = shard
+        .entries
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    if entries
         .get(&edge.owner)
-        .is_some_and(|r| r.edge.ptr_eq(&Arc::downgrade(&edge)))
+        .is_some_and(|weak| weak.ptr_eq(&Arc::downgrade(&edge)))
     {
-        graph.remove(&edge.owner);
+        entries.remove(&edge.owner);
+        shard.len.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -365,5 +498,51 @@ mod tests {
             hew_actor_wait_edge_free(first);
             hew_actor_wait_edge_free(second);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn loom_concurrent_two_actor_cycle_is_never_missed() {
+        use loom::sync::atomic::{
+            fence as loom_fence, AtomicU8 as LoomAtomicU8, Ordering as LoomOrdering,
+        };
+        use loom::sync::Arc as LoomArc;
+
+        loom::model(|| {
+            let state_a = LoomArc::new(LoomAtomicU8::new(STATE_ARMED));
+            let state_b = LoomArc::new(LoomAtomicU8::new(STATE_ARMED));
+
+            let a_for_b = LoomArc::clone(&state_a);
+            let b_for_b = LoomArc::clone(&state_b);
+            let tb = loom::thread::spawn(move || {
+                b_for_b
+                    .compare_exchange(
+                        STATE_ARMED,
+                        STATE_PENDING,
+                        LoomOrdering::SeqCst,
+                        LoomOrdering::Acquire,
+                    )
+                    .expect("B transitions armed -> pending");
+                loom_fence(LoomOrdering::SeqCst);
+                a_for_b.load(LoomOrdering::SeqCst) == STATE_PENDING
+            });
+
+            state_a
+                .compare_exchange(
+                    STATE_ARMED,
+                    STATE_PENDING,
+                    LoomOrdering::SeqCst,
+                    LoomOrdering::Acquire,
+                )
+                .expect("A transitions armed -> pending");
+            loom_fence(LoomOrdering::SeqCst);
+            let a_saw_b = state_b.load(LoomOrdering::SeqCst) == STATE_PENDING;
+            let b_saw_a = tb.join().expect("thread B");
+
+            assert!(
+                a_saw_b || b_saw_a,
+                "concurrent 2-cycle must be observed by at least one participant"
+            );
+        });
     }
 }

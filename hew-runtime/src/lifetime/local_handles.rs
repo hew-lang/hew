@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
@@ -128,40 +128,21 @@ struct LocalHandleState {
     imports: crate::platform::host_io::ImportedActorRegistry,
 }
 
-impl LocalHandleState {
-    fn retain_actor(&mut self, token: HewLocalPidId) -> bool {
-        let Some(Route::Actor { references, .. } | Route::RetiredActor { references, .. }) =
-            self.routes.get_mut(&token)
-        else {
-            return false;
-        };
-        *references = references
-            .checked_add(1)
-            .expect("actor identity reference count overflow");
-        true
-    }
+const FAST_ACTOR_SHARDS: usize = 64;
 
-    fn release_actor(&mut self, token: HewLocalPidId) -> bool {
-        let remove = match self.routes.get_mut(&token) {
-            Some(Route::Actor { references, .. }) => {
-                // The live actor owns one reference independently of handles.
-                assert!(*references > 1, "unowned actor identity release");
-                *references -= 1;
-                false
-            }
-            Some(Route::RetiredActor { references, .. }) => {
-                *references -= 1;
-                *references == 0
-            }
-            _ => return false,
-        };
-        if remove {
-            if let Some(Route::RetiredActor { actor_id, .. }) = self.routes.remove(&token) {
-                self.actor_tokens.remove(&actor_id);
-            }
-        }
-        true
-    }
+/// Sharded actor-route entry for lock-free retain/release/resolve on the hot
+/// actor-ask path. Always modified under `LocalHandles::state` (lock order:
+/// `state` -> `fast_actors[shard]`).
+struct FastActorEntry {
+    runtime_id: RuntimeId,
+    actor_id: u64,
+    retired: AtomicBool,
+    references: AtomicUsize,
+}
+
+#[inline]
+const fn fast_actor_shard(token: HewLocalPidId) -> usize {
+    token.as_usize() & (FAST_ACTOR_SHARDS - 1)
 }
 
 /// The disjoint declared child rosters share one canonical role-token table.
@@ -468,6 +449,9 @@ impl Drop for SupervisorPin {
 /// release this lock, then resolve and pin the `ActorId` through `LiveActors`.
 pub(crate) struct LocalHandles {
     state: PoisonSafe<LocalHandleState>,
+    fast_actors: [RwLock<FxHashMap<HewLocalPidId, FastActorEntry>>; FAST_ACTOR_SHARDS],
+    #[cfg(not(target_arch = "wasm32"))]
+    import_count: AtomicUsize,
     publication_gate: PublicationGate,
     supervisor_teardown_gate: SupervisorTeardownGate,
     #[cfg(test)]
@@ -570,9 +554,81 @@ impl Drop for LocalHandlePublication<'_> {
 }
 
 impl LocalHandles {
+    #[inline]
+    fn fast_shard(
+        &self,
+        token: HewLocalPidId,
+    ) -> &RwLock<FxHashMap<HewLocalPidId, FastActorEntry>> {
+        &self.fast_actors[fast_actor_shard(token)]
+    }
+
+    fn retain_actor(&self, token: HewLocalPidId) -> bool {
+        let shard = self
+            .fast_shard(token)
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        shard.get(&token).is_some_and(|entry| {
+            entry
+                .references
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+                    (r > 0).then(|| {
+                        r.checked_add(1)
+                            .expect("actor identity reference count overflow")
+                    })
+                })
+                .is_ok()
+        })
+    }
+
+    fn release_actor(&self, token: HewLocalPidId) -> (bool, Option<u64>) {
+        let released_fast = {
+            let shard = self
+                .fast_shard(token)
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            shard.get(&token).is_some_and(|entry| {
+                entry
+                    .references
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |r| {
+                        (r > 1).then_some(r - 1)
+                    })
+                    .is_ok()
+            })
+        };
+        if released_fast {
+            return (true, None);
+        }
+        self.state.access(|state| {
+            let mut fast = self
+                .fast_shard(token)
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(entry) = fast.get(&token) {
+                let is_retired = entry.retired.load(Ordering::Acquire);
+                let prev = entry.references.fetch_sub(1, Ordering::AcqRel);
+                if !is_retired {
+                    assert!(prev > 1, "unowned actor identity release");
+                    return (true, None);
+                }
+                if prev == 1 {
+                    let actor_id = entry.actor_id;
+                    fast.remove(&token);
+                    state.routes.remove(&token);
+                    state.actor_tokens.remove(&actor_id);
+                    return (true, Some(actor_id));
+                }
+                return (true, None);
+            }
+            (false, None)
+        })
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             state: PoisonSafe::new(LocalHandleState::default()),
+            fast_actors: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+            #[cfg(not(target_arch = "wasm32"))]
+            import_count: AtomicUsize::new(0),
             publication_gate: PublicationGate {
                 state: Mutex::new(PublicationGateState {
                     accepting: true,
@@ -795,6 +851,18 @@ impl LocalHandles {
                 }
             }
             state.actor_tokens.insert(actor_id, token);
+            self.fast_shard(token)
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    token,
+                    FastActorEntry {
+                        runtime_id,
+                        actor_id,
+                        retired: AtomicBool::new(false),
+                        references: AtomicUsize::new(1),
+                    },
+                );
             Ok(token)
         })
     }
@@ -858,14 +926,13 @@ impl LocalHandles {
         if token == HewLocalPidId::INVALID {
             return None;
         }
-        self.state.access(|state| match state.routes.get(&token) {
-            Some(Route::Actor {
-                runtime_id: owner,
-                actor_id,
-                ..
-            }) if *owner == runtime_id => Some(*actor_id),
-            _ => None,
-        })
+        let shard = self
+            .fast_shard(token)
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = shard.get(&token)?;
+        (entry.runtime_id == runtime_id && !entry.retired.load(Ordering::Acquire))
+            .then_some(entry.actor_id)
     }
 
     /// Resolve a live or retired incarnation without acquiring allocation ownership.
@@ -948,19 +1015,28 @@ impl LocalHandles {
             if let Some(Route::Actor {
                 runtime_id,
                 actor_id,
-                references,
+                ..
             }) = state.routes.remove(&token)
             {
-                if references > 1 {
+                let mut fast = self
+                    .fast_shard(token)
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let prev_refs = fast.get(&token).map_or(1, |entry| {
+                    entry.retired.store(true, Ordering::Release);
+                    entry.references.fetch_sub(1, Ordering::AcqRel)
+                });
+                if prev_refs > 1 {
                     state.routes.insert(
                         token,
                         Route::RetiredActor {
                             runtime_id,
                             actor_id,
-                            references: references - 1,
+                            references: prev_refs - 1,
                         },
                     );
                 } else {
+                    fast.remove(&token);
                     state.actor_tokens.remove(&actor_id);
                 }
             }
@@ -1235,6 +1311,7 @@ mod imported_actors {
         let token = allocate().ok_or(LocalHandleError::Exhausted)?;
         handles.state.access(|state| {
             state.imports.insert(token, service);
+            handles.import_count.fetch_add(1, super::Ordering::AcqRel);
         });
         Ok(token)
     }
@@ -1243,7 +1320,11 @@ mod imported_actors {
     pub(crate) fn current_imported_actor(
         token: HewLocalPidId,
     ) -> Option<Arc<crate::hew_node::service_api::ImportedService>> {
-        current_handles()?
+        let handles = current_handles()?;
+        if handles.import_count.load(super::Ordering::Acquire) == 0 {
+            return None;
+        }
+        handles
             .state
             .access(|state| state.imports.clone_service(token))
     }
@@ -1268,12 +1349,18 @@ pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLoca
 /// No actor value owns the target allocation or extends its lifecycle.
 #[no_mangle]
 pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId {
+    if token == HewLocalPidId::INVALID {
+        return token;
+    }
     if let Some(handles) = current_handles() {
-        handles.state.access(|state| {
-            if !state.retain_actor(token) {
-                state.imports.retain(token);
+        if !handles.retain_actor(token) {
+            #[cfg(not(target_arch = "wasm32"))]
+            if handles.import_count.load(Ordering::Acquire) != 0 {
+                handles.state.access(|state| {
+                    state.imports.retain(token);
+                });
             }
-        });
+        }
     }
     token
 }
@@ -1282,22 +1369,24 @@ pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId
 /// or an imported descriptor, independently of actor lifecycle and revocation.
 #[no_mangle]
 pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
+    if token == HewLocalPidId::INVALID {
+        return;
+    }
     if let Some(handles) = current_handles() {
-        let (actor_id, retired) = handles.state.access(|state| {
-            let actor_id = match state.routes.get(&token) {
-                Some(Route::RetiredActor {
-                    actor_id,
-                    references: 1,
-                    ..
-                }) => Some(*actor_id),
-                _ => None,
-            };
-            if state.release_actor(token) {
-                return (actor_id, None);
+        let (handled, actor_id) = handles.release_actor(token);
+        if !handled {
+            #[cfg(not(target_arch = "wasm32"))]
+            if handles.import_count.load(Ordering::Acquire) != 0 {
+                let retired = handles.state.access(|state| {
+                    let dropped = state.imports.release(token);
+                    if dropped.is_some() {
+                        handles.import_count.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    dropped
+                });
+                drop(retired);
             }
-            (None, Some(state.imports.release(token)))
-        });
-        drop(retired);
+        }
         if let Some(actor_id) = actor_id {
             crate::monitor::forget_unreferenced_actor_terminal(actor_id);
         }
@@ -1667,7 +1756,7 @@ mod tests {
         let old = handles
             .register_actor(runtime_id, 41)
             .expect("old direct route");
-        assert!(handles.state.access(|state| state.retain_actor(old)));
+        assert!(handles.retain_actor(old));
 
         assert_eq!(handles.resolve_actor(runtime_id, old), Some(41));
         assert_eq!(handles.retire_actor(old, 41), RetireActorResult::Retired);
@@ -1687,7 +1776,7 @@ mod tests {
         assert_ne!(replacement, old);
         assert_eq!(handles.resolve_actor(runtime_id, old), None);
         assert_eq!(handles.resolve_actor(runtime_id, replacement), Some(42));
-        assert!(handles.state.access(|state| state.release_actor(old)));
+        assert!(handles.release_actor(old).0);
         assert_eq!(handles.observation_actor(runtime_id, old), None);
     }
 
@@ -1696,8 +1785,8 @@ mod tests {
         let handles = LocalHandles::new();
         let owner = RuntimeId::DEFAULT;
         let token = handles.register_actor(owner, 1).expect("actor route");
-        assert!(handles.state.access(|state| state.retain_actor(token)));
-        assert!(handles.state.access(|state| state.retain_actor(token)));
+        assert!(handles.retain_actor(token));
+        assert!(handles.retain_actor(token));
 
         assert_eq!(handles.retire_actor(token, 1), RetireActorResult::Retired);
         assert_eq!(handles.retire_actor(token, 2), RetireActorResult::Mismatch);
@@ -1706,9 +1795,9 @@ mod tests {
         assert_eq!(handles.observation_actor(RuntimeId(9), token), None);
         assert_eq!(handles.counts(), (1, 0));
 
-        assert!(handles.state.access(|state| state.release_actor(token)));
+        assert!(handles.release_actor(token).0);
         assert_eq!(handles.observation_actor(owner, token), Some(1));
-        assert!(handles.state.access(|state| state.release_actor(token)));
+        assert!(handles.release_actor(token).0);
         assert_eq!(handles.observation_actor(owner, token), None);
         assert_eq!(handles.counts(), (0, 0));
     }
@@ -1718,7 +1807,7 @@ mod tests {
         let handles = LocalHandles::new();
         let owner = RuntimeId::DEFAULT;
         let held = handles.register_actor(owner, 1).expect("retained actor");
-        assert!(handles.state.access(|state| state.retain_actor(held)));
+        assert!(handles.retain_actor(held));
         assert_eq!(handles.retire_actor(held, 1), RetireActorResult::Retired);
 
         for actor_id in 2..2_002 {
@@ -1734,7 +1823,7 @@ mod tests {
         }
         assert_eq!(handles.counts(), (1, 0));
         assert_eq!(handles.observation_actor(owner, held), Some(1));
-        assert!(handles.state.access(|state| state.release_actor(held)));
+        assert!(handles.release_actor(held).0);
         assert_eq!(handles.counts(), (0, 0));
     }
 

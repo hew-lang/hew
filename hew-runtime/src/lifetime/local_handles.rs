@@ -449,7 +449,8 @@ impl Drop for SupervisorPin {
 /// release this lock, then resolve and pin the `ActorId` through `LiveActors`.
 pub(crate) struct LocalHandles {
     state: PoisonSafe<LocalHandleState>,
-    fast_actors: [RwLock<FxHashMap<HewLocalPidId, FastActorEntry>>; FAST_ACTOR_SHARDS],
+    fast_actors: [crate::util::CachePadded<RwLock<FxHashMap<HewLocalPidId, FastActorEntry>>>;
+        FAST_ACTOR_SHARDS],
     #[cfg(not(target_arch = "wasm32"))]
     import_count: AtomicUsize,
     publication_gate: PublicationGate,
@@ -626,7 +627,9 @@ impl LocalHandles {
     pub(crate) fn new() -> Self {
         Self {
             state: PoisonSafe::new(LocalHandleState::default()),
-            fast_actors: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+            fast_actors: std::array::from_fn(|_| {
+                crate::util::CachePadded(RwLock::new(FxHashMap::default()))
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             import_count: AtomicUsize::new(0),
             publication_gate: PublicationGate {

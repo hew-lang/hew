@@ -60,10 +60,65 @@ pub const BUF_ALIGN: usize = 16;
 /// [`BUF_ALIGN`] so the payload pointer keeps the block's alignment.
 const HEADER: usize = BUF_ALIGN;
 
+/// Maximum payload size served from the thread-local small-block freelist.
+/// Eliminates global allocator contention for small actor payloads (<= 64B).
+const SMALL_BLOCK_MAX: usize = 64;
+const SMALL_POOL_CAP: usize = 256;
+
+struct SmallBufPool(std::cell::RefCell<Vec<*mut u8>>);
+
+impl SmallBufPool {
+    const fn new() -> Self {
+        Self(std::cell::RefCell::new(Vec::new()))
+    }
+
+    #[inline]
+    fn pop(&self) -> Option<*mut u8> {
+        self.0.try_borrow_mut().ok()?.pop()
+    }
+
+    #[inline]
+    unsafe fn push(&self, base: *mut u8) {
+        if let Ok(mut slots) = self.0.try_borrow_mut() {
+            if slots.len() < SMALL_POOL_CAP {
+                slots.push(base);
+                return;
+            }
+        }
+        // SAFETY: `base` was allocated with `small_block_layout()`.
+        unsafe { dealloc(base, small_block_layout()) };
+    }
+}
+
+impl Drop for SmallBufPool {
+    fn drop(&mut self) {
+        let layout = small_block_layout();
+        for base in self.0.get_mut().drain(..) {
+            // SAFETY: each pooled block was allocated with `small_block_layout()`.
+            unsafe { dealloc(base, layout) };
+        }
+    }
+}
+
+std::thread_local! {
+    static SMALL_BUF_POOL: SmallBufPool = const { SmallBufPool::new() };
+}
+
+#[inline]
+const fn small_block_layout() -> Layout {
+    match Layout::from_size_align(HEADER + SMALL_BLOCK_MAX, BUF_ALIGN) {
+        Ok(layout) => layout,
+        Err(_) => unreachable!(),
+    }
+}
+
 /// Block layout for a `size`-byte payload, or `None` when the total would
 /// overflow `isize`.
 #[inline]
 fn block_layout(size: usize) -> Option<Layout> {
+    if size <= SMALL_BLOCK_MAX {
+        return Some(small_block_layout());
+    }
     let total = size.checked_add(HEADER)?;
     Layout::from_size_align(total, BUF_ALIGN).ok()
 }
@@ -102,11 +157,20 @@ unsafe fn payload_size(ptr: *mut c_void) -> usize {
 )]
 pub fn buf_try_alloc(size: usize) -> *mut c_void {
     let size = size.max(1);
-    let Some(layout) = block_layout(size) else {
-        return std::ptr::null_mut();
+    let base = if size <= SMALL_BLOCK_MAX {
+        if let Some(pooled) = SMALL_BUF_POOL.with(SmallBufPool::pop) {
+            pooled
+        } else {
+            // SAFETY: small_block_layout() has non-zero size (80 bytes).
+            unsafe { alloc(small_block_layout()) } // ALLOCATOR-PAIRING: GlobalAlloc
+        }
+    } else {
+        let Some(layout) = block_layout(size) else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: layout has non-zero size (HEADER > 0).
+        unsafe { alloc(layout) } // ALLOCATOR-PAIRING: GlobalAlloc
     };
-    // SAFETY: layout has non-zero size (HEADER > 0).
-    let base = unsafe { alloc(layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
     if base.is_null() {
         return std::ptr::null_mut();
     }
@@ -155,6 +219,12 @@ pub unsafe fn buf_realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
     let old_size = unsafe { payload_size(ptr) };
     // SAFETY: same guarantee; the base is HEADER bytes before the payload.
     let base = unsafe { ptr.cast::<u8>().sub(HEADER) };
+    if old_size <= SMALL_BLOCK_MAX && new_size <= SMALL_BLOCK_MAX {
+        // Both old and new sizes fit in the fixed 64B small block in-place.
+        // SAFETY: base is a live small block of at least HEADER bytes.
+        unsafe { base.cast::<usize>().write(new_size) };
+        return ptr;
+    }
     let Some(old_layout) = block_layout(old_size) else {
         // The recorded size came from a successful block_layout, so this is
         // unreachable unless the header was corrupted.
@@ -191,6 +261,11 @@ pub unsafe fn buf_free(ptr: *mut c_void) {
     let size = unsafe { payload_size(ptr) };
     // SAFETY: same guarantee; the base is HEADER bytes before the payload.
     let base = unsafe { ptr.cast::<u8>().sub(HEADER) };
+    if size <= SMALL_BLOCK_MAX {
+        // SAFETY: `base` was allocated with `small_block_layout()`.
+        SMALL_BUF_POOL.with(|pool| unsafe { pool.push(base) });
+        return;
+    }
     let Some(layout) = block_layout(size) else {
         // Only reachable through a corrupted header; deallocating with a wrong
         // layout is undefined behaviour, so fail closed instead.

@@ -15,27 +15,37 @@ pub use target::{HewWaker, OwnedWaker};
 /// Registrations are weak so cancelling a sender immediately releases its
 /// readiness target. A notification retains each live target outside the lock.
 #[derive(Debug, Default)]
-pub(crate) struct ReadinessRegistrations(std::sync::Mutex<Vec<std::sync::Weak<dyn WakeTarget>>>);
+pub(crate) struct ReadinessRegistrations {
+    has_waiters: std::sync::atomic::AtomicBool,
+    waiters: std::sync::Mutex<Vec<std::sync::Weak<dyn WakeTarget>>>,
+}
 
 impl ReadinessRegistrations {
     pub(crate) fn register<T: WakeTarget + 'static>(&self, waker: &std::sync::Arc<T>) {
-        let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
+        let mut waiters = crate::util::MutexExt::lock_or_recover(&self.waiters);
         waiters.retain(|waiter| waiter.strong_count() != 0);
         let weak = std::sync::Arc::downgrade(waker);
         let weak: std::sync::Weak<dyn WakeTarget> = weak;
         if !waiters.iter().any(|existing| existing.ptr_eq(&weak)) {
             waiters.push(weak);
         }
+        self.has_waiters
+            .store(!waiters.is_empty(), std::sync::atomic::Ordering::SeqCst);
     }
 
     pub(crate) fn notify(&self) {
+        if !self.has_waiters.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let ready: Vec<_> = {
-            let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
+            let mut waiters = crate::util::MutexExt::lock_or_recover(&self.waiters);
             let ready = waiters
                 .iter()
                 .filter_map(std::sync::Weak::upgrade)
                 .collect();
             waiters.retain(|waiter| waiter.strong_count() != 0);
+            self.has_waiters
+                .store(!waiters.is_empty(), std::sync::atomic::Ordering::SeqCst);
             ready
         };
         for waker in ready {
@@ -68,6 +78,8 @@ pub(crate) fn wait_for_peer<'a, T>(
         return lock.lock_or_recover();
     }
     let _ = lock;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::scheduler::flush_current_worker_lifo_slot();
     condition
         .wait_timeout(guard, timeout)
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -133,6 +145,8 @@ pub mod blocking {
             if self.take_ready() {
                 return;
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::scheduler::flush_current_worker_lifo_slot();
             // A reply usually lands within a futex round trip; spin for it
             // first so neither side makes a syscall.
             if crate::platform::executor::spin_waiter(|| self.pending.load(Ordering::Acquire))
@@ -161,6 +175,8 @@ pub mod blocking {
                 }
                 return true;
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::scheduler::flush_current_worker_lifo_slot();
             let mut guard = self.lock.lock_or_recover();
             self.blocked.store(true, Ordering::SeqCst);
             while !self.pending.swap(false, Ordering::SeqCst) {

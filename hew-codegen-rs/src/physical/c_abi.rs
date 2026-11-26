@@ -164,7 +164,105 @@ pub(super) fn get_or_declare_external_widened<'ctx>(
     if expected.get_return_type().and_then(narrow_bits) == Some(1) {
         function.add_attribute(AttributeLoc::Return, Widen::Zero.attribute(function));
     }
+    annotate_runtime_attributes(symbol, function);
     Ok(function)
+}
+
+/// Attach sound LLVM optimization attributes (`nounwind`, `willreturn`,
+/// `readonly`, `noalias`) to known Hew runtime declarations so LLVM's O2
+/// pipeline can CSE/hoist pure getters, eliminate redundant coroutine-frame
+/// reloads, and avoid conservative alias/unwind barriers.
+fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
+    let ctx = function.get_type().get_context();
+    let add_fn = |name: &str| {
+        let id = Attribute::get_named_enum_kind_id(name);
+        if id != 0 {
+            function.add_attribute(AttributeLoc::Function, ctx.create_enum_attribute(id, 0));
+        }
+    };
+    let add_ret = |name: &str| {
+        let id = Attribute::get_named_enum_kind_id(name);
+        if id != 0 {
+            function.add_attribute(AttributeLoc::Return, ctx.create_enum_attribute(id, 0));
+        }
+    };
+
+    // Pure read-only getters (non-unwinding, bounded, nofree, readonly param 0).
+    let is_readonly = matches!(
+        symbol,
+        "hew_coro_state_waker"
+            | "hew_coro_state_request_deadline"
+            | "hew_coro_state_is_cancelled"
+            | "hew_coro_state_cancel_code"
+            | "hew_coro_state_token"
+            | "hew_actor_call_failure"
+            | "hew_vec_len"
+            | "hew_fault_code"
+            | "hew_stack_check"
+    );
+    if is_readonly {
+        add_fn("nounwind");
+        add_fn("willreturn");
+        add_fn("nofree");
+        if function
+            .get_type()
+            .get_param_types()
+            .first()
+            .is_some_and(|t| t.is_pointer_type())
+        {
+            let ro = Attribute::get_named_enum_kind_id("readonly");
+            if ro != 0 {
+                function.add_attribute(AttributeLoc::Param(0), ctx.create_enum_attribute(ro, 0));
+            }
+        }
+        return;
+    }
+
+    // Fresh heap/pool allocators (non-unwinding, bounded, noalias return).
+    let is_allocator = matches!(
+        symbol,
+        "hew_actor_payload_try_alloc"
+            | "hew_cont_frame_alloc"
+            | "hew_actor_call_new"
+            | "hew_actor_wait_edge_new_for_call"
+            | "hew_vec_new_with_elem_layout"
+            | "hew_fault_new"
+            | "hew_fault_new_bounds"
+    );
+    if is_allocator {
+        add_fn("nounwind");
+        add_fn("willreturn");
+        if function
+            .get_type()
+            .get_return_type()
+            .is_some_and(BasicTypeEnum::is_pointer_type)
+        {
+            add_ret("noalias");
+        }
+        return;
+    }
+
+    // Non-blocking, non-unwinding runtime helpers (excludes `C-unwind` and
+    // functions that invoke user destructors/callbacks or block).
+    if matches!(
+        symbol,
+        "hew_coro_state_sender"
+            | "hew_coro_safepoint_budget"
+            | "hew_coro_safepoint"
+            | "hew_actor_payload_free"
+            | "hew_cont_frame_free"
+            | "hew_actor_wait_edge_prepare"
+            | "hew_actor_wait_edge_pending"
+            | "hew_actor_wait_edge_free"
+            | "hew_actor_call_poll"
+            | "hew_actor_call_free"
+            | "hew_actor_handle_retain"
+            | "hew_actor_handle_release"
+            | "hew_fault_set_site_in_image"
+    ) {
+        add_fn("nounwind");
+        add_fn("willreturn");
+    }
 }
 
 fn param_widening(function: FunctionValue<'_>, index: u32) -> Option<Widen> {

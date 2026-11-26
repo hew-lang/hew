@@ -15,7 +15,7 @@
 //! - [`sched_try_wake`] — wake a parked worker thread.
 
 use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 // `AtomicPtr` is used only by test-only code: the `SCHED_TEST_DRAIN_PTR`
 // handshake and the in-module `HewActor` test literals. The default-runtime
 // slot itself now lives in `crate::runtime`.
@@ -47,8 +47,8 @@ const PARK_TIMEOUT: Duration = Duration::from_millis(10);
 
 // ── Observability counters ──────────────────────────────────────────────
 
-pub(crate) static TASKS_SPAWNED: AtomicU64 = AtomicU64::new(0);
-pub(crate) static STEALS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TASKS_SPAWNED: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+pub(crate) static STEALS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
 
 const WORKERS_LIVE: u8 = 0;
 const WORKERS_JOINING: u8 = 1;
@@ -263,7 +263,8 @@ fn get_scheduler() -> Option<&'static Scheduler> {
     runtime::rt_default().map(|rt| &rt.scheduler)
 }
 
-/// Work that has LEFT a queue but has not yet reached an activation.
+/// Per-worker cache-line-aligned slot tracking whether worker `id` holds a
+/// pop-to-activation handoff.
 ///
 /// `crate::activation::ACTIVE_ACTIVATIONS` alone cannot answer "is the scheduler idle?": a worker pops
 /// an actor and only increments that counter later, inside
@@ -272,40 +273,54 @@ fn get_scheduler() -> Option<&'static Scheduler> {
 /// dispatch — possibly a CRASHING one — is about to run. Shutdown read that as
 /// idle and joined the workers.
 ///
-/// A worker CLAIMS before it looks for work and releases after the activation
-/// returns, so anything that leaves a queue does so while this count is
-/// non-zero. The claim is held across the probe as well, which costs a
-/// spuriously non-idle sample for a worker that finds nothing — it drops the
-/// claim and parks immediately after, so the condition settles.
-static PENDING_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+/// A worker CLAIMS its own slot before it looks for work and releases after
+/// the activation returns, so anything that leaves a queue does so while its
+/// slot is `true`. Because each worker writes only its own cache line and
+/// `activation_handoff_in_flight` only scans during shutdown, the hot path
+/// incurs zero cross-core cache-line contention.
+#[repr(align(64))]
+struct WorkerHandoffSlot(AtomicBool);
 
-/// RAII claim over the pop-to-activation handoff. See [`PENDING_ACTIVATIONS`].
-struct ActivationClaim;
+static WORKER_HANDOFFS: [WorkerHandoffSlot; crate::actor::HEW_MAX_WORKERS] =
+    [const { WorkerHandoffSlot(AtomicBool::new(false)) }; crate::actor::HEW_MAX_WORKERS];
+
+/// RAII claim over the pop-to-activation handoff. See [`WORKER_HANDOFFS`].
+struct ActivationClaim(usize);
 
 impl ActivationClaim {
-    fn new() -> Self {
-        PENDING_ACTIVATIONS.fetch_add(1, Ordering::AcqRel);
-        Self
+    #[inline]
+    fn new(worker_id: usize) -> Self {
+        WORKER_HANDOFFS[worker_id].0.store(true, Ordering::SeqCst);
+        Self(worker_id)
     }
 }
 
 impl Drop for ActivationClaim {
+    #[inline]
     fn drop(&mut self) {
-        PENDING_ACTIVATIONS.fetch_sub(1, Ordering::AcqRel);
+        WORKER_HANDOFFS[self.0].0.store(false, Ordering::Release);
     }
 }
 
 /// Whether any worker holds the pop-to-activation handoff.
 fn activation_handoff_in_flight() -> bool {
-    PENDING_ACTIVATIONS.load(Ordering::Acquire) != 0
+    let limit = get_scheduler()
+        .map_or(WORKER_HANDOFFS.len(), |sched| sched.worker_count)
+        .min(WORKER_HANDOFFS.len());
+    WORKER_HANDOFFS[..limit]
+        .iter()
+        .any(|slot| slot.0.load(Ordering::Acquire))
 }
 
 /// Whether another activation or continuation can use a yielded worker.
 pub(crate) fn has_runnable_work() -> bool {
+    if CURRENT_WORKER_LIFO.with(|slot| !slot.get().is_null()) {
+        return true;
+    }
     get_scheduler().is_some_and(|sched| {
         !sched.global_queue.is_empty()
             || crate::driver::has_queued_work()
-            || !sched.task_queue.is_empty()
+            || sched.pending_tasks.load(Ordering::Acquire) != 0
             || sched.stealers.iter().any(|stealer| !stealer.is_empty())
     })
 }
@@ -315,7 +330,7 @@ pub(crate) fn has_runnable_work() -> bool {
 /// This is used by graceful shutdown to stop waiting once the runtime is
 /// already idle, rather than always sleeping until the full wall-clock drain
 /// timeout expires. Idle means no queued work AND no dispatch in flight,
-/// including the pop-to-activation handoff — see [`PENDING_ACTIVATIONS`].
+/// including the pop-to-activation handoff — see [`WORKER_HANDOFFS`].
 pub(crate) fn drain_is_idle() -> bool {
     let Some(sched) = get_scheduler() else {
         return true;
@@ -329,7 +344,7 @@ pub(crate) fn drain_is_idle() -> bool {
     }
     if !sched.global_queue.is_empty()
         || crate::driver::has_queued_work()
-        || !sched.task_queue.is_empty()
+        || sched.pending_tasks.load(Ordering::Acquire) != 0
         || crate::task_scope::checked::TaskExecution::has_live_tasks()
     {
         return false;
@@ -361,12 +376,18 @@ pub(crate) struct Scheduler {
     global_queue: GlobalQueue,
     /// Ready tasks, polled FIFO by any worker.
     task_queue: crossbeam_deque::Injector<std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>>,
+    /// Approximate count of queued tasks in `task_queue` so workers skip
+    /// touching the injector's head/tail when no tasks are pending.
+    pending_tasks: crate::util::CachePadded<AtomicUsize>,
     stealers: Vec<WorkStealer>,
     shutdown: AtomicBool,
     /// Number of workers that published their parker state before the final
     /// under-lock queue probe. Keeps the busy enqueue path from scanning every
     /// parker when no worker can be waiting.
-    parked_workers: AtomicU64,
+    parked_workers: crate::util::CachePadded<AtomicU64>,
+    /// Bitmask of parked worker IDs (for worker IDs `< 64`), enabling O(1)
+    /// parked-worker selection without scanning busy peers' parker cache lines.
+    parked_mask: crate::util::CachePadded<AtomicU64>,
     /// Per-worker parking primitives. Each worker parks on its own
     /// `Mutex/Condvar` to avoid contention on a single global lock.
     parkers: Vec<Parker>,
@@ -377,7 +398,7 @@ pub(crate) struct Scheduler {
     /// Workers currently spinning for work. A notifier skips waking a parked
     /// worker while one spins: the spinner either takes the work or stops
     /// spinning before its final under-lock probe, which then observes it.
-    spinning_workers: AtomicU64,
+    spinning_workers: crate::util::CachePadded<AtomicU64>,
 }
 
 #[cfg(test)]
@@ -397,7 +418,10 @@ impl Scheduler {
     }
 }
 
-/// Per-worker parking primitive.
+/// Per-worker parking primitive, cache-line-aligned (128B on aarch64/Apple
+/// Silicon, 64B elsewhere) to prevent false sharing between adjacent workers.
+#[cfg_attr(target_arch = "aarch64", repr(align(128)))]
+#[cfg_attr(not(target_arch = "aarch64"), repr(align(64)))]
 struct Parker {
     mutex: Mutex<()>,
     cond: Condvar,
@@ -583,16 +607,18 @@ pub extern "C" fn hew_sched_init() -> c_int {
         shutdown_finalized: AtomicBool::new(false),
         global_queue,
         task_queue: crossbeam_deque::Injector::new(),
+        pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
         stealers,
         shutdown: AtomicBool::new(false),
-        parked_workers: AtomicU64::new(0),
+        parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+        parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
         parkers,
         worker_count,
         spin_limit: spin::configured_spin_limit(
             worker_count,
             thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
         ),
-        spinning_workers: AtomicU64::new(0),
+        spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
     });
 
     // Install via CAS; second calls are harmless no-ops.
@@ -1200,6 +1226,7 @@ pub(crate) fn enqueue_work(task: std::sync::Arc<dyn crate::wake::scheduled::Read
     let Some(sched) = get_scheduler() else {
         return;
     };
+    sched.pending_tasks.fetch_add(1, Ordering::SeqCst);
     sched.task_queue.push(task);
     sched_try_wake();
 }
@@ -1217,9 +1244,46 @@ pub(crate) fn sched_enqueue(actor: *mut HewActor) {
     sched_enqueue_owned_inner(sched, entry);
 }
 
+/// Maximum consecutive LIFO-slot activations before checking the stealable
+/// local/global queues for fairness (mirrors Go's `runnext` / Tokio's `lifo_slot`).
+const MAX_LIFO_POLLS: u32 = 31;
+
 std::thread_local! {
     static CURRENT_WORKER_DEQUE: std::cell::Cell<(*const Scheduler, *const WorkDeque)> =
         const { std::cell::Cell::new((std::ptr::null(), std::ptr::null())) };
+    static CURRENT_WORKER_LIFO: std::cell::Cell<*mut HewActor> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Publish any actor held in this worker's private LIFO slot into the
+/// stealable local deque and wake a peer. Must be called before a worker
+/// thread blocks synchronously so another worker can run the queued actor.
+pub(crate) fn flush_current_worker_lifo_slot() {
+    let actor = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
+    if actor.is_null() {
+        return;
+    }
+    let pushed_local = CURRENT_WORKER_DEQUE.with(|slot| {
+        let (_bound_sched, local_ptr) = slot.get();
+        if local_ptr.is_null() {
+            false
+        } else {
+            // SAFETY: `local_ptr` is bound by `CurrentWorkerDequeGuard` for the
+            // lifetime of this worker thread's `worker_loop` stack frame.
+            unsafe { (&*local_ptr).push(actor.cast::<()>()) };
+            true
+        }
+    });
+    if !pushed_local {
+        if let Some(sched) = get_scheduler() {
+            sched.global_queue.push(actor.cast::<()>());
+        } else {
+            // SAFETY: no scheduler is installed to take ownership; release the ref.
+            unsafe { release_scheduler_queue_ref(actor) };
+            return;
+        }
+    }
+    sched_try_wake();
 }
 
 struct CurrentWorkerDequeGuard {
@@ -1245,12 +1309,23 @@ fn sched_enqueue_owned_inner(sched: &Scheduler, mut entry: SchedulerQueueEntry) 
     #[cfg(test)]
     run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
     TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
+    let mut should_wake = true;
     let pushed_local = CURRENT_WORKER_DEQUE.with(|slot| {
         let (bound_sched, local_ptr) = slot.get();
         if std::ptr::eq(bound_sched, sched) && !local_ptr.is_null() {
-            // SAFETY: `local_ptr` is bound by `CurrentWorkerDequeGuard` for the
-            // lifetime of this worker thread's `worker_loop` stack frame.
-            unsafe { (&*local_ptr).push(actor.cast::<()>()) };
+            let prev = CURRENT_WORKER_LIFO.with(|lifo| lifo.replace(actor));
+            if prev.is_null() {
+                // First enqueue during this activation stays in the private
+                // LIFO slot: avoids deque contention and wake storms on 1:1
+                // ask/reply handoffs.
+                should_wake = false;
+            } else {
+                // A second enqueue means 2+ actors are runnable; evict the
+                // prior LIFO entry to the stealable deque and wake a peer.
+                // SAFETY: `local_ptr` is bound by `CurrentWorkerDequeGuard` for the
+                // lifetime of this worker thread's `worker_loop` stack frame.
+                unsafe { (&*local_ptr).push(prev.cast::<()>()) };
+            }
             true
         } else {
             false
@@ -1260,7 +1335,9 @@ fn sched_enqueue_owned_inner(sched: &Scheduler, mut entry: SchedulerQueueEntry) 
         sched.global_queue.push(actor.cast::<()>());
     }
     entry.disarm();
-    sched_try_wake();
+    if should_wake {
+        wake_one_worker(sched);
+    }
 }
 
 /// Exact counterfactual for the pre-publish queue-reference regression.
@@ -1305,51 +1382,82 @@ pub fn sched_try_wake() {
 }
 
 fn wake_one_worker(sched: &Scheduler) {
-    static WAKE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    std::thread_local! {
+        static WAKE_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     if sched.worker_count == 0 {
         return;
     }
+    // A spinning worker takes the work, or stops spinning before its final
+    // under-lock probe and observes it there; the same SeqCst total order as
+    // `parked_workers` covers it. A spinner that takes work while more remains
+    // wakes a peer itself (`wake_peer_if_work_remains`).
     if sched.spinning_workers.load(Ordering::SeqCst) != 0
         || sched.parked_workers.load(Ordering::SeqCst) == 0
     {
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "modulo by worker_count keeps result within usize range"
-    )]
-    let start = (WAKE_COUNTER.fetch_add(1, Ordering::Relaxed) % sched.worker_count as u64) as usize;
-    crate::observe::record_scheduler_unpark();
-    let _ = notify_parked_worker(sched, start);
+    let start = WAKE_COUNTER.with(|counter| {
+        let next = counter.get().wrapping_add(1);
+        counter.set(next);
+        next % sched.worker_count
+    });
+    if notify_parked_worker_inner(sched, start).is_some() {
+        crate::observe::record_scheduler_unpark();
+    }
 }
 
 /// Notify exactly one published parker, scanning from `start`.
 ///
 /// Returns the selected worker id for deterministic scheduler tests.
+#[cfg(test)]
 fn notify_parked_worker(sched: &Scheduler, start: usize) -> Option<usize> {
-    // A spinning worker takes the work, or stops spinning before its final
-    // under-lock probe and observes it there; the same SeqCst total order as
-    // `parked_workers` below covers it. A spinner that takes work while more
-    // remains wakes a peer itself (`wake_peer_if_work_remains`).
     if sched.spinning_workers.load(Ordering::SeqCst) != 0 {
         return None;
     }
-    // With no published waiter, a worker racing toward park will observe the
-    // completed queue push in its final under-lock probe. The SeqCst hint
-    // participates in the same total order as the queue position publication
-    // and final `is_empty` probe, so the notifier and worker cannot both miss
-    // each other's publication. Avoid a mutex acquisition (and an
-    // O(worker_count) scan) on that busy path.
     if sched.parked_workers.load(Ordering::SeqCst) == 0 {
         return None;
     }
+    notify_parked_worker_inner(sched, start)
+}
 
-    // Round-robin supplies the scan origin, not an unchecked wake target: a
-    // busy worker has no waiter, so keep looking for an actually parked worker
-    // instead of dropping the notification on the busy parker.
+fn notify_parked_worker_inner(sched: &Scheduler, start: usize) -> Option<usize> {
+    // O(1) parked-worker selection via `parked_mask` when `worker_count <= 64`,
+    // preserving round-robin order from `start` without touching busy workers'
+    // parker cache lines.
+    if sched.worker_count <= 64 {
+        let mut mask = sched.parked_mask.load(Ordering::Acquire);
+        if mask != 0 {
+            while mask != 0 {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "start < worker_count <= 64 fits in u32"
+                )]
+                let rotated = mask.rotate_right(start as u32);
+                let offset = rotated.trailing_zeros() as usize;
+                let idx = (start + offset) % 64;
+                if idx < sched.worker_count && sched.parkers[idx].notify_one_if_parked() {
+                    sched
+                        .parked_mask
+                        .fetch_and(!(1u64 << idx), Ordering::Release);
+                    return Some(idx);
+                }
+                mask &= !(1u64 << idx);
+            }
+            return None;
+        }
+    }
+
+    // Fallback for >64 workers or test-constructed schedulers where
+    // `parker.parked` was set directly without setting `parked_mask`.
     for offset in 0..sched.worker_count {
         let idx = (start + offset) % sched.worker_count;
         if sched.parkers[idx].notify_one_if_parked() {
+            if idx < 64 {
+                sched
+                    .parked_mask
+                    .fetch_and(!(1u64 << idx), Ordering::Release);
+            }
             return Some(idx);
         }
     }
@@ -1388,6 +1496,11 @@ struct LocalQueueRefDrain<'a>(&'a WorkDeque);
 
 impl Drop for LocalQueueRefDrain<'_> {
     fn drop(&mut self) {
+        let lifo = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
+        if !lifo.is_null() {
+            // SAFETY: taking from the LIFO slot transfers the entry's queue reference.
+            unsafe { release_scheduler_queue_ref(lifo) };
+        }
         while let Some(ptr) = self.0.pop() {
             // SAFETY: popping transfers the entry's queue reference.
             unsafe { release_scheduler_queue_ref(ptr.cast::<HewActor>()) };
@@ -1444,6 +1557,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     crate::signal::init_worker_recovery(id as u32);
 
     let mut prefer_task = true;
+    let mut lifo_polls: u32 = 0;
     let mut spin_budget = spin::SpinBudget::new(sched.spin_limit);
     // Set when this worker ran out of work; cleared by the next item it takes.
     let mut leaving_idle = false;
@@ -1520,7 +1634,20 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         // entered an activation. Dropped on every exit from this block,
         // including the `continue`s.
         {
-            let _handoff = ActivationClaim::new();
+            let _handoff = ActivationClaim::new(id);
+            let lifo_actor = CURRENT_WORKER_LIFO.with(|slot| slot.replace(std::ptr::null_mut()));
+            if lifo_actor.is_null() {
+                lifo_polls = 0;
+            } else {
+                if lifo_polls < MAX_LIFO_POLLS {
+                    lifo_polls += 1;
+                    activate_queued_actor(lifo_actor);
+                    continue;
+                }
+                lifo_polls = 0;
+                local.push(lifo_actor.cast::<()>());
+                wake_one_worker(sched);
+            }
             if let Some(work) = find_work(sched, id, local, &mut rng, &mut prefer_task) {
                 if let Some(spent) = spun.take() {
                     spin_budget.hit(spent, sched.spin_limit);
@@ -1607,9 +1734,15 @@ fn find_work(
 }
 
 fn pop_task(sched: &Scheduler) -> Option<std::sync::Arc<dyn crate::wake::scheduled::ReadyWork>> {
+    if sched.pending_tasks.load(Ordering::Acquire) == 0 {
+        return None;
+    }
     loop {
         match sched.task_queue.steal() {
-            crossbeam_deque::Steal::Success(task) => return Some(task),
+            crossbeam_deque::Steal::Success(task) => {
+                sched.pending_tasks.fetch_sub(1, Ordering::Release);
+                return Some(task);
+            }
             crossbeam_deque::Steal::Empty => return None,
             crossbeam_deque::Steal::Retry => {}
         }
@@ -1620,7 +1753,7 @@ fn pop_task(sched: &Scheduler) -> Option<std::sync::Arc<dyn crate::wake::schedul
 fn work_visible(sched: &Scheduler, local: &WorkDeque) -> bool {
     !local.is_empty()
         || !sched.global_queue.is_empty()
-        || !sched.task_queue.is_empty()
+        || sched.pending_tasks.load(Ordering::Acquire) != 0
         || sched.stealers.iter().any(|stealer| !stealer.is_empty())
 }
 
@@ -1630,7 +1763,7 @@ fn work_visible(sched: &Scheduler, local: &WorkDeque) -> bool {
 fn wake_peer_if_work_remains(sched: &Scheduler) {
     if !sched.global_queue.is_empty()
         || sched.stealers.iter().any(|stealer| !stealer.is_empty())
-        || !sched.task_queue.is_empty()
+        || sched.pending_tasks.load(Ordering::Acquire) != 0
     {
         wake_one_worker(sched);
     }
@@ -1697,22 +1830,32 @@ fn park_worker(
     }
 
     let parker = &sched.parkers[id];
+    let mask_bit = if id < 64 { 1u64 << id } else { 0 };
     let mut guard = parker.mutex.lock_or_recover();
     parker.parked.store(true, Ordering::SeqCst);
+    if mask_bit != 0 {
+        sched.parked_mask.fetch_or(mask_bit, Ordering::SeqCst);
+    }
     sched.parked_workers.fetch_add(1, Ordering::SeqCst);
 
     if sched.shutdown.load(Ordering::Acquire) {
         parker.parked.store(false, Ordering::SeqCst);
+        if mask_bit != 0 {
+            sched.parked_mask.fetch_and(!mask_bit, Ordering::Release);
+        }
         sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
         return WorkerParkOutcome::Shutdown;
     }
     if probe_queues
         && (!local.is_empty()
             || !sched.global_queue.is_empty()
-            || !sched.task_queue.is_empty()
+            || sched.pending_tasks.load(Ordering::SeqCst) != 0
             || sched.stealers.iter().any(|stealer| !stealer.is_empty()))
     {
         parker.parked.store(false, Ordering::SeqCst);
+        if mask_bit != 0 {
+            sched.parked_mask.fetch_and(!mask_bit, Ordering::Release);
+        }
         sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
         return WorkerParkOutcome::WorkAvailable;
     }
@@ -1722,6 +1865,9 @@ fn park_worker(
     if !probe_queues {
         let (_guard, result) = parker.cond.wait_timeout_or_recover(guard, PARK_TIMEOUT);
         parker.parked.store(false, Ordering::SeqCst);
+        if mask_bit != 0 {
+            sched.parked_mask.fetch_and(!mask_bit, Ordering::Release);
+        }
         sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
         return if result.timed_out() {
             WorkerParkOutcome::TimedOut
@@ -1731,6 +1877,9 @@ fn park_worker(
     }
     while parker.parked.load(Ordering::Acquire) {
         guard = parker.cond.wait_or_recover(guard);
+    }
+    if mask_bit != 0 {
+        sched.parked_mask.fetch_and(!mask_bit, Ordering::Release);
     }
     drop(guard);
     sched.parked_workers.fetch_sub(1, Ordering::SeqCst);
@@ -2090,10 +2239,12 @@ pub(crate) fn worker_less_scheduler() -> Scheduler {
         // SAFETY: single-threaded test setup with scheduler-owned queue state.
         global_queue: unsafe { crate::deque::GlobalQueue::new() },
         task_queue: crossbeam_deque::Injector::new(),
+        pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
         shutdown: AtomicBool::new(false),
-        parked_workers: AtomicU64::new(0),
+        parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+        parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
         spin_limit: 0,
-        spinning_workers: AtomicU64::new(0),
+        spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
     }
 }
 
@@ -2897,10 +3048,12 @@ mod tests {
             // SAFETY: no values are stored in this local scheduler queue.
             global_queue: unsafe { GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(1),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(1)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
 
         assert!(
@@ -2944,10 +3097,12 @@ mod tests {
             // SAFETY: the queued pointer is a sentinel that is never dereferenced.
             global_queue: unsafe { GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(1),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(1)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: spin::DEFAULT_SPIN_LIMIT,
-            spinning_workers: AtomicU64::new(1),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(1)),
         };
         let sentinel = ptr::NonNull::<()>::dangling().as_ptr();
 
@@ -5508,10 +5663,12 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(0),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -5608,10 +5765,12 @@ mod tests {
             // SAFETY: no preconditions for GlobalQueue::new().
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(0),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
         let _rt_ptr = install_scheduler_for_test(sched);
 
@@ -5678,10 +5837,12 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(0),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler for this test's field reads;
@@ -6105,10 +6266,12 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(0),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.
@@ -6552,10 +6715,12 @@ mod tests {
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             task_queue: crossbeam_deque::Injector::new(),
+            pending_tasks: crate::util::CachePadded(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            parked_workers: AtomicU64::new(0),
+            parked_workers: crate::util::CachePadded(AtomicU64::new(0)),
+            parked_mask: crate::util::CachePadded(AtomicU64::new(0)),
             spin_limit: 0,
-            spinning_workers: AtomicU64::new(0),
+            spinning_workers: crate::util::CachePadded(AtomicU64::new(0)),
         };
         let rt_ptr = install_scheduler_for_test(sched);
         // Stable borrow of the installed scheduler; valid until teardown below.

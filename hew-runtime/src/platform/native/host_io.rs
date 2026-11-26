@@ -584,6 +584,10 @@ pub(crate) unsafe fn start_async_sink_finish(
     }
     *operation.native.sink_finish.lock_or_recover() =
         Some(crate::async_io::sink::Finish::new(pending, owner, waker));
+    operation
+        .native
+        .has_sink_finish
+        .store(true, std::sync::atomic::Ordering::Release);
     true
 }
 

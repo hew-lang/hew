@@ -198,7 +198,7 @@ pub(crate) unsafe fn is_inert(
 pub struct ValueTransfer {
     source: Option<ValueOwner>,
     destination: Option<Acquisition>,
-    walk: Box<TransferWalk>,
+    walk: Option<Box<TransferWalk>>,
     layout: *const HewValueLayout,
     slot: *const c_void,
     prepared: bool,
@@ -207,10 +207,22 @@ pub struct ValueTransfer {
 }
 
 impl ValueTransfer {
+    fn walk_mut(&mut self) -> &mut TransferWalk {
+        self.walk.get_or_insert_with(|| {
+            Box::new(TransferWalk {
+                destination: None,
+                binding: None,
+                waker: None,
+                seen: SeenStorage::default(),
+            })
+        })
+    }
+
     unsafe fn phase(&mut self, kind: HewManagedWalkKind) -> i32 {
-        self.walk.seen.clear();
+        let walk = self.walk_mut();
+        walk.seen.clear();
         let visitor = HewManagedStorageVisitor {
-            context: (&raw mut *self.walk).cast(),
+            context: (&raw mut *walk).cast(),
             storage: backing,
             kind,
         };
@@ -234,31 +246,38 @@ impl ValueTransfer {
             (Some(a), Some(b)) => a.same_account(b),
             _ => false,
         };
-        let mut transfer = Self {
+        if same {
+            return Self {
+                source,
+                destination: None,
+                walk: None,
+                layout,
+                slot,
+                prepared: false,
+                frozen: true,
+                ready: true,
+            };
+        }
+        Self {
             source,
             destination: None,
-            walk: Box::new(TransferWalk {
+            walk: Some(Box::new(TransferWalk {
                 binding: destination.as_ref().and_then(ValueOwner::execution_binding),
                 destination,
                 waker: None,
                 seen: SeenStorage::default(),
-            }),
+            })),
             layout,
             slot,
-            prepared: false,
-            frozen: same,
-            ready: same,
-        };
-        if same {
-            return transfer;
+            prepared: true,
+            frozen: false,
+            ready: false,
         }
-        transfer.prepared = true;
-        transfer
     }
 
     /// The waiting operation retains its existing wake target through retries.
     pub fn set_waker(&mut self, waker: crate::wake::OwnedWaker) {
-        self.walk.waker = Some(waker);
+        self.walk_mut().waker = Some(waker);
     }
 
     /// Supply execution identity even when the recipient has no budget account.
@@ -273,7 +292,7 @@ impl ValueTransfer {
             "destination changed after acquisition"
         );
         // SAFETY: the admission caller pins this exact actor through the snapshot.
-        self.walk.binding = Some(unsafe { DestinationBinding::for_actor(actor) });
+        self.walk_mut().binding = Some(unsafe { DestinationBinding::for_actor(actor) });
         self.prepared = true;
         self.ready = false;
         self.frozen = false;
@@ -285,7 +304,7 @@ impl ValueTransfer {
             self.destination.is_none(),
             "destination changed after acquisition"
         );
-        self.walk.binding = binding;
+        self.walk_mut().binding = binding;
         self.prepared = true;
         self.ready = false;
         self.frozen = false;
@@ -326,7 +345,11 @@ impl ValueTransfer {
         if self.ready {
             return Ok(());
         }
-        if let Some(owner) = &self.walk.destination {
+        if let Some(owner) = self
+            .walk
+            .as_ref()
+            .and_then(|walk| walk.destination.as_ref())
+        {
             // SAFETY: providers are now frozen; slots remain sender-owned.
             self.destination = Some(unsafe { owner.acquire_value(&*self.layout, self.slot) }?);
         }

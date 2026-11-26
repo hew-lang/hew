@@ -53,13 +53,13 @@ static ACTOR_TURNS_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) 
 static ACTOR_TURN_DURATION_NS_TOTAL: [AtomicU64; SHARD_COUNT] =
     [const { AtomicU64::new(0) }; SHARD_COUNT];
 
-static SCHEDULER_PARKS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_UNPARKS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_LIVE: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_SUSPENDED: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_RESUMES_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_SUSPENDS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_FRAME_BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_PARKS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static SCHEDULER_UNPARKS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_LIVE: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+static COROUTINES_SUSPENDED: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+static COROUTINES_RESUMES_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_SUSPENDS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_FRAME_BYTES_LIVE: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
 static REACTOR_REGISTRATIONS_LIVE: AtomicU64 = AtomicU64::new(0);
 static REACTOR_READY_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ACTORS_CRASHES_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -171,9 +171,7 @@ pub(crate) fn record_coroutine_suspend() {
 
 pub(crate) fn record_coroutine_resume() {
     COROUTINES_RESUMES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    let _ = COROUTINES_SUSPENDED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
+    COROUTINES_SUSPENDED.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Count one actor crash under its kind and actor type.

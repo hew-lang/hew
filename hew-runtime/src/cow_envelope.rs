@@ -129,6 +129,14 @@ unsafe impl Sync for HewMsgEnvelope {}
 /// allocation policies remain owned by their respective mailbox modules.
 pub type EnvelopeAlloc = fn(usize) -> *mut c_void;
 
+std::thread_local! {
+    static ENVELOPE_POOL: crate::util::TlsBufPool = const { crate::util::TlsBufPool::new() };
+}
+
+pub(crate) fn pop_pooled_envelope() -> Option<*mut c_void> {
+    ENVELOPE_POOL.with(crate::util::TlsBufPool::pop)
+}
+
 /// Allocate an envelope with one observer.
 ///
 /// # Safety
@@ -333,7 +341,7 @@ pub(crate) unsafe fn free_allocation(env: *mut HewMsgEnvelope) {
             state.withdraw();
         }
         ptr::drop_in_place(env);
-        crate::mem::buf_free(env.cast());
+        ENVELOPE_POOL.with(|pool| pool.push(env.cast()));
     }
 }
 

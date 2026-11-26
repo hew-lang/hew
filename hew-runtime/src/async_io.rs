@@ -251,9 +251,12 @@ impl HewAsyncIo {
                 stream_content: Mutex::new(stream_owner.map(content::ReadOwnership::new)),
                 net,
                 sink_finish: Mutex::new(None),
+                has_sink_finish: std::sync::atomic::AtomicBool::new(false),
                 socket_cancel: None,
                 deadline: Mutex::new(None),
+                has_deadline: std::sync::atomic::AtomicBool::new(false),
                 detach: Mutex::new(None),
+                has_detach: std::sync::atomic::AtomicBool::new(false),
             },
             cleanup: Mutex::new(Cleanup::default()),
             #[cfg(windows)]
@@ -302,11 +305,16 @@ impl HewAsyncIo {
     }
 
     fn advance_finish(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if !self.native.has_sink_finish.load(Ordering::Acquire) {
+            return true;
+        }
         let (result, drained) = {
             let mut finish = self.native.sink_finish.lock_or_recover();
             let result = finish.as_mut().and_then(sink::Finish::poll);
             if result.is_some() {
                 finish.take();
+                self.native.has_sink_finish.store(false, Ordering::Release);
             }
             (result, finish.is_none())
         };
@@ -324,6 +332,9 @@ impl HewAsyncIo {
         if matches!(*state, State::Pending(_)) {
             // Cancellation changes the state under this lock, then takes this.
             *self.native.detach.lock_or_recover() = Some(detach);
+            self.native
+                .has_detach
+                .store(true, std::sync::atomic::Ordering::Release);
         } else {
             drop(state);
             detach.detach();
@@ -370,18 +381,24 @@ impl HewAsyncIo {
     }
 
     fn cancel_native_hooks(&self, won: bool) {
+        use std::sync::atomic::Ordering;
         self.clear_deadline();
         if won {
-            if let Some(finish) = self.native.sink_finish.lock_or_recover().as_mut() {
-                finish.cancel();
+            if self.native.has_sink_finish.load(Ordering::Acquire) {
+                if let Some(finish) = self.native.sink_finish.lock_or_recover().as_mut() {
+                    finish.cancel();
+                }
             }
             if let Some(cancel) = &self.native.socket_cancel {
                 cancel.cancel();
             }
         }
         self.forget_net_slot();
-        if let Some(detach) = self.native.detach.lock_or_recover().take() {
-            detach.detach();
+        if self.native.has_detach.load(Ordering::Acquire) {
+            if let Some(detach) = self.native.detach.lock_or_recover().take() {
+                self.native.has_detach.store(false, Ordering::Release);
+                detach.detach();
+            }
         }
     }
 
@@ -704,12 +721,15 @@ mod native {
     pub(crate) struct NativeFields {
         pub(super) stream_content: Mutex<Option<content::ReadOwnership>>,
         pub(crate) sink_finish: Mutex<Option<sink::Finish>>,
+        pub(crate) has_sink_finish: std::sync::atomic::AtomicBool,
         /// The socket, action and readiness flag of a readiness operation.
         pub(super) net: Option<net::NetOp>,
         pub(super) socket_cancel: Option<Arc<library::SocketCancellation>>,
         pub(super) deadline: Mutex<Option<deadline::Deadline>>,
+        pub(super) has_deadline: std::sync::atomic::AtomicBool,
         /// The running pool job producing the result, told when its caller gives up.
         pub(super) detach: Mutex<Option<crate::blocking_pool::Detach>>,
+        pub(super) has_detach: std::sync::atomic::AtomicBool,
     }
 
     /// An accepted socket remains owned by its operation until a successful take.

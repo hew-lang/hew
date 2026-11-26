@@ -32,10 +32,9 @@ use crate::resume::{sched_enqueue, sched_enqueue_owned};
 /// Activations running right now, and activations finished. The native
 /// scheduler reports these as its worker and task counters; the wasm32 driver
 /// has one activation at a time by construction.
-pub(crate) static ACTIVE_ACTIVATIONS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-pub(crate) static ACTIVATIONS_COMPLETED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ACTIVE_ACTIVATIONS: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+pub(crate) static ACTIVATIONS_COMPLETED: crate::util::ShardedCounter =
+    crate::util::ShardedCounter::new();
 
 #[cfg(any(test, debug_assertions))]
 fn dispatch_lock_seat_for_actor(
@@ -1636,6 +1635,13 @@ pub(crate) static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false
 /// Idempotent (the swap yields null on a second visit), so overlapping
 /// abandon routes settle to exactly one release.
 pub(crate) fn release_parked_ask_channel(a: &HewActor) {
+    // Fast path: most activations (including caller actors making asks) never
+    // populate `parked_ask_channel`. Only the owning activation ever stores a
+    // non-null pointer into this slot, so an empty Acquire load proves there is
+    // no retained gate reference and no drain scan can dereference one here.
+    if a.parked_ask_channel.load(Ordering::Acquire).is_null() {
+        return;
+    }
     let ch =
         crate::lifetime::live_actors::swap_slot_under_registry_lock(a.id, &a.parked_ask_channel);
     if !ch.is_null() {

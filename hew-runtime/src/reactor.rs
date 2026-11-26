@@ -22,7 +22,8 @@
 //! wheel's next deadline, and a timer inserted ahead of that deadline wakes the
 //! reactor through the poller's wake source.
 
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::io;
 use std::net::{TcpListener, TcpStream};
@@ -257,6 +258,8 @@ impl SlotState {
 pub(crate) struct Slot {
     handle: c_int,
     object: IoObject,
+    closed: AtomicBool,
+    nonblocking: AtomicBool,
     state: Mutex<SlotState>,
     #[cfg(test)]
     readiness_dispatch: Mutex<()>,
@@ -428,7 +431,7 @@ impl Slot {
     }
 
     pub(crate) fn is_closed(&self) -> bool {
-        self.state.lock_or_recover().closed
+        self.closed.load(Ordering::Acquire)
     }
 
     /// The socket's timeout for waits in `direction`. The socket option is
@@ -445,6 +448,9 @@ impl Slot {
 
     /// Switch the socket to non-blocking mode at its first waiting operation.
     pub(crate) fn ensure_nonblocking(&self) -> io::Result<()> {
+        if self.nonblocking.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut state = self.state.lock_or_recover();
         if !state.nonblocking {
             match &self.object {
@@ -465,6 +471,7 @@ impl Slot {
                 IoObject::Foreign(..) => {}
             }
             state.nonblocking = true;
+            self.nonblocking.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -649,14 +656,16 @@ impl Slot {
         let mut next = None;
         let removed = {
             let mut state = self.state.lock_or_recover();
-            let mut removed = Vec::new();
+            let mut removed: [Option<Arc<HewAsyncIo>>; 3] = [None, None, None];
+            let mut count = 0;
             if let Some(index) = state
                 .readers
                 .queue
                 .iter()
                 .position(|queued| std::ptr::eq(Arc::as_ptr(queued), operation))
             {
-                removed.push(state.readers.queue.remove(index));
+                removed[count] = state.readers.queue.remove(index);
+                count += 1;
                 if index == 0 {
                     next = state.readers.queue.front().cloned();
                     state.readers.front_woken = next.is_some();
@@ -668,7 +677,8 @@ impl Slot {
                     .as_ref()
                     .is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), operation))
                 {
-                    removed.push(slot.take());
+                    removed[count] = slot.take();
+                    count += 1;
                 }
             }
             removed
@@ -693,10 +703,17 @@ impl Slot {
             {
                 state.armed = 0;
             }
-            let mut ready = Vec::with_capacity(2);
+            let mut ready: [Option<Arc<HewAsyncIo>>; 2] = [None, None];
+            let mut count = 0;
+            let mut push_ready = |op: Option<Arc<HewAsyncIo>>| {
+                if let Some(op) = op {
+                    ready[count] = Some(op);
+                    count += 1;
+                }
+            };
             let mut turn = None;
             if events & (HEW_IO_READ | HEW_IO_HUP | HEW_IO_ERROR) != 0 {
-                ready.extend(state.reader.take());
+                push_ready(state.reader.take());
                 // The front reader stays queued; it leaves when it completes.
                 if !state.readers.front_woken {
                     turn = state.readers.queue.front().cloned();
@@ -704,7 +721,7 @@ impl Slot {
                 }
             }
             if events & (HEW_IO_WRITE | HEW_IO_HUP | HEW_IO_ERROR) != 0 {
-                ready.extend(state.writer.take());
+                push_ready(state.writer.take());
             }
             if !state.closed && state.interest() != 0 {
                 if let Ok(poller) = poller() {
@@ -712,18 +729,18 @@ impl Slot {
                         // Nothing can report readiness for the remaining
                         // waiter now; wake it so its attempt reports the fault.
                         eprintln!("hew: re-arm I/O readiness failed: {error}");
-                        ready.extend(state.reader.take());
-                        ready.extend(state.writer.take());
+                        push_ready(state.reader.take());
+                        push_ready(state.writer.take());
                     }
                 }
             }
             (ready, turn)
         };
-        for operation in ready.iter().chain(&turn) {
+        for operation in ready.iter().flatten().chain(&turn) {
             crate::observe::record_reactor_ready_event();
             operation.signal_ready();
         }
-        for operation in &ready {
+        for operation in ready.iter().flatten() {
             waiter_removed(operation);
         }
     }
@@ -740,6 +757,7 @@ impl Slot {
         let waiters = {
             let mut state = self.state.lock_or_recover();
             state.closed = true;
+            self.closed.store(true, Ordering::Release);
             #[cfg(unix)]
             if state.added {
                 if let Ok(poller) = poller() {
@@ -799,19 +817,23 @@ impl Slot {
 
 const SHARDS: usize = 64;
 
+/// One cache-line-aligned shard of the handle-to-slot table.
+#[repr(align(64))]
+struct TableShard(Mutex<FxHashMap<c_int, Arc<Slot>>>);
+
 /// Handle to slot, sharded so operations on different handles never share a
-/// lock. A shard lock is held only to clone or move a slot reference.
+/// lock or cache line. A shard lock is held only to clone or move a slot reference.
 struct Table {
-    shards: [Mutex<HashMap<c_int, Arc<Slot>>>; SHARDS],
+    shards: [TableShard; SHARDS],
 }
 
 static TABLE: LazyLock<Table> = LazyLock::new(|| Table {
-    shards: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+    shards: std::array::from_fn(|_| TableShard(Mutex::new(FxHashMap::default()))),
 });
 static NEXT_HANDLE: AtomicI32 = AtomicI32::new(1);
 
-fn shard(handle: c_int) -> &'static Mutex<HashMap<c_int, Arc<Slot>>> {
-    &TABLE.shards[handle.unsigned_abs() as usize % SHARDS]
+fn shard(handle: c_int) -> &'static Mutex<FxHashMap<c_int, Arc<Slot>>> {
+    &TABLE.shards[handle.unsigned_abs() as usize % SHARDS].0
 }
 
 /// Give `object` a slot and return its handle. Handles count up and wrap to 1
@@ -850,6 +872,8 @@ fn new_slot(handle: c_int, object: IoObject) -> Slot {
     Slot {
         handle,
         object,
+        closed: AtomicBool::new(false),
+        nonblocking: AtomicBool::new(false),
         state: Mutex::new(SlotState::default()),
         #[cfg(test)]
         readiness_dispatch: Mutex::new(()),
@@ -900,6 +924,7 @@ pub(crate) fn slots() -> Vec<Arc<Slot>> {
         .iter()
         .flat_map(|shard| {
             shard
+                .0
                 .lock_or_recover()
                 .values()
                 .cloned()
@@ -1204,7 +1229,7 @@ pub(crate) fn io_leak_verdict_after_runtime_cleanup() {
     let handles: usize = TABLE
         .shards
         .iter()
-        .map(|shard| shard.lock_or_recover().len())
+        .map(|shard| shard.0.lock_or_recover().len())
         .sum();
     let waiting = WAITERS.load(Ordering::SeqCst);
     if handles == 0 && waiting == 0 {

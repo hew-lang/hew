@@ -357,14 +357,17 @@ mod platform {
             _added: bool,
         ) -> io::Result<()> {
             let flags = libc::EV_ADD | libc::EV_ONESHOT;
-            let mut changes = Vec::with_capacity(2);
+            let mut changes = [change(0, 0, 0, 0, 0), change(0, 0, 0, 0, 0)];
+            let mut len = 0;
             if interest & HEW_IO_READ != 0 {
-                changes.push(change(fd as usize, libc::EVFILT_READ, flags, 0, token));
+                changes[len] = change(fd as usize, libc::EVFILT_READ, flags, 0, token);
+                len += 1;
             }
             if interest & HEW_IO_WRITE != 0 {
-                changes.push(change(fd as usize, libc::EVFILT_WRITE, flags, 0, token));
+                changes[len] = change(fd as usize, libc::EVFILT_WRITE, flags, 0, token);
+                len += 1;
             }
-            self.apply(&changes)
+            self.apply(&changes[..len])
         }
 
         /// Remove both filters before the slot closes `fd`.

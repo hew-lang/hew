@@ -83,7 +83,18 @@ impl HewAsyncIo {
         // Hold registration through publication: an immediate callback may
         // complete the operation but cannot remove an unpublished handle.
         let mut deadline = self.native.deadline.lock_or_recover();
+        // Publish presence before checking `is_pending` (pairs with `clear_deadline`'s
+        // SeqCst load after state transition) so a concurrent completion never misses
+        // a newly installed deadline.
+        self.native
+            .has_deadline
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if !self.is_pending() {
+            if deadline.is_none() {
+                self.native
+                    .has_deadline
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             return;
         }
         let payload = Box::into_raw(Box::new(Expiry {
@@ -94,6 +105,11 @@ impl HewAsyncIo {
         let Some(absolute) = crate::timer_deadline::after(now_ns, duration) else {
             // SAFETY: registration has not accepted this callback payload.
             drop(unsafe { Box::from_raw(payload) });
+            if deadline.is_none() {
+                self.native
+                    .has_deadline
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             drop(deadline);
             self.complete(Err(IoFailure::invalid("I/O deadline exceeds timer range")));
             return;
@@ -105,6 +121,11 @@ impl HewAsyncIo {
         if timer.entry.is_null() {
             // SAFETY: failed registration did not accept the payload.
             drop(unsafe { Box::from_raw(payload) });
+            if deadline.is_none() {
+                self.native
+                    .has_deadline
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             drop(deadline);
             self.complete(Err(IoFailure::invalid("I/O timer registration failed")));
         } else {
@@ -115,11 +136,31 @@ impl HewAsyncIo {
     }
 
     pub(super) fn has_deadline(&self) -> bool {
+        if !self
+            .native
+            .has_deadline
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
         self.native.deadline.lock_or_recover().is_some()
     }
 
     pub(super) fn clear_deadline(&self) {
-        let deadline = self.native.deadline.lock_or_recover().take();
+        if !self
+            .native
+            .has_deadline
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let deadline = {
+            let mut guard = self.native.deadline.lock_or_recover();
+            self.native
+                .has_deadline
+                .store(false, std::sync::atomic::Ordering::Release);
+            guard.take()
+        };
         drop(deadline);
     }
 }

@@ -2016,12 +2016,15 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
         if src.len == 0 {
             return new_v;
         }
-        if src.layout.as_ref().is_some_and(|layout| {
+        let can_share_cow = if let Some(layout) = src.layout.as_ref() {
             layout.ownership_kind == HewTypeOwnershipKind::Plain
                 && layout.clone_fn.is_none()
                 && layout.drop_fn.is_none()
                 && layout.release_start.is_none()
-        }) {
+        } else {
+            src.elem_kind == ElemKind::Plain
+        };
+        if can_share_cow {
             if (*buffer_owner(v)).fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
                 abort_vector();
             }

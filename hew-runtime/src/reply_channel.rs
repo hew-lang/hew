@@ -139,6 +139,11 @@ impl std::fmt::Debug for HewReplyChannel {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
+std::thread_local! {
+    static REPLY_CHANNEL_POOL: crate::util::TlsBoxPool<HewReplyChannel> =
+        const { crate::util::TlsBoxPool::new() };
+}
+
 /// Create a new reply channel.
 ///
 /// # Safety
@@ -148,32 +153,34 @@ impl std::fmt::Debug for HewReplyChannel {
 pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
     #[cfg(test)]
     ACTIVE_CHANNELS.fetch_add(1, Ordering::Relaxed);
-    Box::into_raw(Box::new(HewReplyChannel {
-        refs: AtomicUsize::new(1),
-        ready: AtomicBool::new(false),
-        cancelled: AtomicBool::new(false),
-        orphaned: AtomicBool::new(false),
-        value: ptr::null_mut(),
-        inline_value: [0; 16],
-        value_is_inline: false,
-        value_size: 0,
-        reply_drop_fn: Mutex::new(None),
-        native_reply_release: None,
-        allocation_failed: AtomicBool::new(false),
-        fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
-        failure: Mutex::new(None),
-        caller_actor_id: AtomicU64::new(0),
-        caller_actor_serial: AtomicU64::new(0),
-        lock: Mutex::new(()),
-        cond: Condvar::new(),
-        await_cancel: AtomicPtr::new(ptr::null_mut()),
-        has_native_waker: AtomicBool::new(false),
-        payload_owned: AtomicBool::new(false),
-        native: Mutex::new(native::NativeReplyOwner::default()),
-        native_request: None,
-        native_layout: ptr::null(),
-        native_code: None,
-    }))
+    REPLY_CHANNEL_POOL.with(|pool| {
+        pool.alloc(HewReplyChannel {
+            refs: AtomicUsize::new(1),
+            ready: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            orphaned: AtomicBool::new(false),
+            value: ptr::null_mut(),
+            inline_value: [0; 16],
+            value_is_inline: false,
+            value_size: 0,
+            reply_drop_fn: Mutex::new(None),
+            native_reply_release: None,
+            allocation_failed: AtomicBool::new(false),
+            fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
+            failure: Mutex::new(None),
+            caller_actor_id: AtomicU64::new(0),
+            caller_actor_serial: AtomicU64::new(0),
+            lock: Mutex::new(()),
+            cond: Condvar::new(),
+            await_cancel: AtomicPtr::new(ptr::null_mut()),
+            has_native_waker: AtomicBool::new(false),
+            payload_owned: AtomicBool::new(false),
+            native: Mutex::new(native::NativeReplyOwner::default()),
+            native_request: None,
+            native_layout: ptr::null(),
+            native_code: None,
+        })
+    })
 }
 
 /// Construct a native reply channel with its initial owner state populated
@@ -187,32 +194,34 @@ fn new_native_channel(
 ) -> *mut HewReplyChannel {
     #[cfg(test)]
     ACTIVE_CHANNELS.fetch_add(1, Ordering::Relaxed);
-    Box::into_raw(Box::new(HewReplyChannel {
-        refs: AtomicUsize::new(1),
-        ready: AtomicBool::new(false),
-        cancelled: AtomicBool::new(false),
-        orphaned: AtomicBool::new(false),
-        value: ptr::null_mut(),
-        inline_value: [0; 16],
-        value_is_inline: false,
-        value_size: 0,
-        reply_drop_fn: Mutex::new(drop_reply),
-        native_reply_release,
-        allocation_failed: AtomicBool::new(false),
-        fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
-        failure: Mutex::new(None),
-        caller_actor_id: AtomicU64::new(0),
-        caller_actor_serial: AtomicU64::new(0),
-        lock: Mutex::new(()),
-        cond: Condvar::new(),
-        await_cancel: AtomicPtr::new(ptr::null_mut()),
-        has_native_waker: AtomicBool::new(true),
-        payload_owned: AtomicBool::new(false),
-        native: Mutex::new(native_owner),
-        native_request: None,
-        native_layout,
-        native_code,
-    }))
+    REPLY_CHANNEL_POOL.with(|pool| {
+        pool.alloc(HewReplyChannel {
+            refs: AtomicUsize::new(1),
+            ready: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            orphaned: AtomicBool::new(false),
+            value: ptr::null_mut(),
+            inline_value: [0; 16],
+            value_is_inline: false,
+            value_size: 0,
+            reply_drop_fn: Mutex::new(drop_reply),
+            native_reply_release,
+            allocation_failed: AtomicBool::new(false),
+            fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
+            failure: Mutex::new(None),
+            caller_actor_id: AtomicU64::new(0),
+            caller_actor_serial: AtomicU64::new(0),
+            lock: Mutex::new(()),
+            cond: Condvar::new(),
+            await_cancel: AtomicPtr::new(ptr::null_mut()),
+            has_native_waker: AtomicBool::new(true),
+            payload_owned: AtomicBool::new(false),
+            native: Mutex::new(native_owner),
+            native_request: None,
+            native_layout,
+            native_code,
+        })
+    })
 }
 
 /// Construct the complete immutable request state before publishing either owner.
@@ -1051,7 +1060,7 @@ pub unsafe extern "C-unwind" fn hew_reply_channel_free(ch: *mut HewReplyChannel)
         }
         #[cfg(test)]
         ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
-        drop(Box::from_raw(ch));
+        REPLY_CHANNEL_POOL.with(|pool| pool.free(ch));
     }
 }
 

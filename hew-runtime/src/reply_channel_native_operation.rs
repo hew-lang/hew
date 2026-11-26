@@ -136,27 +136,30 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
         if !copied.is_null() {
             ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), size);
         }
-        let mut operation = Box::new(HewNativeReply {
-            payload: ReplyPayload {
-                value: copied,
-                layout,
-            },
-            inline_value,
-            is_inline: can_inline,
-            owner: owner.clone(),
-            channel: ptr::null_mut(),
-            transfer: None,
-            terminal: false,
-            taken: false,
-            code: crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+        let operation = NATIVE_REPLY_POOL.with(|pool| {
+            pool.alloc(HewNativeReply {
+                payload: ReplyPayload {
+                    value: copied,
+                    layout,
+                },
+                inline_value,
+                is_inline: can_inline,
+                owner: owner.clone(),
+                channel: ptr::null_mut(),
+                transfer: None,
+                terminal: false,
+                taken: false,
+                code: crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+            })
         });
         if let Some(reservation) = reservation {
-            if let Err(failure) =
-                reservation.commit_value(&PAYLOAD_LAYOUT, ptr::from_ref(&operation.payload).cast())
+            if let Err(failure) = reservation
+                .commit_value(&PAYLOAD_LAYOUT, ptr::from_ref(&(*operation).payload).cast())
             {
                 crate::mem::buf_free(copied);
-                operation.payload.value = ptr::null_mut();
-                operation.taken = true;
+                (*operation).payload.value = ptr::null_mut();
+                (*operation).taken = true;
+                NATIVE_REPLY_POOL.with(|pool| pool.free(operation));
                 out_status.write(failure);
                 return ptr::null_mut();
             }
@@ -166,11 +169,13 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
                 .release_value(&*layout, value)
                 .unwrap_or_else(|_| std::process::abort());
         }
-        operation.channel = crate::execution_context::hew_get_reply_channel().cast();
-        if !operation.channel.is_null() {
-            crate::execution_context::mark_current_reply_channel_consumed(operation.channel.cast());
+        (*operation).channel = crate::execution_context::hew_get_reply_channel().cast();
+        if !(*operation).channel.is_null() {
+            crate::execution_context::mark_current_reply_channel_consumed(
+                (*operation).channel.cast(),
+            );
         }
-        Box::into_raw(operation)
+        operation
     }
 }
 
@@ -447,6 +452,11 @@ pub(super) unsafe fn release_payload(
     }
 }
 
+std::thread_local! {
+    static NATIVE_REPLY_POOL: crate::util::TlsBoxPool<HewNativeReply> =
+        const { crate::util::TlsBoxPool::new() };
+}
+
 /// Release a terminal operation after taking its remaining cleanup obligations.
 /// # Safety
 /// The caller owns this operation and has stopped polling it.
@@ -457,13 +467,15 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_free_native(operation: *mut HewN
     }
     // SAFETY: the caller transfers one final operation owner.
     unsafe {
-        let operation = Box::from_raw(operation);
-        if !(operation.terminal && operation.taken && operation.transfer.is_none()) {
+        let op = &mut *operation;
+        if !(op.terminal && op.taken && op.transfer.is_none()) {
             eprintln!("fatal: hew_actor_reply_free_native called out of lifecycle order");
             std::process::abort();
         }
-        if !operation.channel.is_null() {
-            super::super::hew_reply_channel_free(operation.channel);
+        let channel = std::mem::replace(&mut op.channel, ptr::null_mut());
+        NATIVE_REPLY_POOL.with(|pool| pool.free(operation));
+        if !channel.is_null() {
+            super::super::hew_reply_channel_free(channel);
         }
     }
 }

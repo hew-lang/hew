@@ -4,8 +4,352 @@
 //! because a panicked thread should not cascade-crash independent actors.
 
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
+
+/// Aligns `T` to a cache line (128 bytes on aarch64/Apple Silicon where the L2
+/// prefetcher pairs 64-byte lines, 64 bytes elsewhere) to prevent false sharing.
+#[cfg_attr(target_arch = "aarch64", repr(align(128)))]
+#[cfg_attr(not(target_arch = "aarch64"), repr(align(64)))]
+#[derive(Debug, Default)]
+pub(crate) struct CachePadded<T>(pub(crate) T);
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for CachePadded<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+/// Cache-line-sharded monotonic counter for hot-path runtime metrics.
+///
+/// Eliminates cross-core cache-line bouncing on global counters (`MESSAGES_SENT`,
+/// `MESSAGES_RECEIVED`, `TASKS_SPAWNED`, `STEALS_TOTAL`) by hashing each thread
+/// onto its own cache-line-aligned shard on native targets, while collapsing to
+/// a single `AtomicU64` on single-threaded `wasm32`.
+#[cfg(not(target_arch = "wasm32"))]
+const COUNTER_SHARDS: usize = 64;
+
+#[cfg(not(target_arch = "wasm32"))]
+static NEXT_COUNTER_SHARD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+std::thread_local! {
+    static THREAD_COUNTER_SHARD: usize =
+        NEXT_COUNTER_SHARD.fetch_add(1, Ordering::Relaxed) & (COUNTER_SHARDS - 1);
+}
+
+#[derive(Debug)]
+pub(crate) struct ShardedCounter {
+    #[cfg(not(target_arch = "wasm32"))]
+    shards: [CachePadded<AtomicU64>; COUNTER_SHARDS],
+    #[cfg(target_arch = "wasm32")]
+    value: AtomicU64,
+}
+
+impl ShardedCounter {
+    pub(crate) const fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self {
+                shards: [const { CachePadded(AtomicU64::new(0)) }; COUNTER_SHARDS],
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                value: AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn fetch_add(&self, val: u64, order: Ordering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let idx = THREAD_COUNTER_SHARD.with(|&slot| slot);
+            self.shards[idx].fetch_add(val, order);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.fetch_add(val, order);
+        }
+    }
+
+    pub(crate) fn load(&self, order: Ordering) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut sum = 0u64;
+            for shard in &self.shards {
+                sum = sum.wrapping_add(shard.load(order));
+            }
+            sum
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.load(order)
+        }
+    }
+
+    pub(crate) fn store(&self, val: u64, order: Ordering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.shards[0].store(val, order);
+            for shard in &self.shards[1..] {
+                shard.store(0, order);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.store(val, order);
+        }
+    }
+}
+
+/// Cache-line-sharded signed gauge for hot-path up/down runtime counters.
+///
+/// Supports increments on one worker thread and decrements on another without
+/// cross-core cache-line bouncing. `load()` sums all shards and clamps at 0.
+#[derive(Debug)]
+pub(crate) struct ShardedGauge {
+    #[cfg(not(target_arch = "wasm32"))]
+    shards: [CachePadded<std::sync::atomic::AtomicI64>; COUNTER_SHARDS],
+    #[cfg(target_arch = "wasm32")]
+    value: std::sync::atomic::AtomicI64,
+}
+
+impl ShardedGauge {
+    pub(crate) const fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self {
+                shards: [const { CachePadded(std::sync::atomic::AtomicI64::new(0)) };
+                    COUNTER_SHARDS],
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                value: std::sync::atomic::AtomicI64::new(0),
+            }
+        }
+    }
+
+    #[inline]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "runtime gauge deltas fit comfortably in i64"
+    )]
+    pub(crate) fn fetch_add(&self, val: u64, order: Ordering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let idx = THREAD_COUNTER_SHARD.with(|&slot| slot);
+            self.shards[idx].fetch_add(val as i64, order);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.fetch_add(val as i64, order);
+        }
+    }
+
+    #[inline]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "runtime gauge deltas fit comfortably in i64"
+    )]
+    pub(crate) fn fetch_sub(&self, val: u64, order: Ordering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let idx = THREAD_COUNTER_SHARD.with(|&slot| slot);
+            self.shards[idx].fetch_sub(val as i64, order);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.fetch_sub(val as i64, order);
+        }
+    }
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "clamped non-negative with .max(0) before casting to u64"
+    )]
+    pub(crate) fn load(&self, order: Ordering) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut sum = 0i64;
+            for shard in &self.shards {
+                sum = sum.wrapping_add(shard.load(order));
+            }
+            sum.max(0) as u64
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.load(order).max(0) as u64
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "runtime gauge values fit comfortably in i64"
+    )]
+    pub(crate) fn store(&self, val: u64, order: Ordering) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.shards[0].store(val as i64, order);
+            for shard in &self.shards[1..] {
+                shard.store(0, order);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.value.store(val as i64, order);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swap(&self, val: u64, order: Ordering) -> u64 {
+        let load_order = match order {
+            Ordering::AcqRel => Ordering::Acquire,
+            Ordering::Release => Ordering::Relaxed,
+            other => other,
+        };
+        let store_order = match order {
+            Ordering::AcqRel => Ordering::Release,
+            Ordering::Acquire => Ordering::Relaxed,
+            other => other,
+        };
+        let prev = self.load(load_order);
+        self.store(val, store_order);
+        prev
+    }
+}
+
+/// Maximum recycled allocations retained per thread in a hot-path TLS pool.
+const TLS_POOL_CAP: usize = 128;
+
+/// Thread-local freelist for `Box`-backed runtime objects (`HewReplyChannel`,
+/// `HewActorCall`, `HewNativeReply`).
+///
+/// `free` runs `ptr::drop_in_place` immediately so pooled slots never retain
+/// references, then caches the raw allocation locally to bypass global
+/// allocator locks on steady-state actor ask/reply paths. Remaining slots are
+/// deallocated cleanly when the thread exits.
+pub(crate) struct TlsBoxPool<T> {
+    slots: std::cell::RefCell<Vec<*mut T>>,
+}
+
+impl<T> TlsBoxPool<T> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            slots: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn alloc(&self, val: T) -> *mut T {
+        debug_assert!(std::mem::size_of::<T>() > 0);
+        if let Ok(mut slots) = self.slots.try_borrow_mut() {
+            if let Some(ptr) = slots.pop() {
+                // SAFETY: `ptr` is a valid, properly aligned, uninitialized
+                // `Layout::new::<T>()` allocation previously returned to this pool.
+                unsafe { std::ptr::write(ptr, val) };
+                return ptr;
+            }
+        }
+        Box::into_raw(Box::new(val))
+    }
+
+    /// Destroy the value at `ptr` and return its raw backing allocation to the
+    /// thread-local pool (or global allocator if full).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a valid, uniquely owned pointer allocated by `Self::alloc`
+    /// (or `Box::into_raw(Box::new(_))`).
+    #[inline]
+    pub(crate) unsafe fn free(&self, ptr: *mut T) {
+        debug_assert!(std::mem::size_of::<T>() > 0);
+        // SAFETY: caller transfers unique ownership of the initialized `T`.
+        unsafe { std::ptr::drop_in_place(ptr) };
+        if let Ok(mut slots) = self.slots.try_borrow_mut() {
+            if slots.len() < TLS_POOL_CAP {
+                slots.push(ptr);
+                return;
+            }
+        }
+        // SAFETY: `ptr` was allocated with `Layout::new::<T>()` via GlobalAlloc
+        // and its value has already been dropped above.
+        unsafe { std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<T>()) };
+    }
+}
+
+impl<T> Drop for TlsBoxPool<T> {
+    fn drop(&mut self) {
+        let layout = std::alloc::Layout::new::<T>();
+        for ptr in self.slots.get_mut().drain(..) {
+            // SAFETY: each pooled slot was dropped in `Self::free` and owns
+            // one raw `Layout::new::<T>()` allocation from GlobalAlloc.
+            unsafe { std::alloc::dealloc(ptr.cast::<u8>(), layout) };
+        }
+    }
+}
+
+/// Thread-local freelist for `crate::mem::buf_try_alloc` fixed-size blocks
+/// (`HewMsgNode`, `HewMsgEnvelope`).
+pub(crate) struct TlsBufPool {
+    slots: std::cell::RefCell<Vec<*mut std::ffi::c_void>>,
+}
+
+impl TlsBufPool {
+    pub(crate) const fn new() -> Self {
+        Self {
+            slots: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn pop(&self) -> Option<*mut std::ffi::c_void> {
+        self.slots.try_borrow_mut().ok()?.pop()
+    }
+
+    /// Return a `buf_try_alloc` block to the thread-local pool (or free it).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a uniquely owned pointer from `crate::mem::buf_try_alloc`
+    /// matching this pool's block size, with any contained Rust values already
+    /// dropped.
+    #[inline]
+    pub(crate) unsafe fn push(&self, ptr: *mut std::ffi::c_void) {
+        if let Ok(mut slots) = self.slots.try_borrow_mut() {
+            if slots.len() < TLS_POOL_CAP {
+                slots.push(ptr);
+                return;
+            }
+        }
+        // SAFETY: `ptr` came from `crate::mem::buf_try_alloc`.
+        unsafe { crate::mem::buf_free(ptr) };
+    }
+}
+
+impl Drop for TlsBufPool {
+    fn drop(&mut self) {
+        for ptr in self.slots.get_mut().drain(..) {
+            // SAFETY: each pooled block came from `crate::mem::buf_try_alloc`.
+            unsafe { crate::mem::buf_free(ptr) };
+        }
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {

@@ -12,7 +12,7 @@ use live_actors::ActorIncarnation;
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 
 const WAIT_SHARDS: usize = 64;
 const STATE_DISARMED: u8 = 0;
@@ -45,16 +45,18 @@ impl HewActorWaitEdge {
     }
 }
 
+#[cfg_attr(target_arch = "aarch64", repr(align(128)))]
+#[cfg_attr(not(target_arch = "aarch64"), repr(align(64)))]
 struct WaitShard {
     len: AtomicUsize,
-    entries: RwLock<FxHashMap<ActorIncarnation, Weak<HewActorWaitEdge>>>,
+    entries: Mutex<FxHashMap<ActorIncarnation, Weak<HewActorWaitEdge>>>,
 }
 
 impl WaitShard {
     fn new() -> Self {
         Self {
             len: AtomicUsize::new(0),
-            entries: RwLock::new(FxHashMap::default()),
+            entries: Mutex::new(FxHashMap::default()),
         }
     }
 }
@@ -82,7 +84,7 @@ fn is_target_pending(target: ActorIncarnation) -> bool {
     if shard.len.load(Ordering::SeqCst) == 0 {
         return false;
     }
-    let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+    let entries = shard.entries.lock_or_recover();
     entries
         .get(&target)
         .and_then(Weak::upgrade)
@@ -130,10 +132,7 @@ impl HewActorWaitEdge {
 
     fn install(owner: ActorIncarnation, edge: &Arc<Self>) {
         let shard = &WAITS[shard_index(owner)];
-        let mut entries = shard
-            .entries
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut entries = shard.entries.lock_or_recover();
         if let Some(previous) = entries.insert(owner, Arc::downgrade(edge)) {
             if let Some(previous_edge) = previous.upgrade() {
                 previous_edge.replaced.store(true, Ordering::Release);
@@ -152,7 +151,7 @@ pub(crate) fn ready(owner: ActorIncarnation) {
     if shard.len.load(Ordering::SeqCst) == 0 {
         return;
     }
-    let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+    let entries = shard.entries.lock_or_recover();
     if let Some(edge) = entries.get(&owner).and_then(Weak::upgrade) {
         edge.state.store(STATE_DISARMED, Ordering::SeqCst);
     }
@@ -327,7 +326,7 @@ fn detect_cycle_slow(edge: &HewActorWaitEdge) -> i32 {
         if shard.len.load(Ordering::SeqCst) == 0 {
             continue;
         }
-        let entries = shard.entries.read().unwrap_or_else(PoisonError::into_inner);
+        let entries = shard.entries.lock_or_recover();
         for (owner, weak) in entries.iter() {
             if let Some(candidate) = weak.upgrade() {
                 if candidate.state.load(Ordering::SeqCst) == STATE_PENDING {
@@ -419,10 +418,7 @@ pub unsafe extern "C" fn hew_actor_wait_edge_free(edge: *const HewActorWaitEdge)
     let edge = unsafe { Arc::from_raw(edge) };
     edge.state.store(STATE_DISARMED, Ordering::SeqCst);
     let shard = &WAITS[shard_index(edge.owner)];
-    let mut entries = shard
-        .entries
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut entries = shard.entries.lock_or_recover();
     if entries
         .get(&edge.owner)
         .is_some_and(|weak| weak.ptr_eq(&Arc::downgrade(&edge)))

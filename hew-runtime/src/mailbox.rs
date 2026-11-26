@@ -39,10 +39,9 @@ use crate::set_last_error;
 
 /// Messages this process has sent and received. The scheduler reports them as
 /// its own counters; the mailbox is what increments them.
-pub(crate) static MESSAGES_SENT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-pub(crate) static MESSAGES_RECEIVED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static MESSAGES_SENT: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+pub(crate) static MESSAGES_RECEIVED: crate::util::ShardedCounter =
+    crate::util::ShardedCounter::new();
 use crate::tracing::HewTraceContext;
 
 // Exact ask-node identity ledger for ownership regressions. A queued ask moves
@@ -513,6 +512,10 @@ fn should_fail_mailbox_alloc() -> bool {
     })
 }
 
+std::thread_local! {
+    static MSG_NODE_POOL: crate::util::TlsBufPool = const { crate::util::TlsBufPool::new() };
+}
+
 fn mailbox_malloc(size: usize) -> *mut c_void {
     #[cfg(test)]
     {
@@ -522,6 +525,37 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
+    crate::mem::buf_try_alloc(size)
+}
+
+fn alloc_msg_node_raw() -> *mut HewMsgNode {
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return ptr::null_mut();
+        }
+    }
+    if let Some(ptr) = MSG_NODE_POOL.with(crate::util::TlsBufPool::pop) {
+        return ptr.cast::<HewMsgNode>();
+    }
+    crate::mem::buf_try_alloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>()
+}
+
+unsafe fn free_msg_node_raw(node: *mut HewMsgNode) {
+    // SAFETY: `node` is a uniquely owned `HewMsgNode` block from `buf_try_alloc`.
+    MSG_NODE_POOL.with(|pool| unsafe { pool.push(node.cast()) });
+}
+
+fn mailbox_envelope_alloc(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return ptr::null_mut();
+        }
+    }
+    if let Some(ptr) = crate::cow_envelope::pop_pooled_envelope() {
+        return ptr;
+    }
     crate::mem::buf_try_alloc(size)
 }
 
@@ -584,7 +618,7 @@ pub unsafe extern "C" fn hew_msg_envelope_new(
     drop_glue: Option<HewMsgEnvelopeDropFn>,
 ) -> *mut HewMsgEnvelope {
     // SAFETY: forwarded unchanged to the shared envelope lifecycle.
-    unsafe { crate::cow_envelope::new(payload, payload_size, drop_glue, mailbox_malloc) }
+    unsafe { crate::cow_envelope::new(payload, payload_size, drop_glue, mailbox_envelope_alloc) }
 }
 
 /// Release one live envelope ownership reference.
@@ -712,8 +746,7 @@ unsafe fn msg_node_alloc_with_trace(
         set_last_error("msg_node_alloc_with_trace: null payload with non-zero size");
         return ptr::null_mut();
     }
-    // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
+    let node = alloc_msg_node_raw();
     if node.is_null() {
         return ptr::null_mut();
     }
@@ -742,7 +775,7 @@ unsafe fn msg_node_alloc_with_trace(
         if data_size > 0 {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                crate::mem::buf_free(node.cast());
+                free_msg_node_raw(node);
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
@@ -753,7 +786,7 @@ unsafe fn msg_node_alloc_with_trace(
         (*node).envelope = hew_msg_envelope_new((*node).data, data_size, None);
         if (*node).envelope.is_null() {
             crate::mem::buf_free((*node).data);
-            crate::mem::buf_free(node.cast());
+            free_msg_node_raw(node);
             return ptr::null_mut();
         }
         crate::request_state::bind_reply((*node).envelope, reply_channel.cast());
@@ -786,8 +819,7 @@ unsafe fn msg_node_alloc_owned(
     envelope: *mut HewMsgEnvelope,
     reply_channel: *mut c_void,
 ) -> *mut HewMsgNode {
-    // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
+    let node = alloc_msg_node_raw();
     if node.is_null() {
         return ptr::null_mut();
     }
@@ -1149,7 +1181,7 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
         crate::cow_envelope::release((*node).envelope);
         (*node).envelope = ptr::null_mut();
         retire_msg_node_ask_sender_ref(node);
-        crate::mem::buf_free(node.cast());
+        free_msg_node_raw(node);
     }
 }
 
@@ -1223,7 +1255,9 @@ fn alloc_stub_node() -> *mut HewMsgNode {
 /// consumer dequeues from `tail`. A heap-allocated stub node remains live for
 /// the queue's full lifetime so producers never race a freed former stub.
 struct MpscQueue {
-    head: AtomicPtr<HewMsgNode>,
+    /// Producer-contended swap target isolated on its own cache line so
+    /// producer pushes do not false-share with the consumer's `tail`/`stub`.
+    head: crate::util::CachePadded<AtomicPtr<HewMsgNode>>,
     tail: UnsafeCell<*mut HewMsgNode>,
     stub: *mut HewMsgNode,
 }
@@ -1262,7 +1296,7 @@ impl MpscQueue {
             return None;
         }
         Some(Self {
-            head: AtomicPtr::new(stub),
+            head: crate::util::CachePadded(AtomicPtr::new(stub)),
             tail: UnsafeCell::new(stub),
             stub,
         })
@@ -3552,44 +3586,49 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
     // SAFETY: Caller guarantees `mb` is valid and single-consumer.
     let mb = unsafe { &*mb };
 
-    // System messages have priority (lock-free dequeue).
-    // SAFETY: single-consumer invariant satisfied by caller.
-    match unsafe { mb.sys_queue.try_dequeue() } {
-        TryDequeueResult::Node(sys_node) => {
-            mb.sys_count.fetch_sub(1, Ordering::AcqRel);
-            MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
-            let raw = unsafe { (*sys_node).msg_type };
-            let Some(kind) = HewSysMsg::from_raw(raw) else {
-                // Fail-closed: a system-queue node whose kind does not decode is
-                // NOT downgraded to a user message (that would hand it to the
-                // application trampoline). Every runtime producer goes through the
-                // typed `mailbox_send_sys*`, and the C entry point validates, so
-                // reaching here means memory corruption. Drop it and report.
-                eprintln!(
-                    "[mailbox] refusing system-queue node with undecodable kind {raw} \
-                     (mailbox {mb:p}); dropping"
-                );
-                // SAFETY: `sys_node` is exclusively owned here and not published.
-                unsafe { hew_msg_node_free(sys_node) };
+    // System messages have priority (lock-free dequeue). Skip touching
+    // `sys_queue` entirely on the common path when `sys_count == 0`.
+    // `enqueue_sys_node_inner` publishes `sys_count` before `sys_queue.enqueue`,
+    // so an Acquire load of 0 guarantees no system node is reachable.
+    if mb.sys_count.load(Ordering::Acquire) != 0 {
+        // SAFETY: single-consumer invariant satisfied by caller.
+        match unsafe { mb.sys_queue.try_dequeue() } {
+            TryDequeueResult::Node(sys_node) => {
+                mb.sys_count.fetch_sub(1, Ordering::AcqRel);
+                MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
+                let raw = unsafe { (*sys_node).msg_type };
+                let Some(kind) = HewSysMsg::from_raw(raw) else {
+                    // Fail-closed: a system-queue node whose kind does not decode is
+                    // NOT downgraded to a user message (that would hand it to the
+                    // application trampoline). Every runtime producer goes through the
+                    // typed `mailbox_send_sys*`, and the C entry point validates, so
+                    // reaching here means memory corruption. Drop it and report.
+                    eprintln!(
+                        "[mailbox] refusing system-queue node with undecodable kind {raw} \
+                         (mailbox {mb:p}); dropping"
+                    );
+                    // SAFETY: `sys_node` is exclusively owned here and not published.
+                    unsafe { hew_msg_node_free(sys_node) };
+                    return RecvNode {
+                        node: ptr::null_mut(),
+                        origin: Origin::User,
+                    };
+                };
+                return RecvNode {
+                    node: sys_node,
+                    origin: Origin::Sys(kind),
+                };
+            }
+            TryDequeueResult::Inconsistent => {
+                // A system signal is mid-link; do not bypass it with a user message.
                 return RecvNode {
                     node: ptr::null_mut(),
                     origin: Origin::User,
                 };
-            };
-            return RecvNode {
-                node: sys_node,
-                origin: Origin::Sys(kind),
-            };
+            }
+            TryDequeueResult::Empty => {}
         }
-        TryDequeueResult::Inconsistent => {
-            // A system signal is mid-link; do not bypass it with a user message.
-            return RecvNode {
-                node: ptr::null_mut(),
-                origin: Origin::User,
-            };
-        }
-        TryDequeueResult::Empty => {}
     }
 
     // User messages: slow path uses mutex, fast path uses lock-free queue.
@@ -3636,7 +3675,9 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if let TryDequeueResult::Node(node) = unsafe { mb.user_fast.try_dequeue() } {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            mb.native_capacity.notify();
+            if mb.capacity > 0 {
+                mb.native_capacity.notify();
+            }
             return RecvNode {
                 node,
                 origin: Origin::User,

@@ -13,16 +13,16 @@
 //!
 //! # Sharding and lock ordering
 //!
-//! `LiveActors` partitions actor IDs across 16 independent shards
-//! (`LIVE_ACTOR_SHARDS`), matching `LINK_TABLE` and `MONITOR_TABLE`.
+//! `LiveActors` partitions actor IDs across 64 cache-line-aligned `Mutex`
+//! shards (`LIVE_ACTOR_SHARDS`).
 //!
 //! **Single-shard lock invariant**: no operation in this module ever holds more
 //! than one shard lock at a time. Point operations (`track_actor`,
 //! `untrack_actor`, `take_actor_by_id`, `pin_actor_by_id`,
 //! `with_live_actor_by_id`, `get_actor_ptr_by_id`,
-//! `swap_slot_under_registry_lock`) acquire only `shards[actor_id % 16]`.
+//! `swap_slot_under_registry_lock`) acquire only `shards[actor_id % 64]`.
 //! Whole-registry scans (`with_live_actor`, `has_drain_blocking_suspended_actor`,
-//! `snapshot_live_actor_*`, `drain_all_for_cleanup`) visit shards `0..16` one
+//! `snapshot_live_actor_*`, `drain_all_for_cleanup`) visit shards `0..64` one
 //! shard at a time, releasing shard `i` before acquiring shard `i + 1`. Because
 //! an actor's `id` is immutable for its lifetime, its shard is fixed, so
 //! per-actor serialization (`pin_actor_by_id` vs `untrack_actor`, and
@@ -36,15 +36,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
 
-/// Number of shards for the live-actor registry, matching `LINK_TABLE` and
-/// `MONITOR_TABLE`. Must remain a power of two.
-const LIVE_ACTOR_SHARDS: usize = 16;
+/// Number of shards for the live-actor registry. Must remain a power of two.
+const LIVE_ACTOR_SHARDS: usize = 64;
 
 #[inline]
 fn shard_index(actor_id: u64) -> usize {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..16)"
+        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..64)"
     )]
     {
         (actor_id as usize) & (LIVE_ACTOR_SHARDS - 1)
@@ -61,6 +60,9 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
+// SAFETY: `HewActor` is `Sync` and all reads under shared registry locks only
+// access synchronized/atomic actor fields.
+unsafe impl Sync for ActorPtr {}
 
 struct LiveActor {
     actor: ActorPtr,
@@ -80,10 +82,14 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     unsafe { crate::platform::executor::retire_tracked_actor_route(runtime, token, actor_id) };
 }
 
+/// One cache-line-aligned shard of the live-actor registry.
+#[repr(align(64))]
+struct LiveActorShard(PoisonSafe<Option<FxHashMap<u64, LiveActor>>>);
+
 /// Runtime-owned actor-liveness state.
 pub(crate) struct LiveActors {
-    /// Sharded maps of live actor id -> pointer (16 shards; see module doc).
-    shards: [PoisonSafe<Option<FxHashMap<u64, LiveActor>>>; LIVE_ACTOR_SHARDS],
+    /// Sharded maps of live actor id -> pointer (64 shards; see module doc).
+    shards: [LiveActorShard; LIVE_ACTOR_SHARDS],
     /// Exact count of tracked actors across all shards, maintained under each
     /// shard's lock on insert, remove, and drain.
     len: AtomicUsize,
@@ -96,7 +102,7 @@ impl LiveActors {
     /// Construct an empty liveness registry for a runtime.
     pub(crate) const fn new() -> Self {
         Self {
-            shards: [const { PoisonSafe::new(None) }; LIVE_ACTOR_SHARDS],
+            shards: [const { LiveActorShard(PoisonSafe::new(None)) }; LIVE_ACTOR_SHARDS],
             len: AtomicUsize::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
@@ -104,22 +110,36 @@ impl LiveActors {
     }
 }
 
-/// Run `f` with mutable access to the shard owning `actor_id`.
+/// Run `f` with exclusive access to the shard owning `actor_id`.
 fn with_shard<R>(
     actor_id: u64,
     f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
 ) -> R {
     let actors = crate::platform::executor::current_live_actors();
-    actors.shards[shard_index(actor_id)].access(|map| f(map, &actors.len))
+    actors.shards[shard_index(actor_id)]
+        .0
+        .access(|map| f(map, &actors.len))
 }
 
-/// Run `f` with mutable access to the shard owning `actor_id` when a runtime is installed.
+/// Run `f` with exclusive access to the shard owning `actor_id` when a runtime is installed.
 fn with_shard_opt<R>(
     actor_id: u64,
     f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>, &AtomicUsize) -> R,
 ) -> Option<R> {
+    crate::platform::executor::current_live_actors_opt().map(|actors| {
+        actors.shards[shard_index(actor_id)]
+            .0
+            .access(|map| f(map, &actors.len))
+    })
+}
+
+/// Run `f` with read-only access to the shard owning `actor_id` when a runtime is installed.
+fn with_shard_read_opt<R>(
+    actor_id: u64,
+    f: impl FnOnce(&Option<FxHashMap<u64, LiveActor>>) -> R,
+) -> Option<R> {
     crate::platform::executor::current_live_actors_opt()
-        .map(|actors| actors.shards[shard_index(actor_id)].access(|map| f(map, &actors.len)))
+        .map(|actors| actors.shards[shard_index(actor_id)].0.access(|map| f(map)))
 }
 
 /// Register an actor in the live tracking map.
@@ -218,15 +238,15 @@ pub(crate) fn with_live_actor<R>(
     let actors = crate::platform::executor::current_live_actors_opt()?;
     let mut f = Some(f);
     for shard in &actors.shards {
-        let result = shard.access(|map| {
+        let result = shard.0.access(|map| {
             if map
                 .as_ref()
                 .is_some_and(|m| m.values().any(|ptr| ptr.actor.0 == actor))
             {
                 let func = f.take().expect("closure runs at most once");
                 // SAFETY: `actor` is tracked in this shard; concurrent frees
-                // must remove it under this same shard lock before reclaiming
-                // the allocation.
+                // must remove it under this same shard's write lock before
+                // reclaiming the allocation.
                 Some(func(unsafe { &*actor }))
             } else {
                 None
@@ -288,14 +308,15 @@ pub(crate) fn with_live_actor_by_id<R>(
     expected: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_shard_opt(actor_id, |map, _| {
+    with_shard_read_opt(actor_id, |map| {
         if map
             .as_ref()
             .and_then(|m| m.get(&actor_id))
             .is_some_and(|ptr| ptr.actor.0 == expected)
         {
             // SAFETY: `expected` is tracked under `actor_id`; concurrent frees
-            // must remove that exact entry before reclaiming the allocation.
+            // must remove that exact entry under the write lock before
+            // reclaiming the allocation.
             Some(f(unsafe { &*expected }))
         } else {
             None
@@ -313,7 +334,7 @@ pub(crate) fn with_live_actor_by_id<R>(
 /// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
 /// instead so the actor cannot be freed between lookup and dereference.
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
-    with_shard_opt(actor_id, |map, _| {
+    with_shard_read_opt(actor_id, |map| {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.actor.0))
             .filter(|ptr| !ptr.is_null())
@@ -368,13 +389,14 @@ impl ActorPin {
 /// or user work. Existing mailbox submission keeps its pin only for that
 /// submission operation.
 pub(crate) fn pin_actor_by_id(actor_id: u64) -> Option<ActorPin> {
-    let ptr = with_shard_opt(actor_id, |map, _| {
+    let ptr = with_shard_read_opt(actor_id, |map| {
         let ptr = map
             .as_ref()
             .and_then(|m| m.get(&actor_id).map(|p| p.actor.0))
             .filter(|p| !p.is_null())?;
-        // SAFETY: the pointer is tracked under the owning shard lock. Incrementing
-        // before releasing the lock is mutually exclusive with untracking.
+        // SAFETY: the pointer is tracked under the owning shard's read lock.
+        // Incrementing before releasing the read lock is mutually exclusive
+        // with untracking, which acquires the shard's exclusive write lock.
         unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
         Some(ptr)
     })
@@ -616,12 +638,12 @@ mod native {
             return false;
         };
         for shard in &actors.shards {
-            let blocked = shard.access(|map| {
+            let blocked = shard.0.access(|map| {
                 map.as_ref().is_some_and(|entries| {
                     entries.values().any(|entry| {
                         let actor = &entry.actor.0;
                         // SAFETY: the pointer remains tracked under its owning shard lock;
-                        // every free path must untrack it before reclaiming the box.
+                        // every free path must untrack it under the lock before reclaiming.
                         let a = unsafe { &**actor };
                         if a.actor_state.load(Ordering::Acquire)
                             != crate::internal::types::HewActorState::Suspended as i32
@@ -662,7 +684,7 @@ mod native {
         };
         let mut ptrs = Vec::new();
         for shard in &actors.shards {
-            shard.access(|map| {
+            shard.0.access(|map| {
                 if let Some(m) = map.as_ref() {
                     ptrs.extend(m.values().map(|entry| entry.actor.0));
                 }
@@ -679,7 +701,7 @@ mod native {
         };
         let mut ids = Vec::new();
         for shard in &actors.shards {
-            shard.access(|map| {
+            shard.0.access(|map| {
                 if let Some(m) = map.as_ref() {
                     ids.extend(m.keys().copied());
                 }
@@ -695,7 +717,7 @@ mod native {
         };
         let mut drained = HashMap::new();
         for shard in &actors.shards {
-            let taken = shard.access(|map| match map.as_mut() {
+            let taken = shard.0.access(|map| match map.as_mut() {
                 Some(m) => {
                     let entries = std::mem::take(m);
                     actors.len.fetch_sub(entries.len(), Ordering::AcqRel);
@@ -779,7 +801,7 @@ mod wasm_guest {
             return false;
         };
         for shard in &actors.shards {
-            let active = shard.access(|map| {
+            let active = shard.0.access(|map| {
                 map.as_ref().is_some_and(|entries| {
                     entries.values().any(|entry| {
                         // SAFETY: the liveness shard retains the allocation during
@@ -811,7 +833,7 @@ mod wasm_guest {
         };
         let mut incarnations = Vec::new();
         for shard in &actors.shards {
-            shard.access(|map| {
+            shard.0.access(|map| {
                 if let Some(entries) = map.as_ref() {
                     incarnations.extend(entries.values().map(|entry| {
                         // SAFETY: the shard lock retains this tracked allocation.

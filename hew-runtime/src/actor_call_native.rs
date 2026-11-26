@@ -614,20 +614,22 @@ pub(crate) unsafe fn actor_call_resume(
             kind,
         )
     } {
-        let mut operation = Box::new(HewActorCall {
-            route: CallRoute::Imported(imported),
-            owned_target: None,
-            expected_size: reply_size,
-            kind,
-            state: CallState::Waiting,
-            target: None,
-            cleanup_started: false,
-            cleanup: None,
-            rejected_payload: ptr::null_mut(),
+        let operation = ACTOR_CALL_POOL.with(|pool| {
+            pool.alloc(HewActorCall {
+                route: CallRoute::Imported(imported),
+                owned_target: None,
+                expected_size: reply_size,
+                kind,
+                state: CallState::Waiting,
+                target: None,
+                cleanup_started: false,
+                cleanup: None,
+                rejected_payload: ptr::null_mut(),
+            })
         });
         // SAFETY: the operation exclusively owns the remote readiness state.
-        unsafe { operation.poll() };
-        return Box::into_raw(operation);
+        unsafe { (*operation).poll() };
+        return operation;
     }
     let channel = if kind.completion_policy().is_some() {
         // SAFETY: registration precedes any request publication.
@@ -670,26 +672,28 @@ pub(crate) unsafe fn actor_call_resume(
             kind.completion_policy().is_some(),
         )
     };
-    let mut operation = Box::new(HewActorCall {
-        route: CallRoute::Local(LocalCall {
-            admission,
-            channel,
-            timer,
-            request,
-        }),
-        owned_target: None,
-        expected_size: reply_size,
-        kind,
-        state: CallState::Admitting,
-        target: None,
-        cleanup_started: false,
-        cleanup: None,
-        rejected_payload: ptr::null_mut(),
+    let operation = ACTOR_CALL_POOL.with(|pool| {
+        pool.alloc(HewActorCall {
+            route: CallRoute::Local(LocalCall {
+                admission,
+                channel,
+                timer,
+                request,
+            }),
+            owned_target: None,
+            expected_size: reply_size,
+            kind,
+            state: CallState::Admitting,
+            target: None,
+            cleanup_started: false,
+            cleanup: None,
+            rejected_payload: ptr::null_mut(),
+        })
     });
     // SAFETY: the first attempt establishes admission in source evaluation order
     // and captures `operation.target` directly from the pinned receiver.
-    unsafe { operation.poll() };
-    Box::into_raw(operation)
+    unsafe { (*operation).poll() };
+    operation
 }
 
 /// Seal a mailbox message before transferring its fields and optional actor
@@ -889,6 +893,11 @@ pub unsafe extern "C" fn hew_actor_call_cleanup_fault(
         .map_or(ptr::null_mut(), |driver| driver.take_fault())
 }
 
+std::thread_local! {
+    static ACTOR_CALL_POOL: crate::util::TlsBoxPool<HewActorCall> =
+        const { crate::util::TlsBoxPool::new() };
+}
+
 /// Release an owned call, withdrawing a queued loser or tombstoning a late reply.
 ///
 /// # Safety
@@ -897,7 +906,7 @@ pub unsafe extern "C" fn hew_actor_call_cleanup_fault(
 pub unsafe extern "C" fn hew_actor_call_free(operation: *mut HewActorCall) {
     if !operation.is_null() {
         // SAFETY: the caller transfers its one operation owner.
-        drop(unsafe { Box::from_raw(operation) });
+        ACTOR_CALL_POOL.with(|pool| unsafe { pool.free(operation) });
     }
 }
 

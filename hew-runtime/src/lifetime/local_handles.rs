@@ -128,7 +128,7 @@ struct LocalHandleState {
     imports: crate::platform::host_io::ImportedActorRegistry,
 }
 
-const FAST_ACTOR_SHARDS: usize = 64;
+const FAST_ACTOR_SHARDS: usize = 256;
 
 /// Sharded actor-route entry for lock-free retain/release/resolve on the hot
 /// actor-ask path. Always modified under `LocalHandles::state` (lock order:

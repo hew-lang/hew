@@ -115,6 +115,10 @@ pub struct HewReplyChannel {
     /// Retained readiness target for a checked native invocation. Registration
     /// precedes admission; abandonment detaches it without touching the sender.
     native: Mutex<native::NativeReplyOwner>,
+    /// Inline dispatch claim (1=withdrawable, 2=dispatched, 3=withdrawn) used
+    /// on plain local asks without deadlines or remote admission to elide
+    /// `Arc<RequestState>` allocation.
+    inline_dispatch: std::sync::atomic::AtomicU8,
     /// Immutable request metadata and the claim shared with its owned envelope.
     native_request: Option<Arc<crate::request_state::RequestState>>,
     native_layout: *const hew_cabi::value::HewValueLayout,
@@ -176,6 +180,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
             has_native_waker: AtomicBool::new(false),
             payload_owned: AtomicBool::new(false),
             native: Mutex::new(native::NativeReplyOwner::default()),
+            inline_dispatch: std::sync::atomic::AtomicU8::new(1),
             native_request: None,
             native_layout: ptr::null(),
             native_code: None,
@@ -217,6 +222,7 @@ fn new_native_channel(
             has_native_waker: AtomicBool::new(true),
             payload_owned: AtomicBool::new(false),
             native: Mutex::new(native_owner),
+            inline_dispatch: std::sync::atomic::AtomicU8::new(1),
             native_request: None,
             native_layout,
             native_code,
@@ -243,14 +249,32 @@ pub(crate) unsafe fn configure_native_request(
     )));
 }
 
+/// Claim an inline local ask without an allocated `RequestState`.
+/// # Safety
+/// The channel is retained throughout this call.
+pub(crate) unsafe fn claim_inline_dispatch(channel: *const HewReplyChannel) -> bool {
+    // SAFETY: caller guarantees `channel` is live.
+    let channel = unsafe { &*channel };
+    channel
+        .inline_dispatch
+        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+        != Err(3)
+}
+
 /// Withdraw before dispatch, leaving an already running handler alone.
 /// # Safety
 /// The optional channel is retained throughout this call.
 pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
     // SAFETY: the caller retains the optional reply owner during this borrow.
-    let channel = unsafe { channel.as_ref() };
-    if let Some(state) = channel.and_then(|channel| channel.native_request.as_ref()) {
+    let Some(channel) = (unsafe { channel.as_ref() }) else {
+        return;
+    };
+    if let Some(state) = channel.native_request.as_ref() {
         state.withdraw();
+    } else {
+        let _ = channel
+            .inline_dispatch
+            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
     }
 }
 

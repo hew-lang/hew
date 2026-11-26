@@ -187,23 +187,41 @@ fn annotate_runtime_attributes(symbol: &str, function: FunctionValue<'_>) {
         }
     };
 
-    // Pure read-only getters (non-unwinding, bounded, nofree, readonly param 0).
-    let is_readonly = matches!(
+    // Pure argument-only read getters (non-unwinding, bounded, nofree, nosync,
+    // memory(argmem: read), readonly param 0).
+    let is_argmem_readonly = matches!(
         symbol,
         "hew_coro_state_waker"
             | "hew_coro_state_request_deadline"
-            | "hew_coro_state_is_cancelled"
-            | "hew_coro_state_cancel_code"
             | "hew_coro_state_token"
             | "hew_actor_call_failure"
             | "hew_vec_len"
             | "hew_fault_code"
-            | "hew_stack_check"
     );
-    if is_readonly {
+    // Read-only queries that may read nested pointers or globals (non-unwinding,
+    // bounded, nofree, memory(read), readonly param 0).
+    let is_general_readonly = matches!(
+        symbol,
+        "hew_coro_state_is_cancelled" | "hew_coro_state_cancel_code" | "hew_stack_check"
+    );
+    if is_argmem_readonly || is_general_readonly {
         add_fn("nounwind");
         add_fn("willreturn");
         add_fn("nofree");
+        if is_argmem_readonly {
+            add_fn("nosync");
+        }
+        let mem_id = Attribute::get_named_enum_kind_id("memory");
+        if mem_id != 0 {
+            // LLVM 23 MemoryEffects bitmask: 2 bits per location (ArgMem=0,
+            // InaccessibleMem=2, ErrnoMem=4, Other=6), Ref = 0b01.
+            // 0x01 => memory(argmem: read), 0x55 => memory(read).
+            let effects: u64 = if is_argmem_readonly { 0x01 } else { 0x55 };
+            function.add_attribute(
+                AttributeLoc::Function,
+                ctx.create_enum_attribute(mem_id, effects),
+            );
+        }
         if function
             .get_type()
             .get_param_types()

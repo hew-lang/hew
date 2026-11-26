@@ -37,13 +37,13 @@ use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
 
 /// Number of shards for the live-actor registry. Must remain a power of two.
-const LIVE_ACTOR_SHARDS: usize = 64;
+const LIVE_ACTOR_SHARDS: usize = 256;
 
 #[inline]
 fn shard_index(actor_id: u64) -> usize {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..64)"
+        reason = "shard index is masked to LIVE_ACTOR_SHARDS - 1 (0..256)"
     )]
     {
         (actor_id as usize) & (LIVE_ACTOR_SHARDS - 1)

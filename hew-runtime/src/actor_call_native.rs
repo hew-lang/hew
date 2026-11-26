@@ -38,7 +38,7 @@ struct LocalCall {
     admission: Option<HewNativeAsk>,
     channel: *mut HewReplyChannel,
     timer: *mut HewCoroSleep,
-    request: Arc<RequestState>,
+    request: Option<Arc<RequestState>>,
 }
 
 impl LocalCall {
@@ -138,7 +138,11 @@ impl HewActorCall {
                     if !matches!(self.state, CallState::Taken | CallState::TakenClean)
                         || self.kind.completion_policy().is_some()
                     {
-                        local.request.withdraw();
+                        if let Some(request) = &local.request {
+                            request.withdraw();
+                        } else {
+                            crate::reply_channel::withdraw_native_request(local.channel);
+                        }
                     }
                     let reply = crate::reply_channel::native::cancel_take_release(local.channel);
                     (local.take_request(), reply)
@@ -259,7 +263,11 @@ impl HewActorCall {
     fn poll_deadline(&mut self) -> i32 {
         let unadmitted = matches!(self.state, CallState::Admitting);
         let local = self.local();
-        let (timer, channel, deadline) = (local.timer, local.channel, local.request.deadline);
+        let deadline = local.request.as_ref().map_or_else(
+            crate::request_deadline::RequestDeadline::default,
+            |request| request.deadline,
+        );
+        let (timer, channel) = (local.timer, local.channel);
         if timer.is_null() {
             return -1;
         }
@@ -275,7 +283,9 @@ impl HewActorCall {
             return -2;
         }
         if channel.is_null() {
-            self.local().request.withdraw();
+            if let Some(request) = &self.local().request {
+                request.withdraw();
+            }
             self.state = CallState::Ready(RequestOutcome::Refused(AskError::Timeout));
             return AskError::Timeout as i32;
         }
@@ -350,7 +360,12 @@ impl HewActorCall {
         ));
         let local = self.local();
         (
-            Arc::clone(&local.request),
+            Arc::clone(
+                local
+                    .request
+                    .as_ref()
+                    .expect("queued inbound request carries RequestState"),
+            ),
             std::mem::replace(&mut local.timer, ptr::null_mut()),
         )
     }
@@ -649,14 +664,16 @@ pub(crate) unsafe fn actor_call_resume(
     let request = unsafe {
         if channel.is_null() {
             let state = RequestState::new(deadline, remote_admission);
-            Arc::new(if observe_queue {
+            Some(Arc::new(if observe_queue {
                 state.with_observer(crate::wake::OwnedWaker::retain(&*waker))
             } else {
                 state
-            })
-        } else {
+            }))
+        } else if deadline.raw() >= 0 || remote_admission.is_some() {
             crate::reply_channel::configure_native_request(channel, deadline, remote_admission);
-            crate::reply_channel::native_request_state(channel).expect("configured request")
+            crate::reply_channel::native_request_state(channel)
+        } else {
+            None
         }
     };
     // SAFETY: the operation transfers its envelope and retains this exact state.
@@ -668,7 +685,7 @@ pub(crate) unsafe fn actor_call_resume(
             channel.cast(),
             waker,
             caller,
-            Some(Arc::clone(&request)),
+            request.clone(),
             kind.completion_policy().is_some(),
         )
     };
@@ -986,7 +1003,7 @@ mod tests {
                         admission: None,
                         channel,
                         timer: ptr::null_mut(),
-                        request: crate::reply_channel::native_request_state(channel).unwrap(),
+                        request: crate::reply_channel::native_request_state(channel),
                     }),
                     owned_target: None,
                     expected_size: size_of::<*const AtomicUsize>(),
@@ -1075,7 +1092,7 @@ mod tests {
                     admission: None,
                     channel,
                     timer: ptr::null_mut(),
-                    request: crate::reply_channel::native_request_state(channel).unwrap(),
+                    request: crate::reply_channel::native_request_state(channel),
                 }),
                 owned_target: None,
                 expected_size: size_of::<*const AtomicUsize>(),

@@ -11,10 +11,10 @@ use crate::util::MutexExt;
 use live_actors::ActorIncarnation;
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 
-const WAIT_SHARDS: usize = 64;
+const WAIT_SHARDS: usize = 256;
 const STATE_DISARMED: u8 = 0;
 const STATE_ARMED: u8 = 1;
 const STATE_PENDING: u8 = 2;
@@ -45,18 +45,89 @@ impl HewActorWaitEdge {
     }
 }
 
+#[derive(Default)]
+struct ShardEntries {
+    /// Inline fast slot for the common 0-or-1-waiter-per-shard case (avoids
+    /// `FxHashMap` allocation and hashing on 256-shard tables).
+    inline: Option<(ActorIncarnation, Weak<HewActorWaitEdge>)>,
+    overflow: FxHashMap<ActorIncarnation, Weak<HewActorWaitEdge>>,
+}
+
+impl ShardEntries {
+    fn get(&self, key: &ActorIncarnation) -> Option<&Weak<HewActorWaitEdge>> {
+        if let Some((k, v)) = &self.inline {
+            if k == key {
+                return Some(v);
+            }
+        }
+        self.overflow.get(key)
+    }
+
+    fn insert(
+        &mut self,
+        key: ActorIncarnation,
+        value: Weak<HewActorWaitEdge>,
+    ) -> Option<Weak<HewActorWaitEdge>> {
+        if let Some((k, v)) = &mut self.inline {
+            if *k == key {
+                return Some(std::mem::replace(v, value));
+            }
+            return self.overflow.insert(key, value);
+        }
+        if self.overflow.is_empty() {
+            self.inline = Some((key, value));
+            return None;
+        }
+        self.overflow.insert(key, value)
+    }
+
+    fn remove_if_ptr_eq(&mut self, key: &ActorIncarnation, edge: &Arc<HewActorWaitEdge>) -> bool {
+        let probe = Arc::downgrade(edge);
+        if let Some((k, v)) = &self.inline {
+            if k == key {
+                if v.ptr_eq(&probe) {
+                    self.inline = None;
+                    return true;
+                }
+                return false;
+            }
+        }
+        if self
+            .overflow
+            .get(key)
+            .is_some_and(|weak| weak.ptr_eq(&probe))
+        {
+            self.overflow.remove(key);
+            return true;
+        }
+        false
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&ActorIncarnation, &Weak<HewActorWaitEdge>)> {
+        self.inline
+            .iter()
+            .map(|(k, v)| (k, v))
+            .chain(self.overflow.iter())
+    }
+}
+
 #[cfg_attr(target_arch = "aarch64", repr(align(128)))]
 #[cfg_attr(not(target_arch = "aarch64"), repr(align(64)))]
 struct WaitShard {
     len: AtomicUsize,
-    entries: Mutex<FxHashMap<ActorIncarnation, Weak<HewActorWaitEdge>>>,
+    /// Count of edges in this shard currently in `STATE_PENDING`. Lets
+    /// `is_target_pending` skip locking completely for targets with no pending
+    /// outgoing wait (e.g. worker actors).
+    pending_count: AtomicIsize,
+    entries: Mutex<ShardEntries>,
 }
 
 impl WaitShard {
     fn new() -> Self {
         Self {
             len: AtomicUsize::new(0),
-            entries: Mutex::new(FxHashMap::default()),
+            pending_count: AtomicIsize::new(0),
+            entries: Mutex::new(ShardEntries::default()),
         }
     }
 }
@@ -65,7 +136,7 @@ impl WaitShard {
 const fn shard_index(owner: ActorIncarnation) -> usize {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "masked to WAIT_SHARDS - 1 (0..64)"
+        reason = "masked to WAIT_SHARDS - 1 (0..256)"
     )]
     {
         (owner.actor_id() as usize) & (WAIT_SHARDS - 1)
@@ -79,9 +150,16 @@ static WAITS: LazyLock<[WaitShard; WAIT_SHARDS]> =
 /// same knot simultaneously do not race diagnostic publication.
 static CYCLE_CHECK_LOCK: Mutex<()> = Mutex::new(());
 
+#[inline]
+fn disarm_edge(shard: &WaitShard, edge: &HewActorWaitEdge) {
+    if edge.state.swap(STATE_DISARMED, Ordering::SeqCst) == STATE_PENDING {
+        shard.pending_count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn is_target_pending(target: ActorIncarnation) -> bool {
     let shard = &WAITS[shard_index(target)];
-    if shard.len.load(Ordering::SeqCst) == 0 {
+    if shard.pending_count.load(Ordering::SeqCst) == 0 {
         return false;
     }
     let entries = shard.entries.lock_or_recover();
@@ -136,7 +214,7 @@ impl HewActorWaitEdge {
         if let Some(previous) = entries.insert(owner, Arc::downgrade(edge)) {
             if let Some(previous_edge) = previous.upgrade() {
                 previous_edge.replaced.store(true, Ordering::Release);
-                previous_edge.state.store(STATE_DISARMED, Ordering::SeqCst);
+                disarm_edge(shard, &previous_edge);
             }
         } else {
             shard.len.fetch_add(1, Ordering::SeqCst);
@@ -153,7 +231,7 @@ pub(crate) fn ready(owner: ActorIncarnation) {
     }
     let entries = shard.entries.lock_or_recover();
     if let Some(edge) = entries.get(&owner).and_then(Weak::upgrade) {
-        edge.state.store(STATE_DISARMED, Ordering::SeqCst);
+        disarm_edge(shard, &edge);
     }
 }
 
@@ -298,7 +376,9 @@ pub unsafe extern "C" fn hew_actor_wait_edge_pending(edge: *const HewActorWaitEd
     {
         return 0;
     }
-    std::sync::atomic::fence(Ordering::SeqCst);
+    WAITS[shard_index(edge.owner)]
+        .pending_count
+        .fetch_add(1, Ordering::SeqCst);
 
     // An independent or non-pending alternative rules out this edge before
     // the graph walk. Keep the edge pending so a later confirmation can close
@@ -382,7 +462,7 @@ fn detect_cycle_slow(edge: &HewActorWaitEdge) -> i32 {
     let _ = edge
         .diagnostic
         .set(format!("local actor wait cycle at {operation}: {path}"));
-    edge.state.store(STATE_DISARMED, Ordering::SeqCst);
+    disarm_edge(&WAITS[shard_index(edge.owner)], edge);
     1
 }
 
@@ -416,14 +496,10 @@ pub unsafe extern "C" fn hew_actor_wait_edge_free(edge: *const HewActorWaitEdge)
     }
     // SAFETY: this call consumes the operation's one raw Arc reference.
     let edge = unsafe { Arc::from_raw(edge) };
-    edge.state.store(STATE_DISARMED, Ordering::SeqCst);
     let shard = &WAITS[shard_index(edge.owner)];
+    disarm_edge(shard, &edge);
     let mut entries = shard.entries.lock_or_recover();
-    if entries
-        .get(&edge.owner)
-        .is_some_and(|weak| weak.ptr_eq(&Arc::downgrade(&edge)))
-    {
-        entries.remove(&edge.owner);
+    if entries.remove_if_ptr_eq(&edge.owner, &edge) {
         shard.len.fetch_sub(1, Ordering::SeqCst);
     }
 }

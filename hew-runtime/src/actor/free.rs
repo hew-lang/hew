@@ -671,8 +671,6 @@ pub(crate) unsafe fn free_actor_resources(actor: *mut HewActor) {
         unsafe { crate::arena::hew_arena_free_all(arena_ptr) };
     }
 
-    unregister_actor_state_lock(actor);
-
     if !mb.is_null() {
         // Observation point for the teardown-ordering proof. This is the last
         // instruction before the actor's system queue is destroyed, so a test

@@ -11,8 +11,7 @@ use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
-use std::thread::ThreadId;
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{
@@ -540,24 +539,48 @@ pub const HEW_ACTOR_STATE_LOCK_OK: c_int = 0;
 /// Runtime ABI return code for failed actor-state lock operations.
 pub const HEW_ACTOR_STATE_LOCK_ERR: c_int = -1;
 
-#[derive(Debug, Default)]
-struct ActorStateLockState {
-    held: bool,
-    owner: Option<ThreadId>,
-    poisoned: bool,
+const STATE_LOCK_UNLOCKED: u64 = 0;
+const STATE_LOCK_POISONED: u64 = u64::MAX;
+const STATE_LOCK_CONTENDED_BIT: u64 = 1 << 63;
+
+static NEXT_FAST_THREAD_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static FAST_THREAD_ID: u64 = {
+        let id = NEXT_FAST_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+        assert!(id != 0 && (id & STATE_LOCK_CONTENDED_BIT) == 0, "fast thread id overflow");
+        id
+    };
 }
 
+#[inline]
+fn current_fast_thread_id() -> u64 {
+    FAST_THREAD_ID.with(|id| *id)
+}
+
+/// Inline per-actor state lock with a lock-free uncontended fast path.
+///
+/// Stored at the tail of [`HewActor`] (after all codegen-mirrored offsets) so
+/// dispatch takes zero global table lookups, zero `Arc` clones, and zero
+/// mutex/condvar syscalls in the common uncontended case.
 #[derive(Debug, Default)]
-struct ActorStateLock {
-    state: Mutex<ActorStateLockState>,
+pub(crate) struct ActorStateLock {
+    /// `0` = unlocked, `u64::MAX` = poisoned, otherwise `fast_thread_id | contended_bit`.
+    fast_owner: AtomicU64,
+    /// Slow-path waiter count and condvar synchronization (only touched under contention or poison).
+    waiters: Mutex<usize>,
     available: Condvar,
 }
 
-fn actor_state_locks(
-) -> &'static Mutex<rustc_hash::FxHashMap<usize, std::sync::Arc<ActorStateLock>>> {
-    static LOCKS: OnceLock<Mutex<rustc_hash::FxHashMap<usize, std::sync::Arc<ActorStateLock>>>> =
-        OnceLock::new();
-    LOCKS.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
+impl ActorStateLock {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self {
+            fast_owner: AtomicU64::new(STATE_LOCK_UNLOCKED),
+            waiters: Mutex::new(0),
+            available: Condvar::new(),
+        }
+    }
 }
 
 fn recover_runtime_mutex<T>(
@@ -566,107 +589,148 @@ fn recover_runtime_mutex<T>(
     err.into_inner()
 }
 
-fn lookup_actor_state_lock(actor: *mut HewActor) -> Option<std::sync::Arc<ActorStateLock>> {
-    let locks = actor_state_locks()
-        .lock()
-        .unwrap_or_else(recover_runtime_mutex);
-    locks.get(&(actor as usize)).cloned()
-}
-
+#[inline]
 pub(crate) fn actor_state_lock_seat(
     actor: *mut HewActor,
 ) -> *mut crate::execution_context::HewActorStateLockState {
-    #[cfg(test)]
-    {
-        let mut locks = actor_state_locks()
-            .lock()
-            .unwrap_or_else(recover_runtime_mutex);
-        locks.entry(actor as usize).or_default();
-        locks
-            .get(&(actor as usize))
-            .map_or(ptr::null_mut(), |lock| {
-                std::sync::Arc::as_ptr(lock).cast_mut().cast()
-            })
+    if actor.is_null() {
+        return ptr::null_mut();
     }
-    #[cfg(not(test))]
-    lookup_actor_state_lock(actor).map_or(ptr::null_mut(), |lock| {
-        std::sync::Arc::as_ptr(&lock).cast_mut().cast()
-    })
+    // SAFETY: `actor` is live for the duration of the dispatch/resume frame.
+    (&raw const unsafe { &*actor }.state_lock).cast_mut().cast()
 }
 
-fn register_actor_state_lock(actor: *mut HewActor) {
-    let mut locks = actor_state_locks()
-        .lock()
-        .unwrap_or_else(recover_runtime_mutex);
-    locks.insert(actor as usize, std::sync::Arc::default());
-}
-
-fn unregister_actor_state_lock(actor: *mut HewActor) {
-    let mut locks = actor_state_locks()
-        .lock()
-        .unwrap_or_else(recover_runtime_mutex);
-    locks.remove(&(actor as usize));
-}
-
+#[inline]
 fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
-    let current = std::thread::current().id();
-    let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
+    let current = current_fast_thread_id();
+    if lock
+        .fast_owner
+        .compare_exchange(
+            STATE_LOCK_UNLOCKED,
+            current,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        return HEW_ACTOR_STATE_LOCK_OK;
+    }
+    acquire_actor_state_lock_slow(lock, current)
+}
+
+#[cold]
+fn acquire_actor_state_lock_slow(lock: &ActorStateLock, current: u64) -> c_int {
+    let mut waiters = lock.waiters.lock().unwrap_or_else(recover_runtime_mutex);
     loop {
-        if state.poisoned {
+        let observed = lock.fast_owner.load(Ordering::Acquire);
+        if observed == STATE_LOCK_POISONED {
             crate::set_last_error("actor-state lock acquire: lock poisoned by prior handler panic");
             return HEW_ACTOR_STATE_LOCK_ERR;
         }
-        if !state.held {
-            state.held = true;
-            state.owner = Some(current);
-            return HEW_ACTOR_STATE_LOCK_OK;
+        if observed == STATE_LOCK_UNLOCKED {
+            let desired = if *waiters > 0 {
+                current | STATE_LOCK_CONTENDED_BIT
+            } else {
+                current
+            };
+            if lock
+                .fast_owner
+                .compare_exchange(
+                    STATE_LOCK_UNLOCKED,
+                    desired,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return HEW_ACTOR_STATE_LOCK_OK;
+            }
+            continue;
         }
-        if state.owner == Some(current) {
+        if (observed & !STATE_LOCK_CONTENDED_BIT) == current {
             crate::set_last_error("actor-state lock acquire: lock already held by this dispatch");
             return HEW_ACTOR_STATE_LOCK_ERR;
         }
-        state = lock
+        if (observed & STATE_LOCK_CONTENDED_BIT) == 0
+            && lock
+                .fast_owner
+                .compare_exchange(
+                    observed,
+                    observed | STATE_LOCK_CONTENDED_BIT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        {
+            continue;
+        }
+        *waiters += 1;
+        waiters = lock
             .available
-            .wait(state)
+            .wait(waiters)
             .unwrap_or_else(recover_runtime_mutex);
+        *waiters -= 1;
     }
 }
 
+#[inline]
 fn release_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
-    let current = std::thread::current().id();
-    let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
-    if !state.held {
+    let current = current_fast_thread_id();
+    if lock
+        .fast_owner
+        .compare_exchange(
+            current,
+            STATE_LOCK_UNLOCKED,
+            Ordering::Release,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        return HEW_ACTOR_STATE_LOCK_OK;
+    }
+    release_actor_state_lock_slow(lock, current)
+}
+
+#[cold]
+fn release_actor_state_lock_slow(lock: &ActorStateLock, current: u64) -> c_int {
+    let _waiters = lock.waiters.lock().unwrap_or_else(recover_runtime_mutex);
+    let observed = lock.fast_owner.load(Ordering::Acquire);
+    if observed == STATE_LOCK_UNLOCKED || observed == STATE_LOCK_POISONED {
         crate::set_last_error("actor-state lock release: lock is not held");
         return HEW_ACTOR_STATE_LOCK_ERR;
     }
-    if state.owner != Some(current) {
+    if (observed & !STATE_LOCK_CONTENDED_BIT) != current {
         crate::set_last_error("actor-state lock release: lock held by another dispatch thread");
         return HEW_ACTOR_STATE_LOCK_ERR;
     }
-
-    state.held = false;
-    state.owner = None;
-    drop(state);
+    lock.fast_owner
+        .store(STATE_LOCK_UNLOCKED, Ordering::Release);
     lock.available.notify_one();
     HEW_ACTOR_STATE_LOCK_OK
 }
 
-/// Test-only: observe whether an actor's registered state lock is currently
-/// held. Used by the scheduler suspend-edge test to assert the per-actor lock is
+/// Test-only: observe whether an actor's state lock is currently held.
+/// Used by the scheduler suspend-edge test to assert the per-actor lock is
 /// RELEASED across the suspend edge (a suspended actor must hold no lock against
-/// senders — R2 P0). Returns `None` when no lock is registered for `actor`.
+/// senders — R2 P0). Returns `None` when `actor` is null.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn actor_state_lock_is_held_for_test(actor: *mut HewActor) -> Option<bool> {
-    let lock = lookup_actor_state_lock(actor)?;
-    let state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
-    Some(state.held)
+    if actor.is_null() {
+        return None;
+    }
+    // SAFETY: test passes a live actor pointer.
+    let observed = unsafe { &*actor }
+        .state_lock
+        .fast_owner
+        .load(Ordering::Acquire);
+    Some(observed != STATE_LOCK_UNLOCKED && observed != STATE_LOCK_POISONED)
 }
 
 /// Acquire the compiler-owned actor-state lock for `actor`.
 ///
 /// Generated dispatch wrappers call this before entering a receive handler
-/// body. The lock is actor-lifetime state stored in a runtime sidecar so the
-/// `repr(C)` actor layout stays stable.
+/// body. The lock is stored inline at the tail of [`HewActor`] (after all
+/// codegen-mirrored offsets).
 ///
 /// # Safety
 ///
@@ -675,12 +739,8 @@ pub(crate) fn actor_state_lock_is_held_for_test(actor: *mut HewActor) -> Option<
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_state_lock_acquire(actor: *mut HewActor) -> c_int {
     cabi_guard!(actor.is_null(), HEW_ACTOR_STATE_LOCK_ERR);
-
-    let Some(lock) = lookup_actor_state_lock(actor) else {
-        crate::set_last_error("actor-state lock acquire: actor has no registered state lock");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    };
-    acquire_actor_state_lock_ref(&lock)
+    // SAFETY: caller guarantees `actor` is a valid live actor pointer.
+    acquire_actor_state_lock_ref(&unsafe { &*actor }.state_lock)
 }
 
 /// Release the compiler-owned actor-state lock after normal handler return.
@@ -692,12 +752,8 @@ pub unsafe extern "C" fn hew_actor_state_lock_acquire(actor: *mut HewActor) -> c
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_state_lock_release(actor: *mut HewActor) -> c_int {
     cabi_guard!(actor.is_null(), HEW_ACTOR_STATE_LOCK_ERR);
-
-    let Some(lock) = lookup_actor_state_lock(actor) else {
-        crate::set_last_error("actor-state lock release: actor has no registered state lock");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    };
-    release_actor_state_lock_ref(&lock)
+    // SAFETY: caller guarantees `actor` is a valid live actor pointer.
+    release_actor_state_lock_ref(&unsafe { &*actor }.state_lock)
 }
 
 pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
@@ -714,7 +770,7 @@ pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
         return HEW_ACTOR_STATE_LOCK_ERR;
     }
     // SAFETY: scheduler obtained `lock_seat` from `actor_state_lock_seat`, which
-    // casts the live sidecar `ActorStateLock` allocation to the opaque ctx type.
+    // points to the live actor's inline `ActorStateLock`.
     let lock = unsafe { &*seat.cast::<ActorStateLock>() };
     acquire_actor_state_lock_ref(lock)
 }
@@ -733,7 +789,7 @@ pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
         return HEW_ACTOR_STATE_LOCK_ERR;
     }
     // SAFETY: scheduler obtained `lock_seat` from `actor_state_lock_seat`, which
-    // casts the live sidecar `ActorStateLock` allocation to the opaque ctx type.
+    // points to the live actor's inline `ActorStateLock`.
     let lock = unsafe { &*seat.cast::<ActorStateLock>() };
     release_actor_state_lock_ref(lock)
 }
@@ -742,27 +798,31 @@ unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison
     if actor.is_null() {
         return HEW_ACTOR_STATE_LOCK_OK;
     }
-    let Some(lock) = lookup_actor_state_lock(actor) else {
-        return HEW_ACTOR_STATE_LOCK_OK;
-    };
-
-    let current = std::thread::current().id();
-    let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
-    if !state.held {
+    // SAFETY: caller guarantees `actor` is a valid live actor pointer.
+    let lock = &unsafe { &*actor }.state_lock;
+    let current = current_fast_thread_id();
+    let _waiters = lock.waiters.lock().unwrap_or_else(recover_runtime_mutex);
+    let observed = lock.fast_owner.load(Ordering::Acquire);
+    if observed == STATE_LOCK_UNLOCKED || observed == STATE_LOCK_POISONED {
         return HEW_ACTOR_STATE_LOCK_OK;
     }
-    if state.owner != Some(current) {
+    if (observed & !STATE_LOCK_CONTENDED_BIT) != current {
         crate::set_last_error(
             "actor-state lock release-after-panic: lock held by another dispatch thread",
         );
         return HEW_ACTOR_STATE_LOCK_ERR;
     }
-
-    state.held = false;
-    state.owner = None;
-    state.poisoned |= poison;
-    drop(state);
-    lock.available.notify_one();
+    let next = if poison {
+        STATE_LOCK_POISONED
+    } else {
+        STATE_LOCK_UNLOCKED
+    };
+    lock.fast_owner.store(next, Ordering::Release);
+    if poison {
+        lock.available.notify_all();
+    } else {
+        lock.available.notify_one();
+    }
     HEW_ACTOR_STATE_LOCK_OK
 }
 
@@ -1393,6 +1453,9 @@ pub struct HewActor {
     /// an error is recorded). Appended at the tail so codegen-mirrored offsets
     /// (`id`, `state`) remain fixed.
     pub(crate) parse_errors: crate::parse_error_slot::ActorParseErrors,
+    /// Inline per-actor state lock (lock-free uncontended fast path). Appended
+    /// at the tail so codegen-mirrored offsets (`id`, `state`) remain fixed.
+    pub(crate) state_lock: ActorStateLock,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.

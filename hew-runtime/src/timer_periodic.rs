@@ -558,6 +558,7 @@ mod tests {
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
             parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+            state_lock: crate::actor::ActorStateLock::new(),
         }
     }
 

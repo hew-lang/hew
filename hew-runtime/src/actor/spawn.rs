@@ -307,6 +307,7 @@ fn build_spawned_actor(
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: config.native_completion,
         parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+        state_lock: ActorStateLock::new(),
     })
 }
 
@@ -446,7 +447,6 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // actually handed out (see that module for why exit status alone cannot
     // see a leaked actor).
     crate::actor_balance::record_actor_box_alloc();
-    register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller

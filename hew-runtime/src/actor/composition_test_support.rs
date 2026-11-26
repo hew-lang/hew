@@ -85,6 +85,7 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: None,
         parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+        state_lock: ActorStateLock::new(),
     }))
 }
 

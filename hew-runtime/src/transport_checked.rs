@@ -155,11 +155,25 @@ mod tests {
         }
         assert_eq!(transport::hew_tcp_listener_close(listener), 0);
         assert_eq!(transport::hew_tcp_listener_close(listener), -1);
+        // A bound socket that never listens holds its port, so the connect is
+        // refused even while other tests bind ephemeral ports.
+        let closed = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+            .expect("create refusal socket");
+        closed
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .expect("bind refusal socket");
+        let closed_port = closed
+            .local_addr()
+            .ok()
+            .and_then(|address| address.as_socket())
+            .expect("refusal socket address")
+            .port();
         stream_error::set_last_error_with_errno("stale".into(), 9);
-        // SAFETY: managed_call keeps the host live. The listener has closed,
-        // so this also covers a transport failure with no supplied diagnostic.
+        // SAFETY: managed_call keeps the host live. Nothing listens on
+        // `closed_port`, so this covers a transport failure with no supplied
+        // diagnostic.
         let failed = managed_call("127.0.0.1", |host| unsafe {
-            hew_checked_tcp_connect_timeout(host, port, 2000)
+            hew_checked_tcp_connect_timeout(host, i32::from(closed_port), 2000)
         });
         assert_eq!(failed, -1);
         assert_ne!(hew_cabi::sink::take_last_errno(), 9);

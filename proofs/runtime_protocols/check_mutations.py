@@ -769,8 +769,8 @@ MUTATIONS = [
         "vector_move",
         "vector",
         "vec.rs",
-        "// source's heap is now owned by the Vec; the source is dead.\n        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);",
-        "// source's heap is now owned by the Vec; the source is dead.\n        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);\n        if let Some(clone) = layout.clone_fn { clone(data, dst.cast()); }",
+        "// source's heap is now owned by the Vec; the source is dead.\n        if elem_size > 0 {\n            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);",
+        "// source's heap is now owned by the Vec; the source is dead.\n        if elem_size > 0 {\n            core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);\n            if let Some(clone) = layout.clone_fn { clone(data, dst.cast()); }",
         "vector_owned_copy_move",
     ),
     (

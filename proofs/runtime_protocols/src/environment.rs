@@ -39,6 +39,17 @@ pub mod platform {
             // SAFETY: reading the host's model clock has no preconditions.
             unsafe { crate::clock::hew_now_ms() }
         }
+        // The native host admits every due tick.
+        #[cfg(feature = "periodic_loom")]
+        pub fn admit_periodic_tick() -> bool {
+            true
+        }
+    }
+    #[cfg(feature = "channel")]
+    pub mod executor {
+        pub fn send_abandoned_by_shutdown() -> bool {
+            panic!("channel: blocking shutdown path outside model")
+        }
     }
 }
 

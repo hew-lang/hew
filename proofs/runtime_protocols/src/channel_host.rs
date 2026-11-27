@@ -3,10 +3,6 @@ pub struct ActorStreamCancellation;
 impl ActorStreamCancellation {
     pub fn close_reader(&self) { panic!("channel: actor stream cancellation outside model"); }
 }
-pub mod shutdown {
-    pub const PHASE_DRAIN: i32 = 2;
-    pub fn hew_shutdown_phase() -> i32 { panic!("channel: blocking shutdown path outside model"); }
-}
 pub mod driver { pub fn active() -> bool { false } }
 pub mod code_owner {
     #[derive(Debug)]

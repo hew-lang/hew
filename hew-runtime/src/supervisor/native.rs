@@ -1321,7 +1321,9 @@ mod tests {
             assert_eq!(CONFIG_DROPS.load(Ordering::SeqCst), 2);
 
             assert_eq!(hew_supervisor_native_spawn_poll(ptr::null_mut(), 0), 1);
-            let mut fault = crate::fault::hew_fault_new(1);
+            // The out-slot is lent empty; a dangling sentinel shows the null
+            // operation clears it without reading or freeing it.
+            let mut fault = ptr::NonNull::<HewFault>::dangling().as_ptr();
             assert_eq!(
                 hew_supervisor_native_spawn_take(ptr::null_mut(), &raw mut fault),
                 HewLocalPidId::INVALID

@@ -5385,6 +5385,17 @@ mod vec_owned_tests {
     use core::sync::atomic::AtomicI64;
     use std::sync::{Mutex, MutexGuard};
 
+    /// Releases a test-owned owned-element vec when its frame exits, including
+    /// by unwind, as generated scope cleanup does for a Hew local.
+    struct VecDropGuard(*mut HewVec);
+    impl Drop for VecDropGuard {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `hew_vec_new_with_elem_layout` and is
+            // released only here.
+            unsafe { hew_vec_free_owned(self.0) };
+        }
+    }
+
     #[test]
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
         let layout = HewValueLayout {
@@ -6653,6 +6664,7 @@ mod vec_owned_tests {
         // installed execution context and drops `MovedValueGuard` via the fallback driver.
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             let v = hew_vec_new_with_elem_layout(layout);
+            let _vec_guard = VecDropGuard(v);
             let replacement = make_source(55);
             let _ = hew_vec_set_owned_move_release(v, 0, (&raw const replacement).cast());
         }));
@@ -6689,14 +6701,6 @@ mod vec_owned_tests {
     )]
     #[test]
     fn supervised_actor_oob_set_move_release_with_resumable_destructor_cleans_up_and_restarts() {
-        struct VecDropGuard(*mut HewVec);
-        impl Drop for VecDropGuard {
-            fn drop(&mut self) {
-                // SAFETY: `self.0` was allocated as an empty owned vec in `child_dispatch`.
-                unsafe { hew_vec_free_owned(self.0) };
-            }
-        }
-
         unsafe extern "C-unwind" fn oob_child_dispatch(
             _ctx: *mut crate::execution_context::HewExecutionContext,
             _state: *mut c_void,

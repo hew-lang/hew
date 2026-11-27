@@ -3435,25 +3435,18 @@ mod tests {
         crate::scheduler::hew_runtime_cleanup();
     }
 
-    /// Arena `max_heap` enforcement emits `SPAN_MAX_HEAP_EXCEEDED`.
+    /// Managed `ValueOwner` `max_heap` enforcement emits `SPAN_MAX_HEAP_EXCEEDED`.
     #[test]
-    fn substrate_max_heap_span_emits_on_arena_cap_exceeded() {
+    fn substrate_max_heap_span_emits_on_value_budget_exceeded() {
         let _guard = setup();
 
-        let arena = crate::arena::hew_arena_new_with_cap(64);
-        assert!(!arena.is_null());
-        // SAFETY: `arena` is live until freed below.
-        unsafe {
-            crate::arena::hew_arena_set_current(arena);
-            let ok = crate::arena::hew_arena_malloc(64);
-            assert!(!ok.is_null());
-            // Without an unwind boundary installed, hew_arena_malloc returns
-            // null after emitting the max-heap trace span.
-            let over = crate::arena::hew_arena_malloc(1);
-            assert!(over.is_null());
-            crate::arena::hew_arena_set_current(std::ptr::null_mut());
-            crate::arena::hew_arena_free_all(arena);
-        }
+        let owner = crate::owned_value_budget::ValueOwner::new(Some(64));
+        let mut actor = crate::test_actor::stub_actor();
+        actor.id = 77;
+        actor.spawn_serial = 1;
+        // SAFETY: `actor` is a valid initialized `HewActor` on this stack frame.
+        unsafe { owner.bind_incarnation(&raw mut actor) };
+        owner.heap_exceeded();
 
         let snapshot = trace_snapshot(None, None, 16).expect("max_heap snapshot");
         let max_heap = snapshot

@@ -88,6 +88,21 @@ pub(crate) unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewAc
     }
 }
 
+/// Whether no lifetime pin and no activation can still reach `a`'s box: the
+/// one free gate for every path that waits out pins and dispatch ownership.
+///
+/// The leading pin read covers activation start. A dequeued entry's pin is
+/// released only after its claim sets `dispatch_active`, so reading that
+/// release as zero makes the claim visible to the flag read. The trailing pin
+/// read covers activation end. A terminal activation retains a pin before its
+/// Release clear of `dispatch_active`, so once the flag read observes that
+/// clear, the retain or its later release is visible here.
+fn lifetime_quiescent(a: &HewActor) -> bool {
+    a.send_pin_count.load(Ordering::Acquire) == 0
+        && !a.dispatch_active.load(Ordering::Acquire)
+        && a.send_pin_count.load(Ordering::Acquire) == 0
+}
+
 /// Release the continuation frame of an actor that is being abandoned mid-suspend,
 /// discharge the reply that activation still owed, and latch the actor out of the
 /// non-quiescent `Suspended` window.
@@ -455,9 +470,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
             let pin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut pinned = false;
             loop {
-                if a.send_pin_count.load(Ordering::Acquire) == 0
-                    && !a.dispatch_active.load(Ordering::Acquire)
-                {
+                if lifetime_quiescent(a) {
                     break;
                 }
                 if std::time::Instant::now() >= pin_deadline {
@@ -653,25 +666,7 @@ pub(crate) unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // Snapshot remaining fields before mutating `*actor` so no `&HewActor`
     // reference overlaps later field writes or `Box::from_raw(actor)`.
-    let arena_ptr = a.arena;
     let mb = a.mailbox.cast::<HewMailbox>();
-
-    if !arena_ptr.is_null() {
-        // Null the slot BEFORE freeing — defense-in-depth per LESSONS row
-        // `raii-null-after-move`.  Any straggler reader that holds only
-        // `actor` (not a cached copy) now fails closed at the C-ABI
-        // entry-guard null check (`hew_arena_reset` / `hew_arena_free_all`
-        // are both null-tolerant) instead of dereferencing freed memory.
-        // The cached-`actor_arena` reader in `scheduler.rs::activate_actor`
-        // is protected by the `Crashing → Crashed` two-step instead; this
-        // null-out covers other helpers that re-read `a.arena`.
-        // SAFETY: caller guarantees exclusive access to `actor` during free.
-        unsafe { (*actor).arena = std::ptr::null_mut() };
-        // SAFETY: Arena was created by hew_arena_new during spawn.
-        unsafe { crate::arena::hew_arena_free_all(arena_ptr) };
-    }
-
-    unregister_actor_state_lock(actor);
 
     if !mb.is_null() {
         // Observation point for the teardown-ordering proof. This is the last
@@ -765,7 +760,6 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         actor,
         actor_id: a.id,
         flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
-        arena: a.arena,
         prev_context: crate::execution_context::current_context(),
         ..crate::execution_context::HewExecutionContext::default()
     };
@@ -1075,9 +1069,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
     // `deadline`; give the pin drain its own full budget.
     let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        if a.send_pin_count.load(Ordering::Acquire) == 0
-            && !a.dispatch_active.load(Ordering::Acquire)
-        {
+        if lifetime_quiescent(a) {
             break;
         }
         if std::time::Instant::now() >= drain_deadline {
@@ -1111,7 +1103,7 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
 mod native_drain {
     use super::{
         actor_free_state_is_quiescent, decide_finalize_by_latch, finalize_quiescent_actor_cleanup,
-        hew_actor_stop, live_actors, prepare_quiescent_actor_for_cleanup, ptr,
+        hew_actor_stop, lifetime_quiescent, live_actors, prepare_quiescent_actor_for_cleanup, ptr,
         scrub_actor_relationships_after_pin_drain, ActorId, DrainOutcome, DrainOutcomeRepr,
         FinalizeDecision, HashSet, HewActor, HewActorState, Ordering,
     };
@@ -1226,9 +1218,7 @@ mod native_drain {
             // SAFETY: actor is a live pointer returned by take_actor_by_id.
             let a = unsafe { &*actor };
             loop {
-                if a.send_pin_count.load(Ordering::Acquire) == 0
-                    && !a.dispatch_active.load(Ordering::Acquire)
-                {
+                if lifetime_quiescent(a) {
                     break;
                 }
                 if std::time::Instant::now() >= deadline {

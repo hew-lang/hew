@@ -80,18 +80,6 @@ mod semaphore;
 mod timer_deadline;
 #[cfg(feature = "timer")]
 type HewTimerCb = unsafe extern "C" fn(*mut std::ffi::c_void);
-#[cfg(feature = "arena")]
-#[path = "../../../hew-runtime/src/arena.rs"]
-mod arena;
-#[cfg(feature = "arena")]
-extern crate self as libc;
-#[cfg(feature = "arena")]
-mod arena_host;
-#[cfg(feature = "arena")]
-#[path = "../../../hew-runtime/src/arena_layout.rs"]
-mod arena_layout;
-#[cfg(feature = "arena")]
-pub use arena_host::*;
 #[path = "../../../hew-runtime/src/request_deadline.rs"]
 mod request_deadline;
 #[path = "sync.rs"]
@@ -116,10 +104,8 @@ mod wake;
 use environment::actor;
 #[cfg(feature = "read_slot")]
 use environment::bytes;
-#[cfg(any(feature = "arena", feature = "semaphore", feature = "vector"))]
+#[cfg(any(feature = "semaphore", feature = "vector"))]
 use environment::internal;
-#[cfg(feature = "arena")]
-use environment::observe;
 #[cfg(any(
     feature = "timer",
     feature = "await_race",
@@ -129,7 +115,7 @@ use environment::observe;
     feature = "reactor_loom"
 ))]
 use environment::timer_periodic;
-#[cfg(any(feature = "arena", feature = "vector"))]
+#[cfg(feature = "vector")]
 use environment::trap_code;
 use environment::{
     clock, coro_state, execution_context, fault, lifetime, platform, resume, tracing, util,

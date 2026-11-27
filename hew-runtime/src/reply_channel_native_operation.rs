@@ -59,6 +59,8 @@ static PAYLOAD_LAYOUT: HewValueLayout = HewValueLayout {
 #[derive(Debug)]
 pub struct HewNativeReply {
     payload: ReplyPayload,
+    inline_value: [u8; 16],
+    is_inline: bool,
     owner: Option<ValueOwner>,
     channel: *mut HewReplyChannel,
     transfer: Option<ValueTransfer>,
@@ -111,37 +113,53 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
             out_status.write(hew_cabi::managed::HEAP_EXCEEDED);
             return ptr::null_mut();
         };
-        let copied = if (*layout).size == 0 {
+        let size = (*layout).size;
+        let can_inline = owner.is_none()
+            && size > 0
+            && size <= 16
+            && (*layout).ownership_kind == HewTypeOwnershipKind::Plain
+            && (*layout).drop_fn.is_none()
+            && (*layout).release_start.is_none();
+        let mut inline_value = [0u8; 16];
+        let copied = if size == 0 || can_inline {
+            if can_inline {
+                ptr::copy_nonoverlapping(value.cast::<u8>(), inline_value.as_mut_ptr(), size);
+            }
             ptr::null_mut()
         } else {
-            super::super::alloc_reply_buffer((*layout).size)
+            super::super::alloc_reply_buffer(size)
         };
-        if (*layout).size != 0 && copied.is_null() {
+        if size != 0 && !can_inline && copied.is_null() {
             out_status.write(hew_cabi::managed::HEAP_EXCEEDED);
             return ptr::null_mut();
         }
         if !copied.is_null() {
-            ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), (*layout).size);
+            ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), size);
         }
-        let mut operation = Box::new(HewNativeReply {
-            payload: ReplyPayload {
-                value: copied,
-                layout,
-            },
-            owner: owner.clone(),
-            channel: ptr::null_mut(),
-            transfer: None,
-            terminal: false,
-            taken: false,
-            code: crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+        let operation = NATIVE_REPLY_POOL.with(|pool| {
+            pool.alloc(HewNativeReply {
+                payload: ReplyPayload {
+                    value: copied,
+                    layout,
+                },
+                inline_value,
+                is_inline: can_inline,
+                owner: owner.clone(),
+                channel: ptr::null_mut(),
+                transfer: None,
+                terminal: false,
+                taken: false,
+                code: crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+            })
         });
         if let Some(reservation) = reservation {
-            if let Err(failure) =
-                reservation.commit_value(&PAYLOAD_LAYOUT, ptr::from_ref(&operation.payload).cast())
+            if let Err(failure) = reservation
+                .commit_value(&PAYLOAD_LAYOUT, ptr::from_ref(&(*operation).payload).cast())
             {
                 crate::mem::buf_free(copied);
-                operation.payload.value = ptr::null_mut();
-                operation.taken = true;
+                (*operation).payload.value = ptr::null_mut();
+                (*operation).taken = true;
+                NATIVE_REPLY_POOL.with(|pool| pool.free(operation));
                 out_status.write(failure);
                 return ptr::null_mut();
             }
@@ -151,11 +169,13 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
                 .release_value(&*layout, value)
                 .unwrap_or_else(|_| std::process::abort());
         }
-        operation.channel = crate::execution_context::hew_get_reply_channel().cast();
-        if !operation.channel.is_null() {
-            crate::execution_context::mark_current_reply_channel_consumed(operation.channel.cast());
+        (*operation).channel = crate::execution_context::hew_get_reply_channel().cast();
+        if !(*operation).channel.is_null() {
+            crate::execution_context::mark_current_reply_channel_consumed(
+                (*operation).channel.cast(),
+            );
         }
-        Box::into_raw(operation)
+        operation
     }
 }
 
@@ -223,14 +243,72 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_poll_native(
             operation.terminal = true;
             return CoroStatus::Complete as i32;
         }
-        let wake = OwnedWaker::retain(&*waker_ptr);
+        // Fast path: when no transfer gate is active and the reply transfer is
+        // inert, publish directly in one lock acquisition without retaining a
+        // publisher waker or entering/leaving the transfer gate.
         let (destination, binding) = {
             let mut owner = (*channel).native.lock_or_recover();
-            if !owner.claim(identity, Some(wake.clone())) {
+            if owner.gate.is_none()
+                && operation.transfer.is_none()
+                && crate::owned_value_budget::transfer::is_inert(
+                    operation.owner.as_ref(),
+                    owner.value_owner.as_ref(),
+                    operation.payload.layout,
+                )
+            {
+                let wake = if (*channel).cancelled.load(Ordering::Acquire) {
+                    owner.waker.take()
+                } else {
+                    let size = (*operation.payload.layout).size;
+                    if operation.is_inline && owner.value_owner.is_none() {
+                        ptr::copy_nonoverlapping(
+                            operation.inline_value.as_ptr(),
+                            (*channel).inline_value.as_mut_ptr(),
+                            size,
+                        );
+                        (*channel).value = ptr::null_mut();
+                        (*channel).value_is_inline = true;
+                        (*channel).value_size = size;
+                    } else {
+                        let val = if operation.is_inline {
+                            let buf = super::super::alloc_reply_buffer(size);
+                            if buf.is_null() {
+                                super::super::hew_reply_channel_mark_allocation_failed(channel);
+                                ptr::null_mut()
+                            } else {
+                                ptr::copy_nonoverlapping(
+                                    operation.inline_value.as_ptr(),
+                                    buf.cast::<u8>(),
+                                    size,
+                                );
+                                buf
+                            }
+                        } else {
+                            ptr::replace(&raw mut operation.payload.value, ptr::null_mut())
+                        };
+                        (*channel).value = val;
+                        (*channel).value_size = size;
+                        owner.payload_owned = true;
+                        (*channel).payload_owned.store(true, Ordering::Release);
+                    }
+                    (*channel).ready.store(true, Ordering::Release);
+                    operation.taken = true;
+                    owner.waker.take()
+                };
+                drop(owner);
+                operation.terminal = true;
+                if let Some(wake) = wake {
+                    wake.wake();
+                }
+                return CoroStatus::Complete as i32;
+            }
+            let wake = OwnedWaker::retain(&*waker_ptr);
+            if !owner.claim(identity, Some(wake)) {
                 return CoroStatus::Pending as i32;
             }
             (owner.value_owner.clone(), owner.binding.clone())
         };
+        let wake = OwnedWaker::retain(&*waker_ptr);
         let inert = operation.transfer.is_none()
             && crate::owned_value_budget::transfer::is_inert(
                 operation.owner.as_ref(),
@@ -273,9 +351,27 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_poll_native(
         let wake = {
             let mut owner = (*channel).native.lock_or_recover();
             if !(*channel).cancelled.load(Ordering::Acquire) {
-                (*channel).value = ptr::replace(&raw mut operation.payload.value, ptr::null_mut());
-                (*channel).value_size = (*operation.payload.layout).size;
+                let size = (*operation.payload.layout).size;
+                let val = if operation.is_inline {
+                    let buf = super::super::alloc_reply_buffer(size);
+                    if buf.is_null() {
+                        super::super::hew_reply_channel_mark_allocation_failed(channel);
+                        ptr::null_mut()
+                    } else {
+                        ptr::copy_nonoverlapping(
+                            operation.inline_value.as_ptr(),
+                            buf.cast::<u8>(),
+                            size,
+                        );
+                        buf
+                    }
+                } else {
+                    ptr::replace(&raw mut operation.payload.value, ptr::null_mut())
+                };
+                (*channel).value = val;
+                (*channel).value_size = size;
                 owner.payload_owned = true;
+                (*channel).payload_owned.store(true, Ordering::Release);
                 (*channel).ready.store(true, Ordering::Release);
                 operation.taken = true;
             }
@@ -356,6 +452,11 @@ pub(super) unsafe fn release_payload(
     }
 }
 
+std::thread_local! {
+    static NATIVE_REPLY_POOL: crate::util::TlsBoxPool<HewNativeReply> =
+        const { crate::util::TlsBoxPool::new() };
+}
+
 /// Release a terminal operation after taking its remaining cleanup obligations.
 /// # Safety
 /// The caller owns this operation and has stopped polling it.
@@ -366,13 +467,15 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_free_native(operation: *mut HewN
     }
     // SAFETY: the caller transfers one final operation owner.
     unsafe {
-        let operation = Box::from_raw(operation);
-        if !(operation.terminal && operation.taken && operation.transfer.is_none()) {
+        let op = &mut *operation;
+        if !(op.terminal && op.taken && op.transfer.is_none()) {
             eprintln!("fatal: hew_actor_reply_free_native called out of lifecycle order");
             std::process::abort();
         }
-        if !operation.channel.is_null() {
-            super::super::hew_reply_channel_free(operation.channel);
+        let channel = std::mem::replace(&mut op.channel, ptr::null_mut());
+        NATIVE_REPLY_POOL.with(|pool| pool.free(operation));
+        if !channel.is_null() {
+            super::super::hew_reply_channel_free(channel);
         }
     }
 }
@@ -797,11 +900,12 @@ mod tests {
                 CoroStatus::Complete as i32
             );
             let cleanup = hew_actor_reply_take_cleanup_native(operation);
-            assert!(!cleanup.is_null());
-            let mut driver = crate::release_walker::ReleaseDriver::new(cleanup);
-            assert!(driver.poll(parent));
-            assert!(driver.take_fault().is_null());
-            drop(driver);
+            if !cleanup.is_null() {
+                let mut driver = crate::release_walker::ReleaseDriver::new(cleanup);
+                assert!(driver.poll(parent));
+                assert!(driver.take_fault().is_null());
+                drop(driver);
+            }
             hew_actor_reply_free_native(operation);
             super::super::super::hew_reply_channel_free(channel);
             crate::coro_state::hew_coro_state_free(parent);

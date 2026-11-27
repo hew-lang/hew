@@ -807,6 +807,8 @@ pub(super) fn fail_restart_snapshot(
     // SAFETY: the same roster guard protects child-slot mutation.
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = ptr::null_mut();
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe { &(*sup).live_slots }.publish(index, ptr::null_mut());
     }
 }
 
@@ -860,6 +862,8 @@ pub(super) fn publish_restart_snapshot(
     // SAFETY: the same roster guard protects child-slot mutation.
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = child;
+        // SAFETY: `roster` is held and `sup` is live.
+        unsafe { &(*sup).live_slots }.publish(index, child);
     }
     true
 }
@@ -941,7 +945,6 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
             coalesce_match_fn: spec.coalesce_match_fn,
             coalesce_fallback: spec.coalesce_fallback,
             budget: 0,
-            arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
             message_drop_fn: spec.message_drop_fn,
         };
@@ -1019,7 +1022,6 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
             coalesce_match_fn: opts.coalesce_match_fn,
             coalesce_fallback: opts.coalesce_fallback,
             budget: 0,
-            arena_cap_bytes: opts.arena_cap_bytes,
             cycle_capable: opts.cycle_capable,
             message_drop_fn: opts.message_drop_fn,
         };

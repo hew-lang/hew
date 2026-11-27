@@ -116,6 +116,13 @@ pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
     imp::executor::publish_queue_entry(entry);
 }
 
+/// Publish a running actor's own requeue at the FIFO tail of the active
+/// cooperative driver or the native scheduler.
+#[inline]
+pub(crate) fn publish_requeue_entry(entry: SchedulerQueueEntry) {
+    imp::executor::publish_requeue_entry(entry);
+}
+
 /// Return whether the active scheduler or cooperative driver has queued work.
 #[inline]
 pub(crate) fn has_runnable_work() -> bool {

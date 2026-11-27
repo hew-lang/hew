@@ -41,7 +41,7 @@
 //!
 //! The block is allocated with alignment [`BUF_ALIGN`] (16), matching what
 //! `libc::malloc` guaranteed before the migration, and the header is exactly
-//! [`BUF_ALIGN`] bytes so the payload keeps that alignment.
+//! [`BUF_ALIGN`] bytes so the payload pointer keeps that alignment.
 //!
 //! A zero-length request allocates a one-byte payload, so the returned pointer
 //! is always non-null and always releasable -- the same sentinel behaviour the

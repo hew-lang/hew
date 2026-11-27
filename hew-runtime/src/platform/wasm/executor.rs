@@ -124,6 +124,12 @@ pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
     }
 }
 
+/// The cooperative driver's ready list is already FIFO.
+#[inline]
+pub(crate) fn publish_requeue_entry(entry: SchedulerQueueEntry) {
+    publish_queue_entry(entry);
+}
+
 #[inline]
 pub(crate) fn has_runnable_work() -> bool {
     crate::driver::has_queued_work()

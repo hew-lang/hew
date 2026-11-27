@@ -268,6 +268,78 @@ pub unsafe extern "C" fn hew_actor_timer_new(
     }
     // SAFETY: the unpublished envelope belongs to this call.
     unsafe {
+        timer_new_with_envelope(
+            token,
+            message,
+            envelope,
+            payload_release,
+            after_ns,
+            overdue_ns,
+            has_overdue,
+            invocation,
+            payload_layout,
+        )
+    }
+}
+
+/// Inline-SBO variant of [`hew_actor_timer_new`] copying `size` bytes from a
+/// caller stack wrapper directly into the envelope's inline buffer.
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes live for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_timer_new_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    after_ns: i64,
+    overdue_ns: i64,
+    has_overdue: bool,
+    invocation: *const crate::coro_state::HewCoroState,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> *const OneShot {
+    // SAFETY: copies `size` bytes synchronously from `src` into the envelope.
+    let envelope =
+        unsafe { crate::mailbox::hew_msg_envelope_new_inline(src, size, Some(drop_payload)) };
+    if envelope.is_null() {
+        return ptr::null();
+    }
+    // SAFETY: the unpublished envelope belongs to this call.
+    unsafe {
+        timer_new_with_envelope(
+            token,
+            message,
+            envelope,
+            payload_release,
+            after_ns,
+            overdue_ns,
+            has_overdue,
+            invocation,
+            payload_layout,
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete compiler-private one-shot timer registration contract"
+)]
+unsafe fn timer_new_with_envelope(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut HewMsgEnvelope,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    after_ns: i64,
+    overdue_ns: i64,
+    has_overdue: bool,
+    invocation: *const crate::coro_state::HewCoroState,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> *const OneShot {
+    // SAFETY: the unpublished envelope belongs to this call.
+    unsafe {
         (*envelope).release_start = payload_release;
         crate::cow_envelope::set_layout(envelope, payload_layout);
     };
@@ -333,8 +405,7 @@ pub unsafe extern "C" fn hew_actor_timer_new(
     } else {
         // SAFETY: failed registration retained the source's typed fields.
         unsafe {
-            crate::mem::buf_free(payload);
-            crate::cow_envelope::free_allocation(envelope);
+            crate::cow_envelope::discard_unpublished_shallow(envelope);
         }
         ptr::null()
     }

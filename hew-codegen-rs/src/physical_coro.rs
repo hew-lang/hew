@@ -28,6 +28,7 @@ pub(super) struct Frame<'ctx> {
     child_invocation: Cell<Option<PointerValue<'ctx>>>,
     managed_view: Cell<Option<PointerValue<'ctx>>>,
     managed_operation: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
+    shared_actor_call: Cell<Option<PointerValue<'ctx>>>,
     managed_frame_type: inkwell::types::StructType<'ctx>,
 }
 
@@ -85,6 +86,69 @@ pub(super) fn entry_storage<'ctx>(
     builder
         .build_alloca(ty, name)
         .llvm_ctx("allocate local storage")
+}
+
+pub(super) fn entry_storage_aligned<'ctx>(
+    ctx: &'ctx Context,
+    entry: BasicBlock<'ctx>,
+    ty: BasicTypeEnum<'ctx>,
+    align: u32,
+    name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let slot = entry_storage(ctx, entry, ty, name)?;
+    slot.as_instruction()
+        .ok_or_else(|| CodegenError::FailClosed("entry alloca lacks instruction".into()))?
+        .set_alignment(align)
+        .llvm_ctx("align local storage")?;
+    Ok(slot)
+}
+
+pub(super) fn emit_lifetime_start<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    let func = intrinsic(module, "llvm.lifetime.start", &[ptr.into()])?;
+    if func.count_params() == 1 {
+        builder
+            .build_call(func, &[slot.into()], "")
+            .llvm_ctx("start stack slot lifetime")?;
+    } else {
+        builder
+            .build_call(
+                func,
+                &[ctx.i64_type().const_all_ones().into(), slot.into()],
+                "",
+            )
+            .llvm_ctx("start stack slot lifetime")?;
+    }
+    Ok(())
+}
+
+pub(super) fn emit_lifetime_end<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    let func = intrinsic(module, "llvm.lifetime.end", &[ptr.into()])?;
+    if func.count_params() == 1 {
+        builder
+            .build_call(func, &[slot.into()], "")
+            .llvm_ctx("end stack slot lifetime")?;
+    } else {
+        builder
+            .build_call(
+                func,
+                &[ctx.i64_type().const_all_ones().into(), slot.into()],
+                "",
+            )
+            .llvm_ctx("end stack slot lifetime")?;
+    }
+    Ok(())
 }
 
 fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
@@ -527,6 +591,7 @@ pub(super) fn begin<'ctx>(
         child_invocation: Cell::new(None),
         managed_view: Cell::new(None),
         managed_operation: Cell::new(None),
+        shared_actor_call: Cell::new(None),
         managed_frame_type: managed_frame_type(ctx, target_data),
     })
 }
@@ -915,6 +980,53 @@ impl<'ctx> Frame<'ctx> {
         name: &str,
     ) -> CodegenResult<PointerValue<'ctx>> {
         entry_storage(ctx, self.entry, ty, name)
+    }
+
+    pub fn storage_aligned(
+        &self,
+        ctx: &'ctx Context,
+        ty: BasicTypeEnum<'ctx>,
+        align: u32,
+        name: &str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        entry_storage_aligned(ctx, self.entry, ty, align, name)
+    }
+
+    pub fn shared_actor_call_storage(
+        &self,
+        ctx: &'ctx Context,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        if let Some(slot) = self.shared_actor_call.get() {
+            return Ok(slot);
+        }
+        let words = u32::try_from(
+            hew_runtime::actor_call_native::HEW_ACTOR_CALL_SLOT_BYTES / std::mem::size_of::<u64>(),
+        )
+        .expect("actor call slot words fit u32");
+        let slot = self.storage_aligned(
+            ctx,
+            ctx.i64_type().array_type(words).into(),
+            hew_runtime::actor_call_native::HEW_ACTOR_CALL_SLOT_ALIGN,
+            "frame.actor.call.shared",
+        )?;
+        self.shared_actor_call.set(Some(slot));
+        Ok(slot)
+    }
+
+    pub fn select_actor_call_storage(
+        &self,
+        ctx: &'ctx Context,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let words = u32::try_from(
+            hew_runtime::actor_call_native::HEW_ACTOR_CALL_SLOT_BYTES / std::mem::size_of::<u64>(),
+        )
+        .expect("actor call slot words fit u32");
+        self.storage_aligned(
+            ctx,
+            ctx.i64_type().array_type(words).into(),
+            hew_runtime::actor_call_native::HEW_ACTOR_CALL_SLOT_ALIGN,
+            "frame.actor.call.select",
+        )
     }
 
     fn nonfinal_suspend(&self, ctx: &'ctx Context, builder: &Builder<'ctx>) -> IntValue<'ctx> {

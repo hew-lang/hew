@@ -104,21 +104,13 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_context_not_installed_error();
         }
         4 => {
-            assert!(hew_runtime::arena::set_current_arena(ptr::null_mut()).is_null());
-            assert_context_not_installed_error();
-        }
-        5 => {
-            assert!(unsafe { hew_runtime::arena::hew_arena_malloc(16) }.is_null());
-            assert_context_not_installed_error();
-        }
-        6 => {
             assert!(unsafe {
                 hew_runtime::task_scope::hew_task_scope_set_current(ptr::null_mut())
             }
             .is_null());
             assert_context_not_installed_error();
         }
-        7 => {
+        5 => {
             let mut out = hew_runtime::tracing::HewTraceContext {
                 trace_id_hi: u64::MAX,
                 trace_id_lo: u64::MAX,
@@ -134,7 +126,7 @@ fn run_ctx_null_reader_case(case: u8) {
             assert_eq!(out.flags, 0);
             assert_context_not_installed_error();
         }
-        8 => {
+        6 => {
             let trace = hew_runtime::tracing::HewTraceContext {
                 trace_id_hi: 1,
                 trace_id_lo: 2,
@@ -145,17 +137,17 @@ fn run_ctx_null_reader_case(case: u8) {
             unsafe { hew_runtime::tracing::hew_trace_set_context(&raw const trace) };
             assert_context_not_installed_error();
         }
-        9 => {
+        7 => {
             let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_begin(11, 12);
             assert_context_not_installed_error();
         }
-        10 => {
+        8 => {
             let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_end(11, 12);
             assert_context_not_installed_error();
         }
-        11 => {
+        9 => {
             let _tracing = TracingEnabledGuard::enable();
             hew_runtime::tracing::hew_trace_lifecycle(11, hew_runtime::tracing::SPAN_STOP);
             assert_context_not_installed_error();
@@ -166,14 +158,14 @@ fn run_ctx_null_reader_case(case: u8) {
 
 proptest! {
     #[test]
-    fn ctx_null_readers_emit_typed_error(case in 0u8..12) {
+    fn ctx_null_readers_emit_typed_error(case in 0u8..10) {
         run_ctx_null_reader_case(case);
     }
 }
 
 #[test]
 fn ctx_null_reader_catalog_covers_every_case() {
-    for case in 0..12 {
+    for case in 0..10 {
         run_ctx_null_reader_case(case);
     }
 }

@@ -51,7 +51,6 @@ pub(crate) fn stub_actor() -> HewActor {
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
-        arena: ptr::null_mut(),
         suspended_cont: AtomicPtr::new(ptr::null_mut()),
         cont_tag: AtomicI32::new(ContTag::Empty as i32),
         pending_wake: AtomicBool::new(false),
@@ -72,6 +71,7 @@ pub(crate) fn stub_actor() -> HewActor {
         #[cfg(not(target_arch = "wasm32"))]
         native_completion: None,
         parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+        state_lock: crate::actor::ActorStateLock::new(),
     }
 }
 

@@ -39,10 +39,9 @@ use crate::set_last_error;
 
 /// Messages this process has sent and received. The scheduler reports them as
 /// its own counters; the mailbox is what increments them.
-pub(crate) static MESSAGES_SENT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-pub(crate) static MESSAGES_RECEIVED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static MESSAGES_SENT: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+pub(crate) static MESSAGES_RECEIVED: crate::util::ShardedCounter =
+    crate::util::ShardedCounter::new();
 use crate::tracing::HewTraceContext;
 
 // Exact ask-node identity ledger for ownership regressions. A queued ask moves
@@ -513,6 +512,10 @@ fn should_fail_mailbox_alloc() -> bool {
     })
 }
 
+std::thread_local! {
+    static MSG_NODE_POOL: crate::util::TlsBufPool = const { crate::util::TlsBufPool::new() };
+}
+
 fn mailbox_malloc(size: usize) -> *mut c_void {
     #[cfg(test)]
     {
@@ -522,6 +525,37 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
+    crate::mem::buf_try_alloc(size)
+}
+
+fn alloc_msg_node_raw() -> *mut HewMsgNode {
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return ptr::null_mut();
+        }
+    }
+    if let Some(ptr) = MSG_NODE_POOL.with(crate::util::TlsBufPool::pop) {
+        return ptr.cast::<HewMsgNode>();
+    }
+    crate::mem::buf_try_alloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>()
+}
+
+unsafe fn free_msg_node_raw(node: *mut HewMsgNode) {
+    // SAFETY: `node` is a uniquely owned `HewMsgNode` block from `buf_try_alloc`.
+    MSG_NODE_POOL.with(|pool| unsafe { pool.push(node.cast()) });
+}
+
+fn mailbox_envelope_alloc(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return ptr::null_mut();
+        }
+    }
+    if let Some(ptr) = crate::cow_envelope::pop_pooled_envelope() {
+        return ptr;
+    }
     crate::mem::buf_try_alloc(size)
 }
 
@@ -565,6 +599,9 @@ pub struct HewMsgNode {
     /// `CANCEL_TOKEN_NONE (0)` when no token is attached.
     /// Cross-node serialisation of this field is deferred to a future lane.
     pub cancel_token_handle: u64,
+    /// True when this node lives inside `(*envelope).embedded_node` rather
+    /// than a standalone `MSG_NODE_POOL` / sized-block allocation.
+    pub is_embedded: bool,
 }
 
 // The envelope representation and lifecycle live in `crate::cow_envelope`.
@@ -584,7 +621,24 @@ pub unsafe extern "C" fn hew_msg_envelope_new(
     drop_glue: Option<HewMsgEnvelopeDropFn>,
 ) -> *mut HewMsgEnvelope {
     // SAFETY: forwarded unchanged to the shared envelope lifecycle.
-    unsafe { crate::cow_envelope::new(payload, payload_size, drop_glue, mailbox_malloc) }
+    unsafe { crate::cow_envelope::new(payload, payload_size, drop_glue, mailbox_envelope_alloc) }
+}
+
+/// Allocate a fresh owned envelope copying `payload_size` bytes from `src`
+/// into the envelope's 64-byte inline buffer when `payload_size <= 64`.
+///
+/// # Safety
+///
+/// `src` must be null (when `payload_size == 0`) or point to at least
+/// `payload_size` readable bytes for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_new_inline(
+    src: *const c_void,
+    payload_size: usize,
+    drop_glue: Option<HewMsgEnvelopeDropFn>,
+) -> *mut HewMsgEnvelope {
+    // SAFETY: forwarded unchanged to the shared inline envelope constructor.
+    unsafe { crate::cow_envelope::new_inline(src, payload_size, drop_glue, mailbox_envelope_alloc) }
 }
 
 /// Release one live envelope ownership reference.
@@ -700,6 +754,34 @@ unsafe fn msg_node_alloc_sys(
 /// # Safety
 ///
 /// Same requirements as [`msg_node_alloc`].
+/// Try to claim `(*envelope).embedded_node` when `envelope` is uniquely owned.
+#[inline]
+unsafe fn try_claim_embedded_node(envelope: *mut HewMsgEnvelope) -> *mut HewMsgNode {
+    if envelope.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `envelope` is a live owned envelope.
+    unsafe {
+        if (*envelope).refcount.load(Ordering::Acquire) != 1 {
+            return ptr::null_mut();
+        }
+        if (*envelope)
+            .embedded_node_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return ptr::null_mut();
+        }
+        if (*envelope).refcount.load(Ordering::Acquire) != 1 {
+            (*envelope)
+                .embedded_node_claimed
+                .store(false, Ordering::Release);
+            return ptr::null_mut();
+        }
+        (*envelope).embedded_node.get().cast::<HewMsgNode>()
+    }
+}
+
 unsafe fn msg_node_alloc_with_trace(
     msg_type: i32,
     data: *const c_void,
@@ -712,51 +794,48 @@ unsafe fn msg_node_alloc_with_trace(
         set_last_error("msg_node_alloc_with_trace: null payload with non-zero size");
         return ptr::null_mut();
     }
-    // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
-    if node.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
-    unsafe {
-        ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
-        (*node).msg_type = msg_type;
-        (*node).data_size = data_size;
-        (*node).reply_channel = reply_channel;
-        (*node).obligated = !reply_channel.is_null();
-        (*node).envelope = ptr::null_mut();
-        (*node).trace_context = trace_context;
-        // Explicit zero-init for the mailbox-envelope ABI fields.
-        // These fields are NEW; mailbox_malloc uses buf_try_alloc (not a zeroing
-        // allocator like calloc) so they are NOT zero-initialized. An uninitialized
-        // payload_class byte that happened to equal SerializedCrossNode (3)
-        // would silently pass the cross-node gate — defeating the fail-closed
-        // invariant. Zero maps to the canonical sentinels:
-        //   payload_class = 0  →  MailboxPayloadClass::Unit
-        //   cancel_token  = 0  →  CANCEL_TOKEN_NONE
-        (*node).payload_class = 0;
-        (*node).caller = caller;
-        (*node).cancel_token_handle = 0;
-
-        // Deep-copy message data for actor isolation.
-        if data_size > 0 {
+    // SAFETY: copies `<= 64B` inline into the envelope (1 allocation total),
+    // or allocates an external buffer + envelope for `> 64B` payloads.
+    let envelope = unsafe {
+        if data_size <= crate::cow_envelope::INLINE_PAYLOAD_CAP {
+            let src = if data_size > 0 { data } else { ptr::null() };
+            hew_msg_envelope_new_inline(src, data_size, None)
+        } else {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                crate::mem::buf_free(node.cast());
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
-            (*node).data = buf;
-        } else {
-            (*node).data = ptr::null_mut();
+            let env = hew_msg_envelope_new(buf, data_size, None);
+            if env.is_null() {
+                crate::mem::buf_free(buf);
+                return ptr::null_mut();
+            }
+            env
         }
-        (*node).envelope = hew_msg_envelope_new((*node).data, data_size, None);
-        if (*node).envelope.is_null() {
-            crate::mem::buf_free((*node).data);
-            crate::mem::buf_free(node.cast());
-            return ptr::null_mut();
-        }
-        crate::request_state::bind_reply((*node).envelope, reply_channel.cast());
+    };
+    if envelope.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `envelope` was just allocated with `refcount == 1`, so its
+    // embedded node is guaranteed unclaimed.
+    let node = unsafe { try_claim_embedded_node(envelope) };
+    debug_assert!(!node.is_null(), "fresh envelope must yield embedded node");
+    // SAFETY: `node` points to `(*envelope).embedded_node` owned exclusively.
+    unsafe {
+        ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
+        (*node).msg_type = msg_type;
+        (*node).data = (*envelope).payload;
+        (*node).data_size = data_size;
+        (*node).reply_channel = reply_channel;
+        (*node).obligated = !reply_channel.is_null();
+        (*node).envelope = envelope;
+        (*node).trace_context = trace_context;
+        (*node).payload_class = 0;
+        (*node).caller = caller;
+        (*node).cancel_token_handle = 0;
+        (*node).is_embedded = true;
+        crate::request_state::bind_reply(envelope, reply_channel.cast());
     }
 
     #[cfg(test)]
@@ -766,31 +845,29 @@ unsafe fn msg_node_alloc_with_trace(
 
 /// Allocate a [`HewMsgNode`] that takes an existing owned envelope.
 ///
-/// The caller transfers one refcount on `envelope` to the new node;
-/// on `hew_msg_node_free` the node releases that refcount via
-/// [`hew_msg_envelope_release`].
+/// Claims `(*envelope).embedded_node` when `envelope` is uniquely owned
+/// (`refcount == 1`), falling back to `alloc_msg_node_raw` only when shared.
 ///
 /// # Safety
 ///
-/// `envelope` must be a live envelope obtained from
-/// [`hew_msg_envelope_new`]. The caller must not release
-/// its own reference if it intends the new node to own it; this
-/// function consumes one refcount.
-///
-/// Live envelope path: reached from [`admit_native_request`] (and through
-/// it from [`crate::actor::try_submit_native_request`]). On `malloc`
-/// failure the node is null and the envelope refcount is **not**
-/// consumed — the caller releases it.
+/// `envelope` must be a live envelope obtained from [`hew_msg_envelope_new`]
+/// or [`hew_msg_envelope_new_inline`].
 unsafe fn msg_node_alloc_owned(
     msg_type: i32,
     envelope: *mut HewMsgEnvelope,
     reply_channel: *mut c_void,
 ) -> *mut HewMsgNode {
-    // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
-    if node.is_null() {
-        return ptr::null_mut();
-    }
+    // SAFETY: `envelope` is live.
+    let embedded = unsafe { try_claim_embedded_node(envelope) };
+    let (node, is_embedded) = if embedded.is_null() {
+        let raw = alloc_msg_node_raw();
+        if raw.is_null() {
+            return ptr::null_mut();
+        }
+        (raw, false)
+    } else {
+        (embedded, true)
+    };
 
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
@@ -805,10 +882,10 @@ unsafe fn msg_node_alloc_owned(
         crate::request_state::bind_reply(envelope, reply_channel.cast());
         (*node).trace_context = crate::tracing::current_context();
         // Explicit zero-init for the mailbox-envelope ABI fields.
-        // See msg_node_alloc for the rationale; same invariant applies here.
         (*node).payload_class = 0;
         (*node).caller = crate::actor_caller::local_sender();
         (*node).cancel_token_handle = 0;
+        (*node).is_embedded = is_embedded;
     }
 
     #[cfg(test)]
@@ -828,17 +905,6 @@ pub(crate) unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) 
             reply_channel.cast(),
         );
     }
-}
-
-unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
-    // SAFETY: caller guarantees exclusive ownership of `node`.
-    let reply_channel = unsafe { (*node).reply_channel };
-    // SAFETY: caller guarantees exclusive ownership of `node`.
-    unsafe {
-        (*node).reply_channel = ptr::null_mut();
-    }
-    // SAFETY: the detached reply channel (if any) belonged to this queued ask node.
-    unsafe { retire_orphaned_ask_sender_ref(reply_channel) };
 }
 
 /// Nodes detached from a terminal mailbox under its single-consumer lock.
@@ -1136,20 +1202,33 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
     #[cfg(test)]
     untrack_ask_node_for_test(node);
-    // SAFETY: caller guarantees `node` came from the sized-block allocator and is exclusively owned.
+    // SAFETY: caller exclusively owns `node` (either embedded inside `(*node).envelope`
+    // or allocated from `MSG_NODE_POOL` / sized-block allocator). Extract all fields
+    // from `node` BEFORE releasing `env`, because releasing `env` frees embedded nodes.
     unsafe {
-        // A queued native ask keeps its sender reference until typed payload
-        // cleanup completes, so its caller cannot pass that cleanup barrier.
-        if !(*node).envelope.is_null() && (*(*node).envelope).release_start.is_some() {
-            (*(*node).envelope).release_reply =
-                std::mem::replace(&mut (*node).reply_channel, ptr::null_mut());
+        let is_embedded = (*node).is_embedded;
+        let env = std::mem::replace(&mut (*node).envelope, ptr::null_mut());
+        let reply_channel = std::mem::replace(&mut (*node).reply_channel, ptr::null_mut());
+        if !env.is_null() && (*env).release_start.is_some() {
+            (*env).release_reply = reply_channel;
+            if is_embedded {
+                (*env).embedded_node_claimed.store(false, Ordering::Release);
+            }
+            crate::cow_envelope::release(env);
+            if !is_embedded {
+                free_msg_node_raw(node);
+            }
+            return;
+        }
+        if is_embedded && !env.is_null() {
+            (*env).embedded_node_claimed.store(false, Ordering::Release);
         }
         // Payload cleanup settles before the sender's completion reference.
-        // Stubs and unpublished detached nodes legitimately have no envelope.
-        crate::cow_envelope::release((*node).envelope);
-        (*node).envelope = ptr::null_mut();
-        retire_msg_node_ask_sender_ref(node);
-        crate::mem::buf_free(node.cast());
+        crate::cow_envelope::release(env);
+        retire_orphaned_ask_sender_ref(reply_channel);
+        if !is_embedded {
+            free_msg_node_raw(node);
+        }
     }
 }
 
@@ -1213,6 +1292,7 @@ fn alloc_stub_node() -> *mut HewMsgNode {
         (*node).payload_class = 0;
         (*node).caller = crate::actor_caller::HewCallerStamp::default();
         (*node).cancel_token_handle = 0;
+        (*node).is_embedded = false;
     }
     node
 }
@@ -1223,7 +1303,9 @@ fn alloc_stub_node() -> *mut HewMsgNode {
 /// consumer dequeues from `tail`. A heap-allocated stub node remains live for
 /// the queue's full lifetime so producers never race a freed former stub.
 struct MpscQueue {
-    head: AtomicPtr<HewMsgNode>,
+    /// Producer-contended swap target isolated on its own cache line so
+    /// producer pushes do not false-share with the consumer's `tail`/`stub`.
+    head: crate::util::CachePadded<AtomicPtr<HewMsgNode>>,
     tail: UnsafeCell<*mut HewMsgNode>,
     stub: *mut HewMsgNode,
 }
@@ -1262,7 +1344,7 @@ impl MpscQueue {
             return None;
         }
         Some(Self {
-            head: AtomicPtr::new(stub),
+            head: crate::util::CachePadded(AtomicPtr::new(stub)),
             tail: UnsafeCell::new(stub),
             stub,
         })
@@ -1940,7 +2022,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         losses: std::array::from_fn(|_| AtomicU64::new(0)),
-        use_slow_path: needs_slow_path(policy),
+        use_slow_path: cap > 0 && needs_slow_path(policy),
     }))
 }
 
@@ -2508,8 +2590,11 @@ impl Drop for NativeReservation<'_> {
         }
         // SAFETY: refusal returns both unpublished references to their caller.
         unsafe {
-            (*self.node).envelope = ptr::null_mut();
+            let env = std::mem::replace(&mut (*self.node).envelope, ptr::null_mut());
             (*self.node).reply_channel = ptr::null_mut();
+            if (*self.node).is_embedded && !env.is_null() {
+                (*env).embedded_node_claimed.store(false, Ordering::Release);
+            }
             hew_msg_node_free(self.node);
         }
         if self.counted || !self.victim.is_null() {
@@ -2553,26 +2638,15 @@ impl NativeReservation<'_> {
                     .position(|entry| *entry == self.victim)
                     .expect("reserved policy victim remains pinned");
                 if self.coalesced {
-                    // SAFETY: reservation excludes every consumer/replacer.
-                    let displaced = unsafe {
-                        (*self.victim).caller = (*node).caller;
-                        (*self.victim).data = (*node).data;
-                        (*self.victim).data_size = (*node).data_size;
-                        (*self.victim).trace_context = (*node).trace_context;
-                        (*self.victim).payload_class = (*node).payload_class;
-                        (*self.victim).cancel_token_handle = (*node).cancel_token_handle;
-                        let old = std::mem::replace(&mut (*self.victim).envelope, (*node).envelope);
-                        (*node).envelope = ptr::null_mut();
-                        (*node).reply_channel = ptr::null_mut();
-                        old
-                    };
+                    let displaced = self.victim;
+                    queue.user_queue[index] = node;
                     self.node = ptr::null_mut();
                     drop(queue);
                     mb.record_loss(2);
-                    // SAFETY: no queued message retains this displaced payload.
+                    // SAFETY: replacing the slot in-place preserves queue order
+                    // and avoids UAF when `displaced` is embedded inside its envelope.
                     unsafe {
-                        hew_msg_envelope_release(displaced);
-                        hew_msg_node_free(node);
+                        hew_msg_node_free(displaced);
                     }
                     mb.native_capacity.notify();
                     return SendOutcome::Coalesced;
@@ -2692,8 +2766,10 @@ pub(crate) unsafe fn reserve_native_request(
             match declared_admission(declared) {
                 DeclaredAdmission::DiscardIncoming => {
                     drop(queue);
+                    drop(reservation);
                     mb.record_loss(0);
-                    // SAFETY: declared loss consumes the caller's one incoming reference.
+                    // SAFETY: declared loss consumes the caller's one incoming reference
+                    // after `reservation` has detached its embedded node.
                     unsafe {
                         hew_msg_envelope_release(envelope);
                     }
@@ -2722,8 +2798,10 @@ pub(crate) unsafe fn reserve_native_request(
     } else if mb.capacity > 0 && !terminal {
         if !try_reserve_fast_path_capacity(mb) {
             if mb.overflow == HewOverflowPolicy::DropNew && !obligated {
+                drop(reservation);
                 mb.record_loss(0);
-                // SAFETY: the caller's incoming reference transfers to declared loss.
+                // SAFETY: the caller's incoming reference transfers to declared loss
+                // after `reservation` has detached its embedded node.
                 unsafe {
                     hew_msg_envelope_release(envelope);
                 }
@@ -3552,44 +3630,49 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
     // SAFETY: Caller guarantees `mb` is valid and single-consumer.
     let mb = unsafe { &*mb };
 
-    // System messages have priority (lock-free dequeue).
-    // SAFETY: single-consumer invariant satisfied by caller.
-    match unsafe { mb.sys_queue.try_dequeue() } {
-        TryDequeueResult::Node(sys_node) => {
-            mb.sys_count.fetch_sub(1, Ordering::AcqRel);
-            MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
-            let raw = unsafe { (*sys_node).msg_type };
-            let Some(kind) = HewSysMsg::from_raw(raw) else {
-                // Fail-closed: a system-queue node whose kind does not decode is
-                // NOT downgraded to a user message (that would hand it to the
-                // application trampoline). Every runtime producer goes through the
-                // typed `mailbox_send_sys*`, and the C entry point validates, so
-                // reaching here means memory corruption. Drop it and report.
-                eprintln!(
-                    "[mailbox] refusing system-queue node with undecodable kind {raw} \
-                     (mailbox {mb:p}); dropping"
-                );
-                // SAFETY: `sys_node` is exclusively owned here and not published.
-                unsafe { hew_msg_node_free(sys_node) };
+    // System messages have priority (lock-free dequeue). Skip touching
+    // `sys_queue` entirely on the common path when `sys_count == 0`.
+    // `enqueue_sys_node_inner` publishes `sys_count` before `sys_queue.enqueue`,
+    // so an Acquire load of 0 guarantees no system node is reachable.
+    if mb.sys_count.load(Ordering::Acquire) != 0 {
+        // SAFETY: single-consumer invariant satisfied by caller.
+        match unsafe { mb.sys_queue.try_dequeue() } {
+            TryDequeueResult::Node(sys_node) => {
+                mb.sys_count.fetch_sub(1, Ordering::AcqRel);
+                MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: `sys_node` is the non-null node just dequeued and is owned here.
+                let raw = unsafe { (*sys_node).msg_type };
+                let Some(kind) = HewSysMsg::from_raw(raw) else {
+                    // Fail-closed: a system-queue node whose kind does not decode is
+                    // NOT downgraded to a user message (that would hand it to the
+                    // application trampoline). Every runtime producer goes through the
+                    // typed `mailbox_send_sys*`, and the C entry point validates, so
+                    // reaching here means memory corruption. Drop it and report.
+                    eprintln!(
+                        "[mailbox] refusing system-queue node with undecodable kind {raw} \
+                         (mailbox {mb:p}); dropping"
+                    );
+                    // SAFETY: `sys_node` is exclusively owned here and not published.
+                    unsafe { hew_msg_node_free(sys_node) };
+                    return RecvNode {
+                        node: ptr::null_mut(),
+                        origin: Origin::User,
+                    };
+                };
+                return RecvNode {
+                    node: sys_node,
+                    origin: Origin::Sys(kind),
+                };
+            }
+            TryDequeueResult::Inconsistent => {
+                // A system signal is mid-link; do not bypass it with a user message.
                 return RecvNode {
                     node: ptr::null_mut(),
                     origin: Origin::User,
                 };
-            };
-            return RecvNode {
-                node: sys_node,
-                origin: Origin::Sys(kind),
-            };
+            }
+            TryDequeueResult::Empty => {}
         }
-        TryDequeueResult::Inconsistent => {
-            // A system signal is mid-link; do not bypass it with a user message.
-            return RecvNode {
-                node: ptr::null_mut(),
-                origin: Origin::User,
-            };
-        }
-        TryDequeueResult::Empty => {}
     }
 
     // User messages: slow path uses mutex, fast path uses lock-free queue.
@@ -3636,7 +3719,9 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if let TryDequeueResult::Node(node) = unsafe { mb.user_fast.try_dequeue() } {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
-            mb.native_capacity.notify();
+            if mb.capacity > 0 {
+                mb.native_capacity.notify();
+            }
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -4157,6 +4242,39 @@ mod tests {
     }
 
     #[test]
+    fn unbounded_mailbox_with_policy_uses_lock_free_fast_path() {
+        // SAFETY: test owns each mailbox exclusively.
+        unsafe {
+            for policy in [
+                HewOverflowPolicy::Block,
+                HewOverflowPolicy::DropNew,
+                HewOverflowPolicy::DropOld,
+                HewOverflowPolicy::Fail,
+                HewOverflowPolicy::Coalesce,
+            ] {
+                let mb = hew_mailbox_new_with_policy(0, policy);
+                assert!(!mb.is_null());
+                assert_eq!((*mb).capacity, -1);
+                assert!(!(*mb).use_slow_path);
+                let val: i32 = 99;
+                let rc =
+                    hew_mailbox_send(mb, 7, (&raw const val).cast_mut().cast(), size_of::<i32>());
+                assert_eq!(rc, 0);
+                let node = hew_mailbox_try_recv(mb);
+                assert!(!node.is_null());
+                assert_eq!(*((*node).data.cast::<i32>()), 99);
+                hew_msg_node_free(node);
+                hew_mailbox_free(mb);
+            }
+
+            let bounded_block = hew_mailbox_new_with_policy(2, HewOverflowPolicy::Block);
+            assert!(!bounded_block.is_null());
+            assert!((*bounded_block).use_slow_path);
+            hew_mailbox_free(bounded_block);
+        }
+    }
+
+    #[test]
     fn send_and_recv_one() {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {
@@ -4642,15 +4760,33 @@ mod tests {
             let mb = hew_mailbox_new();
             hew_mailbox_set_message_drop_fn(mb, Some(message_test_drop_glue));
             let payload = 42i32;
-            // Node, payload buffer and envelope allocations can each refuse.
-            for allocation in 0..3 {
-                let failure = fail_mailbox_alloc_on_nth(allocation);
+            // <= 64B send allocates a single combined envelope (inline SBO + embedded node).
+            {
+                let failure = fail_mailbox_alloc_on_nth(0);
                 assert_eq!(
                     hew_mailbox_try_send(
                         mb,
                         7,
                         (&raw const payload).cast_mut().cast(),
                         size_of::<i32>()
+                    ),
+                    HewError::ErrOom as i32,
+                );
+                assert!(!mailbox_alloc_failure_still_armed());
+                drop(failure);
+                assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 0);
+                assert_eq!(hew_mailbox_len(mb), 0);
+            }
+            // > 64B send allocates external payload buffer + envelope (with embedded node).
+            let large_payload = [7u8; 128];
+            for allocation in 0..2 {
+                let failure = fail_mailbox_alloc_on_nth(allocation);
+                assert_eq!(
+                    hew_mailbox_try_send(
+                        mb,
+                        7,
+                        (&raw const large_payload).cast_mut().cast(),
+                        large_payload.len()
                     ),
                     HewError::ErrOom as i32,
                 );
@@ -6058,6 +6194,9 @@ mod tests {
             let mailbox = hew_mailbox_new();
             let payload = alloc_test_payload(b"retained");
             let envelope = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
+            // Shared envelopes (`refcount > 1`) cannot claim `embedded_node` and
+            // therefore exercise the standalone `alloc_msg_node_raw` OOM fallback.
+            (*envelope).refcount.fetch_add(1, Ordering::AcqRel);
             {
                 let _fail = fail_mailbox_alloc_on_nth(0);
                 assert!(matches!(
@@ -6071,7 +6210,9 @@ mod tests {
                     ),
                     SendOutcome::Oom
                 ));
+                assert!(!mailbox_alloc_failure_still_armed());
             }
+            hew_msg_envelope_release(envelope);
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
             mailbox_close(mailbox);
             assert!(matches!(
@@ -6087,8 +6228,26 @@ mod tests {
             ));
             assert_eq!((*envelope).payload, payload);
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+            // Exclusive envelopes (`refcount == 1`) admit using `embedded_node`
+            // with zero heap allocations even when `mailbox_malloc` is armed to fail.
+            let live_mailbox = hew_mailbox_new();
+            {
+                let _fail = fail_mailbox_alloc_on_nth(0);
+                assert!(matches!(
+                    try_admit_native_request(
+                        &*live_mailbox,
+                        7,
+                        envelope,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
+                    SendOutcome::Enqueued
+                ));
+                assert!(mailbox_alloc_failure_still_armed());
+            }
             hew_mailbox_free(mailbox);
-            hew_msg_envelope_release(envelope);
+            hew_mailbox_free(live_mailbox);
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
         }
     }

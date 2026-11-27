@@ -264,6 +264,122 @@ pub fn function_at(pc: usize) -> Option<HewFunction> {
     unsafe { function_at_in(image::file_table(), image::symtab(), pc) }
 }
 
+/// Fixed-size, zero-allocation, async-signal-safe direct-mapped cache from
+/// `(symtab_base, pc)` to verified symbol index. Every hit re-checks the
+/// symbol's `(start..end)` range so reused heap tables (e.g. unit tests or
+/// reloaded images) can never return a stale entry.
+mod symtab_cache {
+    use std::sync::atomic::{fence, AtomicU32, AtomicUsize, Ordering};
+
+    const CACHE_BITS: u32 = 9;
+    const CACHE_LEN: usize = 1 << CACHE_BITS;
+
+    struct Slot {
+        /// Seqlock counter: even = stable, odd = writer active.
+        seq: AtomicUsize,
+        base: AtomicUsize,
+        pc: AtomicUsize,
+        index: AtomicU32,
+    }
+
+    impl Slot {
+        const fn new() -> Self {
+            Self {
+                seq: AtomicUsize::new(0),
+                base: AtomicUsize::new(0),
+                pc: AtomicUsize::new(0),
+                index: AtomicU32::new(0),
+            }
+        }
+    }
+
+    static SLOTS: [Slot; CACHE_LEN] = [const { Slot::new() }; CACHE_LEN];
+
+    #[inline]
+    fn slot_index(base: usize, pc: usize) -> usize {
+        // SplitMix-style mix that works on both 32-bit (wasm32) and 64-bit targets.
+        #[cfg(target_pointer_width = "64")]
+        const MUL_A: usize = 0x9e37_79b9_7f4a_7c15;
+        #[cfg(target_pointer_width = "64")]
+        const MUL_B: usize = 0xbf58_476d_1ce4_e5b9;
+        #[cfg(not(target_pointer_width = "64"))]
+        const MUL_A: usize = 0x9e37_79b9;
+        #[cfg(not(target_pointer_width = "64"))]
+        const MUL_B: usize = 0x85eb_ca6b;
+
+        let mixed = base.wrapping_mul(MUL_A) ^ pc.wrapping_mul(MUL_B);
+        mixed >> (usize::BITS - CACHE_BITS)
+    }
+
+    #[inline]
+    pub(super) fn lookup(base: usize, pc: usize) -> Option<usize> {
+        let slot = &SLOTS[slot_index(base, pc)];
+        let s1 = slot.seq.load(Ordering::Acquire);
+        if (s1 & 1) != 0 {
+            return None;
+        }
+        let cached_base = slot.base.load(Ordering::Relaxed);
+        let cached_pc = slot.pc.load(Ordering::Relaxed);
+        let cached_index = slot.index.load(Ordering::Relaxed);
+        fence(Ordering::Acquire);
+        let s2 = slot.seq.load(Ordering::Relaxed);
+        if s1 == s2 && s1 != 0 && cached_base == base && cached_pc == pc {
+            Some(cached_index as usize)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub(super) fn store(base: usize, pc: usize, index: usize) {
+        let Ok(index) = u32::try_from(index) else {
+            return;
+        };
+        let slot = &SLOTS[slot_index(base, pc)];
+        let s = slot.seq.load(Ordering::Relaxed);
+        if (s & 1) != 0 {
+            return;
+        }
+        if slot
+            .seq
+            .compare_exchange(s, s.wrapping_add(1), Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        fence(Ordering::Release);
+        slot.base.store(base, Ordering::Relaxed);
+        slot.pc.store(pc, Ordering::Relaxed);
+        slot.index.store(index, Ordering::Relaxed);
+        slot.seq.store(s.wrapping_add(2), Ordering::Release);
+    }
+}
+
+/// Resolve one verified symbol index in `symtab` into a [`HewFunction`].
+fn resolve_symbol_at(
+    files: *const u8,
+    symtab: &Table<'static>,
+    base: usize,
+    pc: usize,
+    index: usize,
+) -> Option<HewFunction> {
+    let (start, end) = symtab.symbol_range(index).ok()??;
+    let start = base.wrapping_add_signed(start as isize);
+    let end = base.wrapping_add_signed(end as isize);
+    if !(start..end).contains(&pc) {
+        return None;
+    }
+    let symbol = symtab.symbol(index).ok()??;
+    let position = locate_in(files, symbol.file_id, None).map(|position| SourcePosition {
+        line: symbol.decl_line,
+        ..position
+    });
+    Some(HewFunction {
+        name: symbol.name.as_ptr().cast(),
+        position: position.filter(|position| position.line != 0),
+    })
+}
+
 /// Resolve a frame against the tables of its originating image.
 ///
 /// # Safety
@@ -272,22 +388,17 @@ pub fn function_at(pc: usize) -> Option<HewFunction> {
 pub unsafe fn function_at_in(files: *const u8, base: *const u8, pc: usize) -> Option<HewFunction> {
     let symtab = table(base, TableKind::Symtab)?;
     let base = base as usize;
-    (0..symtab.len()).find_map(|index| {
-        let (start, end) = symtab.symbol_range(index).ok()??;
-        let start = base.wrapping_add_signed(start as isize);
-        let end = base.wrapping_add_signed(end as isize);
-        if !(start..end).contains(&pc) {
-            return None;
+    if let Some(cached_index) = symtab_cache::lookup(base, pc) {
+        if cached_index < symtab.len() {
+            if let Some(found) = resolve_symbol_at(files, &symtab, base, pc, cached_index) {
+                return Some(found);
+            }
         }
-        let symbol = symtab.symbol(index).ok()??;
-        let position = locate_in(files, symbol.file_id, None).map(|position| SourcePosition {
-            line: symbol.decl_line,
-            ..position
-        });
-        Some(HewFunction {
-            name: symbol.name.as_ptr().cast(),
-            position: position.filter(|position| position.line != 0),
-        })
+    }
+    (0..symtab.len()).find_map(|index| {
+        let found = resolve_symbol_at(files, &symtab, base, pc, index)?;
+        symtab_cache::store(base, pc, index);
+        Some(found)
     })
 }
 
@@ -409,5 +520,34 @@ mod tests {
         assert!(find(-17).is_some());
         assert!(find(-65).is_none());
         assert!(find(-16).is_none());
+        // Repeated lookups at the same PC hit the direct-mapped symtab cache
+        // and still return the exact valid symbol.
+        let cached = find(-64).unwrap();
+        assert_eq!(
+            // SAFETY: the resolved name borrows the live symbol table.
+            unsafe { CStr::from_ptr(cached.name) }.to_bytes(),
+            b"worker"
+        );
+        // Mutating the range in place invalidates the cached range check so
+        // reused addresses can never return a stale symbol.
+        bytes[slots[1].start..slots[1].start + 4].copy_from_slice(&(-32i32).to_le_bytes());
+        // SAFETY: both table allocations remain live while their results are used.
+        assert!(unsafe {
+            function_at_in(
+                files.as_ptr(),
+                bytes.as_ptr(),
+                base.wrapping_add_signed(-64),
+            )
+        }
+        .is_none());
+        // SAFETY: both table allocations remain live while their results are used.
+        assert!(unsafe {
+            function_at_in(
+                files.as_ptr(),
+                bytes.as_ptr(),
+                base.wrapping_add_signed(-32),
+            )
+        }
+        .is_some());
     }
 }

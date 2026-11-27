@@ -169,6 +169,10 @@ pub(crate) unsafe fn claim_message(
     // SAFETY: the worker retains the dequeued envelope throughout this borrow.
     let Some(state) = (unsafe { envelope.as_ref() }).and_then(|envelope| envelope.request.as_ref())
     else {
+        if !channel.is_null() {
+            // SAFETY: the caller retains the reply channel throughout claim.
+            return unsafe { crate::reply_channel::claim_inline_dispatch(channel) };
+        }
         return true;
     };
     if state.deadline.expired() {

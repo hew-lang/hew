@@ -1,10 +1,11 @@
 //! Non-blocking reply observation for checked native invocations.
 
+#[cfg(test)]
+use super::hew_reply_channel_new;
 use super::{
     hew_reply_channel_failure_kind, hew_reply_channel_free, hew_reply_channel_is_orphaned,
-    hew_reply_channel_is_ready, hew_reply_channel_new, hew_reply_channel_retain,
-    hew_reply_channel_set_reply_drop_fn, hew_reply_payload_free, take_ready_reply, HewReplyChannel,
-    HewReplyDropFn,
+    hew_reply_channel_is_ready, hew_reply_channel_retain, hew_reply_payload_free, take_ready_reply,
+    HewReplyChannel, HewReplyDropFn,
 };
 use crate::internal::types::{AskError, HEW_REPLY_FAIL_HANDLER_TRAPPED, HEW_REPLY_FAIL_NONE};
 use crate::release_walker::HewReleaseCursor;
@@ -194,25 +195,30 @@ pub unsafe extern "C" fn hew_reply_channel_new_native(
     if waker.is_null() {
         return ptr::null_mut();
     }
-    let channel = hew_reply_channel_new();
-    // SAFETY: the new channel is exclusively owned and the descriptor is live.
+    // SAFETY: the descriptor and optional layout are live for construction.
     unsafe {
-        {
-            let mut owner = (*channel).native.lock_or_recover();
-            owner.waker = Some(OwnedWaker::retain(&*waker));
-            owner.value_owner = crate::owned_value_budget::current_owner();
-            owner.binding = crate::owned_value_budget::transfer::current_binding();
-        }
-        hew_reply_channel_set_reply_drop_fn(channel, drop_reply);
-        (*channel).native_reply_release = layout
+        let native_owner = NativeReplyOwner {
+            waker: Some(OwnedWaker::retain(&*waker)),
+            value_owner: crate::owned_value_budget::current_owner(),
+            payload_owned: false,
+            binding: crate::owned_value_budget::transfer::current_binding(),
+            gate: None,
+            waiters: smallvec::SmallVec::new(),
+        };
+        let native_reply_release = layout
             .as_ref()
             .map_or(reply_release, |layout| layout.release_start);
-        (*channel).native_layout = layout;
-        (*channel).native_code = layout
+        let native_code = layout
             .as_ref()
             .map(|layout| crate::code_owner::CodeRoot::acquire(layout.code_owner));
+        super::new_native_channel(
+            native_owner,
+            drop_reply,
+            native_reply_release,
+            layout,
+            native_code,
+        )
     }
-    channel
 }
 
 /// Poll once without blocking. Returns -1 while pending or a runtime `AskError`
@@ -239,18 +245,32 @@ pub unsafe extern "C" fn hew_reply_channel_poll_native(
     }
     // SAFETY: readiness published the matching payload; this is the only take.
     unsafe {
+        if (*channel).value_is_inline {
+            (*channel).value_is_inline = false;
+            if expected_size != 0 {
+                ptr::copy_nonoverlapping(
+                    (*channel).inline_value.as_ptr(),
+                    output.cast::<u8>(),
+                    expected_size,
+                );
+            }
+            return AskError::None as i32;
+        }
         let value = take_ready_reply(channel, None);
         if expected_size != 0 {
             ptr::copy_nonoverlapping(value.cast::<u8>(), output.cast::<u8>(), expected_size);
         }
-        let owner = {
-            let mut native = (*channel).native.lock_or_recover();
-            std::mem::take(&mut native.payload_owned).then(|| native.value_owner.clone())
-        };
-        if let Some(Some(owner)) = owner.filter(|_| !value.is_null()) {
-            let width = crate::owned_value_budget::visit::slot_bytes(&*(*channel).native_layout)
-                .unwrap_or_else(|_| std::process::abort());
-            owner.release_backing(value, width);
+        if (*channel).payload_owned.swap(false, Ordering::AcqRel) {
+            let owner = {
+                let mut native = (*channel).native.lock_or_recover();
+                std::mem::take(&mut native.payload_owned).then(|| native.value_owner.clone())
+            };
+            if let Some(Some(owner)) = owner.filter(|_| !value.is_null()) {
+                let width =
+                    crate::owned_value_budget::visit::slot_bytes(&*(*channel).native_layout)
+                        .unwrap_or_else(|_| std::process::abort());
+                owner.release_backing(value, width);
+            }
         }
         hew_reply_payload_free(value.cast(), expected_size);
     }
@@ -307,7 +327,7 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
             return AskError::SendFailed as i32;
         }
         if (*channel).value_size != expected_size
-            || (expected_size != 0 && (*channel).value.is_null())
+            || (expected_size != 0 && (*channel).value.is_null() && !(*channel).value_is_inline)
         {
             return AskError::PayloadSizeMismatch as i32;
         }
@@ -453,6 +473,7 @@ pub(crate) unsafe fn cancel_take_release(channel: *mut HewReplyChannel) -> *mut 
         let mut guard = (*channel).native.lock_or_recover();
         (*channel).cancelled.store(true, Ordering::Release);
         let waker = guard.waker.take();
+        (*channel).value_is_inline = false;
         let value = std::mem::replace(&mut (*channel).value, ptr::null_mut());
         let size = (*channel).value_size;
         let start = (*channel).native_reply_release;
@@ -507,23 +528,46 @@ pub unsafe extern "C-unwind" fn hew_actor_reply_native(
             crate::execution_context::mark_current_reply_channel_consumed(channel.cast());
             let mut guard = (*channel).native.lock_or_recover();
             if !(*channel).cancelled.load(Ordering::Acquire) {
-                let copied = if size == 0 {
-                    ptr::null_mut()
-                } else if value.is_null() {
-                    super::hew_reply_channel_mark_allocation_failed(channel);
-                    ptr::null_mut()
-                } else {
-                    super::alloc_reply_buffer(size)
-                };
-                if size == 0 || !copied.is_null() {
-                    if size != 0 {
-                        ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), size);
-                    }
-                    (*channel).value = copied;
+                let can_inline = size > 0
+                    && size <= 16
+                    && !value.is_null()
+                    && drop_reply.is_none()
+                    && reply_release.is_none()
+                    && (*channel).native_reply_release.is_none()
+                    && (*channel).native_layout.as_ref().is_none_or(|layout| {
+                        layout.ownership_kind == hew_cabi::value::HewTypeOwnershipKind::Plain
+                            && layout.drop_fn.is_none()
+                            && layout.release_start.is_none()
+                    });
+                if can_inline {
+                    ptr::copy_nonoverlapping(
+                        value.cast::<u8>(),
+                        (*channel).inline_value.as_mut_ptr(),
+                        size,
+                    );
+                    (*channel).value = ptr::null_mut();
+                    (*channel).value_is_inline = true;
                     (*channel).value_size = size;
                     delivered = true;
-                } else if !value.is_null() {
-                    super::hew_reply_channel_mark_allocation_failed(channel);
+                } else {
+                    let copied = if size == 0 {
+                        ptr::null_mut()
+                    } else if value.is_null() {
+                        super::hew_reply_channel_mark_allocation_failed(channel);
+                        ptr::null_mut()
+                    } else {
+                        super::alloc_reply_buffer(size)
+                    };
+                    if size == 0 || !copied.is_null() {
+                        if size != 0 {
+                            ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), size);
+                        }
+                        (*channel).value = copied;
+                        (*channel).value_size = size;
+                        delivered = true;
+                    } else if !value.is_null() {
+                        super::hew_reply_channel_mark_allocation_failed(channel);
+                    }
                 }
                 (*channel).ready.store(true, Ordering::Release);
             }

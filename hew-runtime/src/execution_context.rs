@@ -15,7 +15,6 @@ use std::mem::offset_of;
 use std::ptr;
 
 use crate::actor::HewActor;
-pub use crate::arena::ActorArena as HewArena;
 use crate::tracing::HewTraceContext;
 
 pub use crate::cancel_token::HewCancellationToken as HewCancelToken;
@@ -198,8 +197,6 @@ pub const HEW_CTX_OFFSET_FLAGS: usize = offset_of!(HewExecutionContext, flags);
 pub const HEW_CTX_OFFSET_CANCEL_TOKEN: usize = offset_of!(HewExecutionContext, cancel_token);
 /// Byte offset of [`HewExecutionContext::task_scope`].
 pub const HEW_CTX_OFFSET_TASK_SCOPE: usize = offset_of!(HewExecutionContext, task_scope);
-/// Byte offset of [`HewExecutionContext::arena`].
-pub const HEW_CTX_OFFSET_ARENA: usize = offset_of!(HewExecutionContext, arena);
 /// Byte offset of [`HewExecutionContext::trace`].
 pub const HEW_CTX_OFFSET_TRACE: usize = offset_of!(HewExecutionContext, trace);
 /// Byte offset of [`HewTraceContext::span_id`] within the trace context.
@@ -270,8 +267,6 @@ pub struct HewExecutionContext {
     pub cancel_token: *mut HewCancelToken,
     /// Active structured-concurrency task scope, or null when absent.
     pub task_scope: *mut HewTaskScope,
-    /// Actor-local arena active for this dispatch.
-    pub arena: *mut HewArena,
     /// Trace context active for this dispatch.
     pub trace: HewTraceContext,
     /// Partition policy governing remote `send`/`ask` resolution for this
@@ -824,7 +819,6 @@ mod tests {
             offset_of!(HewExecutionContext, task_scope),
             HEW_CTX_OFFSET_TASK_SCOPE
         );
-        assert_eq!(offset_of!(HewExecutionContext, arena), HEW_CTX_OFFSET_ARENA);
         assert_eq!(offset_of!(HewExecutionContext, trace), HEW_CTX_OFFSET_TRACE);
         assert_eq!(
             offset_of!(HewExecutionContext, trace) + offset_of!(HewTraceContext, span_id),

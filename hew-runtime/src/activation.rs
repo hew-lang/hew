@@ -27,15 +27,14 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::mailbox_header::{HewSysMsg, Origin};
-use crate::resume::{sched_enqueue, sched_enqueue_owned};
+use crate::resume::{sched_enqueue, sched_enqueue_owned, sched_requeue_self};
 
 /// Activations running right now, and activations finished. The native
 /// scheduler reports these as its worker and task counters; the wasm32 driver
 /// has one activation at a time by construction.
-pub(crate) static ACTIVE_ACTIVATIONS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-pub(crate) static ACTIVATIONS_COMPLETED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ACTIVE_ACTIVATIONS: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+pub(crate) static ACTIVATIONS_COMPLETED: crate::util::ShardedCounter =
+    crate::util::ShardedCounter::new();
 
 #[cfg(any(test, debug_assertions))]
 fn dispatch_lock_seat_for_actor(
@@ -282,7 +281,7 @@ pub(crate) unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut 
             )
             .is_ok()
     {
-        sched_enqueue(actor);
+        sched_requeue_self(actor);
     }
     crate::observe::record_coroutine_suspend();
     crate::observe::hew_observe_probe_suspend(
@@ -342,10 +341,6 @@ pub(crate) unsafe fn cancel_parked_activation_for_stop(actor: *mut HewActor) {
     // crash-reply, before dropping the cancel token.
     retire_suspended_reply_channel(a);
     clear_suspended_cancel_token(a);
-    if !a.arena.is_null() {
-        // SAFETY: arena was created at spawn; the cancelled activation is over.
-        unsafe { crate::arena::hew_arena_reset(a.arena) };
-    }
     settle_after_activation(actor, 0);
 }
 /// The RESUME re-entry: drive the actor's parked continuation to its next
@@ -413,7 +408,6 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
         cancel_token: stashed_cancel_token.cast(),
         task_scope: std::ptr::null_mut(),
-        arena: a.arena,
         trace: crate::tracing::HewTraceContext::default(),
         partition_policy: std::ptr::null_mut(),
         prev_context: crate::execution_context::current_context(),
@@ -561,13 +555,6 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
             // Destroyed tag with a null slot, so a refusal here (the None
             // branch where nothing was ever parked) is harmless.
             let _ = crate::coro_exec::re_arm(a);
-            // Settle: the resumed dispatch is finished. Mirror the post-loop
-            // idle/requeue CAS so queued messages are served. Reset the arena
-            // for the completed activation.
-            if !a.arena.is_null() {
-                // SAFETY: arena was created at spawn; no references survive.
-                unsafe { crate::arena::hew_arena_reset(a.arena) };
-            }
             settle_after_activation(actor, 0);
         }
     }
@@ -732,10 +719,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         _ => base_budget,
     };
     let mailbox = a.mailbox.cast::<HewMailbox>();
-    // Cache arena pointer before dispatch — the actor may be freed by a
-    // supervisor on another worker during crash recovery, making `a.arena`
-    // a dangling read.
-    let actor_arena = a.arena;
 
     let _activation_metrics = ActivationMetricsGuard::new();
 
@@ -971,7 +954,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
                     cancel_token: std::ptr::null_mut(),
                     task_scope: std::ptr::null_mut(),
-                    arena: a.arena,
                     trace: msg_ref.trace_context,
                     partition_policy: std::ptr::null_mut(),
                     prev_context: crate::execution_context::current_context(),
@@ -1384,11 +1366,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         }
     }
 
-    if !crashed && !actor_arena.is_null() {
-        // SAFETY: Arena was created during spawn; no references survive past activation.
-        unsafe { crate::arena::hew_arena_reset(actor_arena) };
-    }
-
     // An external trap defers its mailbox drain while this frame owns the
     // consumer. `dispatch_active` prevents a supervisor from freeing the actor
     // until the activation-ownership guard drops, so retire any queued nodes
@@ -1505,7 +1482,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             )
             .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
         }
     } else {
         // No more messages → RUNNING → IDLE.
@@ -1556,7 +1533,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         )
                         .is_ok()
                     {
-                        sched_enqueue(actor);
+                        sched_requeue_self(actor);
                     }
                     return;
                 }
@@ -1636,6 +1613,13 @@ pub(crate) static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false
 /// Idempotent (the swap yields null on a second visit), so overlapping
 /// abandon routes settle to exactly one release.
 pub(crate) fn release_parked_ask_channel(a: &HewActor) {
+    // Fast path: most activations (including caller actors making asks) never
+    // populate `parked_ask_channel`. Only the owning activation ever stores a
+    // non-null pointer into this slot, so an empty Acquire load proves there is
+    // no retained gate reference and no drain scan can dereference one here.
+    if a.parked_ask_channel.load(Ordering::Acquire).is_null() {
+        return;
+    }
     let ch =
         crate::lifetime::live_actors::swap_slot_under_registry_lock(a.id, &a.parked_ask_channel);
     if !ch.is_null() {
@@ -1719,7 +1703,7 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
                 )
                 .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
             return;
         }
         // Latch re-check AFTER publishing `Suspended`, mirroring the FG3 drain
@@ -1786,7 +1770,6 @@ unsafe fn finish_failed_resume(
 
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
-    let actor_arena = a.arena;
     let checked = matches!(&failure, crate::actor_native::DispatchFailure::Checked(_));
     let code = match failure {
         crate::actor_native::DispatchFailure::Checked(fault) => {
@@ -1895,14 +1878,6 @@ unsafe fn finish_failed_resume(
         // SAFETY: the native unwind abandoned a running frame; its typed
         // obligations were recovered above, so only raw reclamation remains.
         let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
-    }
-
-    // Per-activation arena cleanup BEFORE publishing terminal `Crashed`.
-    if took_crashing && !actor_arena.is_null() {
-        // SAFETY: arena was created at spawn; the crash discards all in-flight
-        // data, and `Crashing` prevents `hew_actor_free` from reclaiming it
-        // ahead of us.
-        unsafe { crate::arena::hew_arena_reset(actor_arena) };
     }
 
     // If the handler did not already deposit its reply, send the empty crash
@@ -2051,7 +2026,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             )
             .is_ok()
         {
-            sched_enqueue(actor);
+            sched_requeue_self(actor);
         }
     } else if a
         .actor_state
@@ -2094,7 +2069,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                     )
                     .is_ok()
                 {
-                    sched_enqueue(actor);
+                    sched_requeue_self(actor);
                 }
                 return;
             }
@@ -2225,16 +2200,24 @@ impl Drop for ActivationOwnership<'_> {
         #[cfg(test)]
         run_activation_pre_terminal_lock_hook(self.actor);
 
-        let native_pin = self.actor.native_completion.as_ref().and_then(|_| {
-            crate::lifetime::live_actors::pin_actor_by_id(self.actor.id)
-                .filter(|pin| std::ptr::eq(pin.actor(), self.actor))
-        });
+        // Defer pinning the actor for `finish_native_terminal` until we
+        // actually observe a terminal state under the terminal-reclaim lock.
+        // While `dispatch_active` is still `true`, `self.actor` cannot be
+        // freed, so incrementing `send_pin_count` directly via
+        // `SchedulerQueueEntry::retain` keeps the allocation live past
+        // `dispatch_active = false` without touching the shared `LIVE_ACTORS`
+        // shard mutexes on the 99.99% non-terminal path. The retain must
+        // precede the Release clear below: the freers' `lifetime_quiescent`
+        // re-reads the pin count after observing the clear.
+        let mut terminal_pin: Option<SchedulerQueueEntry> = None;
+        let actor_ptr = std::ptr::from_ref(self.actor).cast_mut();
         // Test terminal state, perform the final drain, and publish ownership
         // release under one terminal-reclaim lock. If an external trap gets the
         // lock first and observes this owner, this check must run afterward and
         // see its terminal publication. If this check runs first and sees
         // non-terminal, the ownership clear must precede the trap's locked
-        // quiescence check, authorizing the trap to drain.
+        // quiescence check, authorizing the trap to drain (and finish native
+        // terminal cleanup).
         //
         // The same critical section closes the producer link handoff: a node
         // linked after this drain cannot observe ownership release until the
@@ -2248,7 +2231,17 @@ impl Drop for ActivationOwnership<'_> {
                 self.actor.mailbox.cast::<HewMailbox>(),
                 || {
                     let state = self.actor.actor_state.load(Ordering::Acquire);
-                    state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
+                    let is_terminal = state == HewActorState::Stopped as i32
+                        || state == HewActorState::Crashed as i32;
+                    if is_terminal
+                        && terminal_pin.is_none()
+                        && self.actor.native_completion.is_some()
+                    {
+                        // SAFETY: `dispatch_active` is still `true`, keeping
+                        // `self.actor` live while we retain a lifetime pin.
+                        terminal_pin = Some(SchedulerQueueEntry::retain(actor_ptr));
+                    }
+                    is_terminal
                 },
                 || {
                     // Release so a free path that subsequently observes the
@@ -2258,14 +2251,11 @@ impl Drop for ActivationOwnership<'_> {
                 },
             );
         }
-        if let Some(pin) = native_pin {
-            let actor = pin.actor();
-            let state = actor.actor_state.load(Ordering::Acquire);
-            if (state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32)
-                && !actor.dispatch_active.load(Ordering::Acquire)
-            {
+        if let Some(_pin) = terminal_pin {
+            let actor = self.actor;
+            if !actor.dispatch_active.load(Ordering::Acquire) {
                 // SAFETY: the terminal state excludes future handler execution;
-                // the pin retains the allocation after activation release. All
+                // `_pin` retains the allocation after activation release. All
                 // mailbox locks have been released before invoking destructors.
                 unsafe { crate::actor_native::finish_native_terminal(actor) };
             }
@@ -2346,148 +2336,139 @@ fn restore_current_context_after_dispatch() {
 /// this call. `cont`, if non-null, must be the continuation parked on `actor`
 /// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
 /// the executor owns teardown.
+/// Core resume-wake state machine for an actor whose liveness is already
+/// guaranteed by the caller (either a held [`ActorPin`] or a `with_live_actor`
+/// registry lock).
+///
+/// # Safety
+///
+/// `actor` must point to `a` and remain live for the duration of this call.
+unsafe fn enqueue_resume_live(
+    a: &HewActor,
+    actor: *mut HewActor,
+    cont: *mut c_void,
+) -> (Option<SchedulerQueueEntry>, crate::runtime_id::RuntimeId) {
+    // Capture the actor's owning-runtime id while the actor is guaranteed live.
+    // The wake-routing check runs AFTER releasing any registry lock or pin, so
+    // a trap never poisons a registry lock.
+    let actor_runtime_id = a.runtime_id;
+    // If the park has not yet stored a handle, the suspend edge is mid-park.
+    // Record the wake so the suspend edge re-enqueues; do
+    // NOT store the handle ourselves (the suspend edge owns the slot write).
+    let parked = a.suspended_cont.load(Ordering::Acquire);
+    if parked.is_null() {
+        crate::coro_exec::mark_pending_wake(a);
+        // The actor is not yet `Suspended`; the CAS below would fail anyway.
+        // Re-check after marking: if the park JUST finished publishing
+        // `Suspended` between our load and the mark, fall through to the CAS
+        // so the wake is delivered now rather than waiting on the suspend
+        // edge's pending-wake drain. (Two-phase park, both directions.)
+        if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
+            let _ = cont; // handle is owned by the suspend edge; nothing to store.
+            return (None, actor_runtime_id);
+        }
+    }
+
+    // Own the prospective queue entry before publishing Runnable. The caller's
+    // pin or registry lock keeps the allocation live while this reference is
+    // acquired; afterward the entry itself closes the pre-publish window.
+    // SAFETY: caller guarantees `actor` is live for this call.
+    let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
+
+    // CAS Suspended → Runnable; only enqueue on success (fail-closed against
+    // a terminal or not-yet-parked actor). A competing wake can drive a
+    // complete resume/park cycle between attempts, so every failed attempt
+    // must close its own mark-after-drain window.
+    loop {
+        match a.actor_state.compare_exchange(
+            HewActorState::Suspended as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // Direct delivery won: consume the pending marker so recorded
+                // and direct delivery collapse into ONE wake. Without this,
+                // the mark at the top of this call (mid-park window, park
+                // published `Suspended` between the slot load and the
+                // re-check) leaks past the park's own FG3 drain and fires a
+                // stale wake on the actor's NEXT park — the
+                // fabricated-timeout race (see the fn doc). Consuming a
+                // CONCURRENT racer's marker here is equally correct: its
+                // readiness deposit happens-before its mark (deposit-then-
+                // wake contract), so the single direct wake's resume scan
+                // observes that readiness too.
+                let _ = crate::coro_exec::take_pending_wake(a);
+                break (Some(queue_entry), actor_runtime_id);
+            }
+            Err(observed) if observed == HewActorState::Runnable as i32 => {
+                // `Runnable`: a delivery is ALREADY enqueued — either the
+                // park's FG3 drain (it consumed a marker and re-enqueued) or
+                // another source's direct CAS win. Marking here would be the
+                // stale-wake duplicate: if this call's own mark above was
+                // already drained, a second mark survives into a later park
+                // and fires with no readiness behind it. No wake is lost by
+                // not marking:
+                // - if the drain consumed OUR mark, its AcqRel swap reading
+                //   our Release mark orders our readiness deposit before the
+                //   drain's enqueue and hence before the resume's scan;
+                // - if another source won directly, every enqueue_resume
+                //   source settles a one-shot arbiter BEFORE waking — our
+                //   source either won it (its readiness is published before
+                //   the completion the resume edge observes, so the resume's
+                //   status-gated re-scan finds it) or lost it (the winner
+                //   carries the resume; our effect is resolved by the
+                //   arbiter).
+                break (None, actor_runtime_id);
+            }
+            Err(_) => {
+                // `Running` (dispatch park not yet published — the FG3
+                // window) or `Idle` (lifecycle park's Idle → Suspended
+                // window): the wake could genuinely be missed — record it so
+                // the park's drain delivers. Terminal actors
+                // (`Stopped`/`Crashed`) also land here; the mark is inert (a
+                // terminal actor never parks again).
+                #[cfg(test)]
+                run_enqueue_resume_cas_fail_hook(actor);
+                crate::coro_exec::mark_pending_wake(a);
+                // Mark-after-drain guard: the park can publish `Suspended`
+                // AND run its ONE-SHOT drain inside the gap between our
+                // failed CAS and the mark above. The mark then lands after
+                // the only drain that would have consumed it, stranding the
+                // actor `Suspended` with a set marker (the lifecycle park
+                // has no second drain; the dispatch park's is equally
+                // one-shot). Re-check: if the state now reads `Suspended`,
+                // retry the CAS ourselves — the `Ok` arm consumes the
+                // marker, so the retry self-cleans. A competing delivery can
+                // run another park cycle before the retry's CAS. If that CAS
+                // loses, its new mark needs the same post-mark recheck;
+                // bounding retries can strand Suspended with a set marker.
+                if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32 {
+                    #[cfg(test)]
+                    if let Some(hook) = ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook) {
+                        hook(actor);
+                    }
+                    continue;
+                }
+                break (None, actor_runtime_id);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }
 
-    // This entry point is reached not only by a live reply but also by orphan
-    // teardown
-    // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
-    // mailbox runs during its own teardown. `cleanup_all_actors` frees actors in
-    // nondeterministic `HashMap` order, so the caller box can already be freed
-    // when the callee teardown fires this wake. Dereferencing `actor` directly
-    // would be a heap-use-after-free. (Production callers arrive through
-    // `enqueue_resume_by_incarnation`, which has already refused a wake whose
-    // incarnation is gone; this guard is what makes the raw-pointer entry point
-    // safe for the scheduler's own tests and for a pin held across the call.)
-    //
-    // `with_live_actor` makes the liveness check and the wake one atomic action:
-    // it holds the `LIVE_ACTORS` registry lock across the closure, and EVERY free
-    // path (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`)
-    // removes the actor from `LIVE_ACTORS` BEFORE reclaiming the box. So while the
-    // closure runs the box cannot be freed, and if the caller was already torn
-    // down the closure never runs (the pointer is no longer tracked) — the stale
-    // wake is dropped, never dereferenced. The freed caller's continuation is
-    // already destroyed by its own C1 teardown, so dropping the wake is correct.
+    // Raw-pointer entry point (used by scheduler unit tests). `with_live_actor`
+    // proves the address is tracked and holds the shard lock across the wake.
     let enqueued = crate::lifetime::live_actors::with_live_actor(actor, |a| {
-        // Capture the actor's owning-runtime id under the registry lock (the
-        // actor is guaranteed live here). The wake-routing check runs
-        // AFTER `with_live_actor` returns and the lock is released (below), so a
-        // trap never poisons the registry lock.
-        let actor_runtime_id = a.runtime_id;
-        // If the park has not yet stored a handle, the suspend edge is mid-park.
-        // Record the wake so the suspend edge re-enqueues; do
-        // NOT store the handle ourselves (the suspend edge owns the slot write).
-        let parked = a.suspended_cont.load(Ordering::Acquire);
-        if parked.is_null() {
-            crate::coro_exec::mark_pending_wake(a);
-            // The actor is not yet `Suspended`; the CAS below would fail anyway.
-            // Re-check after marking: if the park JUST finished publishing
-            // `Suspended` between our load and the mark, fall through to the CAS
-            // so the wake is delivered now rather than waiting on the suspend
-            // edge's pending-wake drain. (Two-phase park, both directions.)
-            if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
-                let _ = cont; // handle is owned by the suspend edge; nothing to store.
-                return (None, actor_runtime_id);
-            }
-        }
-
-        // Own the prospective queue entry before publishing Runnable. The
-        // registry lock keeps the allocation live while this reference is
-        // acquired; afterward the entry itself closes the pre-publish window.
         // SAFETY: `with_live_actor` holds registry authority for this actor.
-        let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
-
-        // CAS Suspended → Runnable; only enqueue on success (fail-closed against
-        // a terminal or not-yet-parked actor). A competing wake can drive a
-        // complete resume/park cycle between attempts, so every failed attempt
-        // must close its own mark-after-drain window.
-        loop {
-            match a.actor_state.compare_exchange(
-                HewActorState::Suspended as i32,
-                HewActorState::Runnable as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    // Direct delivery won: consume the pending marker so recorded
-                    // and direct delivery collapse into ONE wake. Without this,
-                    // the mark at the top of this call (mid-park window, park
-                    // published `Suspended` between the slot load and the
-                    // re-check) leaks past the park's own FG3 drain and fires a
-                    // stale wake on the actor's NEXT park — the
-                    // fabricated-timeout race (see the fn doc). Consuming a
-                    // CONCURRENT racer's marker here is equally correct: its
-                    // readiness deposit happens-before its mark (deposit-then-
-                    // wake contract), so the single direct wake's resume scan
-                    // observes that readiness too.
-                    let _ = crate::coro_exec::take_pending_wake(a);
-                    break (Some(queue_entry), actor_runtime_id);
-                }
-                Err(observed) if observed == HewActorState::Runnable as i32 => {
-                    // `Runnable`: a delivery is ALREADY enqueued — either the
-                    // park's FG3 drain (it consumed a marker and re-enqueued) or
-                    // another source's direct CAS win. Marking here would be the
-                    // stale-wake duplicate: if this call's own mark above was
-                    // already drained, a second mark survives into a later park
-                    // and fires with no readiness behind it. No wake is lost by
-                    // not marking:
-                    // - if the drain consumed OUR mark, its AcqRel swap reading
-                    //   our Release mark orders our readiness deposit before the
-                    //   drain's enqueue and hence before the resume's scan;
-                    // - if another source won directly, every enqueue_resume
-                    //   source settles a one-shot arbiter BEFORE waking — our
-                    //   source either won it (its readiness is published before
-                    //   the completion the resume edge observes, so the resume's
-                    //   status-gated re-scan finds it) or lost it (the winner
-                    //   carries the resume; our effect is resolved by the
-                    //   arbiter).
-                    break (None, actor_runtime_id);
-                }
-                Err(_) => {
-                    // `Running` (dispatch park not yet published — the FG3
-                    // window) or `Idle` (lifecycle park's Idle → Suspended
-                    // window): the wake could genuinely be missed — record it so
-                    // the park's drain delivers. Terminal actors
-                    // (`Stopped`/`Crashed`) also land here; the mark is inert (a
-                    // terminal actor never parks again).
-                    #[cfg(test)]
-                    run_enqueue_resume_cas_fail_hook(actor);
-                    crate::coro_exec::mark_pending_wake(a);
-                    // Mark-after-drain guard: the park can publish `Suspended`
-                    // AND run its ONE-SHOT drain inside the gap between our
-                    // failed CAS and the mark above. The mark then lands after
-                    // the only drain that would have consumed it, stranding the
-                    // actor `Suspended` with a set marker (the lifecycle park
-                    // has no second drain; the dispatch park's is equally
-                    // one-shot). Re-check: if the state now reads `Suspended`,
-                    // retry the CAS ourselves — the `Ok` arm consumes the
-                    // marker, so the retry self-cleans. A competing delivery can
-                    // run another park cycle before the retry's CAS. If that CAS
-                    // loses, its new mark needs the same post-mark recheck;
-                    // bounding retries can strand Suspended with a set marker.
-                    if a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32 {
-                        #[cfg(test)]
-                        if let Some(hook) = ENQUEUE_RESUME_RETRY_HOOK.access(|hook| *hook) {
-                            hook(actor);
-                        }
-                        continue;
-                    }
-                    break (None, actor_runtime_id);
-                }
-            }
-        }
+        unsafe { enqueue_resume_live(a, actor, cont) }
     });
 
-    // The owned entry keeps the allocation live after dropping the registry
-    // lock and until the queue consumer claims dispatch ownership.
-    //
-    // `sched_enqueue` resolves its scheduler through
-    // `get_scheduler()` → `rt_default()`, which `enter()` does not reroute, so an
-    // actor owned by a non-default runtime would wake on the WRONG scheduler.
-    // Refuse the enqueue when the actor belongs to another runtime. The runtime
-    // id was captured under the registry lock above, so this reads no freed memory.
     if let Some((Some(entry), actor_runtime_id)) = enqueued {
         assert_wake_routes_to_owning_runtime(actor_runtime_id);
         sched_enqueue_owned(entry);
@@ -2513,16 +2494,20 @@ pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_vo
 ///
 /// The refusal happens before any mutation of the resolved actor, so a stale
 /// wake cannot leave a `pending_wake` marker on the wrong incarnation either.
-/// The pin taken during resolution is held across the enqueue, so the target
-/// cannot die or have its address reused mid-call.
+/// The pin taken during resolution keeps this incarnation live across the wake
+/// without re-scanning all `LIVE_ACTORS` shards.
 pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
-    let _ = crate::lifetime::live_actors::with_live_incarnation(target, |pin| {
+    let enqueued = crate::lifetime::live_actors::with_live_incarnation(target, |pin| {
         // SAFETY: the pin keeps THIS incarnation's allocation live across the
         // wake; the free path drains `send_pin_count` before reclaiming it.
         // `cont` is null because the suspend edge owns the parked handle — the
         // resume edge reads it from `suspended_cont`, never from here.
-        unsafe { enqueue_resume_pinned(pin.as_ptr(), std::ptr::null_mut()) };
+        unsafe { enqueue_resume_live(pin.actor(), pin.as_ptr(), std::ptr::null_mut()) }
     });
+    if let Some((Some(entry), actor_runtime_id)) = enqueued {
+        assert_wake_routes_to_owning_runtime(actor_runtime_id);
+        sched_enqueue_owned(entry);
+    }
 }
 /// Verify that a wake uses the actor's owning runtime.
 ///

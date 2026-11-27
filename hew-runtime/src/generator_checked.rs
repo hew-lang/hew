@@ -397,7 +397,6 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             context.actor_id = parent_context.actor_id;
             context.parent_supervisor = parent_context.parent_supervisor;
             context.supervisor_child_index = parent_context.supervisor_child_index;
-            context.arena = parent_context.arena;
             context.trace = parent_context.trace;
             context.partition_policy = parent_context.partition_policy;
         }

@@ -403,10 +403,9 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
 /// cleanup would double-free that registration (surfaced under
 /// `MallocGuardEdges` + the `await cancel release on released registration`
 /// debug-assert). Before this raw free, reply-swap crash unwind invokes the
-/// resumed root's registered typed field drops exactly once; the later
-/// `hew_arena_reset` reclaims remaining arena-backed state. This function
+/// resumed root's registered typed field drops exactly once. This function
 /// therefore owns only the frame allocation, matching the fresh-dispatch
-/// branch's typed-unwind → raw-drain ordering.
+/// branch's typed-unwind ordering.
 ///
 /// This is DISTINCT from [`destroy_parked`], which REFUSES a `Resuming` tag to
 /// protect a LIVE concurrent resume (FG2 — see
@@ -805,10 +804,6 @@ mod tests {
             hibernating: AtomicI32::new(0),
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            arena: ptr::null_mut(),
-            #[cfg(target_arch = "wasm32")]
-            arena: ptr::null_mut(),
             suspended_cont: AtomicPtr::new(ptr::null_mut()),
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
@@ -829,6 +824,7 @@ mod tests {
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
             parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+            state_lock: crate::actor::ActorStateLock::new(),
         })
     }
 
@@ -1251,10 +1247,6 @@ mod forced_ordering_probe {
             hibernating: AtomicI32::new(0),
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
-            arena: ptr::null_mut(),
-            #[cfg(target_arch = "wasm32")]
-            arena: ptr::null_mut(),
             suspended_cont: AtomicPtr::new(ptr::null_mut()),
             cont_tag: AtomicI32::new(ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
@@ -1275,6 +1267,7 @@ mod forced_ordering_probe {
             #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
             parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+            state_lock: crate::actor::ActorStateLock::new(),
         })
     }
 

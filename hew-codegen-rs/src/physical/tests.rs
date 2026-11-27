@@ -1757,6 +1757,108 @@ fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
 }
 
 #[test]
+fn float_loop_chunks_vec_len_and_inline_scalar_set_work_at_o0_o2() {
+    let semantic = lower_source(
+        r"
+        fn sum_f64_by_len(count: i64) -> i64 {
+            var values: Vec<f64> = Vec.new();
+            for index in 0..count {
+                values.push(1.5);
+            }
+            var sum: f64 = 0.0;
+            var index: i64 = 0;
+            while index < values.len() {
+                sum += values[index];
+                index += 1;
+            }
+            sum as i64
+        }
+        fn scalar_set_unique_and_cow(n: i64) -> i64 {
+            var base: Vec<i64> = Vec.new();
+            for index in 0..n {
+                base.push(index);
+            }
+            // Unique buffer: exercises inline scalar set fast path.
+            for index in 0..n {
+                base.set(index, index * 2);
+            }
+            // Cloned buffer: exercises CoW slow path without mutating `base`.
+            var copy = base.clone();
+            copy.set(0, 999);
+            base[0] + copy[0] + base[n - 1]
+        }
+        fn main() -> i64 {
+            sum_f64_by_len(4) + scalar_set_unique_and_cow(4)
+        }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        let llvm = build_module(&ctx, verified.module(), "float_and_scalar_set", &machine).unwrap();
+        if opt == OptLevel::O0 {
+            let ir = llvm.print_to_string().to_string();
+            assert!(
+                ir.contains("branch_weights"),
+                "safepoint and inline scalar branches must carry branch_weights metadata"
+            );
+            assert!(
+                ir.contains("vector.set.inline"),
+                "scalar Vec::set must emit inline fast path"
+            );
+        }
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        crate::physical::test_runtime::disable_stack_check_for_jit(&llvm);
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        type Entry =
+            unsafe extern "C" fn(i64, *mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
+        // SAFETY: both functions take one i64 and return i64 via the private ABI.
+        let sum_f64 = unsafe {
+            engine
+                .get_function::<Entry>("__hew_fn_sum_f64_by_len")
+                .unwrap()
+        };
+        let scalar_set = unsafe {
+            engine
+                .get_function::<Entry>("__hew_fn_scalar_set_unique_and_cow")
+                .unwrap()
+        };
+
+        let mut result = -1;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output pointers remain live for the duration of the call.
+        assert_eq!(
+            unsafe { sum_f64.call(4, &raw mut result, &raw mut fault) },
+            0,
+            "{opt:?}"
+        );
+        assert!(fault.is_null());
+        assert_eq!(result, 6, "{opt:?}: 4 * 1.5 == 6");
+
+        result = -1;
+        // SAFETY: output pointers remain live for the duration of the call.
+        assert_eq!(
+            unsafe { scalar_set.call(4, &raw mut result, &raw mut fault) },
+            0,
+            "{opt:?}"
+        );
+        assert!(fault.is_null());
+        // base[0] == 0 (untouched by copy.set), copy[0] == 999, base[3] == 6
+        assert_eq!(result, 1005, "{opt:?}");
+    }
+}
+
+#[test]
 fn active_operation_root_uses_the_split_coroutine_owner_slot() {
     use std::cell::Cell;
     use std::ffi::c_void;

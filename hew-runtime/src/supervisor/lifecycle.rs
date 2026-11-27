@@ -413,6 +413,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
             config_drop_fn: None,
             native_code: None,
         }),
+        live_slots: LiveChildSlotTable::new(),
+        child_count_atomic: std::sync::atomic::AtomicUsize::new(0),
         restart_epoch: (Mutex::new(0), Condvar::new()),
         native_restart_wakers: crate::wake::ReadinessRegistrations::default(),
     });
@@ -536,7 +538,6 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         native_spawn: None,
         backoff: RestartBackoff::default(),
         circuit_breaker: CircuitBreakerState::default(),
-        arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
         // Carried in the spec literal so the initial supervised
         // spawn — which happens inside this call via restart_child_from_spec —
@@ -584,6 +585,13 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         s.child_specs.push(internal_spec);
         s.children.push(ptr::null_mut());
         s.child_count += 1;
+        // SAFETY: `sup` is live and `roster` serializes slot-table growth.
+        unsafe {
+            (*sup).live_slots.ensure_slot(i);
+            (*sup)
+                .child_count_atomic
+                .store(s.child_count, Ordering::Release);
+        }
         debug_assert_eq!(s.children.len(), s.child_specs.len());
         i
     };
@@ -1301,7 +1309,6 @@ mod tests {
             coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,
@@ -1442,7 +1449,6 @@ mod tests {
                 coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
-                arena_cap_bytes: 0,
                 cycle_capable: 0,
                 lifecycle_fn: None,
                 init_fn: None,
@@ -2124,7 +2130,6 @@ mod tests {
                 coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
-                arena_cap_bytes: 0,
                 cycle_capable: 0,
                 lifecycle_fn: None,
                 init_fn: None,
@@ -2172,7 +2177,6 @@ mod tests {
                     coalesce_match_fn: None,
                     coalesce_fallback: OVERFLOW_DROP_NEW,
                     message_drop_fn: None,
-                    arena_cap_bytes: 0,
                     cycle_capable: 0,
                     lifecycle_fn: None,
                     init_fn: None,
@@ -2257,7 +2261,6 @@ mod tests {
                 coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
-                arena_cap_bytes: 0,
                 cycle_capable: 0,
                 lifecycle_fn: None,
                 init_fn: Some(init_counted_teardown_race_state),
@@ -3138,6 +3141,63 @@ mod tests {
     /// (probed at the seam), and the ask lands in the incarnation that was
     /// current at resolve time — never a later one, never nowhere.
     #[test]
+    fn live_slot_fast_path_resolves_without_roster_lock_and_tracks_restart_and_shutdown() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the supervisor tree and holds `roster` on the
+        // same thread to prove the fast-path reads never acquire `roster`.
+        unsafe {
+            let (sup, old_child, _self_actor) = make_supervisor_with_child();
+            let supervisor_token = (*sup).local_pid_id;
+
+            {
+                let _roster_guard = (*sup).roster.lock_or_recover();
+                assert_eq!((*sup).child_count_atomic.load(Ordering::Acquire), 1);
+                let resolved = role::role_resolve_current_child_id(supervisor_token, 0, false);
+                assert_eq!(resolved, Ok(((*old_child).id, (*old_child).spawn_serial)));
+                let lookup = hew_supervisor_child_get(sup, 0);
+                assert_eq!(lookup.tag, 0);
+                assert_eq!(lookup.handle, old_child);
+
+                // Exercise multi-chunk slot-table growth beyond chunk 0 (16 slots).
+                (*sup).live_slots.publish(20, old_child);
+                let high = (*sup)
+                    .live_slots
+                    .try_load(20)
+                    .expect("chunk-1 slot must be published");
+                assert_eq!(high.actor_ptr, old_child);
+                assert_eq!(high.actor_id, (*old_child).id);
+                assert_eq!(high.spawn_serial, (*old_child).spawn_serial);
+                (*sup).live_slots.publish(20, ptr::null_mut());
+                assert!((*sup).live_slots.try_load(20).is_none());
+            }
+
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            assert_ne!(replacement, old_child);
+
+            {
+                let _roster_guard = (*sup).roster.lock_or_recover();
+                let resolved = role::role_resolve_current_child_id(supervisor_token, 0, false);
+                assert_eq!(
+                    resolved,
+                    Ok(((*replacement).id, (*replacement).spawn_serial))
+                );
+                let lookup = hew_supervisor_child_get(sup, 0);
+                assert_eq!(lookup.tag, 0);
+                assert_eq!(lookup.handle, replacement);
+            }
+
+            (*old_child)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            assert_eq!(actor::hew_actor_free(old_child), 0);
+            hew_supervisor_stop(sup);
+
+            assert!(role::role_resolve_current_child_id(supervisor_token, 0, false).is_err());
+        }
+    }
+
+    #[test]
     fn role_ask_submits_to_resolved_incarnation_under_slot_lock() {
         let _rt = crate::runtime_test_guard();
         // SAFETY: the test owns the supervisor tree; the seam hook probes the
@@ -3431,7 +3491,6 @@ mod tests {
                 coalesce_match_fn: None,
                 coalesce_fallback: 0,
                 message_drop_fn: None,
-                arena_cap_bytes: 0,
                 cycle_capable: 0,
                 lifecycle_fn: None,
                 init_fn: None,
@@ -4537,7 +4596,6 @@ mod tests {
             coalesce_match_fn: None,
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,
@@ -5483,7 +5541,6 @@ mod tests {
                 coalesce_match_fn: None,
                 coalesce_fallback: OVERFLOW_DROP_NEW,
                 message_drop_fn: None,
-                arena_cap_bytes: 0,
                 cycle_capable: 0,
                 lifecycle_fn: None,
                 init_fn: None,

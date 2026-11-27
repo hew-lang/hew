@@ -12,7 +12,6 @@ COUNTS = {
     "cancellation": 1,
     "await": 1,
     "timer": 3,
-    "arena": 3,
     "heap": 2,
     "read_slot": 1,
     "supervisor": 2,

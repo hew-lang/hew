@@ -1485,7 +1485,6 @@ fn make_stop_test_actor_with_id(
             hibernating: AtomicI32::new(0),
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
-            arena: ptr::null_mut(),
             suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
             cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
             pending_wake: AtomicBool::new(false),
@@ -1504,6 +1503,7 @@ fn make_stop_test_actor_with_id(
             pending_external_trap_code: AtomicI32::new(0),
             native_completion: None,
             parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+            state_lock: ActorStateLock::new(),
         }));
         (actor, mailbox)
     }
@@ -2703,7 +2703,6 @@ fn send_by_id_dropnew_policy_drop_reports_message_lost() {
         coalesce_fallback: 0,
         message_drop_fn: None,
         budget: 0,
-        arena_cap_bytes: 0,
         cycle_capable: 0,
     };
     // SAFETY: opts is valid for the duration of the call.
@@ -2760,7 +2759,6 @@ fn send_by_id_fail_policy_overflow_is_genuine_failure() {
         coalesce_fallback: 0,
         message_drop_fn: None,
         budget: 0,
-        arena_cap_bytes: 0,
         cycle_capable: 0,
     };
     // SAFETY: opts is valid for the duration of the call.
@@ -3662,7 +3660,6 @@ fn no_spawn_entry_point_installs_a_system_dispatch() {
         coalesce_fallback: 0,
         message_drop_fn: None,
         budget: 0,
-        arena_cap_bytes: 0,
         cycle_capable: 0,
     };
 
@@ -7073,194 +7070,6 @@ fn hew_actor_free_clears_parse_error_slots() {
     }
 }
 
-// ── arena_cap_bytes threading via hew_actor_spawn_opts ───────────────
-
-/// `hew_actor_spawn_opts` with `arena_cap_bytes > 0` spawns an actor whose
-/// arena enforces the cap: the first allocation over the cap raises the
-/// typed `HeapExceeded` unwind caught by the scheduler.
-#[test]
-fn max_heap_spawn_opts_threads_cap_to_arena() {
-    let _guard = crate::runtime_test_guard();
-
-    // Cap: exactly 128 bytes.
-    let opts = HewActorOpts {
-        init_state: ptr::null_mut(),
-        state_size: 0,
-        dispatch: Some(noop_dispatch),
-        mailbox_capacity: 0,
-        overflow: 0,
-        coalesce_match_fn: None,
-        coalesce_fallback: 0,
-        message_drop_fn: None,
-        budget: 0,
-        arena_cap_bytes: 128,
-        cycle_capable: 0,
-    };
-
-    // SAFETY: opts is valid for the duration of the call.
-    let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
-    assert!(
-        !actor.is_null(),
-        "spawn with arena_cap_bytes=128 must succeed"
-    );
-
-    // Verify the arena cap was set: install the actor's arena, attempt to
-    // alloc 129 bytes (one over cap), and catch the scheduler-facing unwind.
-    // SAFETY: actor is valid; arena pointer comes from the actor struct.
-    let arena = unsafe { (*actor).arena };
-    assert!(!arena.is_null(), "actor arena must be allocated");
-    // SAFETY: actor is live for the duration of this test.
-    let actor_id = unsafe { (*actor).id };
-    let _ctx = TestExecutionContext::install(HewExecutionContext {
-        actor,
-        actor_id,
-        // This unit fixture explicitly supplies the catch boundary that a
-        // real scheduler dispatch installs around arena allocation.
-        flags: crate::execution_context::HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED,
-        ..HewExecutionContext::default()
-    });
-
-    // Install the arena lane so hew_arena_malloc routes through it.
-    // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
-    unsafe { crate::arena::hew_arena_set_current(arena) };
-
-    // Allocate up to the cap: 128 bytes in a single call.
-    // SAFETY: arena is installed and valid.
-    let p = unsafe { crate::arena::hew_arena_malloc(128) };
-    assert!(!p.is_null(), "128-byte alloc at cap must succeed");
-
-    // Now exceed the cap: one more byte raises HeapExceeded.
-    let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: arena is still installed.
-        let _ = unsafe { crate::arena::hew_arena_malloc(1) };
-    }))
-    .expect_err("alloc over arena cap must unwind");
-    assert_eq!(
-        exhausted.downcast_ref::<HewPanic>().map(|panic| panic.code),
-        Some(crate::supervisor::HEW_TRAP_HEAP_EXCEEDED)
-    );
-
-    // Restore no-arena state before teardown.
-    // SAFETY: null restores no-arena state.
-    unsafe { crate::arena::hew_arena_set_current(ptr::null_mut()) };
-
-    // SAFETY: actor is valid and was spawned above.
-    let rc = unsafe { hew_actor_free(actor) };
-    assert_eq!(rc, 0, "hew_actor_free must succeed");
-}
-
-/// `hew_actor_spawn_opts` with `arena_cap_bytes = 0` spawns an actor with
-/// an unbounded arena (same as legacy `hew_arena_new`).
-#[test]
-fn max_heap_spawn_opts_zero_cap_is_unbounded() {
-    let _guard = crate::runtime_test_guard();
-
-    let opts = HewActorOpts {
-        init_state: ptr::null_mut(),
-        state_size: 0,
-        dispatch: Some(noop_dispatch),
-        mailbox_capacity: 0,
-        overflow: 0,
-        coalesce_match_fn: None,
-        coalesce_fallback: 0,
-        message_drop_fn: None,
-        budget: 0,
-        arena_cap_bytes: 0,
-        cycle_capable: 0,
-    };
-
-    // SAFETY: opts is valid for the duration of the call.
-    let actor = unsafe { hew_actor_spawn_opts(&raw const opts) };
-    assert!(
-        !actor.is_null(),
-        "spawn with arena_cap_bytes=0 must succeed"
-    );
-
-    // SAFETY: actor is valid; arena pointer comes from the actor struct.
-    let arena = unsafe { (*actor).arena };
-    assert!(!arena.is_null(), "actor arena must be allocated");
-    // SAFETY: actor is live for the duration of this test.
-    let actor_id = unsafe { (*actor).id };
-    let _ctx = TestExecutionContext::install(HewExecutionContext {
-        actor,
-        actor_id,
-        ..HewExecutionContext::default()
-    });
-
-    // Install the arena and alloc a large block — must succeed (unbounded).
-    // SAFETY: arena is a valid pointer from hew_arena_new.
-    unsafe { crate::arena::hew_arena_set_current(arena) };
-
-    // SAFETY: arena is installed.
-    let p = unsafe { crate::arena::hew_arena_malloc(65536) };
-    assert!(!p.is_null(), "64 KiB alloc in unbounded arena must succeed");
-
-    // SAFETY: null restores no-arena state.
-    unsafe { crate::arena::hew_arena_set_current(ptr::null_mut()) };
-
-    // SAFETY: actor is valid.
-    let rc = unsafe { hew_actor_free(actor) };
-    assert_eq!(rc, 0, "hew_actor_free must succeed");
-}
-
-// ── null-arena guard: backport of wasm OOM behaviour to native path ───
-
-/// `hew_actor_spawn` must return null and release all owned resources
-/// (`state`, `init_state` copy, mailbox) when `hew_arena_new` fails (OOM).
-///
-/// Covers the native `spawn_actor_internal` null-arena guard introduced
-/// to match the wasm twin's existing OOM handling.  The "no-leak" half is
-/// enforced by ASAN in CI; the "no null-arena actor" half is enforced by
-/// the null return asserted here (a non-null return from the broken pre-fix
-/// code would carry `actor.arena = null` and crash on the first arena alloc).
-#[test]
-fn spawn_arena_alloc_failure_returns_null() {
-    let _guard = crate::runtime_test_guard();
-
-    // ── case 1: zero-size state (init_state is null on the spawn path) ──
-    // Arena fails → cleanup_failed_spawn frees the (empty) state + mailbox.
-    crate::hew_clear_error();
-    let _arena_guard = fail_arena_alloc_next();
-    // SAFETY: null state with size=0 is valid; dispatch is a valid fn ptr.
-    let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
-    assert!(
-        actor.is_null(),
-        "spawn must return null when arena allocation fails (zero-state path)"
-    );
-    // Guard is consumed; injection is disarmed.
-
-    // ── case 2: non-null state (init_state is allocated then freed) ──
-    // `deep_copy_state` succeeds twice (state copy + init_state copy);
-    // arena fails → cleanup_failed_spawn frees both copies + mailbox.
-    let src: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
-    crate::hew_clear_error();
-    let _arena_guard = fail_arena_alloc_next();
-    // SAFETY: src is a valid 8-byte readable buffer; dispatch is valid.
-    let actor = unsafe {
-        hew_actor_spawn(
-            src.as_ptr().cast_mut().cast(),
-            src.len(),
-            Some(noop_dispatch),
-        )
-    };
-    assert!(
-        actor.is_null(),
-        "spawn must return null when arena allocation fails (with-state path)"
-    );
-
-    // ── case 3: normal spawn succeeds immediately after ──
-    // Verifies the injection is fully disarmed and the runtime is intact.
-    // SAFETY: null state with size=0 is valid.
-    let ok_actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
-    assert!(
-        !ok_actor.is_null(),
-        "normal spawn after failed arena alloc must succeed"
-    );
-    // SAFETY: ok_actor is a valid pointer from hew_actor_spawn.
-    let rc = unsafe { hew_actor_free(ok_actor) };
-    assert_eq!(rc, 0, "hew_actor_free on the recovery actor must succeed");
-}
-
 // ── actor-serial exhaustion: the packed id must never alias ──────────
 //
 // `pid::hew_pid_make` masks the serial to 48 bits, so the allocation after
@@ -7459,7 +7268,6 @@ fn actor_spawn_fails_closed_on_mailbox_oom() {
         coalesce_fallback: 0,
         budget: 0,
         message_drop_fn: None,
-        arena_cap_bytes: 0,
         cycle_capable: 0,
     };
     // SAFETY: exercises OOM fail-closed handling on actor spawn entry points.

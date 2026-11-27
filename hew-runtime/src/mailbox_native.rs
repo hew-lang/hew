@@ -52,8 +52,7 @@ impl Drop for HewNativeSend {
             // SAFETY: an unpublished wrapper owns no fields independently of the
             // source message. Admission clears this slot before relinquishing it.
             unsafe {
-                crate::mem::buf_free((*self.envelope).payload);
-                crate::cow_envelope::free_allocation(self.envelope);
+                crate::cow_envelope::discard_unpublished_shallow(self.envelope);
             }
         }
     }
@@ -115,6 +114,59 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     }))
 }
 
+/// Inline-SBO variant of [`hew_actor_send_wait_new`] copying `size` bytes from
+/// a caller stack wrapper directly into the envelope's inline buffer.
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes live for this call.
+/// `caller`, `waker`, and `payload_layout` satisfy [`hew_actor_send_wait_new`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the ABI carries payload ownership, readiness and request obligation"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_wait_new_inline(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    src: *const std::ffi::c_void,
+    size: usize,
+    drop_payload: super::HewMsgEnvelopeDropFn,
+    waker: *const HewWaker,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    obligated: i32,
+    caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+) -> *mut HewNativeSend {
+    // SAFETY: the caller lends `src` for the synchronous copy into `envelope`.
+    let (envelope, waker) = unsafe {
+        (
+            super::hew_msg_envelope_new_inline(src, size, Some(drop_payload)),
+            CapacityWake::Direct(OwnedWaker::retain(&*waker)),
+        )
+    };
+    if envelope.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the unpublished envelope's fields still belong to its source.
+    unsafe {
+        (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
+        (*envelope).transfer_waker = Some(match &waker {
+            CapacityWake::Direct(waker) => waker.clone(),
+            CapacityWake::Registered(waker) => (**waker).clone(),
+        });
+    };
+    Box::into_raw(Box::new(HewNativeSend {
+        // SAFETY: the caller retains its explicit stamp through this constructor.
+        caller: unsafe { *caller },
+        obligated: obligated != 0,
+        token,
+        message,
+        envelope,
+        wake: waker,
+    }))
+}
+
 /// A completion call waits for admission the same way a `.Wait` submission
 /// does, but it carries the reply channel the handler answers on. Unlike a
 /// one-way submission, the request wrapper owns the transferred fields, so an
@@ -128,6 +180,7 @@ pub struct HewNativeAsk {
     envelope: *mut super::HewMsgEnvelope,
     channel: *mut std::ffi::c_void,
     wake: CapacityWake,
+    pub(crate) resolved_target: Option<crate::lifetime::live_actors::ActorIncarnation>,
 }
 
 /// Walk the actual unpublished request until accepted admission takes it.
@@ -252,10 +305,11 @@ pub(crate) unsafe fn poll_request_admission(
         return Err(AskError::Timeout);
     }
     // SAFETY: the operation retains its unpublished envelope until transfer.
+    let mut resolved_target = wait.resolved_target;
     let outcome = wait.wake.poll(|capacity| {
         // SAFETY: this poll retains its unpublished request through each pinned attempt.
         unsafe {
-            crate::actor::try_submit_native_request(
+            crate::actor::try_submit_native_request_capturing_target(
                 wait.token,
                 wait.message,
                 wait.envelope,
@@ -263,9 +317,11 @@ pub(crate) unsafe fn poll_request_admission(
                 wait.obligated,
                 wait.caller,
                 capacity,
+                &mut resolved_target,
             )
         }
     });
+    wait.resolved_target = resolved_target;
     if matches!(
         outcome,
         super::SendOutcome::Enqueued | super::SendOutcome::Coalesced | super::SendOutcome::Dropped
@@ -401,8 +457,11 @@ pub(crate) unsafe fn request_wait_resume(
     // SAFETY: the unpublished envelope is exclusive.
     unsafe { (*envelope).request = state };
     // SAFETY: the resumed operation uniquely owns this envelope and retains its new wake target.
+    // Avoid redundant retain/drop when `seal_checked` already installed the same waker.
     unsafe {
-        (*envelope).transfer_waker = Some(OwnedWaker::retain(&*waker));
+        if (*envelope).transfer_waker.is_none() {
+            (*envelope).transfer_waker = Some(OwnedWaker::retain(&*waker));
+        }
     }
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
@@ -417,6 +476,7 @@ pub(crate) unsafe fn request_wait_resume(
         envelope,
         channel,
         wake: waker,
+        resolved_target: None,
     })
 }
 

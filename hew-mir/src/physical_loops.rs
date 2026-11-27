@@ -158,6 +158,19 @@ impl PhysicalFunction {
                 let PhysicalRuntimeCarrier::Vector { operation, glue } = action.carrier else {
                     return None;
                 };
+                if operation == PhysicalVectorOp::Len {
+                    if !matches!(
+                        self.storage[result.0 as usize].layout.repr,
+                        PhysicalRepr::Integer { .. }
+                    ) {
+                        return None;
+                    }
+                    let [ArgumentTransfer::Borrow(receiver)] = &args[..] else {
+                        return None;
+                    };
+                    readers.insert(*receiver);
+                    continue;
+                }
                 let glue_id = glue;
                 let glue = &module.vector_glue[glue.0 as usize];
                 let element = module.target.layout(&glue.element.ty)?;
@@ -168,7 +181,7 @@ impl PhysicalFunction {
                     PhysicalVectorOp::Index | PhysicalVectorOp::IndexBorrow => {
                         if !matches!(
                             self.storage[result.0 as usize].layout.repr,
-                            PhysicalRepr::Integer { .. }
+                            PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. }
                         ) {
                             return None;
                         }
@@ -395,7 +408,10 @@ impl PhysicalFunction {
             }
             slot.own != OwnKind::None
                 || slot.borrow_parent.is_some()
-                || !matches!(slot.layout.repr, PhysicalRepr::Integer { .. })
+                || !matches!(
+                    slot.layout.repr,
+                    PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. }
+                )
                 || !matches!(
                     slot.origin,
                     StorageOrigin::Parameter(_)

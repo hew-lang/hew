@@ -225,6 +225,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 0,
             ),
         );
+        // The snapshot record and caller fault pair are private entry allocas
+        // that cannot alias heap vector headers/buffers or each other.
+        let noalias = self.ctx.create_enum_attribute(
+            inkwell::attributes::Attribute::get_named_enum_kind_id("noalias"),
+            0,
+        );
+        for param in [0, 4, 5] {
+            value.add_attribute(inkwell::attributes::AttributeLoc::Param(param), noalias);
+        }
         let entry = self.ctx.append_basic_block(value, "entry");
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
@@ -438,9 +447,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "exhausted",
             )
             .llvm_ctx("test local countdown")?;
-        self.builder
+        let cold = self.ctx.metadata_node(&[
+            self.ctx.metadata_string("branch_weights").into(),
+            self.ctx.i32_type().const_int(1, false).into(),
+            self.ctx
+                .i32_type()
+                .const_int(
+                    u64::from(hew_mir::SAFEPOINT_BUDGET.saturating_sub(1)),
+                    false,
+                )
+                .into(),
+        ]);
+        let branch = self
+            .builder
             .build_conditional_branch(exhausted, poll, continuing)
             .llvm_ctx("select chunk budget exit")?;
+        branch
+            .set_metadata(cold, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
         self.builder.position_at_end(continuing);
         self.emit_edge(normal)?;
         Ok(())

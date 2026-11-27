@@ -4,11 +4,27 @@
 //! implementations. The payload envelope, however, is ABI-identical and has
 //! one lifecycle, so this module is its sole implementation authority.
 
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::mailbox_header::header_validate;
+
+/// Maximum wrapper/payload size stored inline inside [`HewMsgEnvelope`] without
+/// a separate sized-block heap allocation.
+pub const INLINE_PAYLOAD_CAP: usize = 64;
+
+/// 16-byte-aligned inline small-buffer seat inside [`HewMsgEnvelope`].
+#[repr(C, align(16))]
+pub struct InlinePayloadBuf(pub UnsafeCell<[MaybeUninit<u8>; INLINE_PAYLOAD_CAP]>);
+
+impl std::fmt::Debug for InlinePayloadBuf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("InlinePayloadBuf").finish_non_exhaustive()
+    }
+}
 
 /// Drop glue invoked once, before the envelope releases its payload allocation.
 pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
@@ -21,13 +37,13 @@ pub(crate) struct IngressDrop {
 }
 
 /// Owned container for an actor message payload, with a stable payload prefix.
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct HewMsgEnvelope {
     /// Live ownership references; admitted payloads are exclusive.
     pub refcount: AtomicUsize,
     /// Envelope contract bits; see [`crate::mailbox_header`].
     pub header_bits: AtomicU32,
-    /// Heap-allocated payload bytes.
+    /// Borrowed/owned payload bytes (points to `inline_payload` when `payload_is_inline`).
     pub payload: *mut c_void,
     /// Size of `payload` in bytes.
     pub payload_size: usize,
@@ -53,6 +69,14 @@ pub struct HewMsgEnvelope {
     pub(crate) transfer_waker: Option<crate::wake::OwnedWaker>,
     pub(crate) admission_pending: bool,
     code: Option<crate::code_owner::CodeRoot>,
+    /// True when `payload` points into `inline_payload` rather than a heap block.
+    pub(crate) payload_is_inline: bool,
+    /// Guards exclusive MPSC/queue claim of `embedded_node` when `refcount == 1`.
+    pub(crate) embedded_node_claimed: AtomicBool,
+    /// Inline SBO storage for `<= 64B` message wrappers and raw payloads.
+    pub(crate) inline_payload: InlinePayloadBuf,
+    /// Intrusive mailbox queue node eliminating separate `HewMsgNode` allocation.
+    pub(crate) embedded_node: UnsafeCell<MaybeUninit<crate::mailbox::HewMsgNode>>,
 }
 
 #[derive(Debug)]
@@ -114,6 +138,7 @@ impl std::fmt::Debug for HewMsgEnvelope {
             .field("header_bits", &self.header_bits.load(Ordering::Relaxed))
             .field("payload", &self.payload)
             .field("payload_size", &self.payload_size)
+            .field("payload_is_inline", &self.payload_is_inline)
             .field("drop_glue_set", &self.drop_glue.is_some())
             .finish_non_exhaustive()
     }
@@ -128,6 +153,14 @@ unsafe impl Sync for HewMsgEnvelope {}
 /// Target mailbox allocator, retained as an argument so target test hooks and
 /// allocation policies remain owned by their respective mailbox modules.
 pub type EnvelopeAlloc = fn(usize) -> *mut c_void;
+
+std::thread_local! {
+    static ENVELOPE_POOL: crate::util::TlsBufPool = const { crate::util::TlsBufPool::new() };
+}
+
+pub(crate) fn pop_pooled_envelope() -> Option<*mut c_void> {
+    ENVELOPE_POOL.with(crate::util::TlsBufPool::pop)
+}
 
 /// Allocate an envelope with one observer.
 ///
@@ -146,7 +179,8 @@ pub unsafe fn new(
     if env.is_null() {
         return ptr::null_mut();
     }
-    // SAFETY: `env` is a fresh allocation with suitable size and alignment.
+    // SAFETY: `env` is a fresh allocation with suitable size and alignment;
+    // `inline_payload` and `embedded_node` remain `MaybeUninit`.
     unsafe {
         ptr::write(&raw mut (*env).refcount, AtomicUsize::new(1));
         ptr::write(&raw mut (*env).header_bits, AtomicU32::new(0));
@@ -166,8 +200,86 @@ pub unsafe fn new(
         ptr::write(&raw mut (*env).transfer_waker, None);
         (*env).admission_pending = false;
         ptr::write(&raw mut (*env).code, None);
+        (*env).payload_is_inline = false;
+        ptr::write(
+            &raw mut (*env).embedded_node_claimed,
+            AtomicBool::new(false),
+        );
     }
     env
+}
+
+/// Allocate an envelope copying `payload_size` bytes from `src` directly into
+/// [`HewMsgEnvelope::inline_payload`] when `payload_size <= INLINE_PAYLOAD_CAP`,
+/// falling back to a sized-block heap buffer for larger payloads.
+///
+/// When `src` is null and `payload_size == 0`, `payload` remains null.
+///
+/// # Safety
+/// `src` must be null (only when `payload_size == 0`) or point to at least
+/// `payload_size` readable bytes for the duration of this call.
+pub unsafe fn new_inline(
+    src: *const c_void,
+    payload_size: usize,
+    drop_glue: Option<HewMsgEnvelopeDropFn>,
+    allocate: EnvelopeAlloc,
+) -> *mut HewMsgEnvelope {
+    if src.is_null() && payload_size > 0 {
+        return ptr::null_mut();
+    }
+    if payload_size > INLINE_PAYLOAD_CAP {
+        let payload = crate::mem::buf_try_alloc(payload_size); // ALLOCATOR-PAIRING: GlobalAlloc
+        if payload.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: `src` and `payload` are valid non-overlapping buffers of `payload_size` bytes.
+        unsafe {
+            ptr::copy_nonoverlapping(src.cast::<u8>(), payload.cast::<u8>(), payload_size);
+        }
+        // SAFETY: `payload` is a fresh sized-block allocation.
+        let env = unsafe { new(payload, payload_size, drop_glue, allocate) };
+        if env.is_null() {
+            // SAFETY: envelope allocation failed before taking ownership of `payload`.
+            unsafe { crate::mem::buf_free(payload) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        }
+        return env;
+    }
+    // SAFETY: initializes envelope header with null external payload first.
+    let env = unsafe { new(ptr::null_mut(), payload_size, drop_glue, allocate) };
+    if env.is_null() {
+        return ptr::null_mut();
+    }
+    if !src.is_null() {
+        // SAFETY: `env` is uniquely owned and `payload_size <= INLINE_PAYLOAD_CAP`.
+        unsafe {
+            let dst = (*env).inline_payload.0.get().cast::<u8>();
+            if payload_size > 0 {
+                ptr::copy_nonoverlapping(src.cast::<u8>(), dst, payload_size);
+            }
+            (*env).payload = dst.cast::<c_void>();
+            (*env).payload_is_inline = true;
+        }
+    }
+    env
+}
+
+/// Free an unpublished shallow envelope (and any external heap wrapper) while
+/// leaving all typed payload fields owned by the caller.
+///
+/// # Safety
+/// `env` must be null or an unpublished envelope whose typed fields were never
+/// consumed by a receiver.
+pub(crate) unsafe fn discard_unpublished_shallow(env: *mut HewMsgEnvelope) {
+    if env.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees exclusive unpublished ownership and retains fields.
+    unsafe {
+        if !(*env).payload_is_inline && !(*env).payload.is_null() {
+            crate::mem::buf_free((*env).payload); // ALLOCATOR-PAIRING: GlobalAlloc
+        }
+        free_allocation(env); // ALLOCATOR-PAIRING: GlobalAlloc
+    }
 }
 
 /// Reserve an actor-owned wrapper before source fields are consumed. Failure
@@ -222,6 +334,60 @@ pub(crate) unsafe fn seal_checked(
     }
 }
 
+/// Inline-SBO variant of [`seal_checked`] copying `size` bytes from caller stack
+/// storage `src` directly into the envelope's inline buffer. Failure leaves all
+/// typed fields with the caller without requiring a separate wrapper free.
+///
+/// # Safety
+/// `src` points to `size` initialized wrapper bytes matching `layout`.
+pub(crate) unsafe fn seal_checked_inline(
+    src: *const c_void,
+    size: usize,
+    drop_payload: HewMsgEnvelopeDropFn,
+    release: Option<hew_cabi::value::HewValueReleaseStart>,
+    layout: *const hew_cabi::value::HewValueLayout,
+    waker: *const crate::wake::HewWaker,
+) -> Result<*mut HewMsgEnvelope, i32> {
+    // SAFETY: the source lends its initialized stack wrapper until sealing commits.
+    unsafe {
+        let owner = crate::owned_value_budget::current_owner();
+        let width = if owner.is_some() && !src.is_null() {
+            let layout = layout.as_ref().ok_or(hew_cabi::managed::UNDESCRIBED)?;
+            crate::owned_value_budget::visit::slot_bytes(layout)?
+        } else {
+            0
+        };
+        let reservation = owner
+            .as_ref()
+            .map(|owner| owner.reserve_new(width))
+            .transpose()
+            .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?;
+        let envelope = crate::mailbox::hew_msg_envelope_new_inline(src, size, Some(drop_payload));
+        if envelope.is_null() {
+            return Err(hew_cabi::managed::HEAP_EXCEEDED);
+        }
+        (*envelope).release_start = release;
+        set_layout(envelope, layout);
+        (*envelope).transfer_waker =
+            (!waker.is_null()).then(|| crate::wake::OwnedWaker::retain(&*waker));
+        if let Some(reservation) = reservation {
+            if let Err(status) = reservation.commit_value(&ENVELOPE_LAYOUT, envelope.cast()) {
+                discard_unpublished_shallow(envelope);
+                return Err(status);
+            }
+            if !src.is_null() {
+                owner
+                    .as_ref()
+                    .unwrap()
+                    .release_value(&*layout, src)
+                    .unwrap_or_else(|_| std::process::abort());
+            }
+        }
+        (*envelope).value_owner = owner;
+        Ok(envelope)
+    }
+}
+
 /// Return the shallow wrapper's fields to the original source message. Their
 /// descendants stay owned; only this now-empty envelope allocation is retired.
 /// # Safety
@@ -235,23 +401,82 @@ pub(crate) unsafe fn return_fields(env: *mut HewMsgEnvelope) {
                 .unwrap_or_else(|_| std::process::abort());
             owner.release_backing((*env).payload, bytes);
         }
-        crate::mem::buf_free((*env).payload);
-        free_allocation(env);
+        discard_unpublished_shallow(env);
     }
 }
 
 /// Preserve canonical payload capacity until its children finish authored close.
-unsafe fn payload_cursor(env: *mut HewMsgEnvelope) -> *mut crate::release_walker::HewReleaseCursor {
+/// Returns `(cursor, free_env_now)`. When `free_env_now` is `false`, `env` owns
+/// inline payload storage and will be freed by the cursor after value cleanup.
+unsafe fn payload_cursor(
+    env: *mut HewMsgEnvelope,
+) -> (*mut crate::release_walker::HewReleaseCursor, bool) {
     unsafe fn free_payload(payload: *mut c_void) {
         // SAFETY: the cursor owns this original sized-block allocation.
         unsafe {
             crate::mem::buf_free(payload);
         }
     }
+    unsafe fn free_inline_envelope(payload: *mut c_void) {
+        // SAFETY: `payload` points to `(*env).inline_payload` of an exclusively
+        // owned `HewMsgEnvelope` whose `Value` release item has completed.
+        unsafe {
+            let env = payload
+                .byte_sub(std::mem::offset_of!(HewMsgEnvelope, inline_payload))
+                .cast::<HewMsgEnvelope>();
+            free_allocation(env);
+        }
+    }
     // SAFETY: the unique envelope transfers initialized payload storage to the cursor.
     unsafe {
+        if (*env).payload_is_inline {
+            if let Some(state) = (*env).request.take() {
+                state.withdraw();
+            }
+            (*env).transfer_waker = None;
+            let payload = (*env).payload;
+            let payload_size = (*env).payload_size;
+            let release_start = (*env).release_start;
+            let value_owner = (*env).value_owner.clone();
+            if let Some(layout) = (*env).layout.as_ref().copied() {
+                let bytes = if value_owner.is_some() {
+                    crate::owned_value_budget::visit::slot_bytes(&layout)
+                        .unwrap_or_else(|_| std::process::abort())
+                } else {
+                    0
+                };
+                let cursor = crate::release_walker::HewReleaseCursor::new(vec![
+                    crate::release_walker::ReleaseItem::ManagedBacking {
+                        pointer: payload,
+                        bytes,
+                        free: free_inline_envelope,
+                    },
+                    crate::release_walker::ReleaseItem::Value {
+                        slot: payload,
+                        layout,
+                    },
+                ]);
+                (*cursor).set_value_owner(value_owner);
+                return (cursor, false);
+            }
+            let cursor = crate::release_walker::HewReleaseCursor::payload(
+                payload,
+                payload_size,
+                release_start.expect("selected payload release"),
+                false,
+            );
+            crate::release_walker::HewReleaseCursor::after(
+                cursor,
+                crate::release_walker::ReleaseItem::Storage {
+                    owner: payload,
+                    free: free_inline_envelope,
+                },
+            );
+            return (cursor, false);
+        }
+
         let envelope = &*env;
-        if let Some(layout) = envelope.layout.as_ref() {
+        let cursor = if let Some(layout) = envelope.layout.as_ref() {
             let bytes = if envelope.value_owner.is_some() {
                 crate::owned_value_budget::visit::slot_bytes(layout)
                     .unwrap_or_else(|_| std::process::abort())
@@ -278,7 +503,8 @@ unsafe fn payload_cursor(env: *mut HewMsgEnvelope) -> *mut crate::release_walker
                 envelope.release_start.expect("selected payload release"),
                 true,
             )
-        }
+        };
+        (cursor, true)
     }
 }
 
@@ -333,7 +559,7 @@ pub(crate) unsafe fn free_allocation(env: *mut HewMsgEnvelope) {
             state.withdraw();
         }
         ptr::drop_in_place(env);
-        crate::mem::buf_free(env.cast());
+        ENVELOPE_POOL.with(|pool| pool.push(env.cast()));
     }
 }
 
@@ -358,7 +584,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
             header_validate((*env).header_bits.load(Ordering::Acquire));
             if let Some(start) = (*env).release_start {
                 let _ = start;
-                let cursor = payload_cursor(env);
+                let (cursor, free_env_now) = payload_cursor(env);
                 transfer_code(env, cursor);
                 if !(*env).release_reply.is_null() {
                     unsafe fn retire_reply(reply: *mut c_void) {
@@ -396,7 +622,9 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                 if queued.is_none() {
                     std::process::abort();
                 }
-                free_allocation(env);
+                if free_env_now {
+                    free_allocation(env);
+                }
                 return;
             }
             if !(*env).payload.is_null() {
@@ -416,7 +644,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                     drop((*env).payload);
                 }
             }
-            if !(*env).payload.is_null() {
+            if !(*env).payload_is_inline && !(*env).payload.is_null() {
                 crate::mem::buf_free((*env).payload); // ALLOCATOR-PAIRING: GlobalAlloc
             }
             free_allocation(env); // ALLOCATOR-PAIRING: GlobalAlloc
@@ -448,9 +676,11 @@ pub(crate) unsafe fn release_cursor(
                 return ptr::null_mut();
             }
             let _ = start;
-            let cursor = payload_cursor(env);
+            let (cursor, free_env_now) = payload_cursor(env);
             transfer_code(env, cursor);
-            free_allocation(env);
+            if free_env_now {
+                free_allocation(env);
+            }
             cursor
         } else {
             release(env);
@@ -597,12 +827,55 @@ mod tests {
     }
 
     #[test]
+    fn inline_sbo_sealing_and_release_preserve_alignment_and_budget() {
+        let _serial = CORE_TEST_LOCK.lock().unwrap();
+        DROP_COUNT.store(0, Ordering::SeqCst);
+        let layout = &crate::layout_intrinsics::hew_layout_val_string;
+        // SAFETY: stack wrapper owns one initialized HewString across seal_checked_inline.
+        unsafe {
+            for limit in [13, 14] {
+                let owner = crate::owned_value_budget::ValueOwner::new(Some(limit));
+                let text = hew_cabi::string::string_from_str("retain");
+                let mut stack_slot: *mut hew_cabi::string::HewString = text;
+                owner
+                    .acquire_value(layout, (&raw mut stack_slot).cast())
+                    .unwrap()
+                    .commit();
+                let sealed =
+                    crate::owned_value_budget::with_value_owner(&Some(owner.clone()), || {
+                        seal_checked_inline(
+                            (&raw const stack_slot).cast(),
+                            layout.size,
+                            drop_probe,
+                            None,
+                            layout,
+                            ptr::null(),
+                        )
+                    });
+                if limit == 13 {
+                    assert!(matches!(sealed, Err(hew_cabi::managed::HEAP_EXCEEDED)));
+                    assert_eq!(stack_slot, text);
+                    assert_eq!(owner.live_bytes(), 6);
+                    owner
+                        .release_value(layout, (&raw const stack_slot).cast())
+                        .unwrap();
+                    hew_cabi::string::string_release(text);
+                } else {
+                    let env = sealed.unwrap();
+                    assert!((*env).payload_is_inline);
+                    assert_eq!(((*env).payload as usize) % 16, 0);
+                    assert_eq!(owner.live_bytes(), 14);
+                    release(env);
+                    assert_eq!(owner.live_bytes(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn layout_fingerprint_preserves_the_payload_prefix() {
         let word = std::mem::size_of::<usize>();
-        assert_eq!(
-            std::mem::align_of::<HewMsgEnvelope>(),
-            word.max(align_of::<u64>())
-        );
+        assert_eq!(std::mem::align_of::<HewMsgEnvelope>(), 16);
         assert!(std::mem::size_of::<HewMsgEnvelope>() >= 7 * word + 2 * size_of::<u64>());
         assert_eq!(std::mem::offset_of!(HewMsgEnvelope, refcount), 0);
         assert_eq!(std::mem::offset_of!(HewMsgEnvelope, header_bits), word);

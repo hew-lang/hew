@@ -53,13 +53,13 @@ static ACTOR_TURNS_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) 
 static ACTOR_TURN_DURATION_NS_TOTAL: [AtomicU64; SHARD_COUNT] =
     [const { AtomicU64::new(0) }; SHARD_COUNT];
 
-static SCHEDULER_PARKS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_UNPARKS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_LIVE: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_SUSPENDED: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_RESUMES_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_SUSPENDS_TOTAL: AtomicU64 = AtomicU64::new(0);
-static COROUTINES_FRAME_BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_PARKS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static SCHEDULER_UNPARKS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_LIVE: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+static COROUTINES_SUSPENDED: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
+static COROUTINES_RESUMES_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_SUSPENDS_TOTAL: crate::util::ShardedCounter = crate::util::ShardedCounter::new();
+static COROUTINES_FRAME_BYTES_LIVE: crate::util::ShardedGauge = crate::util::ShardedGauge::new();
 static REACTOR_REGISTRATIONS_LIVE: AtomicU64 = AtomicU64::new(0);
 static REACTOR_READY_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ACTORS_CRASHES_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -116,9 +116,10 @@ pub struct RuntimeHookSnapshot {
     pub pool_saturations_total: u64,
 }
 
+#[inline]
 #[must_use]
 pub fn observe_hot_tier_enabled() -> bool {
-    HOT_TIER_ENABLED.load(Ordering::Acquire)
+    HOT_TIER_ENABLED.load(Ordering::Relaxed)
 }
 
 pub fn set_hot_tier_enabled(enabled: bool) {
@@ -170,9 +171,7 @@ pub(crate) fn record_coroutine_suspend() {
 
 pub(crate) fn record_coroutine_resume() {
     COROUTINES_RESUMES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    let _ = COROUTINES_SUSPENDED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        value.checked_sub(1)
-    });
+    COROUTINES_SUSPENDED.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Count one actor crash under its kind and actor type.
@@ -207,10 +206,6 @@ pub(crate) fn current_worker_id() -> u32 {
 
 pub(crate) fn record_actor_restart() {
     ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn record_arena_reset() {
-    ARENA_RESETS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 #[no_mangle]
@@ -1019,19 +1014,35 @@ mod native {
             SHARDS_IN_USE.load(Ordering::Relaxed)
         }
 
+        #[cold]
+        #[inline(never)]
+        fn record_heap_alloc_slow(size: u64) {
+            let shard = current_shard();
+            let counters = &HEAP_COUNTERS[shard];
+            counters.allocations.fetch_add(1, Ordering::Relaxed);
+            counters.allocated.fetch_add(size, Ordering::Relaxed);
+        }
+
+        #[cold]
+        #[inline(never)]
+        fn record_heap_free_slow(size: u64) {
+            let shard = current_shard();
+            let counters = &HEAP_COUNTERS[shard];
+            counters.frees.fetch_add(1, Ordering::Relaxed);
+            counters.freed.fetch_add(size, Ordering::Relaxed);
+        }
+
+        #[inline]
         pub(crate) fn record_heap_alloc(size: u64) {
             if observe_hot_tier_enabled() {
-                let counters = &HEAP_COUNTERS[current_shard()];
-                counters.allocations.fetch_add(1, Ordering::Relaxed);
-                counters.allocated.fetch_add(size, Ordering::Relaxed);
+                record_heap_alloc_slow(size);
             }
         }
 
+        #[inline]
         pub(crate) fn record_heap_free(size: u64) {
             if observe_hot_tier_enabled() {
-                let counters = &HEAP_COUNTERS[current_shard()];
-                counters.frees.fetch_add(1, Ordering::Relaxed);
-                counters.freed.fetch_add(size, Ordering::Relaxed);
+                record_heap_free_slow(size);
             }
         }
 

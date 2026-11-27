@@ -175,6 +175,18 @@ pub unsafe fn string_alloc_utf8_unchecked(source: *const u8, len: usize) -> *mut
     unsafe { string_alloc_nonnull(source, len) }
 }
 
+// Fast scalar count: pure-ASCII strings have scalar_len == byte_len and
+// avoid a byte-by-byte UTF-8 continuation scan.
+#[inline]
+fn count_utf8_scalars(bytes: &[u8]) -> usize {
+    if bytes.is_ascii() {
+        bytes.len()
+    } else {
+        // SAFETY: callers only pass valid UTF-8 byte slices.
+        unsafe { str::from_utf8_unchecked(bytes) }.chars().count()
+    }
+}
+
 // Shared allocator for the private null-empty and public non-null-empty views.
 unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString {
     if source.is_null() || isize::try_from(len).is_err() {
@@ -182,8 +194,7 @@ unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString 
     }
     // SAFETY: the caller supplies valid UTF-8 readable for its complete length.
     let bytes = unsafe { slice::from_raw_parts(source, len) };
-    // SAFETY: the same bytes are valid UTF-8.
-    let scalar_len = unsafe { str::from_utf8_unchecked(bytes) }.chars().count();
+    let scalar_len = count_utf8_scalars(bytes);
     // SAFETY: one valid UTF-8 piece with its exact scalar count.
     unsafe { string_alloc_pieces(&[bytes], scalar_len) }
 }
@@ -280,7 +291,7 @@ pub fn string_try_from_str(value: &str) -> Option<*mut HewString> {
         return Some(core::ptr::null_mut());
     }
     let len = value.len();
-    let scalar_len = value.chars().count();
+    let scalar_len = count_utf8_scalars(value.as_bytes());
     let indexed = scalar_len != len;
     let total = try_allocation_size(len, indexed)?;
     let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
@@ -587,7 +598,7 @@ pub unsafe fn string_append(value: *mut HewString, suffix: *const HewString) -> 
 #[must_use]
 pub unsafe fn string_append_str(value: *mut HewString, text: &str) -> *mut HewString {
     // SAFETY: `text` is valid UTF-8 with its own scalar count.
-    unsafe { append_utf8(value, text.as_bytes(), text.chars().count()) }
+    unsafe { append_utf8(value, text.as_bytes(), count_utf8_scalars(text.as_bytes())) }
 }
 
 /// Append one scalar to an owned receiver, copying shared storage.

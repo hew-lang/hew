@@ -9,13 +9,15 @@
 //! (immediately after the header). Strong-reference functions accept data
 //! pointers; weak-reference functions accept header pointers.
 
-use crate::util::MutexExt;
+use crate::util::{CondvarExt, MutexExt};
 use hew_cabi::value::{HewValueDropThunk, HewValueLayout};
 use std::alloc::{alloc, dealloc, Layout};
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use std::ffi::{c_char, c_void};
+use std::ops::{Deref, DerefMut};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Header preceding the user data in an Rc allocation.
 #[repr(C)]
@@ -26,7 +28,10 @@ struct HewRcInner {
     layout: HewValueLayout,
     type_name: *const c_char,
     owner: Option<Arc<RcAllocations>>,
-    owner_index: Cell<usize>,
+    /// Intrusive doubly-linked list links within the owning `RcAllocations`
+    /// (or within a detached `RcSurvivors` wave). Zero heap `Vec` allocations.
+    prev: Cell<*mut HewRcInner>,
+    next: Cell<*mut HewRcInner>,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
     managed_published: bool,
     membership_live: bool,
@@ -41,20 +46,283 @@ struct HewRcInner {
     data_offset: usize,
 }
 
+/// Intrusive doubly-linked list of live `HewRcInner` headers owned by an actor.
+///
+/// Preserves FIFO insertion order without allocating or resizing a `Vec`.
+#[derive(Debug)]
+struct IntrusiveRcList {
+    head: *mut HewRcInner,
+    tail: *mut HewRcInner,
+    len: usize,
+}
+
+impl Default for IntrusiveRcList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IntrusiveRcList {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            head: ptr::null_mut(),
+            tail: ptr::null_mut(),
+            len: 0,
+        }
+    }
+
+    #[cfg(test)]
+    #[inline]
+    const fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Append `header` at the tail in O(1) with zero heap allocations.
+    ///
+    /// # Safety
+    /// `header` must be a valid, live `HewRcInner` not currently linked in any
+    /// `IntrusiveRcList`, and caller must hold the owning `FastAllocationsLock`.
+    #[inline]
+    unsafe fn push_back(&mut self, header: *mut HewRcInner) {
+        // SAFETY: caller holds exclusive membership lock and `header` is live.
+        unsafe {
+            debug_assert!((*header).prev.get().is_null() && (*header).next.get().is_null());
+            (*header).prev.set(self.tail);
+            (*header).next.set(ptr::null_mut());
+            if self.tail.is_null() {
+                self.head = header;
+            } else {
+                (*self.tail).next.set(header);
+            }
+        }
+        self.tail = header;
+        self.len += 1;
+    }
+
+    /// Unlink `header` in O(1) with zero heap allocations.
+    ///
+    /// # Safety
+    /// `header` must currently be linked inside `self`, and caller must hold
+    /// the owning `FastAllocationsLock`.
+    #[inline]
+    unsafe fn remove(&mut self, header: *mut HewRcInner) {
+        debug_assert!(self.len > 0);
+        // SAFETY: `header` and its neighbors are live members protected by the lock.
+        unsafe {
+            let prev = (*header).prev.replace(ptr::null_mut());
+            let next = (*header).next.replace(ptr::null_mut());
+            if prev.is_null() {
+                assert_eq!(self.head, header, "corrupted Rc intrusive list head");
+                self.head = next;
+            } else {
+                (*prev).next.set(next);
+            }
+            if next.is_null() {
+                assert_eq!(self.tail, header, "corrupted Rc intrusive list tail");
+                self.tail = prev;
+            } else {
+                (*next).prev.set(prev);
+            }
+        }
+        self.len -= 1;
+    }
+
+    /// Detach the entire chain in O(1), returning `(head, len)` and leaving
+    /// `self` empty.
+    #[inline]
+    fn take_all(&mut self) -> (*mut HewRcInner, usize) {
+        let head = std::mem::replace(&mut self.head, ptr::null_mut());
+        self.tail = ptr::null_mut();
+        let len = std::mem::replace(&mut self.len, 0);
+        (head, len)
+    }
+}
+
+const ALLOC_UNLOCKED: u8 = 0;
+const ALLOC_LOCKED: u8 = 1;
+const ALLOC_CONTENDED: u8 = 2;
+
+/// Userspace-CAS fast lock for [`Allocations`].
+///
+/// Single-actor `hew_rc_new` / `hew_rc_drop` / `close_empty` take one uncontended
+/// `AtomicU8` CAS with zero OS mutex syscalls, while concurrent same-actor
+/// scoped tasks (`TaskExecution`) and cross-actor `CommitTransfer` (`rehome`)
+/// remain strictly serialized via the cold waiter `Mutex` + `Condvar`.
+struct FastAllocationsLock {
+    state: AtomicU8,
+    data: UnsafeCell<Allocations>,
+    slow_waiters: Mutex<usize>,
+    slow_available: Condvar,
+}
+
+impl Default for FastAllocationsLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for FastAllocationsLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FastAllocationsLock")
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: `Allocations` is `Send`, and `FastAllocationsLock` grants exclusive
+// `&mut Allocations` access to at most one thread at a time with Acquire/Release
+// synchronization.
+unsafe impl Send for FastAllocationsLock {}
+// SAFETY: shared references synchronize all accesses to `data` through `state`
+// and `slow_waiters`.
+unsafe impl Sync for FastAllocationsLock {}
+
+struct AllocationsGuard<'a> {
+    lock: &'a FastAllocationsLock,
+}
+
+impl Deref for AllocationsGuard<'_> {
+    type Target = Allocations;
+
+    #[inline]
+    fn deref(&self) -> &Allocations {
+        // SAFETY: `AllocationsGuard` holds exclusive ownership of `lock.data`.
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl DerefMut for AllocationsGuard<'_> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Allocations {
+        // SAFETY: `AllocationsGuard` holds exclusive ownership of `lock.data`.
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl Drop for AllocationsGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if self
+            .lock
+            .state
+            .compare_exchange(
+                ALLOC_LOCKED,
+                ALLOC_UNLOCKED,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            self.lock.unlock_slow();
+        }
+    }
+}
+
+impl FastAllocationsLock {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(ALLOC_UNLOCKED),
+            data: UnsafeCell::new(Allocations {
+                blocks: IntrusiveRcList::new(),
+                closed: false,
+                transfer_pins: 0,
+            }),
+            slow_waiters: Mutex::new(0),
+            slow_available: Condvar::new(),
+        }
+    }
+
+    #[inline]
+    fn lock_or_recover(&self) -> AllocationsGuard<'_> {
+        if self
+            .state
+            .compare_exchange(
+                ALLOC_UNLOCKED,
+                ALLOC_LOCKED,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            return AllocationsGuard { lock: self };
+        }
+        self.lock_slow()
+    }
+
+    #[cold]
+    fn lock_slow(&self) -> AllocationsGuard<'_> {
+        let mut waiters = self.slow_waiters.lock_or_recover();
+        *waiters += 1;
+        loop {
+            let mut observed = self.state.load(Ordering::Relaxed);
+            loop {
+                if observed == ALLOC_UNLOCKED {
+                    let desired = if *waiters > 1 {
+                        ALLOC_CONTENDED
+                    } else {
+                        ALLOC_LOCKED
+                    };
+                    match self.state.compare_exchange_weak(
+                        ALLOC_UNLOCKED,
+                        desired,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            *waiters -= 1;
+                            return AllocationsGuard { lock: self };
+                        }
+                        Err(next) => observed = next,
+                    }
+                } else if observed == ALLOC_LOCKED {
+                    match self.state.compare_exchange_weak(
+                        ALLOC_LOCKED,
+                        ALLOC_CONTENDED,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(next) => observed = next,
+                    }
+                } else {
+                    break;
+                }
+            }
+            waiters = self.slow_available.wait_or_recover(waiters);
+        }
+    }
+
+    #[cold]
+    fn unlock_slow(&self) {
+        let waiters = self.slow_waiters.lock_or_recover();
+        self.state.store(ALLOC_UNLOCKED, Ordering::Release);
+        if *waiters > 0 {
+            self.slow_available.notify_one();
+        }
+        drop(waiters);
+    }
+}
+
 /// Actor-owned membership only; the release walker owns payload destruction.
 #[derive(Debug, Default)]
 pub(crate) struct RcAllocations {
-    inner: Mutex<Allocations>,
+    inner: FastAllocationsLock,
     waiters: crate::wake::ReadinessRegistrations,
 }
 
 #[derive(Debug, Default)]
 struct Allocations {
-    blocks: Vec<*mut HewRcInner>,
+    blocks: IntrusiveRcList,
     closed: bool,
     transfer_pins: usize,
 }
-// SAFETY: membership and slot indices are protected by `inner`; each payload
+// SAFETY: membership and intrusive links are protected by `inner`; each payload
 // and its non-atomic counts remain with their checked single-actor owner.
 unsafe impl Send for Allocations {}
 
@@ -79,12 +347,12 @@ impl RcAllocations {
             !allocations.closed,
             "Rc allocation after actor cleanup quiesced"
         );
-        // SAFETY: construction owns this fresh header; membership protects index.
+        // SAFETY: construction or `rehome` owns this unlinked header under `inner`.
         unsafe {
-            (*header).owner_index.set(allocations.blocks.len());
+            debug_assert!((*header).owner.is_none());
             (*header).owner = Some(self.clone());
+            allocations.blocks.push_back(header);
         }
-        allocations.blocks.push(header);
     }
 
     /// Detach the first finite wave. Its cursor drains successive waves in bounded
@@ -102,13 +370,12 @@ impl RcAllocations {
         drop(allocations);
         Some(crate::release_walker::HewReleaseCursor::new(vec![
             crate::release_walker::ReleaseItem::RcSurvivors(Box::new(RcSurvivors {
-                count: 0,
-                blocks: Vec::new(),
                 owner: self.clone(),
                 waves_complete: false,
-                marked: 0,
-                released: 0,
-                freed: 0,
+                count: 0,
+                mark_cursor: ptr::null_mut(),
+                release_cursor: ptr::null_mut(),
+                free_cursor: ptr::null_mut(),
                 by_type: std::collections::BTreeMap::new(),
                 summary: Vec::new(),
                 waiting: None,
@@ -118,16 +385,16 @@ impl RcAllocations {
 }
 
 /// Retained terminal sweep. Preparation, release and header reclamation are
-/// cursor steps; every wave is fully pinned and marked before payload cleanup.
+/// cursor steps over the detached intrusive chain; every wave is fully pinned
+/// and marked before payload cleanup, with zero intermediate `Vec` allocation.
 #[derive(Debug)]
 pub(crate) struct RcSurvivors {
     owner: Arc<RcAllocations>,
     waves_complete: bool,
     count: u64,
-    blocks: Vec<*mut HewRcInner>,
-    marked: usize,
-    released: usize,
-    freed: usize,
+    mark_cursor: *mut HewRcInner,
+    release_cursor: *mut HewRcInner,
+    free_cursor: *mut HewRcInner,
     by_type: std::collections::BTreeMap<String, u64>,
     summary: Vec<hew_observe_protocol::RcSurvivorType>,
     waiting: Option<Arc<crate::wake::OwnedWaker>>,
@@ -140,18 +407,27 @@ impl RcSurvivors {
         &self,
         visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
     ) -> i32 {
-        for (index, &header) in self.blocks.iter().enumerate().skip(self.freed) {
-            // SAFETY: the detached wave pins every remaining header until all payloads drain.
+        let mut past_released = false;
+        let mut current = self.free_cursor;
+        while !current.is_null() {
+            if current == self.release_cursor {
+                past_released = true;
+            }
+            // SAFETY: the detached wave pins every remaining header from
+            // `free_cursor` onward until all payloads drain.
+            let next = unsafe { (*current).next.get() };
+            // SAFETY: `current` remains pinned through this synchronous visit.
             let status = unsafe {
                 visit_managed_inner(
-                    header.cast::<u8>().add((*header).data_offset),
+                    current.cast::<u8>().add((*current).data_offset),
                     visitor,
-                    index >= self.released,
+                    past_released,
                 )
             };
             if status != 0 {
                 return status;
             }
+            current = next;
         }
         0
     }
@@ -159,21 +435,21 @@ impl RcSurvivors {
     /// Hold every wave at the existing membership lock until selected-cell
     /// transfers commit or abort; no lock crosses typed cleanup callbacks.
     pub(crate) unsafe fn prepare(&mut self, state: *const crate::coro_state::HewCoroState) -> bool {
-        if self.freed != self.blocks.len() || self.waves_complete {
+        if !self.free_cursor.is_null() || self.waves_complete {
             return true;
         }
         let mut allocations = self.owner.inner.lock_or_recover();
         if allocations.transfer_pins == 0 {
             self.waiting = None;
-            self.blocks = std::mem::take(&mut allocations.blocks);
-            if self.blocks.is_empty() {
+            let (head, wave_len) = allocations.blocks.take_all();
+            if head.is_null() {
                 allocations.closed = true;
                 self.waves_complete = true;
             }
-            self.count += self.blocks.len() as u64;
-            self.marked = 0;
-            self.released = 0;
-            self.freed = 0;
+            self.count += wave_len as u64;
+            self.mark_cursor = head;
+            self.release_cursor = head;
+            self.free_cursor = head;
             return true;
         }
         if !state.is_null() {
@@ -203,10 +479,12 @@ impl RcSurvivors {
             unsafe { self.prepare(ptr::null()) },
             "synchronous Rc sweep during transfer"
         );
-        if let Some(&header) = self.blocks.get(self.marked) {
+        if !self.mark_cursor.is_null() {
+            let header = self.mark_cursor;
             // SAFETY: no ordinary turn or scoped child can access this wave.
             let inner = unsafe { &mut *header };
             assert!(inner.strong.get() != 0 && !inner.dying);
+            let next = inner.next.get();
             let type_name = if inner.type_name.is_null() {
                 "<unknown>".to_owned()
             } else {
@@ -226,10 +504,13 @@ impl RcSurvivors {
                     .expect("Rc weak count overflow"),
             );
             inner.owner = None;
-            self.marked += 1;
+            self.mark_cursor = next;
             pending.push(ReleaseItem::RcSurvivors(self));
-        } else if let Some(&header) = self.blocks.get(self.released) {
-            self.released += 1;
+        } else if !self.release_cursor.is_null() {
+            let header = self.release_cursor;
+            // SAFETY: all headers remain pinned until every payload closes.
+            let next = unsafe { (*header).next.get() };
+            self.release_cursor = next;
             // SAFETY: all headers remain pinned until every payload closes.
             let value = unsafe {
                 ReleaseItem::Value {
@@ -258,8 +539,15 @@ impl RcSurvivors {
                 });
             }
             pending.push(value);
-        } else if let Some(&header) = self.blocks.get(self.freed) {
-            self.freed += 1;
+        } else if !self.free_cursor.is_null() {
+            let header = self.free_cursor;
+            // Read `next` and clear links BEFORE `release_pin` can deallocate `header`.
+            // SAFETY: `header` is still pinned by the reserved weak reference.
+            let next = unsafe {
+                (*header).prev.set(ptr::null_mut());
+                (*header).next.replace(ptr::null_mut())
+            };
+            self.free_cursor = next;
             // SAFETY: all payloads have completed; this consumes one reserved pin.
             unsafe { release_pin(header.cast()) };
             pending.push(ReleaseItem::RcSurvivors(self));
@@ -296,19 +584,15 @@ pub(crate) fn current_allocations() -> Option<Arc<RcAllocations>> {
 }
 
 unsafe fn unlink(header: *mut HewRcInner) {
-    // SAFETY: one final strong release owns this header. The membership lock
-    // serializes swap-removal against unrelated scoped-task allocations.
+    // SAFETY: one final strong release (or `rehome` under graph-wide commit)
+    // owns this header. `owner.inner` serializes intrusive removal against
+    // concurrent scoped-task allocations and cross-actor transfers.
     let Some(owner) = (unsafe { (*header).owner.take() }) else {
         return;
     };
     let mut allocations = owner.inner.lock_or_recover();
-    // SAFETY: membership retains the header, and its index is locked here.
-    let index = unsafe { (*header).owner_index.get() };
-    assert_eq!(allocations.blocks.swap_remove(index), header);
-    if let Some(&moved) = allocations.blocks.get(index) {
-        // SAFETY: this index is read and written only under its owner's lock.
-        unsafe { (*moved).owner_index.set(index) };
-    }
+    // SAFETY: `header` was registered in `owner` and not yet swept.
+    unsafe { allocations.blocks.remove(header) };
 }
 
 unsafe fn release_pin(header: *mut c_void) {
@@ -678,7 +962,8 @@ pub unsafe extern "C" fn hew_rc_new(
             layout: value_layout,
             type_name,
             owner: None,
-            owner_index: Cell::new(0),
+            prev: Cell::new(ptr::null_mut()),
+            next: Cell::new(ptr::null_mut()),
             value_owner: crate::owned_value_budget::materialize::invocation_owner(invocation),
             managed_published: false,
             membership_live: false,
@@ -1737,10 +2022,6 @@ mod tests {
 
     #[test]
     fn rc_honours_overaligned_data_align() {
-        // A 64-byte cache-line-aligned payload. Its true alignment (64)
-        // exceeds align_of::<u128>() (16) — the bound the old trailing-zeros
-        // heuristic capped at — and is NOT recoverable from the byte size.
-        // The authoritative alignment must come from the caller.
         #[repr(align(64))]
         struct Over {
             _x: [u8; 64],
@@ -1759,10 +2040,6 @@ mod tests {
             );
             assert!(!rc.is_null());
             let header = header_from_data(rc);
-            // The header records the caller's authoritative alignment, and the
-            // returned data pointer actually satisfies it. Under the old
-            // heuristic data_align would have been capped at 16 and this
-            // allocation could land on a 16-aligned (not 64-aligned) address.
             assert_eq!((*header).data_align, align_of::<Over>());
             assert_eq!(rc as usize % align_of::<Over>(), 0);
             hew_rc_drop(rc);
@@ -1776,6 +2053,80 @@ mod tests {
         assert_eq!(normalise_align(8), 8);
         assert_eq!(normalise_align(3), 4);
         assert_eq!(normalise_align(48), 64);
+    }
+
+    #[test]
+    fn intrusive_rc_list_handles_middle_front_back_removal_and_concurrent_tasks() {
+        let registry = Arc::new(RcAllocations::default());
+        // SAFETY: each test allocation is registered once and dropped once.
+        unsafe {
+            let v = 10_i32;
+            let a = new_for_test(
+                (&raw const v).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
+            let b = new_for_test(
+                (&raw const v).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
+            let c = new_for_test(
+                (&raw const v).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
+            registry.register(header_from_data(a));
+            registry.register(header_from_data(b));
+            registry.register(header_from_data(c));
+            assert_eq!(registry.inner.lock_or_recover().blocks.len(), 3);
+
+            // Middle removal, then head removal, then tail removal.
+            hew_rc_drop(b);
+            assert_eq!(registry.inner.lock_or_recover().blocks.len(), 2);
+            hew_rc_drop(a);
+            assert_eq!(registry.inner.lock_or_recover().blocks.len(), 1);
+            hew_rc_drop(c);
+            assert!(registry.is_empty());
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let shared = Arc::new(RcAllocations::default());
+            let barrier = Arc::new(std::sync::Barrier::new(4));
+            let mut threads = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let reg = Arc::clone(&shared);
+                let bar = Arc::clone(&barrier);
+                threads.push(std::thread::spawn(move || {
+                    bar.wait();
+                    let mut handles = Vec::with_capacity(64);
+                    // SAFETY: each thread owns its own `Rc` handles while sharing `RcAllocations`.
+                    unsafe {
+                        for i in 0..64_i32 {
+                            let rc = new_for_test(
+                                (&raw const i).cast(),
+                                size_of::<i32>(),
+                                align_of::<i32>(),
+                                None,
+                            );
+                            reg.register(header_from_data(rc));
+                            handles.push(rc);
+                        }
+                        for rc in handles {
+                            hew_rc_drop(rc);
+                        }
+                    }
+                }));
+            }
+            for t in threads {
+                t.join().expect("scoped-task Rc stress worker");
+            }
+            assert!(shared.close_empty());
+        }
     }
 
     #[test]

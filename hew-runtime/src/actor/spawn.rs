@@ -26,12 +26,6 @@ pub struct HewActorOpts {
     pub coalesce_fallback: i32,
     /// Messages per activation (`0` = default).
     pub budget: i32,
-    /// Per-actor arena cap in bytes (`0` = unbounded, same as `hew_arena_new`).
-    ///
-    /// Non-zero values cause [`hew_actor_spawn_opts`] to call
-    /// `hew_arena_new_with_cap(arena_cap_bytes)` instead of `hew_arena_new()`.
-    /// This explicit arena limit is separate from managed actor-value budgets.
-    pub arena_cap_bytes: usize,
     /// Non-zero when the checker determined this actor participates in an
     /// actor-ref cycle. Future consumer: cycle-detection / Machine Lane B
     /// cycle handling.
@@ -122,9 +116,6 @@ struct ActorSpawnConfig {
         reason = "receiver-side ABI bit is staged for the Machine Lane B cycle-detection consumer"
     )]
     cycle_capable: bool,
-    /// Arena cap in bytes. `0` = unbounded (calls `hew_arena_new`).
-    /// Non-zero calls `hew_arena_new_with_cap(cap_bytes)`.
-    cap_bytes: usize,
     /// When true, `spawn_actor_internal` adopts `state` as a pre-built
     /// `malloc`-compatible clone (set by [`hew_actor_spawn_opts_adopt`]) and
     /// skips the second `deep_copy_state` that would create `init_state`.
@@ -254,7 +245,6 @@ fn build_spawned_actor(
     config: ActorSpawnConfig,
     identity: SpawnIdentity,
     init_state: *mut c_void,
-    arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
@@ -283,7 +273,6 @@ fn build_spawned_actor(
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
-        arena,
         suspended_cont: AtomicPtr::new(ptr::null_mut()),
         cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
         pending_wake: AtomicBool::new(false),
@@ -307,6 +296,7 @@ fn build_spawned_actor(
         pending_external_trap_code: AtomicI32::new(0),
         native_completion: config.native_completion,
         parse_errors: crate::parse_error_slot::ActorParseErrors::new(),
+        state_lock: ActorStateLock::new(),
     })
 }
 
@@ -370,23 +360,6 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
     true
 }
 
-/// Allocate the per-actor arena for a native spawn.
-///
-/// Centralises the `cap_bytes == 0` / `cap_bytes > 0` branch and provides a
-/// test-only injection point: when `FAIL_ARENA_ALLOC_NEXT` is set, the first
-/// call returns null to simulate an OOM on the arena allocation step.
-fn alloc_actor_arena(cap_bytes: usize) -> *mut crate::arena::ActorArena {
-    #[cfg(test)]
-    if should_fail_arena_alloc() {
-        return ptr::null_mut();
-    }
-    if cap_bytes > 0 {
-        crate::arena::hew_arena_new_with_cap(cap_bytes)
-    } else {
-        crate::arena::hew_arena_new()
-    }
-}
-
 /// Shared implementation for all native actor spawn functions.
 ///
 /// # Safety
@@ -416,37 +389,23 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
-    // Allocate the per-actor arena bump allocator.  Mirror the wasm path:
-    // if allocation fails, free all resources already owned and return null.
-    let arena = alloc_actor_arena(config.cap_bytes);
-    if arena.is_null() {
-        // SAFETY: `init_state` was created above and ownership has not been
-        // transferred.  `cleanup_failed_spawn` also frees `config.state` and
-        // the mailbox; on the adopt path `init_state` is null (no extra alloc).
-        unsafe { cleanup_failed_spawn(&config, init_state) };
-        return ptr::null_mut();
-    }
     let Some(identity) = next_spawn_actor_identity() else {
         crate::set_last_error(
             "hew_actor_spawn: actor serial space exhausted; refusing to mint an aliased actor id",
         );
-        // SAFETY: the arena was allocated above and its ownership has not been
-        // transferred to an actor.
-        unsafe { crate::arena::hew_arena_free_all(arena) };
         // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     };
     let rejected_state_release = config.rejected_state_release;
     let state_release = config.native_state_release;
-    let actor = build_spawned_actor(config, identity, init_state, arena);
+    let actor = build_spawned_actor(config, identity, init_state);
     let raw = Box::into_raw(actor);
     // The single site that mints an actor box. Counted here, at the allocation
     // itself, so the balance in `actor_balance` is over the boxes the runtime
     // actually handed out (see that module for why exit status alone cannot
     // see a leaked actor).
     crate::actor_balance::record_actor_box_alloc();
-    register_actor_state_lock(raw);
     // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
@@ -527,7 +486,6 @@ pub unsafe extern "C" fn hew_actor_spawn(
             budget: HEW_MSG_BUDGET,
             coalesce_match_fn: None,
             cycle_capable: false,
-            cap_bytes: 0,
             adopt: false,
         })
     }
@@ -606,7 +564,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
             budget,
             coalesce_match_fn: opts.coalesce_match_fn,
             cycle_capable: opts.cycle_capable != 0,
-            cap_bytes: opts.arena_cap_bytes,
             adopt: false,
         })
     }
@@ -721,7 +678,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
             budget,
             coalesce_match_fn: opts.coalesce_match_fn,
             cycle_capable: opts.cycle_capable != 0,
-            cap_bytes: opts.arena_cap_bytes,
             adopt: true,
         })
     }
@@ -891,7 +847,6 @@ pub unsafe extern "C" fn hew_actor_construct_native(
             budget: HEW_MSG_BUDGET,
             coalesce_match_fn: coalesce_match,
             cycle_capable: false,
-            cap_bytes: 0,
             adopt: true,
         })
     };
@@ -1132,7 +1087,42 @@ pub(crate) unsafe fn try_submit_native_request(
     // SAFETY: forwards the uniquely owned request and its optional reply.
     unsafe {
         submit_native_request(
-            token, message, envelope, reply, obligated, false, caller, capacity,
+            token, message, envelope, reply, obligated, false, caller, capacity, None,
+        )
+    }
+}
+
+/// Submit an envelope and capture the pinned target's [`ActorIncarnation`] in
+/// the same pin so callers do not re-resolve `token` for wait-graph tracking.
+///
+/// # Safety
+/// Both unpublished references transfer only on successful admission.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "forwards the admission contract plus target capture slot"
+)]
+pub(crate) unsafe fn try_submit_native_request_capturing_target(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    reply: *mut c_void,
+    obligated: bool,
+    caller: crate::actor_caller::HewCallerStamp,
+    capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
+    target_out: &mut Option<live_actors::ActorIncarnation>,
+) -> crate::mailbox::SendOutcome {
+    // SAFETY: forwards the uniquely owned request and its optional reply.
+    unsafe {
+        submit_native_request(
+            token,
+            message,
+            envelope,
+            reply,
+            obligated,
+            false,
+            caller,
+            capacity,
+            Some(target_out),
         )
     }
 }
@@ -1153,6 +1143,7 @@ pub(crate) unsafe fn submit_native_terminal(
             true,
             crate::actor_caller::local_sender(),
             None,
+            None,
         )
     }
 }
@@ -1170,6 +1161,7 @@ unsafe fn submit_native_request(
     terminal: bool,
     caller: crate::actor_caller::HewCallerStamp,
     capacity: Option<&std::sync::Arc<crate::wake::OwnedWaker>>,
+    target_out: Option<&mut Option<live_actors::ActorIncarnation>>,
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
@@ -1185,6 +1177,10 @@ unsafe fn submit_native_request(
     crate::lifetime::local_handles::with_current_actor(token, |actor| {
         // SAFETY: this guard pins the exact actor incarnation and its mailbox.
         let a = unsafe { &*actor };
+        if let Some(slot) = target_out {
+            // SAFETY: `actor` is live and pinned for this closure.
+            *slot = Some(unsafe { live_actors::ActorIncarnation::of(actor) });
+        }
         if let Some(waker) = capacity {
             // SAFETY: this same pin covers registration and the admission check.
             unsafe { &*a.mailbox.cast::<HewMailbox>() }
@@ -1274,47 +1270,47 @@ unsafe fn admit_bound_native_request(
     // the unpublished envelope while waiting, including on a restarted role.
     // SAFETY: the send pin retains this incarnation and the producer owns its envelope.
     let frozen = unsafe {
-        let env = &mut *envelope;
-        if env.layout.is_null() {
+        let layout = (*envelope).layout;
+        if layout.is_null() {
             Ok(true)
         } else {
             let identity = crate::lifetime::live_actors::ActorIncarnation::of(actor);
-            if env
+            if (*envelope)
                 .transfer
                 .as_ref()
                 .is_some_and(|transfer| transfer.target != identity)
             {
-                env.transfer.take();
+                (*envelope).transfer.take();
             }
             let destination = a
                 .native_completion
                 .as_ref()
                 .and_then(|completion| completion.cleanup.value_owner.clone());
-            if env.transfer.is_none()
+            if (*envelope).transfer.is_none()
                 && !crate::owned_value_budget::transfer::is_inert(
-                    env.value_owner.as_ref(),
+                    (*envelope).value_owner.as_ref(),
                     destination.as_ref(),
-                    env.layout,
+                    layout,
                 )
             {
                 let mut value = crate::owned_value_budget::transfer::ValueTransfer::begin(
-                    env.value_owner.clone(),
+                    (*envelope).value_owner.clone(),
                     destination,
                     &raw const crate::cow_envelope::ENVELOPE_LAYOUT,
                     envelope.cast(),
                 );
                 value.set_destination_actor(actor);
-                if let Some(waker) = env.transfer_waker.clone() {
+                if let Some(waker) = (*envelope).transfer_waker.clone() {
                     value.set_waker(waker);
                 }
-                env.transfer = Some(crate::cow_envelope::EnvelopeTransfer {
+                (*envelope).transfer = Some(crate::cow_envelope::EnvelopeTransfer {
                     target: identity,
                     value,
                     pending: false,
                 });
             }
             // An inert transfer has no graph to freeze or commit.
-            match env.transfer.as_mut() {
+            match (*envelope).transfer.as_mut() {
                 Some(transfer) => {
                     let frozen = transfer.value.poll_freeze();
                     transfer.pending = matches!(frozen, Ok(false));
@@ -1463,7 +1459,6 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
             budget: HEW_MSG_BUDGET,
             coalesce_match_fn: None,
             cycle_capable: false,
-            cap_bytes: 0,
             adopt: false,
         })
     }

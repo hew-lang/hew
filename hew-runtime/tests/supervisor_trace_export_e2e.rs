@@ -98,7 +98,6 @@ fn start_one_child_supervisor(name: &str) -> (TestSupervisor, CString) {
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             sys_dispatch: None,
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,

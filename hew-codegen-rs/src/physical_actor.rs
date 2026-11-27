@@ -41,9 +41,13 @@ fn sender_stamp<'ctx>(
     invocation: Option<PointerValue<'ctx>>,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let ptr = ctx.ptr_type(AddressSpace::default());
-    let stamp = builder
-        .build_alloca(caller_stamp_type(ctx), "sender.stamp")
-        .llvm_ctx("allocate the outgoing caller stamp")?;
+    let entry = builder
+        .get_insert_block()
+        .and_then(BasicBlock::get_parent)
+        .and_then(FunctionValue::get_first_basic_block)
+        .ok_or_else(|| CodegenError::FailClosed("sender stamp lacks entry block".into()))?;
+    let stamp = coro::entry_storage(ctx, entry, caller_stamp_type(ctx).into(), "sender.stamp")?;
+    coro::emit_lifetime_start(ctx, llvm, builder, stamp)?;
     let (name, arguments): (_, Vec<BasicMetadataValueEnum<'ctx>>) = match invocation {
         Some(state) => ("hew_coro_state_sender", vec![state.into(), stamp.into()]),
         None => ("hew_local_sender", vec![stamp.into()]),
@@ -1807,6 +1811,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     protocol.sealed,
                     transfers,
                     unwind,
+                    false,
                 )?;
                 self.store(result, value.into())?;
                 return self.emit_result_edge(Some(result), normal);
@@ -2705,33 +2710,48 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let allocate = get_or_declare_external(
-            self.llvm,
-            "hew_actor_payload_try_alloc",
-            ptr.fn_type(&[size_ty.into()], false),
-        )?;
-        let wrapper = call_value(
-            &self.builder,
-            allocate,
-            &[size_ty.const_int(size, false).into()],
-            "stream.start.allocate",
-        )?
-        .into_pointer_value();
-        let allocated = self
-            .ctx
-            .append_basic_block(self.value, "stream.start.allocated");
+        let use_inline = size <= hew_runtime::cow_envelope::INLINE_PAYLOAD_CAP as u64;
         let refused = self
             .ctx
             .append_basic_block(self.value, "stream.start.refused");
         let done = self.ctx.append_basic_block(self.value, "stream.start.done");
-        let missing = self
-            .builder
-            .build_is_null(wrapper, "stream.start.no_memory")
-            .llvm_ctx("check request allocation")?;
-        self.builder
-            .build_conditional_branch(missing, refused, allocated)
-            .llvm_ctx("branch on request allocation")?;
-        self.builder.position_at_end(allocated);
+        let (wrapper, inline_wrapper) = if use_inline {
+            let entry = self.value.get_first_basic_block().unwrap();
+            let slot = coro::entry_storage_aligned(
+                self.ctx,
+                entry,
+                wrapper_ty.into(),
+                16,
+                "stream.start.wrapper",
+            )?;
+            coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, slot)?;
+            (slot, Some(slot))
+        } else {
+            let allocate = get_or_declare_external(
+                self.llvm,
+                "hew_actor_payload_try_alloc",
+                ptr.fn_type(&[size_ty.into()], false),
+            )?;
+            let wrapper = call_value(
+                &self.builder,
+                allocate,
+                &[size_ty.const_int(size, false).into()],
+                "stream.start.allocate",
+            )?
+            .into_pointer_value();
+            let allocated = self
+                .ctx
+                .append_basic_block(self.value, "stream.start.allocated");
+            let missing = self
+                .builder
+                .build_is_null(wrapper, "stream.start.no_memory")
+                .llvm_ctx("check request allocation")?;
+            self.builder
+                .build_conditional_branch(missing, refused, allocated)
+                .llvm_ctx("branch on request allocation")?;
+            self.builder.position_at_end(allocated);
+            (wrapper, None)
+        };
         initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         let fields = self
             .load(*payload, "stream.start.payload")?
@@ -2771,6 +2791,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         ];
         let status = self.emit_actor_send_wait(
             &request,
+            inline_wrapper,
             message_release(self.llvm, self.ctx, actor.id, message),
             message_layout(self.llvm, actor.id, message)?,
             *payload,
@@ -2849,30 +2870,45 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let allocate = get_or_declare_external(
-            self.llvm,
-            "hew_actor_payload_try_alloc",
-            ptr.fn_type(&[size_ty.into()], false),
-        )?;
-        let wrapper = call_value(
-            &self.builder,
-            allocate,
-            &[size_ty.const_int(size, false).into()],
-            "timer.wrapper",
-        )?
-        .into_pointer_value();
+        let use_inline = size <= hew_runtime::cow_envelope::INLINE_PAYLOAD_CAP as u64;
         let failed = self.ctx.append_basic_block(self.value, "timer.failed");
-        let allocated = self.ctx.append_basic_block(self.value, "timer.allocated");
         let accepted = self.ctx.append_basic_block(self.value, "timer.accepted");
         let done = self.ctx.append_basic_block(self.value, "timer.done");
-        let missing = self
-            .builder
-            .build_is_null(wrapper, "timer.no_memory")
-            .llvm_ctx("check timer wrapper allocation")?;
-        self.builder
-            .build_conditional_branch(missing, failed, allocated)
-            .llvm_ctx("route timer allocation")?;
-        self.builder.position_at_end(allocated);
+        let wrapper = if use_inline {
+            let entry = self.value.get_first_basic_block().unwrap();
+            let slot = coro::entry_storage_aligned(
+                self.ctx,
+                entry,
+                wrapper_ty.into(),
+                16,
+                "timer.wrapper",
+            )?;
+            coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, slot)?;
+            slot
+        } else {
+            let allocate = get_or_declare_external(
+                self.llvm,
+                "hew_actor_payload_try_alloc",
+                ptr.fn_type(&[size_ty.into()], false),
+            )?;
+            let wrapper = call_value(
+                &self.builder,
+                allocate,
+                &[size_ty.const_int(size, false).into()],
+                "timer.wrapper",
+            )?
+            .into_pointer_value();
+            let allocated = self.ctx.append_basic_block(self.value, "timer.allocated");
+            let missing = self
+                .builder
+                .build_is_null(wrapper, "timer.no_memory")
+                .llvm_ctx("check timer wrapper allocation")?;
+            self.builder
+                .build_conditional_branch(missing, failed, allocated)
+                .llvm_ctx("route timer allocation")?;
+            self.builder.position_at_end(allocated);
+            wrapper
+        };
         initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         let fields = self.load(*payload, "timer.payload")?.into_struct_value();
         for (index, ty) in handler.params.iter().enumerate() {
@@ -2894,7 +2930,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let schedule = get_or_declare_external(
             self.llvm,
-            "hew_actor_timer_new",
+            if use_inline {
+                "hew_actor_timer_new_inline"
+            } else {
+                "hew_actor_timer_new"
+            },
             ptr.fn_type(
                 &[
                     size_ty.into(),
@@ -2942,6 +2982,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "timer.handle",
         )?
         .into_pointer_value();
+        if use_inline {
+            coro::emit_lifetime_end(self.ctx, self.llvm, &self.builder, wrapper)?;
+        }
         let missing = self
             .builder
             .build_is_null(timer, "timer.not_scheduled")
@@ -3025,40 +3068,55 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let submitted = self.ctx.append_basic_block(self.value, "submission.result");
-        let allocate = get_or_declare_external(
-            self.llvm,
-            "hew_actor_payload_try_alloc",
-            ptr.fn_type(&[size_ty.into()], false),
-        )?;
-        let wrapper = self
-            .builder
-            .build_call(
-                allocate,
-                &[size_ty.const_int(size, false).into()],
-                "submission.allocate",
-            )
-            .llvm_ctx("allocate unpublished message wrapper")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("message allocation returned void".into()))?
-            .into_pointer_value();
-        let allocated = self
-            .ctx
-            .append_basic_block(self.value, "submission.allocated");
-        let oom = self.ctx.append_basic_block(self.value, "submission.oom");
-        let failed = self
-            .builder
-            .build_is_null(wrapper, "submission.no_memory")
-            .llvm_ctx("check message allocation")?;
-        self.builder
-            .build_conditional_branch(failed, oom, allocated)
-            .llvm_ctx("branch on message allocation")?;
-        self.builder.position_at_end(oom);
-        self.builder
-            .build_unconditional_branch(submitted)
-            .llvm_ctx("return allocation failure")?;
-        self.builder.position_at_end(allocated);
+        let use_inline = size <= hew_runtime::cow_envelope::INLINE_PAYLOAD_CAP as u64;
+        let (wrapper, inline_wrapper, oom_and_submitted) = if use_inline {
+            let entry = self.value.get_first_basic_block().unwrap();
+            let slot = coro::entry_storage_aligned(
+                self.ctx,
+                entry,
+                wrapper_ty.into(),
+                16,
+                "submission.wrapper",
+            )?;
+            coro::emit_lifetime_start(self.ctx, self.llvm, &self.builder, slot)?;
+            (slot, Some(slot), None)
+        } else {
+            let submitted = self.ctx.append_basic_block(self.value, "submission.result");
+            let allocate = get_or_declare_external(
+                self.llvm,
+                "hew_actor_payload_try_alloc",
+                ptr.fn_type(&[size_ty.into()], false),
+            )?;
+            let wrapper = self
+                .builder
+                .build_call(
+                    allocate,
+                    &[size_ty.const_int(size, false).into()],
+                    "submission.allocate",
+                )
+                .llvm_ctx("allocate unpublished message wrapper")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("message allocation returned void".into()))?
+                .into_pointer_value();
+            let allocated = self
+                .ctx
+                .append_basic_block(self.value, "submission.allocated");
+            let oom = self.ctx.append_basic_block(self.value, "submission.oom");
+            let failed = self
+                .builder
+                .build_is_null(wrapper, "submission.no_memory")
+                .llvm_ctx("check message allocation")?;
+            self.builder
+                .build_conditional_branch(failed, oom, allocated)
+                .llvm_ctx("branch on message allocation")?;
+            self.builder.position_at_end(oom);
+            self.builder
+                .build_unconditional_branch(submitted)
+                .llvm_ctx("return allocation failure")?;
+            self.builder.position_at_end(allocated);
+            (wrapper, None, Some((oom, submitted)))
+        };
         initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         for (index, ty) in params.iter().enumerate() {
             let index = u32::try_from(index)
@@ -3098,6 +3156,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             })?;
         let (status, refused, discarded) = self.emit_owned_actor_submission(
             &request,
+            inline_wrapper,
             message_release(self.llvm, self.ctx, actor.id, handler.message_id),
             message_layout(self.llvm, actor.id, handler.message_id)?,
             source,
@@ -3106,47 +3165,56 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             dispatch.as_global_value().as_pointer_value(),
             true,
         )?;
-        let admission_block = self.builder.get_insert_block().unwrap();
-        self.builder
-            .build_unconditional_branch(submitted)
-            .llvm_ctx("join admission outcome")?;
-        self.builder.position_at_end(submitted);
-        let outcome = self
-            .builder
-            .build_phi(self.ctx.i32_type(), "submission.outcome")
-            .llvm_ctx("join submission status")?;
-        outcome.add_incoming(&[
-            (
-                &self.ctx.i32_type().const_int(
-                    hew_runtime::internal::types::AskError::SendFailed as u64,
-                    false,
-                ),
-                oom,
-            ),
-            (&status, admission_block),
-        ]);
-
-        let refusal = self
-            .builder
-            .build_phi(self.ctx.bool_type(), "submission.refusal")
-            .llvm_ctx("join refusal evidence")?;
-        let dropped = self
-            .builder
-            .build_phi(self.ctx.bool_type(), "submission.discarded")
-            .llvm_ctx("join discard outcome")?;
-        refusal.add_incoming(&[
-            (&self.ctx.bool_type().const_int(1, false), oom),
-            (&refused, admission_block),
-        ]);
-        dropped.add_incoming(&[
-            (&self.ctx.bool_type().const_zero(), oom),
-            (&discarded, admission_block),
-        ]);
+        let (final_status, final_refusal, final_dropped) =
+            if let Some((oom, submitted)) = oom_and_submitted {
+                let admission_block = self.builder.get_insert_block().unwrap();
+                self.builder
+                    .build_unconditional_branch(submitted)
+                    .llvm_ctx("join admission outcome")?;
+                self.builder.position_at_end(submitted);
+                let outcome = self
+                    .builder
+                    .build_phi(self.ctx.i32_type(), "submission.outcome")
+                    .llvm_ctx("join submission status")?;
+                outcome.add_incoming(&[
+                    (
+                        &self.ctx.i32_type().const_int(
+                            hew_runtime::internal::types::AskError::SendFailed as u64,
+                            false,
+                        ),
+                        oom,
+                    ),
+                    (&status, admission_block),
+                ]);
+                let refusal = self
+                    .builder
+                    .build_phi(self.ctx.bool_type(), "submission.refusal")
+                    .llvm_ctx("join refusal evidence")?;
+                let dropped = self
+                    .builder
+                    .build_phi(self.ctx.bool_type(), "submission.discarded")
+                    .llvm_ctx("join discard outcome")?;
+                refusal.add_incoming(&[
+                    (&self.ctx.bool_type().const_int(1, false), oom),
+                    (&refused, admission_block),
+                ]);
+                dropped.add_incoming(&[
+                    (&self.ctx.bool_type().const_zero(), oom),
+                    (&discarded, admission_block),
+                ]);
+                (
+                    outcome.as_basic_value().into_int_value(),
+                    refusal.as_basic_value().into_int_value(),
+                    dropped.as_basic_value().into_int_value(),
+                )
+            } else {
+                (status, refused, discarded)
+            };
 
         self.write_actor_delivery_result(
-            outcome.as_basic_value().into_int_value(),
-            refusal.as_basic_value().into_int_value(),
-            dropped.as_basic_value().into_int_value(),
+            final_status,
+            final_refusal,
+            final_dropped,
             object,
             result_ty,
             destination,

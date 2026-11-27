@@ -2016,12 +2016,15 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
         if src.len == 0 {
             return new_v;
         }
-        if src.layout.as_ref().is_some_and(|layout| {
+        let can_share_cow = if let Some(layout) = src.layout.as_ref() {
             layout.ownership_kind == HewTypeOwnershipKind::Plain
                 && layout.clone_fn.is_none()
                 && layout.drop_fn.is_none()
                 && layout.release_start.is_none()
-        }) {
+        } else {
+            src.elem_kind == ElemKind::Plain
+        };
+        if can_share_cow {
             if (*buffer_owner(v)).fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
                 abort_vector();
             }
@@ -6741,7 +6744,6 @@ mod vec_owned_tests {
             coalesce_match_fn: None,
             coalesce_fallback: crate::internal::types::HewOverflowPolicy::DropNew as i32,
             message_drop_fn: None,
-            arena_cap_bytes: 0,
             cycle_capable: 0,
             lifecycle_fn: None,
             init_fn: None,

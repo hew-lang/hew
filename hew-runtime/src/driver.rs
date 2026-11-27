@@ -337,6 +337,9 @@ pub(crate) use native_shutdown::{discard_shutdown_requests, publish_shutdown};
 
 /// Whether any participant is waiting to run.
 pub(crate) fn has_queued_work() -> bool {
+    if !active() {
+        return false;
+    }
     !READY.lock_or_recover().entries.is_empty()
 }
 

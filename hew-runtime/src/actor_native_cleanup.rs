@@ -226,7 +226,6 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     let mut context = crate::execution_context::HewExecutionContext {
         actor: ptr::from_ref(actor).cast_mut(),
         actor_id: actor.id,
-        arena: actor.arena,
         parent_supervisor: actor.supervisor,
         supervisor_child_index: actor.supervisor_child_index,
         // SAFETY: the invocation remains owned until this driver completes.

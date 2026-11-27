@@ -628,9 +628,6 @@ pub mod symtab_abi;
 mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not
 // applicable to WASM (no threads, no native timer support).
-// Arena functions (hew_arena_malloc / hew_arena_free / etc.) are now
-// provided by the wasm32 arena module (pub mod arena below) instead of
-// these stubs.
 // ── Actor/scheduling modules ─────────────────────────────────────────────────
 // These require threads, signals and networking. wasm32 has none of them: the
 // process runs on `driver`, the single-thread driver of the same core.
@@ -720,8 +717,6 @@ pub mod actor_caller;
 pub mod actor_group;
 pub mod actor_native;
 pub mod actor_observe;
-pub mod arena;
-mod arena_layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;
@@ -863,11 +858,11 @@ pub mod log_core;
 pub use execution_context::{
     current_context, current_partition_policy, set_current_context, set_current_partition_policy,
     HewExecutionContext, PartitionPolicy, HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
-    HEW_CTX_OFFSET_ACTOR, HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_ARENA,
-    HEW_CTX_OFFSET_CANCEL_TOKEN, HEW_CTX_OFFSET_FLAGS, HEW_CTX_OFFSET_LOCK_SEAT,
-    HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_PARTITION_POLICY, HEW_CTX_OFFSET_PREV_CONTEXT,
-    HEW_CTX_OFFSET_REPLY_CHANNEL, HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX, HEW_CTX_OFFSET_TASK_SCOPE,
-    HEW_CTX_OFFSET_TRACE, HEW_CTX_OFFSET_TRACE_SPAN, HEW_TRACE_OFFSET_SPAN_ID,
+    HEW_CTX_OFFSET_ACTOR, HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_CANCEL_TOKEN,
+    HEW_CTX_OFFSET_FLAGS, HEW_CTX_OFFSET_LOCK_SEAT, HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+    HEW_CTX_OFFSET_PARTITION_POLICY, HEW_CTX_OFFSET_PREV_CONTEXT, HEW_CTX_OFFSET_REPLY_CHANNEL,
+    HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX, HEW_CTX_OFFSET_TASK_SCOPE, HEW_CTX_OFFSET_TRACE,
+    HEW_CTX_OFFSET_TRACE_SPAN, HEW_TRACE_OFFSET_SPAN_ID,
 };
 
 /// `hew_exit` is a termination path like any other, so it must consult the same

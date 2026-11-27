@@ -456,9 +456,14 @@ pub(crate) struct ImportedActorBinding {
     service: Arc<crate::hew_node::service_api::ImportedService>,
 }
 
-pub(crate) struct DroppedImportedActor(
-    #[expect(dead_code, reason = "dropped outside the handle lock")] Option<ImportedActorBinding>,
-);
+pub(crate) struct DroppedImportedActor(Option<ImportedActorBinding>);
+
+impl DroppedImportedActor {
+    #[inline]
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ImportedActorRegistry {
@@ -579,6 +584,10 @@ pub(crate) unsafe fn start_async_sink_finish(
     }
     *operation.native.sink_finish.lock_or_recover() =
         Some(crate::async_io::sink::Finish::new(pending, owner, waker));
+    operation
+        .native
+        .has_sink_finish
+        .store(true, std::sync::atomic::Ordering::Release);
     true
 }
 

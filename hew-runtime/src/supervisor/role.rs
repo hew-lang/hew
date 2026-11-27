@@ -249,7 +249,7 @@ pub(crate) fn actor_role_is_restarting(
 /// reachable in production; the serial match is what keeps wrong-actor delivery
 /// unrepresentable at this seam regardless. Both scalars are copied out under
 /// `roster`; no pointer crosses the lock boundary.
-fn role_resolve_current_child_id(
+pub(super) fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
     key: u32,
     record_ask_error: bool,
@@ -276,6 +276,36 @@ fn role_resolve_current_child_id(
             record_ask_error,
         ));
     }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let fast_path_allowed = ROLE_ASK_SUBMIT_GAP_HOOK.lock_or_recover().is_none();
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    let fast_path_allowed = true;
+
+    if fast_path_allowed {
+        // SAFETY: the stable-identity pin keeps `sup` live for the lock-free
+        // slot read and shutdown re-check.
+        if let Some(snapshot) = unsafe { (*sup).live_slots.try_load(key as usize) } {
+            if !snapshot.actor_ptr.is_null() {
+                // Re-check shutdown after reading the slot so a concurrent
+                // shutdown cannot be missed on the lock-free fast path.
+                // SAFETY: the stable-identity pin keeps `sup` live.
+                if unsafe {
+                    (*sup).cancelled.load(Ordering::Acquire)
+                        || ((*sup).running.load(Ordering::Acquire) == 0
+                            && !(*sup).constructing.load(Ordering::Acquire))
+                } {
+                    return Err(role_refuse(
+                        ChildSlotReason::SupervisorShutdown as u8,
+                        key,
+                        record_ask_error,
+                    ));
+                }
+                return Ok((snapshot.actor_id, snapshot.spawn_serial));
+            }
+        }
+    }
+
     // SAFETY: the stable-identity pin keeps `sup` live through this lookup.
     let guard = unsafe { &(*sup).roster }.lock_or_recover();
     // SAFETY: the guard protects this scoped child/spec roster access.

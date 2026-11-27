@@ -3623,6 +3623,58 @@ fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
 }
 
 #[test]
+fn float_and_vec_len_loops_are_admitted_as_scalar_loop_chunks() {
+    let semantic = lower_source(
+        r"
+        fn sum_f64(values: Vec<f64>) -> f64 {
+            var sum: f64 = 0.0;
+            var index: i64 = 0;
+            while index < values.len() {
+                sum += values[index];
+                index += 1;
+            }
+            sum
+        }
+        fn build_f64(limit: i64) -> i64 {
+            var values: Vec<f64> = Vec.new();
+            for index in 0..limit { values.push(1.5); }
+            values.len()
+        }
+        fn main() -> i64 {
+            var values: Vec<f64> = Vec.new();
+            values.push(1.25);
+            values.push(2.75);
+            let _ = sum_f64(values);
+            build_f64(2)
+        }
+        ",
+    );
+    let mut target = target_for_inventory(&semantic);
+    target.insert_layout(
+        ResolvedTy::F64,
+        PhysicalLayout {
+            size: 8,
+            align: 8,
+            repr: PhysicalRepr::Float { bits: 64 },
+        },
+    );
+    let verified = lower_physical_module(&semantic, target).unwrap();
+    let module = verified.module();
+    let function = |name: &str| {
+        module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap()
+    };
+    assert_eq!(function("sum_f64").loop_plan(module).chunks.len(), 1);
+    assert_eq!(function("build_f64").loop_plan(module).chunks.len(), 1);
+}
+
+#[test]
 fn loop_chunks_carry_a_scalar_vector_append_and_restore_its_handle() {
     let semantic = lower_source(
         r#"

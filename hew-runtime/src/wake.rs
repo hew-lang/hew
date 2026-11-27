@@ -16,7 +16,6 @@ pub use target::{HewWaker, OwnedWaker};
 /// readiness target. A notification retains each live target outside the lock.
 #[derive(Debug, Default)]
 pub(crate) struct ReadinessRegistrations {
-    has_waiters: std::sync::atomic::AtomicBool,
     waiters: std::sync::Mutex<Vec<std::sync::Weak<dyn WakeTarget>>>,
 }
 
@@ -29,14 +28,9 @@ impl ReadinessRegistrations {
         if !waiters.iter().any(|existing| existing.ptr_eq(&weak)) {
             waiters.push(weak);
         }
-        self.has_waiters
-            .store(!waiters.is_empty(), std::sync::atomic::Ordering::SeqCst);
     }
 
     pub(crate) fn notify(&self) {
-        if !self.has_waiters.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
         let ready: Vec<_> = {
             let mut waiters = crate::util::MutexExt::lock_or_recover(&self.waiters);
             let ready = waiters
@@ -44,8 +38,6 @@ impl ReadinessRegistrations {
                 .filter_map(std::sync::Weak::upgrade)
                 .collect();
             waiters.retain(|waiter| waiter.strong_count() != 0);
-            self.has_waiters
-                .store(!waiters.is_empty(), std::sync::atomic::Ordering::SeqCst);
             ready
         };
         for waker in ready {

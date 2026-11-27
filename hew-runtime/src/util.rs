@@ -385,8 +385,8 @@ impl TlsBufPool {
             return None;
         }
         // SAFETY: every cached block came from `crate::mem::buf_try_alloc`
-        // (16-byte aligned, >= 64 writable payload bytes) and stores the next
-        // cached payload pointer in word 0.
+        // (16-byte aligned, this pool's fixed size of at least one pointer)
+        // and stores the next cached payload pointer in word 0.
         let next = unsafe { read_word0_link(head) };
         self.head.set(next);
         self.count.set(self.count.get() - 1);

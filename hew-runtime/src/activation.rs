@@ -2206,7 +2206,9 @@ impl Drop for ActivationOwnership<'_> {
         // freed, so incrementing `send_pin_count` directly via
         // `SchedulerQueueEntry::retain` keeps the allocation live past
         // `dispatch_active = false` without touching the shared `LIVE_ACTORS`
-        // shard mutexes on the 99.99% non-terminal path.
+        // shard mutexes on the 99.99% non-terminal path. The retain must
+        // precede the Release clear below: the freers' `lifetime_quiescent`
+        // re-reads the pin count after observing the clear.
         let mut terminal_pin: Option<SchedulerQueueEntry> = None;
         let actor_ptr = std::ptr::from_ref(self.actor).cast_mut();
         // Test terminal state, perform the final drain, and publish ownership

@@ -50,6 +50,13 @@ pub mod actor {
     pub fn hew_actor_current_id_silent() -> i64 { -1 }
     pub struct HewActor {
         pub id: usize,
+        #[cfg(feature = "vector")]
+        pub native_completion: Option<crate::vector_host::NativeCompletion>,
+    }
+    // No proof installs an actor dispatch context.
+    #[cfg(feature = "vector")]
+    pub fn hew_actor_self() -> *mut HewActor {
+        std::ptr::null_mut()
     }
 }
 
@@ -136,6 +143,10 @@ pub mod fault {
     pub unsafe fn hew_fault_trap(_: i32, _: *mut HewFault) {
         panic!("blocking trap outside host")
     }
+    #[cfg(feature = "vector")]
+    pub unsafe fn hew_fault_drop(_: *mut HewFault) {
+        panic!("vector: asynchronous finalizer outside proof")
+    }
 
     pub const HEW_FAULT_DEADLINE: i32 = -2;
     pub const HEW_FAULT_RACE_LOST: i32 = -3;
@@ -146,6 +157,17 @@ pub mod coro_state {
     pub use crate::channel_host::ActorStreamCancellation;
     #[cfg(feature = "vector")]
     pub struct HewCoroState;
+    #[cfg(feature = "vector")]
+    pub unsafe fn hew_coro_state_new(
+        _: *const crate::wake::HewWaker,
+        _: *mut std::ffi::c_void,
+    ) -> *mut HewCoroState {
+        panic!("vector: asynchronous finalizer outside proof")
+    }
+    #[cfg(feature = "vector")]
+    pub unsafe fn hew_coro_state_free(_: *mut HewCoroState) {
+        panic!("vector: asynchronous finalizer outside proof")
+    }
     #[cfg(all(kani, feature = "root_driver"))]
     pub use crate::root_driver::{
         hew_coro_state_private_status, hew_coro_state_status, HewCoroState,

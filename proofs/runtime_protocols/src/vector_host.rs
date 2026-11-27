@@ -96,6 +96,23 @@ pub mod owned_value_budget {
     }
 }
 
+// Asynchronous `release_start` finalizers are outside this proof: `detached`
+// refuses them, so the actor cleanup inbox and local driver fail closed.
+pub struct NativeCompletion {
+    pub cleanup: NativeCleanup,
+}
+pub struct NativeCleanup {
+    pub value_owner: Option<owned_value_budget::ValueOwner>,
+}
+impl NativeCleanup {
+    pub fn register(&self) -> bool {
+        panic!("vector: asynchronous finalizer outside proof")
+    }
+    pub fn enqueue(&self, _: *mut release_walker::HewReleaseCursor) {
+        panic!("vector: asynchronous finalizer outside proof")
+    }
+}
+
 pub mod string {
     use hew_cabi::string::HewString;
     pub unsafe fn hew_string_clone(_: *const HewString) -> *mut HewString {
@@ -211,6 +228,26 @@ pub mod release_walker {
             } else {
                 Box::into_raw(Box::new(result))
             }
+        }
+    }
+    impl HewReleaseCursor {
+        pub fn set_value_owner(&mut self, _: Option<crate::owned_value_budget::ValueOwner>) {
+            panic!("vector: asynchronous finalizer outside proof")
+        }
+    }
+    pub struct ReleaseDriver;
+    impl ReleaseDriver {
+        pub fn with_value_owner(
+            _: *mut HewReleaseCursor,
+            _: Option<crate::owned_value_budget::ValueOwner>,
+        ) -> Self {
+            panic!("vector: asynchronous finalizer outside proof")
+        }
+        pub unsafe fn poll(&mut self, _: *mut crate::coro_state::HewCoroState) -> bool {
+            panic!("vector: asynchronous finalizer outside proof")
+        }
+        pub fn take_fault(&mut self) -> *mut crate::fault::HewFault {
+            panic!("vector: asynchronous finalizer outside proof")
         }
     }
     pub unsafe fn release_now(_: ReleaseItem) {

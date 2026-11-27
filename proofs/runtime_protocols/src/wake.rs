@@ -52,7 +52,7 @@ pub(crate) fn gate(queued: bool) -> state::ReadyState<loom::sync::atomic::Atomic
     state::ReadyState::from_atomic(loom::sync::atomic::AtomicU8::new(u8::from(queued)))
 }
 
-#[cfg(feature = "semaphore")]
+#[cfg(any(feature = "semaphore", feature = "vector"))]
 pub mod blocking {
     pub struct Readiness;
     impl Readiness {

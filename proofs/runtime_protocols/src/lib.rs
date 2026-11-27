@@ -188,7 +188,7 @@ pub mod vec;
 #[cfg(feature = "channel")]
 mod channel_host;
 #[cfg(feature = "channel")]
-use channel_host::{channel_common, code_owner, driver, release_walker, shutdown};
+use channel_host::{channel_common, code_owner, driver, release_walker};
 #[cfg(feature = "channel")]
 #[path = "../../../hew-runtime/src/channel_core.rs"]
 mod channel_core;

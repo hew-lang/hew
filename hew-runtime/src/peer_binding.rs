@@ -631,6 +631,8 @@ impl PeerAuthConfig {
                 mesh_identity: self.mesh_identity.clone(),
                 node_identity: self.node_identity,
                 session_lease,
+                #[cfg(test)]
+                _test_dir: None,
                 mesh_spki_allowlist,
                 setup_error: self.setup_error.clone(),
             }),
@@ -657,6 +659,10 @@ struct SnapshotInner {
     mesh_identity: Option<MeshIdentityMaterial>,
     node_identity: Option<NodeId>,
     session_lease: Option<Arc<NodeSessionLease>>,
+    /// Owns a test lease's journal directory; declared after the lease so it
+    /// is removed once the lease's file lock is released.
+    #[cfg(test)]
+    _test_dir: Option<tempfile::TempDir>,
     mesh_spki_allowlist: HashSet<Vec<u8>>,
     setup_error: Option<String>,
 }
@@ -673,17 +679,12 @@ impl PeerAuthSnapshot {
         node_identity: NodeId,
         peer_bindings: impl IntoIterator<Item = (RouteSlot, PeerCredential)>,
     ) -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static NEXT_TEST_LEASE: AtomicU64 = AtomicU64::new(1);
-        let lease_id = NEXT_TEST_LEASE.fetch_add(1, Ordering::Relaxed);
-        let lease_path = std::env::temp_dir().join(format!(
-            "hew-peer-auth-test-{}-{lease_id}",
-            std::process::id()
-        ));
-        let session_lease = NodeSessionLease::acquire(&lease_path, node_identity)
+        let test_dir = tempfile::Builder::new()
+            .prefix("hew-peer-auth-test-")
+            .tempdir()
+            .expect("test lease directory should be created");
+        let session_lease = NodeSessionLease::acquire(&test_dir.path().join("node"), node_identity)
             .expect("test node session lease should be acquired");
-        let _ = std::fs::remove_file(&lease_path);
         Self {
             inner: Arc::new(SnapshotInner {
                 admission: None,
@@ -695,6 +696,8 @@ impl PeerAuthSnapshot {
                 mesh_identity: None,
                 node_identity: Some(node_identity),
                 session_lease: Some(Arc::new(session_lease)),
+                #[cfg(test)]
+                _test_dir: Some(test_dir),
                 mesh_spki_allowlist: HashSet::new(),
                 setup_error: None,
             }),
@@ -721,6 +724,8 @@ impl PeerAuthSnapshot {
                 mesh_identity: None,
                 node_identity: None,
                 session_lease: None,
+                #[cfg(test)]
+                _test_dir: None,
                 mesh_spki_allowlist: HashSet::new(),
                 setup_error: None,
             }),
